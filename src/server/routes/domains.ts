@@ -45,7 +45,7 @@ const createDomainSchema = z.object({
     verificationMethod: z.enum(['dns', 'email']).default('dns'),
 })
 
-async function checkDomainAccess(userId: string, organizationId: string) {
+export async function checkDomainAccess(userId: string, organizationId: string) {
     const organization = await db.query.organizations.findFirst({
         where: eq(organizations.id, organizationId),
     })

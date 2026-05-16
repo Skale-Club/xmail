@@ -36,7 +36,7 @@ const updateWebhookSchema = z.object({
 })
 
 // Helper to check access
-async function checkWebhookAccess(userId: string, organizationId: string) {
+export async function checkWebhookAccess(userId: string, organizationId: string) {
     const organization = await db.query.organizations.findFirst({
         where: eq(organizations.id, organizationId),
     })

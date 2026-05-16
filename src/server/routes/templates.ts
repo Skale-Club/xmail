@@ -37,7 +37,7 @@ const updateTemplateSchema = z.object({
 })
 
 // Helper to check organization access
-async function checkOrganizationAccess(userId: string, organizationId: string) {
+export async function checkOrganizationAccess(userId: string, organizationId: string) {
     const organization = await db.query.organizations.findFirst({
         where: eq(organizations.id, organizationId),
     })

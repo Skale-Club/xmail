@@ -49,7 +49,7 @@ const searchMessagesSchema = z.object({
     limit: z.coerce.number().int().min(1).max(100).default(50),
 })
 
-async function checkMessageAccess(userId: string, organizationId: string) {
+export async function checkMessageAccess(userId: string, organizationId: string) {
     const organization = await db.query.organizations.findFirst({
         where: eq(organizations.id, organizationId),
     })

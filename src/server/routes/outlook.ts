@@ -28,7 +28,7 @@ const sendTestSchema = z.object({
     body: z.string().min(1).default('This is a test message sent through Microsoft Graph.'),
 })
 
-async function checkOutlookAccess(userId: string, organizationId: string) {
+export async function checkOutlookAccess(userId: string, organizationId: string) {
     const organization = await db.query.organizations.findFirst({
         where: eq(organizations.id, organizationId),
     })

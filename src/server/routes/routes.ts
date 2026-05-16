@@ -28,7 +28,7 @@ const updateRouteSchema = z.object({
 })
 
 // Helper to check access
-async function checkRouteAccess(userId: string, organizationId: string) {
+export async function checkRouteAccess(userId: string, organizationId: string) {
     const organization = await db.query.organizations.findFirst({
         where: eq(organizations.id, organizationId),
     })
