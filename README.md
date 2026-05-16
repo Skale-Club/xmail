@@ -83,17 +83,20 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 DATABASE_URL=postgresql://postgres:password@db.your-project.supabase.co:5432/postgres
 ```
 
-5. Push the database schema:
+5. Apply the SQL migrations (in filename order) against your Postgres DB. The
+   recommended path is `psql`:
 ```bash
-npm run db:push
+for f in supabase/migrations/[0-9]*.sql; do psql "$DATABASE_URL" -f "$f"; done
 ```
 
-6. Apply RLS policies:
+Or paste each file into the Supabase SQL Editor in filename order. See
+[Schema & Migration Workflow](#schema--migration-workflow) below — `npm run
+db:push` / `drizzle-kit generate` are intentionally NOT used.
+
+6. Apply RLS policies (idempotent re-run of the consolidated migration):
 ```bash
 npm run db:rls
 ```
-
-If you prefer Supabase SQL Editor, run all files in `supabase/migrations` in filename order.
 
 ### Development
 
@@ -227,6 +230,25 @@ skaleclub-mail/
 | `track_domains` | Tracking domains |
 | `suppressions` | Email suppressions |
 | `statistics` | Email statistics |
+
+### Schema & Migration Workflow
+
+**Canonical sources:**
+- **TypeScript schema:** `src/db/schema.ts` — Drizzle table definitions + types (consumed by application code).
+- **SQL migrations:** `supabase/migrations/NNN_description.sql` — hand-written, hand-numbered, applied in order against the Postgres DB. THIS is the source of truth for the running database.
+- **Indexes:** Defined twice intentionally — in `src/db/schema.ts` via Drizzle `index()` (for type-awareness) AND in `sql/indexes.sql` via `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (for safe production apply). Run `npm run db:indexes` to apply index changes.
+
+**What we DO:**
+- Edit `src/db/schema.ts` to update TypeScript types.
+- Write a matching hand-rolled SQL migration in `supabase/migrations/NNN_<name>.sql` (take the next free integer). Migrations must be idempotent where reasonable (`IF NOT EXISTS`, `DROP POLICY IF EXISTS ... CREATE POLICY ...`).
+- Apply via `psql "$DATABASE_URL" -f supabase/migrations/NNN_<name>.sql`.
+- For RLS-policy changes, prefer adding to / regenerating the consolidated RLS migration (currently `020_consolidate_rls.sql` — see QUA-03).
+
+**What we DO NOT do:**
+- **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/0000_dear_wolverine.sql`. The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
+- **Do NOT add Drizzle relations / constraints expecting them to apply automatically.** The TS-side schema is for type information; the DB side comes from the SQL migration.
+
+**Numbering convention:** Migrations are sequential integers (`001` through `019` as of 2026-05-16; `020_consolidate_rls.sql` is the next planned). When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
 
 ## Security
 

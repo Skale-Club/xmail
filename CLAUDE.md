@@ -115,6 +115,25 @@ Schema defined in `src/db/schema.ts` using Drizzle ORM. Key tables: `users`, `or
 
 All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql`). RLS is **defense-in-depth only** — the app's `DATABASE_URL` Postgres role bypasses RLS, so tenant isolation is enforced in JS via `src/server/lib/access.ts`. See `### Authentication Flow` above.
 
+### Schema & Migration Workflow
+
+**Canonical sources:**
+- **TypeScript schema:** `src/db/schema.ts` — Drizzle table definitions + types (consumed by application code).
+- **SQL migrations:** `supabase/migrations/NNN_description.sql` — hand-written, hand-numbered, applied in order against the Postgres DB. THIS is the source of truth for the running database.
+- **Indexes:** Defined twice intentionally — in `src/db/schema.ts` via Drizzle `index()` (for type-awareness) AND in `sql/indexes.sql` via `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (for safe production apply). Run `npm run db:indexes` to apply index changes.
+
+**What we DO:**
+- Edit `src/db/schema.ts` to update TypeScript types.
+- Write a matching hand-rolled SQL migration in `supabase/migrations/NNN_<name>.sql` (take the next free integer). Migrations must be idempotent where reasonable (`IF NOT EXISTS`, `DROP POLICY IF EXISTS ... CREATE POLICY ...`).
+- Apply via `psql "$DATABASE_URL" -f supabase/migrations/NNN_<name>.sql`.
+- For RLS-policy changes, prefer adding to / regenerating the consolidated RLS migration (currently `020_consolidate_rls.sql` — see QUA-03).
+
+**What we DO NOT do:**
+- **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/0000_dear_wolverine.sql`. The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
+- **Do NOT add Drizzle relations / constraints expecting them to apply automatically.** The TS-side schema is for type information; the DB side comes from the SQL migration.
+
+**Numbering convention:** Migrations are sequential integers (`001` through `019` as of 2026-05-16; `020_consolidate_rls.sql` is the next planned). When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+
 ## Key Constraints
 
 - No testing framework is currently configured
