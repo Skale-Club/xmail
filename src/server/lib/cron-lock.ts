@@ -44,7 +44,7 @@ export function computeLockKey(name: string): bigint {
  * swallowed so a single cron tick failure does not crash the scheduler.
  * Errors thrown by `fn` itself propagate to the caller.
  */
-export async function runWithLock(jobName: string, fn: () => Promise<void>): Promise<void> {
+export async function runWithLock(jobName: string, fn: () => Promise<unknown>): Promise<void> {
     const key = computeLockKey(jobName)
 
     // Reserve a single connection so lock and unlock target the same session.
