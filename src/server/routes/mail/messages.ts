@@ -645,6 +645,16 @@ router.post('/:mailboxId/messages/:messageId/move', async (req: Request, res: Re
 
         const data = schema.parse(req.body)
 
+        // COR-05 — see audit H10. Verify the target folder belongs to the SAME mailbox before
+        // moving. Without this, a user can move their message into another user's folder,
+        // silently corrupting the folder tree (orphaned in foreign mailbox, invisible to owner).
+        const targetFolder = await db.query.mailFolders.findFirst({
+            where: and(eq(mailFolders.id, data.folderId), eq(mailFolders.mailboxId, mailboxId)),
+        })
+        if (!targetFolder) {
+            return res.status(400).json({ error: 'Folder does not belong to this mailbox' })
+        }
+
         await db.update(mailMessages)
             .set({ folderId: data.folderId, updatedAt: new Date() })
             .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
