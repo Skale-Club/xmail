@@ -1,9 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import { eq, and, desc, like, sql } from 'drizzle-orm'
+import { eq, and, desc, like, sql, inArray } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
 import { db } from '../../db'
-import { messages, organizations, organizationUsers, deliveries, templates } from '../../db/schema'
+import { messages, organizations, organizationUsers, deliveries, templates, suppressions } from '../../db/schema'
 import { isPlatformAdmin } from '../lib/admin'
 import { injectTracking, incrementStat, fireWebhooks } from '../lib/tracking'
 import { resolveOutlookMailboxForServer, sendMessageWithOutlook } from '../lib/outlook'
@@ -207,6 +207,26 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Access denied' })
         }
 
+        // COR-06 — see audit H11. Block sends to suppressed recipients.
+        // Suppression list is populated by bounce/complaint/manual-unsubscribe pipelines.
+        // We fail the ENTIRE request on any match (safer default; partial-send is v1.3 UX).
+        const allRecipients = [...data.to, ...(data.cc || []), ...(data.bcc || [])]
+        if (allRecipients.length > 0) {
+            const suppressed = await db
+                .select({ emailAddress: suppressions.emailAddress })
+                .from(suppressions)
+                .where(and(
+                    eq(suppressions.organizationId, data.organizationId),
+                    inArray(suppressions.emailAddress, allRecipients),
+                ))
+            if (suppressed.length > 0) {
+                return res.status(400).json({
+                    error: 'Recipients are suppressed',
+                    suppressed: suppressed.map(s => s.emailAddress),
+                })
+            }
+        }
+
         const sendMode: 'smtp' | 'outlook' = data.outlookMailboxId ? 'outlook' : 'smtp'
         const trackOpens = true
         const trackClicks = true
@@ -286,8 +306,6 @@ router.post('/', async (req: Request, res: Response) => {
             attachments: data.attachments || [],
             status: 'queued',
         }).returning()
-
-        const allRecipients = [...data.to, ...(data.cc || []), ...(data.bcc || [])]
 
         if (allRecipients.length > 0) {
             await db.insert(deliveries).values(
