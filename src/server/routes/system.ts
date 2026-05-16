@@ -423,6 +423,64 @@ router.get('/outreach', async (req: Request, res: Response) => {
     }
 })
 
+// PUT /api/system/outreach/global-toggle - Toggle outreach enabled for all organizations (COR-04, audit H9/M7)
+// Replaces the older PUT /api/system/outreach (now 410 Gone — see below).
+// COR-04 — see audit H9/M7 and .planning/phases/12-high-correctness/12-CONTEXT.md
+const outreachGlobalToggleSchema = z.object({
+    enabled: z.boolean(),
+})
+
+router.put('/outreach/global-toggle', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+
+        const { isPlatformAdmin } = await import('../lib/admin')
+        if (!await isPlatformAdmin(userId)) {
+            return res.status(403).json({ error: 'Forbidden' })
+        }
+
+        // Validate body
+        const parseResult = outreachGlobalToggleSchema.safeParse(req.body)
+        if (!parseResult.success) {
+            return res.status(400).json({ error: parseResult.error.errors })
+        }
+        const { enabled } = parseResult.data
+
+        // Capture previousState BEFORE the UPDATE so the response surfaces blast radius.
+        const allOrgs = await db.select({ outreach_enabled: organizations.outreach_enabled }).from(organizations)
+        const previousState = {
+            enabledCount: allOrgs.filter(o => o.outreach_enabled).length,
+            totalCount: allOrgs.length,
+        }
+
+        // Apply the toggle and capture affected row count via .returning()
+        const updated = await db
+            .update(organizations)
+            .set({ outreach_enabled: enabled })
+            .returning({ id: organizations.id })
+        const affectedRows = updated.length
+
+        const timestamp = new Date().toISOString()
+
+        // Audit log — written to stdout with [audit] prefix.
+        // Phase 13 QUA-06 will route this through a proper logger; for v1.2 stdout is sufficient.
+        console.log(`[audit] outreach-toggle user=${userId} from=${previousState.enabledCount}/${previousState.totalCount} to=${enabled} affected=${affectedRows} at=${timestamp}`)
+
+        res.json({
+            affectedRows,
+            previousState,
+            userId,
+            timestamp,
+        })
+    } catch (error) {
+        console.error('Error toggling outreach (global-toggle):', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
 // PUT /api/system/outreach - Toggle outreach enabled for all organizations
 router.put('/outreach', async (req: Request, res: Response) => {
     try {
