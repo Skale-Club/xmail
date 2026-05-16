@@ -13,6 +13,9 @@ import { users, domains, mailboxes, mailFolders, mailMessages } from '../../db/s
 import { encryptSecret } from './crypto'
 
 const BCRYPT_ROUNDS = 12
+// QUA-06 — see audit M11. Gate PII-bearing debug logs behind this flag so production
+// logs do not leak user emails / domain dumps. Use !isProd to print in dev only.
+const isProd = process.env.NODE_ENV === 'production'
 
 /**
  * Authenticate a user for SMTP/IMAP access.
@@ -128,11 +131,11 @@ export async function validateEmailDomainForOrg(email: string, organizationId: s
 export async function findLocalUser(email: string): Promise<{ userId: string } | null> {
     const emailDomain = email.split('@')[1]?.toLowerCase()
     if (!emailDomain) {
-        console.log(`[NativeMail] findLocalUser("${email}") → NO DOMAIN PART`)
+        if (!isProd) console.log(`[NativeMail] findLocalUser("${email}") → NO DOMAIN PART`)
         return null
     }
 
-    console.log(`[NativeMail] findLocalUser("${email}") → checking domain "${emailDomain}"...`)
+    if (!isProd) console.log(`[NativeMail] findLocalUser("${email}") → checking domain "${emailDomain}"...`)
 
     // Domain must be verified in some org
     const verifiedDomain = await db.query.domains.findFirst({
@@ -142,14 +145,17 @@ export async function findLocalUser(email: string): Promise<{ userId: string } |
         ),
     })
     if (!verifiedDomain) {
-        // Log all domains to help debug
-        const allDomains = await db.query.domains.findMany()
-        console.log(`[NativeMail] findLocalUser("${email}") → domain "${emailDomain}" NOT VERIFIED`)
-        console.log(`[NativeMail]   All domains in DB:`, allDomains.map(d => `${d.name} (status=${d.verificationStatus}, orgId=${d.organizationId})`))
+        if (!isProd) {
+            // Diagnostic listing — only useful for local dev debugging. The findMany()
+            // roundtrip is INSIDE the guard so production never pays for it.
+            const allDomains = await db.query.domains.findMany()
+            console.log(`[NativeMail] findLocalUser("${email}") → domain "${emailDomain}" NOT VERIFIED`)
+            console.log(`[NativeMail]   All domains in DB:`, allDomains.map(d => `${d.name} (status=${d.verificationStatus}, orgId=${d.organizationId})`))
+        }
         return null
     }
 
-    console.log(`[NativeMail] findLocalUser("${email}") → domain "${emailDomain}" VERIFIED (orgId=${verifiedDomain.organizationId})`)
+    if (!isProd) console.log(`[NativeMail] findLocalUser("${email}") → domain "${emailDomain}" VERIFIED (orgId=${verifiedDomain.organizationId})`)
 
     // A non-admin user with that exact email must exist
     const user = await db.query.users.findFirst({
@@ -157,10 +163,10 @@ export async function findLocalUser(email: string): Promise<{ userId: string } |
     })
 
     if (!user) {
-        console.log(`[NativeMail] findLocalUser("${email}") → USER NOT FOUND in users table`)
+        if (!isProd) console.log(`[NativeMail] findLocalUser("${email}") → USER NOT FOUND in users table`)
         return null
     }
 
-    console.log(`[NativeMail] findLocalUser("${email}") → FOUND userId=${user.id} isAdmin=${user.isAdmin}`)
+    if (!isProd) console.log(`[NativeMail] findLocalUser("${email}") → FOUND userId=${user.id} isAdmin=${user.isAdmin}`)
     return { userId: user.id }
 }
