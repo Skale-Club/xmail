@@ -24,8 +24,8 @@
 
 ### HIGH — Correctness & Validation (Phase 12)
 
-- [ ] **COR-01**: `POST /webhooks/:id/test` uses `AbortSignal.timeout(10_000)`. (audit H2)
-- [ ] **COR-02**: `fireWebhooks` retries failed deliveries with exponential backoff (1s/3s/9s, max 3 attempts) and persists each attempt to `webhook_requests` with an `attempts` counter. (audit M6, H2)
+- [x] **COR-01**: `POST /webhooks/:id/test` uses `AbortSignal.timeout(10_000)`. (audit H2)
+- [x] **COR-02**: `fireWebhooks` retries failed deliveries with exponential backoff (1s/3s/9s, max 3 attempts) and persists each attempt to `webhook_requests` with an `attempts` counter. (audit M6, H2)
 - [ ] **COR-03**: Click tracking deduplicates within a 60s window per `(messageId, token)` so refresh/preview bots don't multiply stats. (audit H4)
 - [ ] **COR-04**: The outreach global toggle endpoint is renamed `PUT /api/system/outreach/global-toggle`, validates body with Zod, returns `{ affectedRows, previousState }`, and emits an audit log line including `userId`. (audit H9, M7)
 - [ ] **COR-05**: `POST /api/mail/mailboxes/:mailboxId/messages/:messageId/move` validates that the supplied `folderId` belongs to the same `mailboxId` before updating. (audit H10)
