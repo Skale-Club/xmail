@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 13-03-PLAN.md
-last_updated: "2026-05-16T23:32:00.068Z"
+stopped_at: Completed 13-01-PLAN.md
+last_updated: "2026-05-16T23:37:05.424Z"
 last_activity: 2026-05-16
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 18
-  completed_plans: 17
+  completed_plans: 18
   percent: 0
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-05-16)
 ## Current Position
 
 Phase: 13 (medium-consolidation) — EXECUTING
-Plan: 4 of 6
+Plan: 5 of 6
 Status: Ready to execute
 Last activity: 2026-05-16
 
@@ -72,6 +72,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 13 P05 | 4m | 2 tasks | 2 files |
 | Phase 13 P06 | 3min | 2 tasks | 9 files |
 | Phase 13 P03 | 15 min | 2 tasks | 9 files |
+| Phase 13 P01 | 4min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -98,6 +99,7 @@ Carried over from v1.1 + new for v1.2:
 - [Phase 13]: 13-05: Kept SMTP/IMAP/route-matcher/send transport logs unguarded — classified as operational logs analogous to [audit] line in system.ts; QUA-06 scope was findLocalUser specifically per audit M11
 - [Phase 13]: QUA-08 rename: organizations.owner_id->ownerId, outreach_enabled->outreachEnabled (TS only; SQL columns unchanged); JSON wire-format keys preserved as snake_case.
 - [Phase 13]: RLS consolidation: single idempotent migration 020 supersedes 8 historical RLS migrations; 124 policies, 36 tables, 8 helpers; verifier PASS on all 5 checks. Renumbered 017->020 (018/019 taken by Phase 11/12).
+- [Phase 13]: 13-01: tsc-clean QUA-01 — removed 'event as any' casts in tracking.ts (audit M12); AppLogo M1 already clean; zero 13-06 schema-rename fallout surfaced. Both tsconfig.json + tsconfig.server.json exit 0; CI-02 gate ready.
 
 ### Pending Todos
 
@@ -117,7 +119,7 @@ Carried over from v1.1 + new for v1.2:
 
 ## Session Continuity
 
-Last session: 2026-05-16T23:32:00.061Z
-Stopped at: Completed 13-03-PLAN.md
+Last session: 2026-05-16T23:37:05.417Z
+Stopped at: Completed 13-01-PLAN.md
 Resume file: None
 Next action: Phase 11 fully complete (SEC-01..04). Run phase verification; advance to Phase 12 (COR-01..07).
