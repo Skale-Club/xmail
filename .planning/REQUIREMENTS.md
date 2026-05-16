@@ -36,7 +36,7 @@
 
 - [ ] **QUA-01**: `npx tsc --noEmit` passes with zero errors across both `tsconfig.json` and `tsconfig.server.json` (fix `AppLogo.tsx:12` unused var and `tracking.ts:266` `event as any` cast). (audit M1, M12)
 - [ ] **QUA-02**: `supabase/migrations/013_add_performance_indexes.sql` is deleted (moved to `supabase/migrations/archive/`). `package.json` scripts and a README section document that schema lives in `src/db/schema.ts` + hand-written `supabase/migrations/*.sql`, and that `npm run db:generate` is not used for new migrations. Scripts that still rely on it use the current Drizzle-kit syntax. (audit M2, M3, M4)
-- [ ] **QUA-03**: `supabase/migrations/017_consolidate_rls.sql` exists, is idempotent, and reflects the current end-state of RLS policies. Older RLS migrations are annotated as superseded. (audit M5)
+- [ ] **QUA-03**: `supabase/migrations/020_consolidate_rls.sql` exists, is idempotent, and reflects the current end-state of RLS policies. Older RLS migrations are annotated as superseded. (Renumbered from 017 — migrations 018 and 019 were taken by Phase 11 SEC-02 and Phase 12 COR-03.) (audit M5)
 - [ ] **QUA-04**: `POST /api/domains` lowercases and trims `name` before insert. A one-shot data migration lowercases existing `domains.name`. (audit M9)
 - [ ] **QUA-05**: Helmet CSP adds `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`. Verified via response headers in a smoke test. (audit M10)
 - [ ] **QUA-06**: `console.log` calls in `src/server/**/*.ts` that emit PII (emails, tokens) are gated behind `if (!isProd)` or removed; startup messages remain. (audit M11)
