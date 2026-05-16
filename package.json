@@ -14,8 +14,6 @@
         "build:vercel": "npm run build:client && npm run build:api",
         "preview": "vite preview",
         "start": "node dist/server/index.js",
-        "db:generate": "drizzle-kit generate:pg",
-        "db:push": "drizzle-kit push:pg",
         "db:studio": "drizzle-kit studio",
         "db:indexes": "psql \"$DATABASE_URL\" -f sql/indexes.sql",
         "db:rls": "tsx scripts/run-rls-migration.ts",

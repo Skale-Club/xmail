@@ -1,3 +1,8 @@
+-- ARCHIVED 2026-05-16 (Phase 13 QUA-02 / audit M2).
+-- This migration was marked DEPRECATED in-file but kept in the active migrations dir, causing confusion.
+-- Indexes are now defined in `src/db/schema.ts` (Drizzle `index()`) and applied via `sql/indexes.sql` (CONCURRENTLY).
+-- Run `npm run db:indexes` to apply. DO NOT run this archived file against a live DB.
+
 -- DEPRECATED — This migration is superseded.
 -- All indexes are now defined in src/db/schema.ts using Drizzle's index() API.
 -- This file is kept for historical reference only. Do NOT run this migration.
