@@ -8,13 +8,24 @@ export async function runReadinessChecks() {
         checkSupabaseAuthHealth(),
     ])
 
-    const database = dbResult.status === 'fulfilled'
+    const database = dbResult.status === 'fulfilled' && dbResult.value.ok
         ? { ok: true, latencyMs: dbResult.value.latencyMs }
-        : { ok: false, error: dbResult.reason instanceof Error ? dbResult.reason.message : 'Database healthcheck failed' }
+        : {
+            ok: false,
+            error: dbResult.status === 'fulfilled'
+                ? (dbResult.value.error ?? 'database probe returned ok=false')
+                : (dbResult.reason instanceof Error ? dbResult.reason.message : 'Database healthcheck failed'),
+        }
 
-    const auth = authResult.status === 'fulfilled'
+    // checkSupabaseAuthHealth resolves with { ok: true } or throws — fulfilled means healthy.
+    const auth = authResult.status === 'fulfilled' && authResult.value.ok
         ? { ok: true }
-        : { ok: false, error: authResult.reason instanceof Error ? authResult.reason.message : 'Supabase auth healthcheck failed' }
+        : {
+            ok: false,
+            error: authResult.status === 'fulfilled'
+                ? 'supabase auth probe returned ok=false'
+                : (authResult.reason instanceof Error ? authResult.reason.message : 'Supabase auth healthcheck failed'),
+        }
 
     return {
         ok: database.ok && auth.ok,
