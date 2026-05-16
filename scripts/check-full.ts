@@ -31,7 +31,7 @@ async function checkFull() {
             console.log(`ID: ${org.id}`)
             console.log(`Name: ${org.name}`)
             console.log(`Slug: ${org.slug}`)
-            console.log(`Owner ID: ${org.owner_id}`)
+            console.log(`Owner ID: ${org.ownerId}`)
             console.log(`Created: ${org.createdAt}`)
             console.log('---')
         })
@@ -55,9 +55,9 @@ async function checkFull() {
     // Check for mismatches
     console.log('\n=== ANALYSIS ===')
     for (const org of allOrgs) {
-        const owner = allUsers.find(u => u.id === org.owner_id)
+        const owner = allUsers.find(u => u.id === org.ownerId)
         if (!owner) {
-            console.log(`ISSUE: Organization "${org.name}" has owner_id ${org.owner_id} but no user with that ID exists!`)
+            console.log(`ISSUE: Organization "${org.name}" has owner_id ${org.ownerId} but no user with that ID exists!`)
         } else {
             console.log(`OK: Organization "${org.name}" owner is ${owner.email}`)
         }

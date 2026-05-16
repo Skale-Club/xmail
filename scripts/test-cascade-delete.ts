@@ -260,8 +260,8 @@ async function seed() {
 
     // Two organisations.
     await db.insert(organizations).values([
-        { id: ORG_KEEP_ID, name: 'KeepOrg', slug: `keep-${SENTINEL_PREFIX}`, owner_id: USER_MULTI_ID },
-        { id: ORG_DELETE_ID, name: 'DeleteOrg', slug: `del-${SENTINEL_PREFIX}`, owner_id: USER_MULTI_ID },
+        { id: ORG_KEEP_ID, name: 'KeepOrg', slug: `keep-${SENTINEL_PREFIX}`, ownerId: USER_MULTI_ID },
+        { id: ORG_DELETE_ID, name: 'DeleteOrg', slug: `del-${SENTINEL_PREFIX}`, ownerId: USER_MULTI_ID },
     ])
 
     // Memberships: userMulti in BOTH orgs; userSolo only in orgDelete.

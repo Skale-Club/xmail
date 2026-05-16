@@ -11,7 +11,7 @@ interface Organization {
     name: string
     slug: string
     timezone: string
-    owner_id: string
+    ownerId: string
     createdAt: string
     member_count?: number
     server_count?: number

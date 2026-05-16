@@ -141,7 +141,7 @@ router.post('/', async (req: Request, res: Response) => {
             name,
             slug,
             timezone: timezone || 'UTC',
-            owner_id: userId,
+            ownerId: userId,
         }).returning()
 
         // Platform admins are not added as members — they manage orgs externally.
@@ -223,7 +223,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
         }
 
         const isAdmin = await isPlatformAdmin(userId)
-        if (!isAdmin && organization.owner_id !== userId) {
+        if (!isAdmin && organization.ownerId !== userId) {
             return res.status(403).json({ error: 'Only the owner can delete the organization' })
         }
 
@@ -368,7 +368,7 @@ router.delete('/:id/members/:userId', async (req: Request, res: Response) => {
             where: eq(organizations.id, organizationId),
         })
 
-        if (organization?.owner_id === targetUserId) {
+        if (organization?.ownerId === targetUserId) {
             return res.status(400).json({ error: 'Cannot remove the owner' })
         }
 
@@ -423,7 +423,7 @@ router.patch('/:id/members/:userId', async (req: Request, res: Response) => {
             where: eq(organizations.id, organizationId),
         })
 
-        if (organization?.owner_id === targetUserId) {
+        if (organization?.ownerId === targetUserId) {
             return res.status(400).json({ error: "Cannot change the owner's role" })
         }
 

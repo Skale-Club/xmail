@@ -36,7 +36,7 @@ interface Organization {
     name: string
     slug: string
     timezone: string
-    owner_id: string
+    ownerId: string
     createdAt: string
     members: Member[]
 }
@@ -107,7 +107,7 @@ export default function OrganizationDetailPage() {
                     orgId={org.id}
                     members={org.members}
                     isAdmin={isAdmin}
-                    ownerId={org.owner_id}
+                    ownerId={org.ownerId}
                     onRefresh={fetchOrganization}
                 />
             )

@@ -34,23 +34,23 @@ async function fixOrganizationLink() {
     allOrgs.forEach(org => {
         console.log(` - ID: ${org.id}`)
         console.log(` Name: ${org.name}`)
-        console.log(` Owner ID: ${org.owner_id}`)
+        console.log(` Owner ID: ${org.ownerId}`)
         console.log('')
     })
 
     // For each organization, update the owner and create organization_users entry
     for (const org of allOrgs) {
         // Find the user that should own this organization (by matching email or use first user)
-        const realUser = allUsers.find(u => u.id !== org.owner_id) || allUsers[0]
+        const realUser = allUsers.find(u => u.id !== org.ownerId) || allUsers[0]
 
-        if (realUser && realUser.id !== org.owner_id) {
+        if (realUser && realUser.id !== org.ownerId) {
             console.log(`Updating organization "${org.name}"...`)
-            console.log(` Old owner_id: ${org.owner_id}`)
+            console.log(` Old owner_id: ${org.ownerId}`)
             console.log(` New owner_id: ${realUser.id}`)
 
             // Update organization owner
             await db.update(organizations)
-                .set({ owner_id: realUser.id })
+                .set({ ownerId: realUser.id })
                 .where(eq(organizations.id, org.id))
 
             // Delete old organization_users entry if exists
@@ -65,7 +65,7 @@ async function fixOrganizationLink() {
             })
 
             console.log(' Done!\n')
-        } else if (realUser && realUser.id === org.owner_id) {
+        } else if (realUser && realUser.id === org.ownerId) {
             // Check if organization_users entry exists
             const existingMembership = await db.query.organizationUsers.findFirst({
                 where: eq(organizationUsers.organizationId, org.id),

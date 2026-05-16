@@ -12,7 +12,7 @@ async function checkOrganizations() {
         console.log(` - ID: ${org.id}`)
         console.log(` Name: ${org.name}`)
         console.log(` Slug: ${org.slug}`)
-        console.log(` Owner ID: ${org.owner_id}`)
+        console.log(` Owner ID: ${org.ownerId}`)
         console.log('')
     })
 

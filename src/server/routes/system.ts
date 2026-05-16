@@ -408,8 +408,8 @@ router.get('/outreach', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Forbidden' })
         }
 
-        const allOrgs = await db.select({ outreach_enabled: organizations.outreach_enabled }).from(organizations)
-        const enabledOrgs = allOrgs.filter(o => o.outreach_enabled).length
+        const allOrgs = await db.select({ enabled: organizations.outreachEnabled }).from(organizations)
+        const enabledOrgs = allOrgs.filter(o => o.enabled).length
         const totalOrgs = allOrgs.length
 
         res.json({
@@ -450,16 +450,16 @@ router.put('/outreach/global-toggle', async (req: Request, res: Response) => {
         const { enabled } = parseResult.data
 
         // Capture previousState BEFORE the UPDATE so the response surfaces blast radius.
-        const allOrgs = await db.select({ outreach_enabled: organizations.outreach_enabled }).from(organizations)
+        const allOrgs = await db.select({ enabled: organizations.outreachEnabled }).from(organizations)
         const previousState = {
-            enabledCount: allOrgs.filter(o => o.outreach_enabled).length,
+            enabledCount: allOrgs.filter(o => o.enabled).length,
             totalCount: allOrgs.length,
         }
 
         // Apply the toggle and capture affected row count via .returning()
         const updated = await db
             .update(organizations)
-            .set({ outreach_enabled: enabled })
+            .set({ outreachEnabled: enabled })
             .returning({ id: organizations.id })
         const affectedRows = updated.length
 
