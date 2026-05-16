@@ -18,7 +18,7 @@
 ### HIGH — Security Posture (Phase 11)
 
 - [ ] **SEC-01**: A centralized `src/server/lib/network-guard.ts` exposes `isPrivateHost(host)` covering IPv4 RFC1918, loopback, link-local `169.254.0.0/16`, IPv6 ULA `fc00::/7`, link-local `fe80::/10`, `::1`, and cloud metadata hostnames. Used by `webhooks.POST/PATCH`, `track.ts` click handler, and `mailboxes /test-connection`. (audit H1, H3, H6)
-- [ ] **SEC-02**: `src/server/lib/mail-sync.ts` uses `rejectUnauthorized: true` by default. A per-mailbox opt-in `skipTlsVerify` flag is required to relax TLS verification. (audit H5)
+- [x] **SEC-02**: `src/server/lib/mail-sync.ts` uses `rejectUnauthorized: true` by default. A per-mailbox opt-in `skipTlsVerify` flag is required to relax TLS verification. (audit H5)
 - [ ] **SEC-03**: JWT validation in the API middleware is backed by an LRU cache keyed by `sha256(token)` with a 60s TTL, reducing Supabase API calls. Cache-hit-rate logged in dev. (audit H7)
 - [ ] **SEC-04**: All cron jobs in `src/server/jobs/index.ts` (processQueue, processBounces, processReplies, cleanupOldMessages, plus existing outreach) wrap their work in a `pg_try_advisory_lock(BIGINT)` so overlapping ticks or multi-instance deploys are safe. (audit H8)
 

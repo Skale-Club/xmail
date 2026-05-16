@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 10-01-PLAN.md (CRIT-01 closed)
-last_updated: "2026-05-16T21:55:25.001Z"
-last_activity: 2026-05-16
+stopped_at: Completed 11-02-PLAN.md (SEC-02 closed)
+last_updated: "2026-05-16T22:35:00.000Z"
+last_activity: 2026-05-16 -- Phase 11 Plan 02 complete (IMAP TLS hardening)
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 7
+  completed_plans: 4
   percent: 0
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-16)
 
 **Core value:** A user can create a campaign, build a sequence, add leads, and have emails actually sent and tracked — with replies and bounces correctly detected and handled.
-**Current focus:** Phase 10 — critical-fixes
+**Current focus:** Phase 11 — high-security
 
 ## Current Position
 
-Phase: 10 (critical-fixes) — EXECUTING
-Plan: 3 of 3
-Status: Ready to execute
-Last activity: 2026-05-16
+Phase: 11 (high-security) — EXECUTING
+Plan: 3 of 4 (11-01 wired, 11-02 complete, 11-03 helper ready, 11-04 helper ready)
+Status: Executing Phase 11 — SEC-02 closed
+Last activity: 2026-05-16 -- Phase 11 Plan 02 complete (IMAP TLS hardening)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -60,6 +60,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 10-critical-fixes P02 | 6 min | 2 tasks | 3 files |
 | Phase 10-critical-fixes P03 | 8 min | 2 tasks | 9 files |
 | Phase 10-critical-fixes P01 | 6 min | 2 tasks | 2 files |
+| Phase 11-high-security P02  | 4 min | 4 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -74,6 +75,7 @@ Carried over from v1.1 + new for v1.2:
 - [Phase 10-critical-fixes]: isPrivateHost duplicated in mailboxes.ts pending Phase 11 SEC-01 centralization
 - [Phase 10-critical-fixes]: Phase 10 Plan 03: Re-export pattern (no impl move) gives canonical src/server/lib/access.ts without touching 40+ call sites; Phase 11+ will migrate imports and normalize the 7 identical org-scoped signatures into checkOrgAccess.
 - [Phase 10-critical-fixes]: Phase 10 Plan 01: mailboxes are user-scoped (not org-scoped) — cascade cleanup gated on user having zero remaining orgs preserves shared-user mailbox + passwordHash
+- [Phase 11-high-security P02]: IMAP TLS hardening uses data-driven `rejectUnauthorized: !mailbox.skipTlsVerify` (not NODE_ENV). Migration renumbered 017 -> 018 so Phase 13 QUA-03 keeps 017 for RLS consolidation. Operator must `psql -f supabase/migrations/018_add_mailbox_skip_tls_verify.sql` to deploy.
 
 ### Pending Todos
 
@@ -93,7 +95,7 @@ Carried over from v1.1 + new for v1.2:
 
 ## Session Continuity
 
-Last session: 2026-05-16T21:55:24.995Z
-Stopped at: Completed 10-01-PLAN.md (CRIT-01 closed)
+Last session: 2026-05-16T22:35:00.000Z
+Stopped at: Completed 11-02-PLAN.md (SEC-02 closed)
 Resume file: None
-Next action: User to approve roadmap, then run `/gsd:autonomous` (or `/gsd:plan-phase 10` to start manually)
+Next action: Continue Phase 11 — wire 11-03 auth-cache into middleware and 11-04 cron-lock into job runner (helpers already committed)
