@@ -142,10 +142,15 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Only admins can add domains' })
         }
 
+        // QUA-04 — see audit M9. Lowercase + trim once, use the normalized value for both
+        // the duplicate-existence check and the INSERT. This makes the column effectively
+        // case-insensitive and prevents the EXAMPLE.COM-then-example.com dupe class.
+        const normalizedName = data.name.toLowerCase().trim()
+
         const existingDomain = await db.query.domains.findFirst({
             where: and(
                 eq(domains.organizationId, data.organizationId),
-                eq(domains.name, data.name)
+                eq(domains.name, normalizedName)
             ),
         })
 
@@ -155,7 +160,7 @@ router.post('/', async (req: Request, res: Response) => {
 
         const [domain] = await db.insert(domains).values({
             organizationId: data.organizationId,
-            name: data.name,
+            name: normalizedName,
             verificationMethod: data.verificationMethod,
             verificationToken: uuidv4(),
         }).returning()
