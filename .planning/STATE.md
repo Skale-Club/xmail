@@ -1,109 +1,93 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: milestone
-status: completed
-stopped_at: Completed 09-01-PLAN.md (schema hardening - CHECK constraints)
-last_updated: "2026-04-01T21:00:58.765Z"
-last_activity: 2026-04-01
+milestone: v1.2
+milestone_name: security-tech-debt-remediation
+status: planning
+stopped_at: Milestone v1.2 created; ready to execute Phase 10
+last_updated: "2026-05-16T00:00:00.000Z"
+last_activity: 2026-05-16
 progress:
   total_phases: 5
-  completed_phases: 5
-  total_plans: 11
-  completed_plans: 11
-  percent: 100
+  completed_phases: 0
+  total_plans: 21
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-31)
+See: .planning/PROJECT.md (updated 2026-05-16)
 
 **Core value:** A user can create a campaign, build a sequence, add leads, and have emails actually sent and tracked — with replies and bounces correctly detected and handled.
-**Current focus:** Phase 05 — rls-migration-safety
+**Current focus:** Phase 10 — CRITICAL Fixes (cascade integrity, health check, /test-connection auth, RLS doc)
 
 ## Current Position
 
-Phase: 09
+Phase: 10
 Plan: Not started
-Status: Completed
-Last activity: 2026-04-01
+Status: Ready to execute
+Last activity: 2026-05-16 — Milestone v1.2 roadmap created from 2026-05-16 audit
 
-Progress: [██████████] 100%
+Progress: [░░░░░░░░░░] 0%
 
 ### Phase List
 
-- [ ] **Phase 05:** RLS & Migration Safety (DBS-01, DBS-02, DBS-03)
-- [ ] **Phase 06:** Index Foundation (IDX-01 through IDX-06)
-- [ ] **Phase 07:** Pagination (PAGE-01 through PAGE-05)
-- [ ] **Phase 08:** Query Optimization (QRY-01, QRY-02, QRY-03)
-- [x] **Phase 09:** Schema Hardening (SCH-01, SCH-02)
+- [ ] **Phase 10:** CRITICAL Fixes (CRIT-01, CRIT-02, CRIT-03, CRIT-04)
+- [ ] **Phase 11:** HIGH Security Posture (SEC-01, SEC-02, SEC-03, SEC-04)
+- [ ] **Phase 12:** HIGH Correctness & Validation (COR-01..07)
+- [ ] **Phase 13:** MEDIUM Consolidation (QUA-01..08)
+- [ ] **Phase 14:** LOW Cleanup + CI/Observability (CLN-01..04, CI-01..04)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 6 (from v1.0)
+- Total plans completed v1.0+v1.1: 17
 - Average duration: -
 - Total execution time: -
 
-**By Phase (v1.0):**
-
-| Phase | Plans | Files |
-|-------|-------|-------|
-| 01-sending-correctness | 2 | 1 |
-| 03-sequence-builder-ui | 1 | 2 |
-| 04-code-quality | 3 | 5 |
-
-**v1.1 Progress:**
+**v1.2 Progress:**
 
 | Phase | Plans | Status |
 |-------|-------|--------|
-| 05-rls-migration-safety | 2 | Planned |
-| 06-index-foundation | 2 | Executing |
-| 07-pagination | 2 | Executing |
-| 08-query-optimization | 4 | 2 completed |
-| 09-schema-hardening | 1 | Completed |
-| Phase 05-rls-migration-safety P02 | 0h:1m | 2 tasks | 3 files |
-| Phase 06-index-foundation P01 | 5m | 3 tasks | 2 files |
-| Phase 06-index-foundation P02 | 2 | 2 tasks | 2 files |
-| Phase 07-pagination P01 | 9min | 3 tasks | 4 files |
-| Phase 07-pagination P02 | 8min | 4 tasks | 5 files |
-| Phase 08-query-optimization P01 | 120 | 1 tasks | 1 files |
-| Phase 08-query-optimization P02 | 5min | 2 tasks | 5 files |
-| Phase 08-query-optimization P03 | 3min | 2 tasks | 1 files |
-| Phase 09-schema-hardening P01 | <1min | 2 tasks | 2 files |
+| 10-critical-fixes | 3 | Pending |
+| 11-high-security | 4 | Pending |
+| 12-high-correctness | 5 | Pending |
+| 13-medium-consolidation | 6 | Pending |
+| 14-low-and-ci | 3 | Pending |
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
+Carried over from v1.1 + new for v1.2:
 
-- **Phase ordering follows research recommendation** — RLS first (security), indexes second (foundation), pagination third (depends on indexes), query optimization fourth (depends on both), schema hardening last (independent)
-- **Indexes managed via Drizzle `index()` API in schema.ts** — single source of truth; deprecate hand-written `013_add_performance_indexes.sql`
-- **`CREATE INDEX CONCURRENTLY` via separate `sql/indexes.sql`** — not through `db:push` (which wraps transactions and blocks writes)
-- **Phase numbering continues from v1.0** — last phase was 04, new phases start at 05
-- [Phase 05-rls-migration-safety]: CONCURRENTLY via separate SQL file: db:push wraps transactions which blocks CONCURRENTLY; psql executes directly
-- [Phase 05-rls-migration-safety]: Minimal indexes.sql scaffold with example index; actual index population deferred to Phase 06
-- [Phase 07-pagination]: Used Drizzle's InferSelectModel<T> generic for type-safe return from paginate()
-- [Phase 08-query-optimization]: Used Map for O(1) lookup of messages/orgs instead of per-delivery findFirst queries
+- **RLS is defense-in-depth, JS-side is source of truth** — App connection uses `DATABASE_URL` role that bypasses RLS; every API route must call a `checkAccess` helper (v1.2 Phase 10 CRIT-04).
+- **Centralize SSRF guard** in `src/server/lib/network-guard.ts` (v1.2 Phase 11 SEC-01).
+- **Postgres advisory locks for cron** — Multi-instance safe without external infra (v1.2 Phase 11 SEC-04).
+- **Defer Drizzle migration regen** — Schema drift too large; document `supabase/migrations/*.sql` as canonical (v1.2 Phase 13 QUA-02).
 
 ### Pending Todos
 
-- Execute Phase 05 Plan 01: Fix RLS policies (migration 016 + verification)
-- Execute Phase 05 Plan 02: Index migration workflow (sql/indexes.sql + verify)
+- Execute Phase 10 Plan 01: `deleteOrganizationCascade` rewrite (CRIT-01)
+- Execute Phase 10 Plan 02: `/health/ready` + `/test-connection` (CRIT-02, CRIT-03)
+- Execute Phase 10 Plan 03: Access helpers + CLAUDE.md (CRIT-04)
+- Execute Phase 11 Plans 01–04 (SEC-01..04)
+- Execute Phase 12 Plans 01–05 (COR-01..07)
+- Execute Phase 13 Plans 01–06 (QUA-01..08)
+- Execute Phase 14 Plans 01–03 (CLN-01..04, CI-01..04)
 
 ### Blockers/Concerns
 
-- RLS policy fix complexity — needs audit of current policies; may reveal that RLS is bypassed entirely by the service role key in Express middleware
-- `canSendFromAccount` reads daily counter as fetched at job start (carried over from v1.0 — low priority)
+- Phase 10 cascade rewrite is the most error-prone single task — recommend running it on a DB snapshot first.
+- Phase 13 schema field rename (QUA-08) touches many call sites; landing it after the lint/tsc gates exist makes the sweep cheap.
+- CI-04 (error log sink) may end up deferred to v1.3 if budget/infra isn't ready.
 
 ## Session Continuity
 
-Last session: 2026-04-01T20:00:00.000Z
-Stopped at: Completed 09-01-PLAN.md (schema hardening - CHECK constraints)
+Last session: 2026-05-16T00:00:00.000Z
+Stopped at: Milestone v1.2 created from 2026-05-16 system-wide audit
 Resume file: None
-Next action: All planned phases complete (Phase 09 Schema Hardening done)
+Next action: User to approve roadmap, then run `/gsd:autonomous` (or `/gsd:plan-phase 10` to start manually)

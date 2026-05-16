@@ -2,7 +2,21 @@
 
 ## What This Is
 
-SkaleClub Mail is a multi-tenant email server management platform. The outreach module provides cold email campaign tooling: leads management, email sequence building, campaign orchestration, reply/bounce detection, and analytics. Now focused on hardening the database layer so the system is fast and changes don't break things.
+SkaleClub Mail is a multi-tenant email server management platform. The outreach module provides cold email campaign tooling: leads management, email sequence building, campaign orchestration, reply/bounce detection, and analytics. After hardening DB layer in v1.1, focus shifts to security, correctness, and tooling hygiene revealed by the 2026-05-16 system-wide audit.
+
+## Current Milestone: v1.2 Security & Tech Debt Remediation
+
+**Goal:** Eliminate the 4 CRITICAL + 12 HIGH + 13 MEDIUM + 5 LOW issues from the 2026-05-16 audit so the system is secure, correct, and CI-enforceable.
+
+**Target outcomes:**
+- Cascade delete is transactional and complete (no orphans, no cross-org password lockouts)
+- Health check correctly reports DB failures
+- All externally-controlled URLs validated through a centralized SSRF guard
+- Cron jobs are multi-instance safe (Postgres advisory locks)
+- JWT validation cached (perf + cost)
+- Suppression list integrated into POST /messages
+- `npm run lint` and `npx tsc --noEmit` pass with zero warnings; both enforced in CI
+- RLS posture documented honestly; CSP hardened
 
 ## Core Value
 
@@ -47,7 +61,7 @@ A user can create a campaign, build a sequence, add leads, and have emails actua
 
 ### Active
 
-All v1.1 requirements complete. ✓
+See `.planning/REQUIREMENTS.md` for v1.2 requirements (CRIT-01..04, SEC-01..04, COR-01..07, QUA-01..08, CLN-01..04, CI-01..04).
 
 ### Out of Scope
 
@@ -81,6 +95,10 @@ All v1.1 requirements complete. ✓
 | Use lib/api-client.ts across all outreach pages | Consistent error handling and retry logic vs lib/api.ts | ✓ v1.0 |
 | Module-level isSequenceProcessing flag | Prevents cron overlap without DB locks; .finally() resets unconditionally | ✓ v1.0 |
 | Consolidate is_outreach_org_member into is_org_member | Identical function body; reduces maintenance surface | ✓ v1.1 Phase 05 |
+| RLS is defense-in-depth, JS-side is source of truth | App connection uses `DATABASE_URL` role that bypasses RLS; every route must call `checkAccess` | v1.2 Phase 10 (C4) |
+| Centralize SSRF guard in `network-guard.ts` | Webhooks, click tracking, IMAP/SMTP test connection all need it — DRY | v1.2 Phase 11 |
+| Postgres advisory locks for cron jobs | Multi-instance safe without external infra (Redis); leverages existing DB | v1.2 Phase 11 |
+| Defer Drizzle migration regeneration | Schema drift is too large; team-of-one writes manual SQL in `supabase/migrations/`. Document the pattern; deprecate `db:generate` workflow rather than producing a massive auto-diff | v1.2 Phase 13 |
 
 ## Evolution
 
@@ -100,4 +118,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-31 after v1.1 Phase 05 (RLS & migration safety)*
+*Last updated: 2026-05-16 — starting v1.2 Security & Tech Debt Remediation (post-audit)*
