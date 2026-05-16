@@ -58,8 +58,8 @@ export const organizations = pgTable('organizations', {
     name: text('name').notNull(),
     slug: text('slug').notNull().unique(),
     timezone: text('timezone').default('UTC').notNull(),
-    owner_id: uuid('owner_id').references(() => users.id).notNull(),
-    outreach_enabled: boolean('outreach_enabled').default(true).notNull(),
+    ownerId: uuid('owner_id').references(() => users.id).notNull(),
+    outreachEnabled: boolean('outreach_enabled').default(true).notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 })
@@ -388,7 +388,7 @@ export const usersRelations = relations(users, ({ many }) => ({
 
 export const organizationsRelations = relations(organizations, ({ one, many }) => ({
     owner: one(users, {
-        fields: [organizations.owner_id],
+        fields: [organizations.ownerId],
         references: [users.id],
     }),
     members: many(organizationUsers),
