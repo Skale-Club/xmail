@@ -30,7 +30,7 @@
 - [x] **COR-04**: The outreach global toggle endpoint is renamed `PUT /api/system/outreach/global-toggle`, validates body with Zod, returns `{ affectedRows, previousState }`, and emits an audit log line including `userId`. (audit H9, M7)
 - [ ] **COR-05**: `POST /api/mail/mailboxes/:mailboxId/messages/:messageId/move` validates that the supplied `folderId` belongs to the same `mailboxId` before updating. (audit H10)
 - [ ] **COR-06**: `POST /api/messages` checks the `suppressions` table for each recipient and returns 400 with the list when any are suppressed. (audit H11)
-- [ ] **COR-07**: `.eslintrc.cjs` (or flat `eslint.config.js`) exists, `npm run lint` runs successfully, and the codebase passes with zero warnings (whitelisted exceptions documented). (audit H12)
+- [x] **COR-07**: `.eslintrc.cjs` (or flat `eslint.config.js`) exists, `npm run lint` runs successfully, and the codebase passes with zero warnings (whitelisted exceptions documented). (audit H12)
 
 ### MEDIUM — Consolidation & Hygiene (Phase 13)
 
