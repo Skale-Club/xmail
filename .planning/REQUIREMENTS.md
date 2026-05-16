@@ -55,7 +55,7 @@
 - [x] **CI-01**: CI pipeline runs `npm run lint` and fails on warnings. (depends COR-07)
 - [x] **CI-02**: CI pipeline runs `npx tsc --noEmit` and fails on errors. (depends QUA-01)
 - [x] **CI-03**: A runbook entry documents `/health/ready` as the readiness probe and the expected 503 behavior when DB is down. (depends CRIT-02)
-- [ ] **CI-04**: Error log capture strategy is decided (Sentry / Datadog / structured stdout) — either implemented or formally deferred to v1.3 with rationale.
+- [x] **CI-04**: Error log capture strategy is decided (Sentry / Datadog / structured stdout) — either implemented or formally deferred to v1.3 with rationale. **Deferred to v1.3** — see `.planning/PROJECT.md` Key Decisions; needs budget + ops infra decision; `/health/ready` + CI lint/tsc gates are the v1.2 first-line defense.
 
 ---
 
@@ -66,6 +66,7 @@
 - Drizzle migration regeneration / full schema sync
 - Email warm-up sending logic
 - Testing framework setup (Vitest + Supertest)
+- **Error log sink (Sentry / Datadog / structured stdout)** — deferred from v1.2 CI-04; needs budget + ops infra decision before vendor selection.
 
 ---
 
