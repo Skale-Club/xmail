@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.2
-milestone_name: security-tech-debt-remediation
-status: planning
-stopped_at: Milestone v1.2 created; ready to execute Phase 10
-last_updated: "2026-05-16T00:00:00.000Z"
-last_activity: 2026-05-16
+milestone_name: milestone
+status: executing
+stopped_at: Milestone v1.2 created from 2026-05-16 system-wide audit
+last_updated: "2026-05-16T21:52:08.852Z"
+last_activity: 2026-05-16 -- Phase 10 execution started
 progress:
   total_phases: 5
   completed_phases: 0
-  total_plans: 21
-  completed_plans: 0
+  total_plans: 3
+  completed_plans: 1
   percent: 0
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-16)
 
 **Core value:** A user can create a campaign, build a sequence, add leads, and have emails actually sent and tracked — with replies and bounces correctly detected and handled.
-**Current focus:** Phase 10 — CRITICAL Fixes (cascade integrity, health check, /test-connection auth, RLS doc)
+**Current focus:** Phase 10 — critical-fixes
 
 ## Current Position
 
-Phase: 10
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-05-16 — Milestone v1.2 roadmap created from 2026-05-16 audit
+Phase: 10 (critical-fixes) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 10
+Last activity: 2026-05-16 -- Phase 10 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -57,6 +57,7 @@ Progress: [░░░░░░░░░░] 0%
 | 12-high-correctness | 5 | Pending |
 | 13-medium-consolidation | 6 | Pending |
 | 14-low-and-ci | 3 | Pending |
+| Phase 10-critical-fixes P02 | 6 min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,7 @@ Carried over from v1.1 + new for v1.2:
 - **Centralize SSRF guard** in `src/server/lib/network-guard.ts` (v1.2 Phase 11 SEC-01).
 - **Postgres advisory locks for cron** — Multi-instance safe without external infra (v1.2 Phase 11 SEC-04).
 - **Defer Drizzle migration regen** — Schema drift too large; document `supabase/migrations/*.sql` as canonical (v1.2 Phase 13 QUA-02).
+- [Phase 10-critical-fixes]: isPrivateHost duplicated in mailboxes.ts pending Phase 11 SEC-01 centralization
 
 ### Pending Todos
 
