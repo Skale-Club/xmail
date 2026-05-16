@@ -17,7 +17,15 @@
   </head>
   <body class="min-h-screen bg-background">
     <div id="root"></div>
-    <script type="text/javascript" src="/app-config.js"></script>
+    <!--
+      CLN-03: /app-config.js is a runtime-injected classic script served by Express
+      that sets window.__APP_CONFIG__ before main.tsx imports run. We use document.write
+      to inject the <script src> synchronously during HTML parsing — this keeps the
+      original load-order semantics (config available before module scripts execute)
+      without triggering Vite's "can't be bundled without type=module" build warning,
+      which fires on any literal <script src="..."> in index.html lacking type=module.
+    -->
+    <script>document.write('<scr' + 'ipt src="/app-config.js"></scr' + 'ipt>');</script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
