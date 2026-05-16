@@ -274,7 +274,7 @@ export async function fireWebhooks(
 
                         await db.insert(webhookRequests).values({
                             webhookId: wh.id,
-                            event: event as any,
+                            event,
                             payload,
                             responseCode: response.status,
                             responseBody: body.substring(0, 5000),
@@ -289,7 +289,7 @@ export async function fireWebhooks(
                         // Network/timeout error — record and (if attempts remain) retry.
                         await db.insert(webhookRequests).values({
                             webhookId: wh.id,
-                            event: event as any,
+                            event,
                             payload,
                             success: false,
                             error: err instanceof Error ? err.message : 'Request failed',
