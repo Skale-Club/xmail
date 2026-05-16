@@ -1,3 +1,11 @@
+-- ========================================================================
+-- SUPERSEDED BY supabase/migrations/020_consolidate_rls.sql (Phase 13 QUA-03).
+-- This migration's RLS effects are now reflected in 020. Kept on disk
+-- for historical record only. Do NOT add new policies here.
+-- (Table-create + seed remain authoritative; only the RLS portions
+--  at the bottom of this file are superseded.)
+-- ========================================================================
+
 CREATE TABLE IF NOT EXISTS system_branding (
     id text PRIMARY KEY DEFAULT 'default',
     company_name text NOT NULL DEFAULT '',

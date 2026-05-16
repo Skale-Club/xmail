@@ -1,3 +1,9 @@
+-- ========================================================================
+-- SUPERSEDED BY supabase/migrations/020_consolidate_rls.sql (Phase 13 QUA-03).
+-- This migration's RLS effects are now reflected in 020. Kept on disk
+-- for historical record only. Do NOT add new policies here.
+-- ========================================================================
+
 -- Enable Row Level Security for Outreach Module tables
 -- Critical security fix: These tables had no RLS policies, allowing any authenticated user to access any organization's data
 

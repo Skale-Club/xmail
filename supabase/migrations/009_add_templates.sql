@@ -1,3 +1,11 @@
+-- ========================================================================
+-- SUPERSEDED BY supabase/migrations/020_consolidate_rls.sql (Phase 13 QUA-03).
+-- This migration's RLS effects are now reflected in 020. Kept on disk
+-- for historical record only. Do NOT add new policies here.
+-- (Table-create remains authoritative; only the RLS portions at the
+--  bottom of this file are superseded.)
+-- ========================================================================
+
 -- Templates table and RLS policy.
 -- Run after 001_enable_rls.sql so the shared helper functions already exist.
 

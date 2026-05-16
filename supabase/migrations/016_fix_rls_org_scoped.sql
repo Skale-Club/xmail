@@ -1,3 +1,9 @@
+-- ========================================================================
+-- SUPERSEDED BY supabase/migrations/020_consolidate_rls.sql (Phase 13 QUA-03).
+-- This migration's RLS effects are now reflected in 020. Kept on disk
+-- for historical record only. Do NOT add new policies here.
+-- ========================================================================
+
 -- Fix RLS policies that reference dropped server helper functions and server_id column
 -- Migration 008 dropped is_server_member/is_server_admin/is_server_editor and the servers table,
 -- but did NOT fix the RLS policies on server-scoped tables. These policies are now broken.

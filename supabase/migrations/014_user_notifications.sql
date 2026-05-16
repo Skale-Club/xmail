@@ -1,3 +1,11 @@
+-- ========================================================================
+-- SUPERSEDED BY supabase/migrations/020_consolidate_rls.sql (Phase 13 QUA-03).
+-- This migration's RLS effects are now reflected in 020. Kept on disk
+-- for historical record only. Do NOT add new policies here.
+-- (Table-create + indexes remain authoritative; only the RLS portions
+--  at the bottom of this file are superseded.)
+-- ========================================================================
+
 -- User Notifications table for Webmail
 -- Stores notifications for users about server events (bounces, held, spam alerts)
 
