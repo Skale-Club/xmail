@@ -99,6 +99,7 @@ See `.planning/REQUIREMENTS.md` for v1.2 requirements (CRIT-01..04, SEC-01..04, 
 | Centralize SSRF guard in `network-guard.ts` | Webhooks, click tracking, IMAP/SMTP test connection all need it — DRY | v1.2 Phase 11 |
 | Postgres advisory locks for cron jobs | Multi-instance safe without external infra (Redis); leverages existing DB | v1.2 Phase 11 |
 | Defer Drizzle migration regeneration | Schema drift is too large; team-of-one writes manual SQL in `supabase/migrations/`. Document the pattern; deprecate `db:generate` workflow rather than producing a massive auto-diff | v1.2 Phase 13 |
+| Defer error log sink (Sentry/Datadog) to v1.3 | Requires budget + ops infra decision (vendor selection, retention policy, PII handling). `/health/ready` (CRIT-02) plus CI lint + `tsc --noEmit` gates (CI-01, CI-02) provide the v1.2 first-line defense. Avoid premature commitment to a vendor before observability requirements are scoped. | v1.2 Phase 14 — CI-04 deferred; tracked in `Future Requirements` for v1.3 |
 
 ## Evolution
 
