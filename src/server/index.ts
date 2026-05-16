@@ -73,6 +73,20 @@ const trackingLimiter = rateLimit({
 })
 app.use('/t/', trackingLimiter)
 
+// Per-user limiter for /api/mail/mailboxes/test-connection (SMTP/IMAP probe abuse defense).
+// Applied AFTER the auth middleware below so keyGenerator can read req.headers['x-user-id'].
+const testConnectionLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+        const uid = req.headers['x-user-id']
+        return typeof uid === 'string' && uid ? `user:${uid}` : `ip:${req.ip}`
+    },
+    message: { error: 'Too many connection tests; please wait a minute.' },
+})
+
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
@@ -203,6 +217,7 @@ app.use('/api/system', systemRoutes)
 app.use('/api/templates', templateRoutes)
 app.use('/api/outreach', outreachRoutes)
 app.use('/api/outlook', outlookRoutes)
+app.use('/api/mail/mailboxes/test-connection', testConnectionLimiter)
 app.use('/api/mail', mailRoutes)
 app.use('/api/notifications', notificationRoutes)
 
