@@ -64,13 +64,23 @@ npm run db:studio        # Open Drizzle Studio
 1. Frontend authenticates via Supabase Auth (`supabase.auth.signInWithPassword`)
 2. JWT token sent as `Authorization: Bearer <token>` header
 3. Express middleware validates token with Supabase, sets `x-user-id` header
-4. RLS policies enforce organization-level data isolation at the database layer
+4. **Authorization is JS-side, not DB-side.** The app's DB connection uses
+   the `DATABASE_URL` Postgres role, which bypasses Row-Level Security
+   (no `auth.uid()` is set per request). RLS policies in
+   `supabase/migrations/` remain as defense-in-depth, but the real
+   authorization check lives in `src/server/lib/access.ts`. **Every API
+   route MUST call a `checkXAccess` helper before reading or writing
+   tenant-scoped data — there is no DB safety net.** Background jobs
+   and scripts that use the same connection also bypass RLS and must
+   enforce their own scoping in code.
 
 ### Multi-Tenancy Model
 - Users belong to Organizations via `organization_users` (roles: admin, member, viewer)
 - Servers belong to Organizations
 - All resources (domains, credentials, routes, messages, webhooks) belong to Servers
-- RLS policies enforce org-scoped data access
+- **Authorization model:** JS-side helpers in `src/server/lib/access.ts`
+  enforce org-scoped data access. RLS policies are defense-in-depth and
+  do NOT alone protect tenants (the app role bypasses RLS).
 
 ### API Conventions
 - All API routes under `/api/`
@@ -103,7 +113,7 @@ See `.env.example` for full list.
 
 Schema defined in `src/db/schema.ts` using Drizzle ORM. Key tables: `users`, `organizations`, `organization_users`, `servers`, `domains`, `credentials`, `routes`, `messages`, `deliveries`, `webhooks`, `webhook_requests`, `statistics`, `suppressions`, `track_domains`.
 
-All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql`).
+All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql`). RLS is **defense-in-depth only** — the app's `DATABASE_URL` Postgres role bypasses RLS, so tenant isolation is enforced in JS via `src/server/lib/access.ts`. See `### Authentication Flow` above.
 
 ## Key Constraints
 
