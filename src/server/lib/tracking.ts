@@ -119,6 +119,13 @@ export async function incrementStat(organizationId: string, field: StatField): P
 // Webhook dispatcher
 // ---------------------------------------------------------------------------
 
+// COR-02 — see audit M6. Retry transient webhook failures with exponential backoff.
+// Sleep BEFORE attempt N: 0ms before attempt 1, 3s before 2, 9s before 3.
+// Attempts fire at T=0s, ~3s, ~12s after fireWebhooks is invoked.
+const BACKOFF_MS = [0, 3000, 9000]
+const MAX_ATTEMPTS = 3
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
 type WebhookEvent =
     | 'message_sent'
     | 'message_delivered'
@@ -251,32 +258,45 @@ export async function fireWebhooks(
                     headers['X-Webhook-Signature'] = `sha256=${sig}`
                 }
 
-                try {
-                    const response = await fetch(wh.url, {
-                        method: 'POST',
-                        headers,
-                        body: JSON.stringify(payload),
-                        signal: AbortSignal.timeout(10_000),
-                    })
+                // COR-02 — see audit M6/H2. Retry classification: 5xx + network/timeout = retry; 4xx = permanent; 2xx = success.
+                for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                    if (BACKOFF_MS[attempt - 1] > 0) await sleep(BACKOFF_MS[attempt - 1])
 
-                    const body = await response.text()
+                    try {
+                        const response = await fetch(wh.url, {
+                            method: 'POST',
+                            headers,
+                            body: JSON.stringify(payload),
+                            signal: AbortSignal.timeout(10_000),
+                        })
 
-                    await db.insert(webhookRequests).values({
-                        webhookId: wh.id,
-                        event: event as any,
-                        payload,
-                        responseCode: response.status,
-                        responseBody: body.substring(0, 5000),
-                        success: response.ok,
-                    })
-                } catch (err) {
-                    await db.insert(webhookRequests).values({
-                        webhookId: wh.id,
-                        event: event as any,
-                        payload,
-                        success: false,
-                        error: err instanceof Error ? err.message : 'Request failed',
-                    })
+                        const body = await response.text()
+
+                        await db.insert(webhookRequests).values({
+                            webhookId: wh.id,
+                            event: event as any,
+                            payload,
+                            responseCode: response.status,
+                            responseBody: body.substring(0, 5000),
+                            success: response.ok,
+                            attempts: attempt,
+                        })
+
+                        // Success (2xx) OR permanent failure (4xx) → stop. Only 5xx triggers retry.
+                        if (response.ok || response.status < 500) return
+                        // else: 5xx → loop continues (unless this was attempt MAX_ATTEMPTS)
+                    } catch (err) {
+                        // Network/timeout error — record and (if attempts remain) retry.
+                        await db.insert(webhookRequests).values({
+                            webhookId: wh.id,
+                            event: event as any,
+                            payload,
+                            success: false,
+                            error: err instanceof Error ? err.message : 'Request failed',
+                            attempts: attempt,
+                        })
+                        // Loop continues unless this was the last attempt.
+                    }
                 }
             })
         )
