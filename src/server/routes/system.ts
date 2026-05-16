@@ -481,31 +481,14 @@ router.put('/outreach/global-toggle', async (req: Request, res: Response) => {
     }
 })
 
-// PUT /api/system/outreach - Toggle outreach enabled for all organizations
-router.put('/outreach', async (req: Request, res: Response) => {
-    try {
-        const userId = req.headers['x-user-id'] as string
-        if (!userId) {
-            return res.status(401).json({ error: 'Unauthorized' })
-        }
-
-        const { isPlatformAdmin } = await import('../lib/admin')
-        if (!await isPlatformAdmin(userId)) {
-            return res.status(403).json({ error: 'Forbidden' })
-        }
-
-        const { enabled } = req.body
-        if (typeof enabled !== 'boolean') {
-            return res.status(400).json({ error: 'enabled must be a boolean' })
-        }
-
-        await db.update(organizations).set({ outreach_enabled: enabled })
-
-        res.json({ success: true, outreach_enabled: enabled })
-    } catch (error) {
-        console.error('Error updating outreach status:', error)
-        res.status(500).json({ error: 'Internal server error' })
-    }
+// PUT /api/system/outreach - DEPRECATED 2026-05-16, returns 410 Gone (COR-04).
+// Use PUT /api/system/outreach/global-toggle instead.
+router.put('/outreach', (_req: Request, res: Response) => {
+    res.status(410).json({
+        error: 'Endpoint moved',
+        newPath: 'PUT /api/system/outreach/global-toggle',
+        deprecatedAt: '2026-05-16',
+    })
 })
 
 // GET /api/system/db-stats - Get database connection stats and health
