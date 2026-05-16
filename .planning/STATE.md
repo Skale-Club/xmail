@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 12-01-PLAN.md (COR-01 + COR-02 closed)
-last_updated: "2026-05-16T22:52:29.478Z"
+stopped_at: Completed 12-03-PLAN.md (COR-04 closed)
+last_updated: "2026-05-16T22:53:33.607Z"
 last_activity: 2026-05-16
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 12
-  completed_plans: 8
+  completed_plans: 11
   percent: 0
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-05-16)
 ## Current Position
 
 Phase: 12 (high-correctness) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-05-16
 
@@ -65,6 +65,8 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 11-high-security P04  | 8 min | 3 tasks | 2 files |
 | Phase 11-high-security P03  | 5 min | 2 tasks | 1 file (wire-up; helper landed earlier in ebae465) |
 | Phase 12-high-correctness P01 | 3 min | 3 tasks | 2 files |
+| Phase 12 P02 | ~3min | 4 tasks | 3 files |
+| Phase 12 P03 | 4 min | 3 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -84,6 +86,8 @@ Carried over from v1.1 + new for v1.2:
 - [Phase 11-high-security P04]: Option A (reserved-connection + `pg_try_advisory_lock`) chosen over Option B (`pg_try_advisory_xact_lock` + db.transaction) because `queryClient.reserve()` is exposed by postgres-js and Option B would hold a transaction open for the entire job duration (VACUUM / replication pressure). Lock key passed as string + `::bigint` cast (postgres-js tagged-template params reject native bigint at the TS layer). `isSequenceProcessing` flag REMOVED — advisory lock is strictly stronger. Closes audit H8.
 - [Phase 11-high-security P03]: Auth-cache uses hand-rolled Map+TTL (no lru-cache npm dep). 60s TTL bounds token-revocation latency; 5000-entry cap. Cache successes only — 401s always re-hit Supabase. In-flight Promise dedup collapses concurrent identical-token bursts to one Supabase call. Compact-user shape stored (id/email/firstName/lastName/emailVerified) preserves x-user-* header contract for downstream consumers. Closes audit H7.
 - [Phase 12-high-correctness]: Webhook retry backoff: BACKOFF_MS=[0,3000,9000] — attempts at T=0s, ~3s, ~12s; 4xx and 2xx exit immediately, only 5xx + network/timeout retry (COR-01/COR-02)
+- [Phase 12]: 60s sliding-window dedup for click-tracking via atomic UPDATE on messages.clicked_at — multi-instance safe, replaces SELECT-then-act race
+- [Phase 12]: [Phase 12-high-correctness P03]: Outreach toggle hardened — PUT /api/system/outreach/global-toggle (Zod + audit-log + affectedRows/previousState response) replaces old PUT /api/system/outreach which now returns 410 Gone unconditionally with newPath breadcrumb. Audit log to stdout (`[audit] outreach-toggle user=... from=N/N to=bool affected=N at=iso`) until QUA-06 introduces structured logger. No frontend callers found in src/pages or src/components — frontend migration not required for COR-04. Closes audit H9 + M7.
 
 ### Pending Todos
 
@@ -103,7 +107,7 @@ Carried over from v1.1 + new for v1.2:
 
 ## Session Continuity
 
-Last session: 2026-05-16T22:52:29.474Z
-Stopped at: Completed 12-01-PLAN.md (COR-01 + COR-02 closed)
+Last session: 2026-05-16T22:53:33.563Z
+Stopped at: Completed 12-03-PLAN.md (COR-04 closed)
 Resume file: None
 Next action: Phase 11 fully complete (SEC-01..04). Run phase verification; advance to Phase 12 (COR-01..07).
