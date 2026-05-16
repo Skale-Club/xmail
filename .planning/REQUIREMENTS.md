@@ -45,10 +45,10 @@
 
 ### LOW — Cosmetic & Dead Code (Phase 14)
 
-- [ ] **CLN-01**: `/api/system/mail-diag` accepts an optional `?testEmail=` query parameter; default behavior runs no diagnostic test (no hardcoded personal email). (audit L1)
-- [ ] **CLN-02**: Repo root has no `nul` file. `scripts/_check-db.ts` and `scripts/_setup-user.ts` are renamed (drop `_` prefix) or deleted with rationale in commit message. (audit L2, L3)
-- [ ] **CLN-03**: `index.html` script tag for `/app-config.js` no longer produces a Vite build warning. (audit L4)
-- [ ] **CLN-04**: `MAX_WEBHOOK_RESPONSE_BODY = 5000` extracted to a named constant in `tracking.ts`. (audit L5)
+- [x] **CLN-01**: `/api/system/mail-diag` accepts an optional `?testEmail=` query parameter; default behavior runs no diagnostic test (no hardcoded personal email). (audit L1)
+- [x] **CLN-02**: Repo root has no `nul` file. `scripts/_check-db.ts` and `scripts/_setup-user.ts` are renamed (drop `_` prefix) or deleted with rationale in commit message. (audit L2, L3)
+- [x] **CLN-03**: `index.html` script tag for `/app-config.js` no longer produces a Vite build warning. (audit L4)
+- [x] **CLN-04**: `MAX_WEBHOOK_RESPONSE_BODY = 5000` extracted to a named constant in `tracking.ts`. (audit L5)
 
 ### Observability — CI & Monitoring (Phase 14)
 

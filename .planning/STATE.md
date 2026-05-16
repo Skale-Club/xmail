@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
-status: executing
-stopped_at: Completed 14-03-PLAN.md
-last_updated: "2026-05-16T23:48:28.368Z"
+status: verifying
+stopped_at: Completed 14-01-PLAN.md
+last_updated: "2026-05-16T23:54:24.908Z"
 last_activity: 2026-05-16
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 21
-  completed_plans: 20
+  completed_plans: 21
   percent: 0
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-05-16)
 
 Phase: 14 (low-and-ci) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-05-16
 
 Progress: [░░░░░░░░░░] 0%
@@ -75,6 +75,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 13 P01 | 4min | 2 tasks | 1 files |
 | Phase 14 P02 | 1m | 2 tasks | 1 files |
 | Phase 14 P14-03 | 3min | 2 tasks | 3 files |
+| Phase 14-low-and-ci P01 | 12 min | 4 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -105,6 +106,8 @@ Carried over from v1.1 + new for v1.2:
 - [Phase 14]: 14-02: CI workflow .github/workflows/ci.yml runs npm ci + lint + tsc (both tsconfigs) + build on push/PR to main with Node 20.x and cancel-in-progress concurrency; build step uses VITE_* placeholders so vite build passes without real Supabase keys. Kept separate from deploy-hetzner.yml so PRs are gated too. Closes CI-01 + CI-02; branch-protection setup left to operator.
 - [Phase 14]: Defer error log sink (Sentry/Datadog) to v1.3 — needs budget + ops infra decision; /health/ready + CI gates are the v1.2 first-line defense
 - [Phase 14]: Runbook lives at docs/runbook.md (not README); README is product-facing, runbook is ops-facing
+- [Phase 14-low-and-ci]: 14-01 CLN-03: index.html /app-config.js warning silenced via document.write injection (type=text/javascript and vite-ignore both insufficient; Vite only accepts type=module). Synchronous parse-time injection preserves load-order before main.tsx.
+- [Phase 14-low-and-ci]: 14-01 CLN-02: scripts/_check-db.ts + _setup-user.ts deleted (not renamed) — _check-db overlapped with scripts/check-full.ts; _setup-user contained hardcoded PII (vanildo@skale.club) and a deprecated password-update flow superseded by Supabase Auth + scripts/set-admin.ts. CLN-02 deletion landed in parallel commit 22872be.
 
 ### Pending Todos
 
@@ -124,7 +127,7 @@ Carried over from v1.1 + new for v1.2:
 
 ## Session Continuity
 
-Last session: 2026-05-16T23:48:28.357Z
-Stopped at: Completed 14-03-PLAN.md
+Last session: 2026-05-16T23:54:24.900Z
+Stopped at: Completed 14-01-PLAN.md
 Resume file: None
 Next action: Phase 11 fully complete (SEC-01..04). Run phase verification; advance to Phase 12 (COR-01..07).

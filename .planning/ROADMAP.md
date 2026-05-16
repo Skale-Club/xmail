@@ -15,7 +15,7 @@
 - [x] **Phase 11: HIGH Security Posture** — Centralized SSRF guard, IMAP TLS hardening, JWT cache, cron advisory locks (11-01 SEC-01 done, 11-02 SEC-02 done, 11-03 SEC-03 done, 11-04 SEC-04 done — all 4 plans complete 2026-05-16)
 - [x] **Phase 12: HIGH Correctness & Validation** — Webhook timeout/retry/replay, /move folder validation, suppression integration, outreach toggle hardening, ESLint config (completed 2026-05-16)
 - [x] **Phase 13: MEDIUM Consolidation** — tsc errors, migration cleanup, RLS consolidation, domain normalization, CSP hardening, PII logs, field naming (completed 2026-05-16)
-- [ ] **Phase 14: LOW Cleanup + CI/Observability** — Dev artifacts removal, magic constants, CI lint/tsc gates, monitoring/runbook
+- [x] **Phase 14: LOW Cleanup + CI/Observability** — Dev artifacts removal, magic constants, CI lint/tsc gates, monitoring/runbook (completed 2026-05-16)
 
 ---
 
