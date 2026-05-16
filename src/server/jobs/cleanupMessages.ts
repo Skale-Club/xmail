@@ -1,3 +1,5 @@
+/* eslint-disable no-constant-condition -- batch-cleanup uses while(true)+break pattern; each loop
+   exits when no more rows are returned. Refactor to a generator is tracked in Phase 13 QUA-01. */
 import { db } from '../../db'
 import { messages, deliveries, outreachEmails, webhookRequests, mailMessages, mailFolders } from '../../db/schema'
 import { lt, eq, and, or, inArray, isNull } from 'drizzle-orm'

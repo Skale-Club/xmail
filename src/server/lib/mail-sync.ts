@@ -1,9 +1,8 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import Imap from 'imap'
 import { simpleParser } from 'mailparser'
 import { db } from '../../db'
 import { mailboxes, mailFolders, mailMessages } from '../../db/schema'
-import { eq, and, gt, or, isNull, desc } from 'drizzle-orm'
+import { eq, and, desc } from 'drizzle-orm'
 import { decryptSecret } from './crypto'
 
 interface SyncResult {
@@ -340,16 +339,13 @@ async function fetchMessagesSync(
 
         fetch.on('message', (msg: any) => {
             let uid: number | null = null
-            let messageId: string | null = null
             let raw = ''
 
             msg.on('attributes', (attrs: any) => {
                 uid = attrs.uid
-                const headers = attrs.headers
-                if (headers) {
-                    const msgIdHeader = headers.find((h: any) => h.key === 'message-id')
-                    messageId = msgIdHeader ? msgIdHeader.value : null
-                }
+                // Phase 12 COR-07: previously also extracted message-id from attrs.headers and
+                // stored in a `messageId` local; that local was never read (parsed.messageId is
+                // used during insert). Removed for lint compliance.
             })
 
             msg.on('body', (stream: any) => {

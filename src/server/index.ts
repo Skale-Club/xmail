@@ -27,7 +27,6 @@ import { createSMTPServer } from './smtp-server'
 import { createInboundSMTPServer } from './smtp-inbound'
 import { createIMAPServer, loadImapBranding } from './imap-server'
 import { runReadinessChecks } from './lib/health'
-import { supabaseAnonClient } from './lib/supabase'
 import { resolveUserFromToken } from './lib/auth-cache'
 
 const app = express()

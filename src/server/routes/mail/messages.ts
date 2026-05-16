@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { eq, and, desc, inArray, sql, ilike, or } from 'drizzle-orm'
 import Imap from 'imap'
 import { db } from '../../../db'
-import { mailMessages, mailFolders, mailboxes } from '../../../db/schema'
+import { mailMessages, mailFolders } from '../../../db/schema'
 import { checkUserMailboxAccess } from './mailboxes'
 import { mailMessageToListItem } from '../../lib/mail'
 import { runFiltersOnMessage } from './filters'
@@ -695,7 +695,7 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
         let remoteTargetFolder: { id: string; remoteId: string } | null = null
 
         switch (data.action) {
-            case 'archive':
+            case 'archive': {
                 const archiveFolder = await resolveArchiveFolder(mailboxId, mailbox.isNative)
                 if (!archiveFolder) {
                     return res.status(400).json({ error: 'Archive folder is not available for this mailbox' })
@@ -704,20 +704,23 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
                 updateData.folderId = archiveFolder.id
                 remoteTargetFolder = archiveFolder
                 break
-            case 'spam':
+            }
+            case 'spam': {
                 const spamFolder = await resolveSpamFolder(mailboxId, mailbox.isNative)
                 if (spamFolder) {
                     updateData.folderId = spamFolder.id
                     remoteTargetFolder = spamFolder
                 }
                 break
-            case 'unspam':
+            }
+            case 'unspam': {
                 const unspamInboxFolder = await resolveInboxFolder(mailboxId)
                 if (unspamInboxFolder) {
                     updateData.folderId = unspamInboxFolder.id
                     remoteTargetFolder = unspamInboxFolder
                 }
                 break
+            }
             case 'restore': {
                 const inboxFolder = await resolveInboxFolder(mailboxId)
                 if (inboxFolder) {

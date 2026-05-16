@@ -9,7 +9,7 @@ interface AppLogoProps {
 const loadedLogoSources = new Set<string>()
 
 export const AppLogo = memo(function AppLogo({ className = '', alt }: AppLogoProps) {
-    const { branding, isSuccess } = useBranding()
+    const { branding } = useBranding()
     const src = branding.logoUrl
     const [loaded, setLoaded] = useState(() => loadedLogoSources.has(src))
     const prevSrc = useRef<string | null>(src)

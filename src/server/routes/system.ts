@@ -206,7 +206,7 @@ router.post('/branding/upload', async (req: Request, res: Response) => {
         const storagePath = `${fieldName}-${timestamp}-${filename}`
         const storageKey = `${BUCKET_NAME}/${storagePath}`
 
-        const { data: uploadData, error: uploadError } = await supabaseAdminClient
+        const { error: uploadError } = await supabaseAdminClient
             .storage
             .from(BUCKET_NAME)
             .upload(storagePath, fileBuffer, {

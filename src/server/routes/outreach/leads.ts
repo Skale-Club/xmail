@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
 import { leads, leadLists, organizationUsers } from '../../../db/schema'
-import { eq, and, or, like, sql, inArray, desc } from 'drizzle-orm'
+import { eq, and, sql, inArray, desc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 
@@ -185,7 +185,9 @@ router.get('/', async (req: Request, res: Response) => {
         const organizationId = req.query.organizationId as string
         const page = parseInt(req.query.page as string) || 1
         const limit = parseInt(req.query.limit as string) || 50
-        const search = req.query.search as string
+        // Phase 12 COR-07: `_search` retained as a TODO marker; lead search not yet wired through.
+        // Phase 13 QUA-01 will either implement the filter or remove the field entirely.
+        const _search = req.query.search as string
         const status = req.query.status as string
         const leadListId = req.query.leadListId as string
 

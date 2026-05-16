@@ -28,7 +28,7 @@ function decodeToken(token: string): UnsubscribeToken | null {
     }
 }
 
-function generateUnsubscribeHtml(leadEmail: string, campaignName: string): string {
+function generateUnsubscribeHtml(leadEmail: string, _campaignName: string): string {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>

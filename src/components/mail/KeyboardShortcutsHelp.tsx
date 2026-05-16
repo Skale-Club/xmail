@@ -8,8 +8,8 @@ interface KeyboardShortcutsHelpProps {
 }
 
 export function KeyboardShortcutsHelp({ isOpen, onClose }: KeyboardShortcutsHelpProps) {
-    if (!isOpen) return null
-
+    // Phase 12 COR-07: hooks must be called unconditionally; the early-return below replaces the
+    // previous `if (!isOpen) return null` that preceded React.useMemo.
     const categorizedShortcuts = React.useMemo(() => {
         const categories: Record<string, typeof SHORTCUTS> = {}
 
@@ -26,6 +26,8 @@ export function KeyboardShortcutsHelp({ isOpen, onClose }: KeyboardShortcutsHelp
                 (SHORTCUT_CATEGORIES[b as keyof typeof SHORTCUT_CATEGORIES]?.order || 0)
             )
     }, [])
+
+    if (!isOpen) return null
 
     return (
         <>

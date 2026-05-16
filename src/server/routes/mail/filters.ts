@@ -86,7 +86,7 @@ async function applyFilter(message: any, actions: FilterAction[]): Promise<void>
             case 'markNotSpam':
                 updates.isSpam = false
                 break
-            case 'archive':
+            case 'archive': {
                 const archiveFolder = await db.query.mailFolders.findFirst({
                     where: and(
                         eq(mailFolders.mailboxId, message.mailboxId),
@@ -97,6 +97,7 @@ async function applyFilter(message: any, actions: FilterAction[]): Promise<void>
                     updates.folderId = archiveFolder.id
                 }
                 break
+            }
             case 'moveToFolder':
                 if (action.value) {
                     const targetFolder = await db.query.mailFolders.findFirst({

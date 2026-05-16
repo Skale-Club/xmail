@@ -5,8 +5,6 @@ import { routes, organizations, organizationUsers } from '../../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { isPlatformAdmin } from '../lib/admin'
 
-import { v4 as uuidv4 } from 'uuid'
-
 const router = Router()
 
 // Validation schemas

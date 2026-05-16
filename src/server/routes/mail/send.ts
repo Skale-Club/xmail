@@ -524,7 +524,7 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
         let savedMessage
 
         if (existingDraft) {
-            ;[savedMessage] = await db.update(mailMessages).set({
+            [savedMessage] = await db.update(mailMessages).set({
                 folderId: draftsFolder.id,
                 messageId,
                 subject: data.subject || null,
@@ -544,7 +544,7 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
                 updatedAt: new Date(),
             }).where(eq(mailMessages.id, existingDraft.id)).returning()
         } else {
-            ;[savedMessage] = await db.insert(mailMessages).values({
+            [savedMessage] = await db.insert(mailMessages).values({
                 mailboxId,
                 folderId: draftsFolder.id,
                 messageId,

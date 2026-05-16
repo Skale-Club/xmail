@@ -15,7 +15,7 @@ import { mailboxes, mailFolders, mailMessages } from '../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { parseRawEmail } from './lib/mail'
 import { authenticateNativeUser, findLocalUser } from './lib/native-mail'
-import { processInboundEmail, deliverViaRoutes, type MatchedRoute } from './lib/route-matcher'
+import { processInboundEmail, deliverViaRoutes } from './lib/route-matcher'
 
 // Find the companion mailboxes entry (for folder/message storage)
 async function getCompanionMailbox(email: string, userId: string) {

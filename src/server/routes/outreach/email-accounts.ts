@@ -66,13 +66,8 @@ async function checkOrgMembership(userId: string, organizationId: string) {
     return membership
 }
 
-// Helper to get decrypted SMTP credentials
-function getDecryptedCredentials(account: typeof emailAccounts.$inferSelect) {
-    return {
-        smtpPassword: account.smtpPassword ? decryptSecret(account.smtpPassword) : null,
-        imapPassword: account.imapPassword ? decryptSecret(account.imapPassword) : null,
-    }
-}
+// NOTE: getDecryptedCredentials helper previously defined here was removed (Phase 12 COR-07 lint
+// cleanup); routes inline `decryptSecret` calls. Re-add helper if needed by future routes.
 
 // List email accounts for organization
 router.get('/', async (req: Request, res: Response) => {

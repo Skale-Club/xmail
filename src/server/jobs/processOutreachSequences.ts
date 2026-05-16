@@ -22,10 +22,7 @@ import {
     incrementCampaignStats,
 } from '../lib/outreach-sender'
 
-type Campaign = typeof campaigns.$inferSelect
-type Lead = typeof leads.$inferSelect
 type SequenceStep = typeof sequenceSteps.$inferSelect
-type EmailAccount = typeof emailAccounts.$inferSelect
 
 function getNextStep(steps: SequenceStep[], currentStepOrder: number): SequenceStep | null {
     return steps.find(s => s.stepOrder > currentStepOrder) || null

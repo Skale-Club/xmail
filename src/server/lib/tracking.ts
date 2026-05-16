@@ -1,6 +1,6 @@
 import { createHmac } from 'crypto'
 import { db } from '../../db'
-import { webhooks, webhookRequests, statistics, organizationUsers, userNotifications } from '../../db/schema'
+import { webhooks, webhookRequests, organizationUsers, userNotifications } from '../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
 
 // ---------------------------------------------------------------------------

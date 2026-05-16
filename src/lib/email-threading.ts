@@ -48,7 +48,7 @@ export function groupEmailsIntoThreads(emails: EmailItem[]): Map<string, EmailIt
 }
 
 function extractThreadKey(subject: string): string {
-    let key = subject
+    const key = subject
         .toLowerCase()
         .replace(/^re:\s*/i, '')
         .replace(/^fwd:\s*/i, '')

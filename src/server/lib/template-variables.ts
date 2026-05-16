@@ -5,8 +5,6 @@
  * Also supports custom fields from the lead's customFields JSONB column.
  */
 
-import { leads } from '../../db/schema'
-
 // Type for lead data available in templates
 type LeadForTemplate = {
     email: string

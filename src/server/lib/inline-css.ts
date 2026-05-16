@@ -71,7 +71,7 @@ function calculateSpecificity(selector: string): number {
     specificity += (classMatches?.length || 0) * 10;
     specificity += (attrMatches?.length || 0) * 10;
     
-    const cleanPart = part.replace(/[.#\[:].*/g, '');
+    const cleanPart = part.replace(/[.#[:].*/g, '');
     if (cleanPart && /^[a-z]/i.test(cleanPart)) {
       specificity += 1;
     }

@@ -638,7 +638,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         })
 
         const upperArgs = args.toUpperCase()
-        let results: number[] = []
+        const results: number[] = []
 
         // Simple search criteria
         for (let i = 0; i < msgs.length; i++) {

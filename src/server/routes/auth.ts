@@ -43,12 +43,9 @@ function clearRefreshTokenCookie(res: Response) {
     })
 }
 
-const registerSchema = z.object({
-    email: z.string().email('Invalid email address'),
-    password: z.string().min(8, 'Password must be at least 8 characters'),
-    firstName: z.string().optional(),
-    lastName: z.string().optional(),
-})
+// NOTE: registerSchema previously defined here was removed (Phase 12 COR-07 lint cleanup).
+// Registration endpoint is intentionally disabled (returns 403). When/if registration is
+// re-enabled, restore the schema here.
 
 const loginSchema = z.object({
     email: z.string().email('Invalid email address'),

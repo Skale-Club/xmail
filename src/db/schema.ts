@@ -9,7 +9,6 @@ import {
     pgEnum,
     uniqueIndex,
     index,
-    bigint,
     check,
 } from 'drizzle-orm/pg-core'
 import { relations, sql } from 'drizzle-orm'

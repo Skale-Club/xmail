@@ -1,5 +1,4 @@
 import { Router, Request, Response } from 'express'
-import { z } from 'zod'
 import { db } from '../../db'
 import { userNotifications } from '../../db/schema'
 import { eq, and, desc, sql } from 'drizzle-orm'
@@ -7,18 +6,8 @@ import { getAuthenticatedUserFromRequest } from '../lib/user-sync'
 
 const router = Router()
 
-const notificationTypes = ['bounce', 'held', 'spam_alert', 'quota_exceeded', 'limit_reached', 'domain_verification_failed'] as const
-
-const createNotificationSchema = z.object({
-    type: z.enum(notificationTypes),
-    title: z.string().min(1),
-    message: z.string().min(1),
-    metadata: z.record(z.unknown()).optional(),
-})
-
-const updateNotificationSchema = z.object({
-    read: z.boolean(),
-})
+// NOTE: createNotificationSchema + updateNotificationSchema + notificationTypes previously defined
+// here were removed (Phase 12 COR-07 lint cleanup). Re-add when their endpoints are implemented.
 
 router.get('/', async (req: Request, res: Response) => {
     try {

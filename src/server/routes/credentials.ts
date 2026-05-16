@@ -17,10 +17,8 @@ const createCredentialSchema = z.object({
     secret: z.string().optional(),
 });
 
-const updateCredentialSchema = z.object({
-    name: z.string().min(1).max(100).optional(),
-    secret: z.string().optional(),
-});
+// NOTE: updateCredentialSchema previously defined here was removed (Phase 12 COR-07 lint cleanup);
+// re-add when an update endpoint is implemented.
 
 // Helper to check access
 export async function checkCredentialAccess(userId: string, organizationId: string) {
@@ -94,7 +92,6 @@ router.post('/', async (req: Request, res: Response) => {
         }
 
         const key = uuidv4()
-        const secret = uuidv4()
 
         // Hash the secret before inserting
         let hashedSecret: string | null = null
