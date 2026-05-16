@@ -41,6 +41,12 @@ app.use(helmet({
             ...helmet.contentSecurityPolicy.getDefaultDirectives(),
             'img-src': ["'self'", 'data:', 'https:', 'http:', supabaseOrigin].filter(Boolean) as string[],
             'connect-src': ["'self'", supabaseOrigin].filter(Boolean) as string[],
+            // QUA-05 — see audit M10. Close clickjacking (frame-ancestors), plugin-content
+            // (object-src), and base-URI hijack (base-uri) vectors. helmet defaults DO NOT
+            // include these via getDefaultDirectives().
+            'frame-ancestors': ["'none'"],
+            'object-src': ["'none'"],
+            'base-uri': ["'self'"],
         },
     },
 }))
@@ -58,7 +64,7 @@ app.use('/api/', limiter)
 
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 5,
+    max: 10, // QUA-07 — see audit M8. Bumped from 5 → 10 to reduce false lockouts of honest users.
     message: { error: 'Too many authentication attempts, please try again later.' },
     standardHeaders: true,
     legacyHeaders: false,
