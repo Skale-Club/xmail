@@ -12,7 +12,7 @@
 ## Phases
 
 - [x] **Phase 10: CRITICAL Fixes** — Stop the bleeding: cascade delete integrity, health check truth, /test-connection auth + SSRF, RLS doc honesty (completed 2026-05-16)
-- [ ] **Phase 11: HIGH Security Posture** — Centralized SSRF guard, IMAP TLS hardening, JWT cache, cron advisory locks (11-01 SEC-01 done, 11-02 SEC-02 done; 11-03/11-04 helpers committed pending wire-up)
+- [ ] **Phase 11: HIGH Security Posture** — Centralized SSRF guard, IMAP TLS hardening, JWT cache, cron advisory locks (11-01 SEC-01 done, 11-02 SEC-02 done, 11-04 SEC-04 done; 11-03 SEC-03 helper committed pending middleware wire-up)
 - [ ] **Phase 12: HIGH Correctness & Validation** — Webhook timeout/retry/replay, /move folder validation, suppression integration, outreach toggle hardening, ESLint config
 - [ ] **Phase 13: MEDIUM Consolidation** — tsc errors, migration cleanup, RLS consolidation, domain normalization, CSP hardening, PII logs, field naming
 - [ ] **Phase 14: LOW Cleanup + CI/Observability** — Dev artifacts removal, magic constants, CI lint/tsc gates, monitoring/runbook
