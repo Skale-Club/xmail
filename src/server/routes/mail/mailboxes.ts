@@ -5,25 +5,9 @@ import { db } from '../../../db'
 import { mailboxes, mailFolders, mailMessages, users } from '../../../db/schema'
 import { encryptSecret } from '../../lib/crypto'
 import { authenticateNativeUser, createUserMailbox } from '../../lib/native-mail'
+import { isPrivateHost } from '../../lib/network-guard'
 
 const router = Router()
-
-// TODO: Phase 11 SEC-01 — move to src/server/lib/network-guard.ts
-// Duplicated from src/server/routes/track.ts:15-28 per audit 2026-05-16 (CRIT-03 remediation).
-const BLOCKED_HOSTS = new Set([
-    'localhost', '127.0.0.1', '0.0.0.0', '::1', '169.254.169.254',
-])
-
-function isPrivateHost(hostname: string): boolean {
-    if (BLOCKED_HOSTS.has(hostname)) return true
-    // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-    const parts = hostname.split('.').map(Number)
-    if (parts.length !== 4 || parts.some(isNaN)) return false
-    if (parts[0] === 10) return true
-    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true
-    if (parts[0] === 192 && parts[1] === 168) return true
-    return false
-}
 
 export async function checkUserMailboxAccess(userId: string, mailboxId: string) {
     const mailbox = await db.query.mailboxes.findFirst({
@@ -397,7 +381,7 @@ router.post('/test-connection', async (req: Request, res: Response) => {
         const smtpHost = data.smtpHost.trim()
         const imapHost = data.imapHost.trim()
         if (isPrivateHost(smtpHost) || isPrivateHost(imapHost)) {
-            return res.status(400).json({ error: 'Connection to private/loopback hosts is not allowed' })
+            return res.status(400).json({ error: 'Connection to private/loopback/link-local hosts is not allowed' })
         }
 
         const nodemailer = await import('nodemailer')

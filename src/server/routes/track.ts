@@ -3,6 +3,7 @@ import { db } from '../../db'
 import { messages, organizations } from '../../db/schema'
 import { eq } from 'drizzle-orm'
 import { fireWebhooks, incrementStat } from '../lib/tracking'
+import { isPrivateHost } from '../lib/network-guard'
 
 const router = Router()
 
@@ -11,21 +12,6 @@ const PIXEL = Buffer.from(
     'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
     'base64'
 )
-
-const BLOCKED_HOSTS = new Set([
-    'localhost', '127.0.0.1', '0.0.0.0', '::1', '169.254.169.254',
-])
-
-function isPrivateHost(hostname: string): boolean {
-    if (BLOCKED_HOSTS.has(hostname)) return true
-    // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-    const parts = hostname.split('.').map(Number)
-    if (parts.length !== 4 || parts.some(isNaN)) return false
-    if (parts[0] === 10) return true
-    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true
-    if (parts[0] === 192 && parts[1] === 168) return true
-    return false
-}
 
 // ---------------------------------------------------------------------------
 // GET /t/open/:token  — open-tracking pixel
@@ -97,6 +83,7 @@ router.get('/click/:token', async (req: Request, res: Response) => {
         if (!['http:', 'https:'].includes(parsed.protocol)) {
             return res.status(400).send('Invalid URL')
         }
+        // SEC-01 — sync check only; click latency is critical. SSRF for stored URLs is gated at write time (webhooks.ts).
         if (isPrivateHost(parsed.hostname)) {
             return res.status(400).send('Invalid URL')
         }
