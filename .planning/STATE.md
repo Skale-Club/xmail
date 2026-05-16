@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 14-02-PLAN.md
-last_updated: "2026-05-16T23:46:00.734Z"
+stopped_at: Completed 14-03-PLAN.md
+last_updated: "2026-05-16T23:48:28.368Z"
 last_activity: 2026-05-16
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 21
-  completed_plans: 19
+  completed_plans: 20
   percent: 0
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-05-16)
 ## Current Position
 
 Phase: 14 (low-and-ci) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-05-16
 
@@ -74,6 +74,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 13 P03 | 15 min | 2 tasks | 9 files |
 | Phase 13 P01 | 4min | 2 tasks | 1 files |
 | Phase 14 P02 | 1m | 2 tasks | 1 files |
+| Phase 14 P14-03 | 3min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -102,6 +103,8 @@ Carried over from v1.1 + new for v1.2:
 - [Phase 13]: RLS consolidation: single idempotent migration 020 supersedes 8 historical RLS migrations; 124 policies, 36 tables, 8 helpers; verifier PASS on all 5 checks. Renumbered 017->020 (018/019 taken by Phase 11/12).
 - [Phase 13]: 13-01: tsc-clean QUA-01 — removed 'event as any' casts in tracking.ts (audit M12); AppLogo M1 already clean; zero 13-06 schema-rename fallout surfaced. Both tsconfig.json + tsconfig.server.json exit 0; CI-02 gate ready.
 - [Phase 14]: 14-02: CI workflow .github/workflows/ci.yml runs npm ci + lint + tsc (both tsconfigs) + build on push/PR to main with Node 20.x and cancel-in-progress concurrency; build step uses VITE_* placeholders so vite build passes without real Supabase keys. Kept separate from deploy-hetzner.yml so PRs are gated too. Closes CI-01 + CI-02; branch-protection setup left to operator.
+- [Phase 14]: Defer error log sink (Sentry/Datadog) to v1.3 — needs budget + ops infra decision; /health/ready + CI gates are the v1.2 first-line defense
+- [Phase 14]: Runbook lives at docs/runbook.md (not README); README is product-facing, runbook is ops-facing
 
 ### Pending Todos
 
@@ -121,7 +124,7 @@ Carried over from v1.1 + new for v1.2:
 
 ## Session Continuity
 
-Last session: 2026-05-16T23:45:59.694Z
-Stopped at: Completed 14-02-PLAN.md
+Last session: 2026-05-16T23:48:28.357Z
+Stopped at: Completed 14-03-PLAN.md
 Resume file: None
 Next action: Phase 11 fully complete (SEC-01..04). Run phase verification; advance to Phase 12 (COR-01..07).
