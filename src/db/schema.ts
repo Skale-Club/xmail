@@ -1119,6 +1119,8 @@ export const mailboxes = pgTable('mailboxes', {
     imapUsername: text('imap_username').notNull(),
     imapPasswordEncrypted: text('imap_password_encrypted').notNull(),
     imapSecure: boolean('imap_secure').default(true).notNull(),
+    // SEC-02 — per-mailbox opt-in to skip TLS cert verification (self-signed corporate IMAP)
+    skipTlsVerify: boolean('skip_tls_verify').default(false).notNull(),
     // Status
     isDefault: boolean('is_default').default(false).notNull(),
     isActive: boolean('is_active').default(true).notNull(),
