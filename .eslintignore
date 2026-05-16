@@ -1,0 +1,34 @@
+# Build output
+dist/
+api/
+
+# Dependencies
+node_modules/
+
+# Drizzle generated
+drizzle/
+
+# Migrations are SQL, not TS — --ext filters most but be explicit
+supabase/migrations/
+
+# Phase 14 CLN-02 will rename/delete these — ignore for now
+scripts/_check-db.ts
+scripts/_setup-user.ts
+nul
+
+# Non-source directories
+docs/
+plans/
+sql/
+.planning/
+.kilo/
+
+# Configs (don't lint configs to avoid bootstrap loops)
+drizzle.config.ts
+vite.config.ts
+tailwind.config.ts
+postcss.config.js
+components.json
+
+# Generated public files
+public/
