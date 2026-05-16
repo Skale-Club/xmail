@@ -5,6 +5,7 @@ import { webhooks, webhookRequests, organizations, organizationUsers } from '../
 import { eq, and, desc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../lib/admin'
 import { createHmac } from 'crypto'
+import { isPrivateHostWithDns } from '../lib/network-guard'
 
 const router = Router()
 
@@ -134,6 +135,19 @@ router.post('/', async (req: Request, res: Response) => {
 
         const data = createWebhookSchema.parse(req.body)
 
+        // SEC-01 — block SSRF at webhook write time (DNS-resolving, rebinding-safe)
+        try {
+            const parsed = new URL(data.url)
+            if (!['http:', 'https:'].includes(parsed.protocol)) {
+                return res.status(400).json({ error: 'Webhook URL must use http or https' })
+            }
+            if (await isPrivateHostWithDns(parsed.hostname)) {
+                return res.status(400).json({ error: 'Webhook URL resolves to a private/internal host' })
+            }
+        } catch {
+            return res.status(400).json({ error: 'Webhook URL is invalid' })
+        }
+
         const { organization, membership } = await checkWebhookAccess(userId, data.organizationId)
 
         if (!organization || !membership || membership.role !== 'admin') {
@@ -170,6 +184,21 @@ router.patch('/:id', async (req: Request, res: Response) => {
         }
 
         const updates = updateWebhookSchema.parse(req.body)
+
+        // SEC-01 — re-validate URL on update (DNS-resolving, rebinding-safe)
+        if (updates.url !== undefined) {
+            try {
+                const parsed = new URL(updates.url)
+                if (!['http:', 'https:'].includes(parsed.protocol)) {
+                    return res.status(400).json({ error: 'Webhook URL must use http or https' })
+                }
+                if (await isPrivateHostWithDns(parsed.hostname)) {
+                    return res.status(400).json({ error: 'Webhook URL resolves to a private/internal host' })
+                }
+            } catch {
+                return res.status(400).json({ error: 'Webhook URL is invalid' })
+            }
+        }
 
         const webhook = await db.query.webhooks.findFirst({
             where: eq(webhooks.id, webhookId),
