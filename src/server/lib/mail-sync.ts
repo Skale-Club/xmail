@@ -67,8 +67,10 @@ function createImapConnection(mailbox: any, isIdle = false): Imap {
         host: mailbox.imapHost,
         port: mailbox.imapPort,
         tls: mailbox.imapSecure,
-        tlsOptions: { 
-            rejectUnauthorized: process.env.NODE_ENV === 'production'
+        // SEC-02 — strict TLS by default; per-mailbox opt-in for self-signed
+        // see .planning/debug/system-wide-audit-2026-05-16.md H5
+        tlsOptions: {
+            rejectUnauthorized: !mailbox.skipTlsVerify,
         },
         connectionTimeout: 30000,
         authTimeout: 15000,
@@ -496,6 +498,12 @@ export function stopMailboxIdle(mailboxId: string): void {
     console.log(`IMAP IDLE stopped for mailbox ${mailboxId}`)
 }
 
+/**
+ * Test SMTP + IMAP connectivity for a mailbox configuration.
+ *
+ * SEC-02 — `skipTlsVerify` defaults to false (strict TLS).
+ * See .planning/debug/system-wide-audit-2026-05-16.md H5.
+ */
 export async function testMailboxConnection(
     smtpHost: string,
     smtpPort: number,
@@ -506,7 +514,8 @@ export async function testMailboxConnection(
     imapPort: number,
     imapSecure: boolean,
     imapUsername: string,
-    imapPassword: string
+    imapPassword: string,
+    skipTlsVerify: boolean = false
 ): Promise<{ smtp: boolean; imap: boolean; errors: string[] }> {
     const result = { smtp: false, imap: false, errors: [] as string[] }
 
@@ -538,7 +547,8 @@ export async function testMailboxConnection(
             host: imapHost,
             port: imapPort,
             tls: imapSecure,
-            tlsOptions: { rejectUnauthorized: false },
+            // SEC-02 — strict TLS by default; opt-in via skipTlsVerify arg
+            tlsOptions: { rejectUnauthorized: !skipTlsVerify },
         })
 
         await new Promise<void>((resolve, reject) => {
