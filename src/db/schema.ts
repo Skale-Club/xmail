@@ -245,6 +245,7 @@ export const messages = pgTable('messages', {
     deliveredAt: timestamp('delivered_at'),
     bouncedAt: timestamp('bounced_at'),
     openedAt: timestamp('opened_at'),
+    clickedAt: timestamp('clicked_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
