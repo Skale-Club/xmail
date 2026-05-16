@@ -3,6 +3,10 @@ import { db } from '../../db'
 import { webhooks, webhookRequests, organizationUsers, userNotifications } from '../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
 
+// CLN-04 — see audit L5. Cap stored webhook response bodies so a chatty endpoint
+// can't blow up the webhook_requests table. Exported for testability.
+export const MAX_WEBHOOK_RESPONSE_BODY = 5000
+
 // ---------------------------------------------------------------------------
 // HTML injection
 // ---------------------------------------------------------------------------
@@ -277,7 +281,7 @@ export async function fireWebhooks(
                             event,
                             payload,
                             responseCode: response.status,
-                            responseBody: body.substring(0, 5000),
+                            responseBody: body.substring(0, MAX_WEBHOOK_RESPONSE_BODY),
                             success: response.ok,
                             attempts: attempt,
                         })
