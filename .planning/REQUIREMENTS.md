@@ -13,7 +13,7 @@
 - [ ] **CRIT-01**: `deleteOrganizationCascade` runs in a single transaction and deletes every row that references the org (outreach tables, outlook_mailboxes, mail tables, suppressions, etc.) AND preserves user mailboxes/passwordHash for users who are members of other orgs. (audit C2)
 - [x] **CRIT-02**: `/health/ready` returns HTTP 503 with `database.ok=false` when the database is unreachable or returning errors. (audit C3)
 - [x] **CRIT-03**: `POST /api/mail/mailboxes/test-connection` requires authenticated user (`userId` from Supabase token), rejects private/loopback hosts, and is covered by a per-user rate limit. (audit C1)
-- [ ] **CRIT-04**: `CLAUDE.md` (and any onboarding text) accurately describes the auth posture: RLS is defense-in-depth, the app role bypasses RLS, every API route is required to call a `checkAccess` helper. A consolidated `src/server/lib/access.ts` exposes all access helpers. (audit C4)
+- [x] **CRIT-04**: `CLAUDE.md` (and any onboarding text) accurately describes the auth posture: RLS is defense-in-depth, the app role bypasses RLS, every API route is required to call a `checkAccess` helper. A consolidated `src/server/lib/access.ts` exposes all access helpers. (audit C4)
 
 ### HIGH — Security Posture (Phase 11)
 
