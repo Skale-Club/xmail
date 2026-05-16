@@ -28,6 +28,7 @@ import { createInboundSMTPServer } from './smtp-inbound'
 import { createIMAPServer, loadImapBranding } from './imap-server'
 import { runReadinessChecks } from './lib/health'
 import { supabaseAnonClient } from './lib/supabase'
+import { resolveUserFromToken } from './lib/auth-cache'
 
 const app = express()
 const PORT = process.env.PORT || 9001
@@ -182,17 +183,18 @@ app.use('/api', async (req, res, next) => {
     }
 
     const token = authHeader.replace('Bearer ', '')
-    const { data: { user }, error } = await supabaseAnonClient.auth.getUser(token)
+    // SEC-03 — see src/server/lib/auth-cache.ts
+    const { user, error } = await resolveUserFromToken(token)
 
     if (error || !user) {
-        return res.status(401).json({ error: 'Invalid or expired token' })
+        return res.status(401).json({ error: error ?? 'Invalid or expired token' })
     }
 
     req.headers['x-user-id'] = user.id
-    req.headers['x-user-email'] = user.email || ''
-    req.headers['x-user-first-name'] = user.user_metadata?.firstName || ''
-    req.headers['x-user-last-name'] = user.user_metadata?.lastName || ''
-    req.headers['x-user-email-verified'] = String(Boolean(user.email_confirmed_at || user.confirmed_at))
+    req.headers['x-user-email'] = user.email ?? ''
+    req.headers['x-user-first-name'] = user.firstName
+    req.headers['x-user-last-name'] = user.lastName
+    req.headers['x-user-email-verified'] = String(user.emailVerified)
 
     next()
 })
