@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 11-02-PLAN.md (SEC-02 closed)
-last_updated: "2026-05-16T22:35:00.000Z"
-last_activity: 2026-05-16 -- Phase 11 Plan 02 complete (IMAP TLS hardening)
+stopped_at: Completed 11-01-PLAN.md (SEC-01 closed)
+last_updated: "2026-05-16T22:55:00.000Z"
+last_activity: 2026-05-16 -- Phase 11 Plan 01 complete (SSRF guard centralized + webhooks gated)
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 7
-  completed_plans: 4
+  completed_plans: 5
   percent: 0
 ---
 
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-05-16)
 ## Current Position
 
 Phase: 11 (high-security) — EXECUTING
-Plan: 3 of 4 (11-01 wired, 11-02 complete, 11-03 helper ready, 11-04 helper ready)
-Status: Executing Phase 11 — SEC-02 closed
-Last activity: 2026-05-16 -- Phase 11 Plan 02 complete (IMAP TLS hardening)
+Plan: 3 of 4 (11-01 complete, 11-02 complete, 11-03 helper ready, 11-04 helper ready)
+Status: Executing Phase 11 — SEC-01 + SEC-02 closed
+Last activity: 2026-05-16 -- Phase 11 Plan 01 complete (SSRF guard centralized + webhooks gated)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -61,6 +61,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 10-critical-fixes P03 | 8 min | 2 tasks | 9 files |
 | Phase 10-critical-fixes P01 | 6 min | 2 tasks | 2 files |
 | Phase 11-high-security P02  | 4 min | 4 tasks | 3 files |
+| Phase 11-high-security P01  | 10 min | 4 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -76,6 +77,7 @@ Carried over from v1.1 + new for v1.2:
 - [Phase 10-critical-fixes]: Phase 10 Plan 03: Re-export pattern (no impl move) gives canonical src/server/lib/access.ts without touching 40+ call sites; Phase 11+ will migrate imports and normalize the 7 identical org-scoped signatures into checkOrgAccess.
 - [Phase 10-critical-fixes]: Phase 10 Plan 01: mailboxes are user-scoped (not org-scoped) — cascade cleanup gated on user having zero remaining orgs preserves shared-user mailbox + passwordHash
 - [Phase 11-high-security P02]: IMAP TLS hardening uses data-driven `rejectUnauthorized: !mailbox.skipTlsVerify` (not NODE_ENV). Migration renumbered 017 -> 018 so Phase 13 QUA-03 keeps 017 for RLS consolidation. Operator must `psql -f supabase/migrations/018_add_mailbox_skip_tls_verify.sql` to deploy.
+- [Phase 11-high-security P01]: SSRF guard split sync/async by call-site characteristics — sync (`isPrivateHost`) for click-handler hot path and admin-driven test-connection, async DNS-resolving (`isPrivateHostWithDns`) for webhook write paths. Webhook URL validated at write time only; `fireWebhooks` does NOT re-check at delivery time to avoid per-event DNS load. Fail-closed on DNS failure and 2s timeout. Closes audit H1/H3/H6.
 
 ### Pending Todos
 
@@ -95,7 +97,7 @@ Carried over from v1.1 + new for v1.2:
 
 ## Session Continuity
 
-Last session: 2026-05-16T22:35:00.000Z
-Stopped at: Completed 11-02-PLAN.md (SEC-02 closed)
+Last session: 2026-05-16T22:55:00.000Z
+Stopped at: Completed 11-01-PLAN.md (SEC-01 closed)
 Resume file: None
-Next action: Continue Phase 11 — wire 11-03 auth-cache into middleware and 11-04 cron-lock into job runner (helpers already committed)
+Next action: Continue Phase 11 — wire 11-03 auth-cache into middleware (SEC-03) and 11-04 cron-lock into job runner (SEC-04); helpers already committed
