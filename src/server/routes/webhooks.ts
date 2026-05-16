@@ -361,6 +361,8 @@ router.post('/:id/test', async (req: Request, res: Response) => {
                 method: 'POST',
                 headers,
                 body: JSON.stringify(testPayload),
+                // COR-01 — see audit H2. Bound the test call so an admin entering a broken URL can't hang the request.
+                signal: AbortSignal.timeout(10_000),
             })
 
             const responseBody = await response.text()
