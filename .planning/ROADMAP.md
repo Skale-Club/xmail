@@ -87,7 +87,7 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. `npx tsc --noEmit` returns 0 errors against both tsconfig files.
   2. `supabase/migrations/013_add_performance_indexes.sql` is gone from the active migrations dir (archived under `supabase/migrations/archive/`); `README` / `CLAUDE.md` documents the schema-edit workflow.
-  3. `supabase/migrations/017_consolidate_rls.sql` exists, is idempotent (running twice succeeds with no errors), and `verify-rls-policies.ts` reports a clean state from this single migration.
+  3. `supabase/migrations/020_consolidate_rls.sql` exists, is idempotent (running twice succeeds with no errors), and `verify-rls-policies.ts` reports a clean state from this single migration.
   4. Inserting domain `EXAMPLE.COM` then `example.com` returns 400 "duplicate" on the second insert; `SELECT name FROM domains WHERE name <> lower(name)` returns zero rows.
   5. Response headers from any HTML page include `Content-Security-Policy: ... frame-ancestors 'none'; object-src 'none'; base-uri 'self'`.
   6. `grep -r "console.log" src/server/` shows no logs that emit user email/token in production code paths (only startup messages or `if (!isProd)`-guarded debug).
@@ -96,7 +96,7 @@ Plans:
 Plans:
 - 13-01-PLAN.md — Type-check zero-error sweep (QUA-01, also catches schema-rename callers)
 - 13-02-PLAN.md — Migration cleanup + Drizzle workflow doc (QUA-02)
-- 13-03-PLAN.md — `017_consolidate_rls.sql` (QUA-03)
+- 13-03-PLAN.md — `020_consolidate_rls.sql` (QUA-03)
 - 13-04-PLAN.md — Domain lowercase normalization + data backfill (QUA-04)
 - 13-05-PLAN.md — CSP hardening + console.log audit + authLimiter calibration (QUA-05, QUA-06, QUA-07)
 - 13-06-PLAN.md — Schema field rename (QUA-08)
