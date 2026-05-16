@@ -38,9 +38,9 @@
 - [x] **QUA-02**: `supabase/migrations/013_add_performance_indexes.sql` is deleted (moved to `supabase/migrations/archive/`). `package.json` scripts and a README section document that schema lives in `src/db/schema.ts` + hand-written `supabase/migrations/*.sql`, and that `npm run db:generate` is not used for new migrations. Scripts that still rely on it use the current Drizzle-kit syntax. (audit M2, M3, M4)
 - [ ] **QUA-03**: `supabase/migrations/020_consolidate_rls.sql` exists, is idempotent, and reflects the current end-state of RLS policies. Older RLS migrations are annotated as superseded. (Renumbered from 017 — migrations 018 and 019 were taken by Phase 11 SEC-02 and Phase 12 COR-03.) (audit M5)
 - [ ] **QUA-04**: `POST /api/domains` lowercases and trims `name` before insert. A one-shot data migration lowercases existing `domains.name`. (audit M9)
-- [ ] **QUA-05**: Helmet CSP adds `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`. Verified via response headers in a smoke test. (audit M10)
-- [ ] **QUA-06**: `console.log` calls in `src/server/**/*.ts` that emit PII (emails, tokens) are gated behind `if (!isProd)` or removed; startup messages remain. (audit M11)
-- [ ] **QUA-07**: `authLimiter` (`/login`, `/reset-password`) is recalibrated to 10 attempts / 15min (or equivalent), reducing false lockouts. (audit M8)
+- [x] **QUA-05**: Helmet CSP adds `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`. Verified via response headers in a smoke test. (audit M10)
+- [x] **QUA-06**: `console.log` calls in `src/server/**/*.ts` that emit PII (emails, tokens) are gated behind `if (!isProd)` or removed; startup messages remain. (audit M11)
+- [x] **QUA-07**: `authLimiter` (`/login`, `/reset-password`) is recalibrated to 10 attempts / 15min (or equivalent), reducing false lockouts. (audit M8)
 - [ ] **QUA-08**: TypeScript schema property names use camelCase consistently: `organizations.ownerId`, `organizations.outreachEnabled` (SQL columns remain snake_case). (audit M13)
 
 ### LOW — Cosmetic & Dead Code (Phase 14)

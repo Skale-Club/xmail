@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: milestone
 status: executing
-stopped_at: Completed 13-02-PLAN.md
-last_updated: "2026-05-16T23:28:15.487Z"
+stopped_at: Completed 13-05-PLAN.md
+last_updated: "2026-05-16T23:28:58.819Z"
 last_activity: 2026-05-16
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 18
-  completed_plans: 14
+  completed_plans: 15
   percent: 0
 ---
 
@@ -69,6 +69,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 12 P03 | 4 min | 3 tasks | 1 files |
 | Phase 12 P05 | 10min | 4 tasks | 28 files |
 | Phase 13 P02 | 7m | 2 tasks | 4 files |
+| Phase 13 P05 | 4m | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -92,6 +93,7 @@ Carried over from v1.1 + new for v1.2:
 - [Phase 12]: [Phase 12-high-correctness P03]: Outreach toggle hardened — PUT /api/system/outreach/global-toggle (Zod + audit-log + affectedRows/previousState response) replaces old PUT /api/system/outreach which now returns 410 Gone unconditionally with newPath breadcrumb. Audit log to stdout (`[audit] outreach-toggle user=... from=N/N to=bool affected=N at=iso`) until QUA-06 introduces structured logger. No frontend callers found in src/pages or src/components — frontend migration not required for COR-04. Closes audit H9 + M7.
 - [Phase 12]: Demoted no-explicit-any, exhaustive-deps, only-export-components to off globally (with Phase 13/14 TODOs) rather than per-line whitelisting — plan-sanctioned override-bloat mitigation.
 - [Phase 13]: Removed db:generate/db:push scripts from package.json (option a) rather than neutering them; schema workflow now hand-rolled SQL only (Phase 13 QUA-02).
+- [Phase 13]: 13-05: Kept SMTP/IMAP/route-matcher/send transport logs unguarded — classified as operational logs analogous to [audit] line in system.ts; QUA-06 scope was findLocalUser specifically per audit M11
 
 ### Pending Todos
 
@@ -111,7 +113,7 @@ Carried over from v1.1 + new for v1.2:
 
 ## Session Continuity
 
-Last session: 2026-05-16T23:28:15.468Z
-Stopped at: Completed 13-02-PLAN.md
+Last session: 2026-05-16T23:28:58.807Z
+Stopped at: Completed 13-05-PLAN.md
 Resume file: None
 Next action: Phase 11 fully complete (SEC-01..04). Run phase verification; advance to Phase 12 (COR-01..07).
