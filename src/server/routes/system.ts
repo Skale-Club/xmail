@@ -552,12 +552,24 @@ router.get('/db-health', async (req: Request, res: Response) => {
 })
 
 // GET /api/system/mail-diag — Diagnostic: check domains, users, mailboxes, env for native mail
+// CLN-01 — see audit L1. testEmail comes from `?testEmail=` query param (Zod-validated).
+// When omitted, the diagnosticTest section is excluded entirely.
+const mailDiagQuerySchema = z.object({
+    testEmail: z.string().email().optional(),
+})
+
 router.get('/mail-diag', async (req: Request, res: Response) => {
     try {
         const requestingUser = await getRequestingUser(req)
         if (!requestingUser?.isAdmin) {
             return res.status(403).json({ error: 'Forbidden — admin only' })
         }
+
+        const queryParse = mailDiagQuerySchema.safeParse(req.query)
+        if (!queryParse.success) {
+            return res.status(400).json({ error: queryParse.error.errors })
+        }
+        const testEmail = queryParse.data.testEmail
 
         // 1. All domains
         const allDomains = await db.query.domains.findMany()
@@ -605,33 +617,23 @@ router.get('/mail-diag', async (req: Request, res: Response) => {
             RAILWAY_ENVIRONMENT: process.env.RAILWAY_ENVIRONMENT || 'not set',
         }
 
-        // 6. Test: would vanildo@skale.club be found as local?
-        const testEmail = 'vanildo@skale.club'
-        const testDomain = 'skale.club'
-        const verifiedTestDomain = await db.query.domains.findFirst({
-            where: and(eq(domains.name, testDomain), eq(domains.verificationStatus, 'verified')),
-        })
-        const testUser = await db.query.users.findFirst({
-            where: eq(users.email, testEmail),
-        })
-        const testMailbox = testUser ? await db.query.mailboxes.findFirst({
-            where: and(eq(mailboxes.email, testEmail), eq(mailboxes.userId, testUser.id)),
-        }) : null
+        // 6. Optional per-email diagnostic — runs ONLY when ?testEmail= is provided.
+        let diagnosticTest: Record<string, unknown> | undefined
+        if (testEmail) {
+            const testDomain = testEmail.split('@')[1] ?? ''
+            const verifiedTestDomain = testDomain
+                ? await db.query.domains.findFirst({
+                    where: and(eq(domains.name, testDomain), eq(domains.verificationStatus, 'verified')),
+                })
+                : undefined
+            const testUser = await db.query.users.findFirst({
+                where: eq(users.email, testEmail),
+            })
+            const testMailbox = testUser ? await db.query.mailboxes.findFirst({
+                where: and(eq(mailboxes.email, testEmail), eq(mailboxes.userId, testUser.id)),
+            }) : null
 
-        res.json({
-            env: envCheck,
-            domains: allDomains.map(d => ({
-                name: d.name,
-                verificationStatus: d.verificationStatus,
-                organizationId: d.organizationId,
-            })),
-            users: nonAdminUsers.map(u => ({
-                id: u.id,
-                email: u.email,
-                hasPasswordHash: !!u.passwordHash,
-            })),
-            nativeMailboxes: mailboxDetails,
-            diagnosticTest: {
+            diagnosticTest = {
                 testEmail,
                 domainVerified: !!verifiedTestDomain,
                 domainDetails: verifiedTestDomain ? { name: verifiedTestDomain.name, orgId: verifiedTestDomain.organizationId } : null,
@@ -647,7 +649,23 @@ router.get('/mail-diag', async (req: Request, res: Response) => {
                     testUser && !testUser.passwordHash && `User "${testEmail}" has NO password hash (cannot auth SMTP/IMAP)`,
                     testUser && !testMailbox && `User "${testEmail}" has NO native mailbox (call createUserMailbox)`,
                 ].filter(Boolean),
-            },
+            }
+        }
+
+        res.json({
+            env: envCheck,
+            domains: allDomains.map(d => ({
+                name: d.name,
+                verificationStatus: d.verificationStatus,
+                organizationId: d.organizationId,
+            })),
+            users: nonAdminUsers.map(u => ({
+                id: u.id,
+                email: u.email,
+                hasPasswordHash: !!u.passwordHash,
+            })),
+            nativeMailboxes: mailboxDetails,
+            ...(diagnosticTest ? { diagnosticTest } : {}),
             relayConfig: {
                 hasSmtpRelay: !!(process.env.SMTP_HOST && process.env.SMTP_USER),
                 willUseDirect: !(process.env.SMTP_HOST && process.env.SMTP_USER),
