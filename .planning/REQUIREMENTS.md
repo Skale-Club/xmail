@@ -41,7 +41,7 @@
 - [x] **QUA-05**: Helmet CSP adds `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`. Verified via response headers in a smoke test. (audit M10)
 - [x] **QUA-06**: `console.log` calls in `src/server/**/*.ts` that emit PII (emails, tokens) are gated behind `if (!isProd)` or removed; startup messages remain. (audit M11)
 - [x] **QUA-07**: `authLimiter` (`/login`, `/reset-password`) is recalibrated to 10 attempts / 15min (or equivalent), reducing false lockouts. (audit M8)
-- [ ] **QUA-08**: TypeScript schema property names use camelCase consistently: `organizations.ownerId`, `organizations.outreachEnabled` (SQL columns remain snake_case). (audit M13)
+- [x] **QUA-08**: TypeScript schema property names use camelCase consistently: `organizations.ownerId`, `organizations.outreachEnabled` (SQL columns remain snake_case). (audit M13)
 
 ### LOW — Cosmetic & Dead Code (Phase 14)
 
