@@ -4,19 +4,20 @@
 
 SkaleClub Mail is a multi-tenant email server management platform. The outreach module provides cold email campaign tooling: leads management, email sequence building, campaign orchestration, reply/bounce detection, and analytics. After hardening DB layer in v1.1, focus shifts to security, correctness, and tooling hygiene revealed by the 2026-05-16 system-wide audit.
 
-## Current Milestone: v1.2 Security & Tech Debt Remediation
+## Current State
 
-**Goal:** Eliminate the 4 CRITICAL + 12 HIGH + 13 MEDIUM + 5 LOW issues from the 2026-05-16 audit so the system is secure, correct, and CI-enforceable.
+**Latest shipped:** v1.2 — Security & Tech Debt Remediation (2026-05-16). All 27 requirements satisfied across 5 phases (21 plans). See [`MILESTONES.md`](MILESTONES.md) and [`v1.2-MILESTONE-AUDIT.md`](v1.2-MILESTONE-AUDIT.md).
 
-**Target outcomes:**
-- Cascade delete is transactional and complete (no orphans, no cross-org password lockouts)
-- Health check correctly reports DB failures
-- All externally-controlled URLs validated through a centralized SSRF guard
-- Cron jobs are multi-instance safe (Postgres advisory locks)
-- JWT validation cached (perf + cost)
-- Suppression list integrated into POST /messages
-- `npm run lint` and `npx tsc --noEmit` pass with zero warnings; both enforced in CI
-- RLS posture documented honestly; CSP hardened
+**Current milestone:** None — run `/gsd:new-milestone` to start v1.3.
+
+## Next Milestone Goals (v1.3 candidates)
+
+- Error log sink (Sentry / Datadog / structured stdout) — deferred from v1.2 CI-04.
+- Per-user rate limiting (replace per-IP limiter).
+- Persistent webhook dead-letter queue.
+- Drizzle migration regeneration / full schema sync.
+- Testing framework setup (Vitest + Supertest).
+- Email warm-up automation (sending logic).
 
 ## Core Value
 
@@ -58,10 +59,39 @@ A user can create a campaign, build a sequence, add leads, and have emails actua
 - ✓ Outreach sequences batch-load suppressions/idempotency — v1.1 Phase 08
 - ✓ CHECK constraints on sequenceSteps (delayHours >= 0, stepOrder >= 1) — v1.1 Phase 09
 - ✓ Old migration file deprecated with comment header — v1.1 Phase 09
+- ✓ Cascade delete transactional + cross-org user preservation — v1.2 Phase 10 (CRIT-01)
+- ✓ `/health/ready` returns 503 on DB failure — v1.2 Phase 10 (CRIT-02)
+- ✓ `/test-connection` auth + SSRF + rate-limit — v1.2 Phase 10 (CRIT-03)
+- ✓ RLS doc honesty + `access.ts` consolidation — v1.2 Phase 10 (CRIT-04)
+- ✓ Centralized SSRF guard (`network-guard.ts`) — v1.2 Phase 11 (SEC-01)
+- ✓ IMAP TLS hardening + per-mailbox `skipTlsVerify` — v1.2 Phase 11 (SEC-02)
+- ✓ JWT auth cache (60s LRU+TTL) — v1.2 Phase 11 (SEC-03)
+- ✓ Cron jobs use Postgres advisory locks — v1.2 Phase 11 (SEC-04)
+- ✓ Webhook timeout + retry/backoff + attempts counter — v1.2 Phase 12 (COR-01, COR-02)
+- ✓ Click tracking replay dedup (60s window) — v1.2 Phase 12 (COR-03)
+- ✓ Outreach global-toggle Zod + audit response — v1.2 Phase 12 (COR-04)
+- ✓ `/move` folder ownership validation — v1.2 Phase 12 (COR-05)
+- ✓ Suppression integration in `POST /messages` — v1.2 Phase 12 (COR-06)
+- ✓ ESLint config + zero-warning baseline — v1.2 Phase 12 (COR-07)
+- ✓ `tsc --noEmit` zero errors (both configs) — v1.2 Phase 13 (QUA-01)
+- ✓ Migration 013 archived + schema workflow doc — v1.2 Phase 13 (QUA-02)
+- ✓ RLS consolidation migration 020 — v1.2 Phase 13 (QUA-03)
+- ✓ Domain name lowercase normalize + backfill — v1.2 Phase 13 (QUA-04)
+- ✓ CSP hardened (frame-ancestors, object-src, base-uri) — v1.2 Phase 13 (QUA-05)
+- ✓ PII logs gated behind `if (!isProd)` — v1.2 Phase 13 (QUA-06)
+- ✓ authLimiter recalibrated to 10/15min — v1.2 Phase 13 (QUA-07)
+- ✓ Schema fields camelCase (ownerId, outreachEnabled) — v1.2 Phase 13 (QUA-08)
+- ✓ mail-diag testEmail from query param — v1.2 Phase 14 (CLN-01)
+- ✓ Repo cleanup (nul + scripts/_) — v1.2 Phase 14 (CLN-02)
+- ✓ Vite build warning suppressed — v1.2 Phase 14 (CLN-03)
+- ✓ `MAX_WEBHOOK_RESPONSE_BODY` constant extracted — v1.2 Phase 14 (CLN-04)
+- ✓ CI lint + tsc gates active — v1.2 Phase 14 (CI-01, CI-02)
+- ✓ `/health/ready` runbook (`docs/runbook.md`) — v1.2 Phase 14 (CI-03)
+- ✓ Error log sink decision recorded (deferred to v1.3) — v1.2 Phase 14 (CI-04)
 
 ### Active
 
-See `.planning/REQUIREMENTS.md` for v1.2 requirements (CRIT-01..04, SEC-01..04, COR-01..07, QUA-01..08, CLN-01..04, CI-01..04).
+v1.2 complete. Next milestone requirements TBD via `/gsd:new-milestone`.
 
 ### Out of Scope
 
@@ -119,4 +149,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-16 — starting v1.2 Security & Tech Debt Remediation (post-audit)*
+*Last updated: 2026-05-16 — v1.2 Security & Tech Debt Remediation shipped & archived*
