@@ -193,6 +193,7 @@ jobs:
               -e IMAP_PORT=993 \
               -e ENABLE_MAIL_SERVER=true \
               --label "traefik.enable=true" \
+              --label "traefik.docker.network=coolify" \
               --label "traefik.http.routers.skaleclub-mail.rule=Host(\`mail.skale.club\`)" \
               --label "traefik.http.routers.skaleclub-mail.entrypoints=websecure" \
               --label "traefik.http.routers.skaleclub-mail.tls=true" \
