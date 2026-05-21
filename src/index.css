@@ -267,3 +267,16 @@
     padding: 12px 0 32px 0 !important;
     min-height: 200px !important;
 }
+
+.compose-editor-borderless .ql-editor.ql-blank::before {
+    left: 0 !important;
+    right: 0 !important;
+    color: var(--muted-foreground) !important;
+    opacity: 0.45;
+    font-style: normal;
+    transition: opacity 0.15s ease;
+}
+
+.compose-editor-borderless .ql-editor.ql-blank:focus::before {
+    opacity: 0;
+}

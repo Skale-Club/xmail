@@ -7,6 +7,11 @@ import { encryptSecret } from '../../lib/crypto'
 import { authenticateNativeUser, createUserMailbox, deleteMailboxById } from '../../lib/native-mail'
 import { isPrivateHost } from '../../lib/network-guard'
 
+/** Structured error for missing encryption key — helps diagnose Coolify env var issues */
+function isMissingEncryptionKey(err: unknown): boolean {
+    return err instanceof Error && err.message.includes('Missing OUTLOOK_TOKEN_ENCRYPTION_KEY')
+}
+
 const router = Router()
 
 /**
@@ -161,6 +166,20 @@ router.post('/connect', async (req: Request, res: Response) => {
 
         const { email, password } = schema.parse(req.body)
 
+        // Pre-check: does the user exist in the local users table?
+        // If they exist but have no passwordHash it means they signed up via
+        // Supabase Auth (OAuth / magic-link) and never set a native password.
+        // Give an actionable message instead of the generic "Invalid email or password".
+        const preCheck = await db.query.users.findFirst({
+            where: eq(users.email, email.toLowerCase()),
+            columns: { id: true, email: true, passwordHash: true },
+        })
+        if (preCheck && !preCheck.passwordHash) {
+            return res.status(401).json({
+                error: 'This account has no server password set. Go to Settings → Security → Change Password to create one.',
+            })
+        }
+
         const targetUser = await authenticateNativeUser(email, password)
         if (!targetUser) {
             return res.status(401).json({ error: 'Invalid email or password' })
@@ -216,7 +235,16 @@ router.post('/connect', async (req: Request, res: Response) => {
         })
     } catch (error) {
         if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors })
-        console.error('Error connecting mailbox:', error)
+        const msg = error instanceof Error ? error.message : String(error)
+        console.error('[mailboxes/connect] Internal error:', msg, error)
+
+        // Surface actionable config errors to help diagnose Coolify deployment issues
+        if (isMissingEncryptionKey(error)) {
+            return res.status(500).json({
+                error: 'Server configuration error: OUTLOOK_TOKEN_ENCRYPTION_KEY (or JWT_SECRET) is not set. Contact your administrator.',
+            })
+        }
+
         res.status(500).json({ error: 'Internal server error' })
     }
 })

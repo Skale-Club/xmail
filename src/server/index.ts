@@ -33,6 +33,7 @@ import { createIMAPServer, loadImapBranding } from './imap-server'
 import { createMXServer } from './mx-server'
 import { runReadinessChecks } from './lib/health'
 import { resolveUserFromToken } from './lib/auth-cache'
+import { getMailTLSOptions } from './lib/mail-tls'
 
 const app = express()
 const PORT = process.env.PORT || 9001
@@ -122,9 +123,9 @@ app.use('/api/', (_req, res, next) => {
 app.get('/health', (_req, res) => {
     const uptimeSeconds = Math.floor(process.uptime())
     const memoryUsage = process.memoryUsage()
-    
-    res.json({ 
-        status: 'ok', 
+
+    res.json({
+        status: 'ok',
         timestamp: new Date().toISOString(),
         version: process.env.DEPLOY_VERSION || 'unknown',
         deployedAt: process.env.DEPLOYED_AT || null,
@@ -167,6 +168,51 @@ app.get('/health/auth', async (_req, res) => {
 app.get('/health/ready', async (_req, res) => {
     const readiness = await runReadinessChecks()
     res.status(readiness.ok ? 200 : 503).json(readiness)
+})
+
+// Public mail-server health endpoint — useful for post-deploy diagnostics.
+// Shows which TLS cert was loaded, which env vars are set, and which ports
+// the mail servers are listening on. No secrets are exposed.
+app.get('/health/mail', (_req, res) => {
+    const tls = getMailTLSOptions()
+    const envChecks = {
+        SUPABASE_URL:                    !!process.env.SUPABASE_URL,
+        SUPABASE_ANON_KEY:               !!process.env.SUPABASE_ANON_KEY,
+        DATABASE_URL:                    !!process.env.DATABASE_URL,
+        JWT_SECRET:                      !!process.env.JWT_SECRET,
+        ENCRYPTION_KEY:                  !!process.env.ENCRYPTION_KEY,
+        OUTLOOK_TOKEN_ENCRYPTION_KEY:    !!process.env.OUTLOOK_TOKEN_ENCRYPTION_KEY,
+        MAIL_HOST:                       process.env.MAIL_HOST || '(not set)',
+        MAIL_DOMAIN:                     process.env.MAIL_DOMAIN || '(not set)',
+        MAIL_TLS_CERT_PATH:              process.env.MAIL_TLS_CERT_PATH || '(not set)',
+        MAIL_TLS_KEY_PATH:               process.env.MAIL_TLS_KEY_PATH || '(not set)',
+        ENABLE_MAIL_SERVER:              process.env.ENABLE_MAIL_SERVER || '(not set, defaults on)',
+        ENABLE_MX_RECEIVER:              process.env.ENABLE_MX_RECEIVER || '(not set, defaults off)',
+        SMTP_HOST:                       process.env.SMTP_HOST ? '✓ set' : '(not set)',
+    }
+
+    const encryptionKeyPresent = !!(process.env.OUTLOOK_TOKEN_ENCRYPTION_KEY || process.env.JWT_SECRET)
+
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        tls: {
+            loaded: tls !== null,
+            note: tls ? 'TLS certificate active — IMAP/SMTP running with TLS' : 'No TLS cert found — mail servers running in plaintext mode',
+        },
+        encryptionKey: {
+            ok: encryptionKeyPresent,
+            note: encryptionKeyPresent
+                ? 'Encryption key present (OUTLOOK_TOKEN_ENCRYPTION_KEY or JWT_SECRET)'
+                : '⚠️  MISSING — mailbox provisioning will fail with 500 (set OUTLOOK_TOKEN_ENCRYPTION_KEY in Coolify)',
+        },
+        ports: {
+            smtp: parseInt(process.env.SMTP_SUBMISSION_PORT || '587'),
+            imap: parseInt(process.env.IMAP_PORT || '993'),
+            mx:   parseInt(process.env.MX_PORT || '25'),
+        },
+        env: envChecks,
+    })
 })
 
 app.get('/app-config.js', (_req, res) => {

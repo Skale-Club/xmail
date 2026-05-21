@@ -242,6 +242,11 @@ export function useKeyboardShortcutHelp() {
     React.useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === '?' && event.shiftKey) {
+                const target = event.target as HTMLElement
+                const isInput = target.tagName === 'INPUT' ||
+                               target.tagName === 'TEXTAREA' ||
+                               target.isContentEditable
+                if (isInput) return
                 event.preventDefault()
                 setIsOpen(prev => !prev)
             }

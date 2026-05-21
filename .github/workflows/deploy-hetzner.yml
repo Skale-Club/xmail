@@ -40,11 +40,11 @@ jobs:
           envs: IMAGE_NAME,DEPLOY_DIR,HEALTH_CHECK_URL,HEALTH_CHECK_RETRIES,HEALTH_CHECK_INTERVAL
           script: |
             set -euo pipefail
-            
+
             REPO_URL="https://github.com/Skale-Club/skaleclub-mail.git"
             DEPLOY_VERSION="${{ steps.meta.outputs.version }}"
             DEPLOYED_AT="${{ steps.meta.outputs.deployed_at }}"
-            
+
             echo "::group::📦 Preparing server"
             # Install Docker if not present
             if ! command -v docker &> /dev/null; then
@@ -53,7 +53,7 @@ jobs:
               systemctl start docker
               systemctl enable docker
             fi
-            
+
             # Clone or pull latest code
             if [ -d "$DEPLOY_DIR/.git" ]; then
               cd "$DEPLOY_DIR"
@@ -66,7 +66,7 @@ jobs:
               cd "$DEPLOY_DIR"
             fi
             echo "::endgroup::"
-            
+
             echo "::group::💾 Disk space check"
             DISK_FREE_KB=$(df / | awk 'NR==2 {print $4}')
             DISK_FREE_GB=$((DISK_FREE_KB / 1024 / 1024))
@@ -84,7 +84,7 @@ jobs:
               echo "Saving previous image as $IMAGE_NAME:previous..."
               docker tag $IMAGE_NAME:latest $IMAGE_NAME:previous || true
             fi
-            
+
             # Build new image with --no-cache to ensure fresh build
             echo "Building image version $DEPLOY_VERSION..."
             docker build --no-cache \
@@ -94,10 +94,10 @@ jobs:
               -t $IMAGE_NAME:latest \
               -t $IMAGE_NAME:$DEPLOY_VERSION \
               .
-            
+
             echo "Build completed successfully"
             echo "::endgroup::"
-            
+
             echo "::group::🚀 Deploying new container"
             # Stop and remove old container (only after successful build)
             if docker ps -a --filter "name=$IMAGE_NAME" --format "{{.ID}}" | grep -q .; then
@@ -119,8 +119,23 @@ jobs:
                 exit 1
               fi
             fi
-            
-            # Run new container
+
+            # Detect reverse proxy in use:
+            # - Coolify installs Traefik and creates a 'coolify' Docker network
+            # - Legacy setups use Caddy running on the host
+            USING_COOLIFY=false
+            if docker network ls --format "{{.Name}}" | grep -qE "^coolify$"; then
+              USING_COOLIFY=true
+              echo "✅ Coolify/Traefik detected — will use Traefik labels for HTTP routing"
+            else
+              echo "ℹ️  Coolify network not found — will use Caddy for HTTP routing (legacy)"
+            fi
+
+            # Run new container.
+            # Notes:
+            #   - Port 9001 is always published to host (health checks + Caddy fallback)
+            #   - Mail ports 25/587/993 are raw TCP — NOT routed through Traefik HTTP proxy
+            #   - Traefik labels are harmless when Traefik is not present
             echo "Starting new container..."
             docker run -d \
               --name $IMAGE_NAME \
@@ -157,53 +172,75 @@ jobs:
               -e SMTP_INBOUND_PORT=25 \
               -e IMAP_PORT=993 \
               -e ENABLE_MAIL_SERVER=true \
+              --label "traefik.enable=true" \
+              --label "traefik.http.routers.skaleclub-mail.rule=Host(\`mail.skale.club\`)" \
+              --label "traefik.http.routers.skaleclub-mail.entrypoints=https" \
+              --label "traefik.http.routers.skaleclub-mail.tls=true" \
+              --label "traefik.http.routers.skaleclub-mail.tls.certresolver=letsencrypt" \
+              --label "traefik.http.services.skaleclub-mail.loadbalancer.server.port=9001" \
               $IMAGE_NAME:latest
 
             echo "Container started"
+
+            # If Coolify is present, attach container to its Docker network so
+            # Traefik can reach it and route via the labels attached above.
+            if [ "$USING_COOLIFY" = "true" ]; then
+              echo "Connecting container to Coolify network for Traefik routing..."
+              docker network connect coolify $IMAGE_NAME || true
+              echo "✅ Connected to Coolify network"
+            fi
+
             echo "::endgroup::"
 
-            echo "::group::🌐 Caddy — ensure mail.skale.club route"
-            CADDYFILE=/etc/caddy/Caddyfile
-            if ! grep -q "mail.skale.club" "$CADDYFILE"; then
-              echo "Adding mail.skale.club block to Caddyfile..."
-              printf '\nmail.skale.club {\n  encode zstd gzip\n\n  reverse_proxy localhost:9001\n}\n' >> "$CADDYFILE"
-              caddy reload --config "$CADDYFILE"
-              echo "Caddy reloaded with mail.skale.club"
+            echo "::group::🌐 HTTP Routing — Caddy (legacy) or Traefik (Coolify)"
+            if [ "$USING_COOLIFY" = "false" ] && command -v caddy &> /dev/null; then
+              CADDYFILE=/etc/caddy/Caddyfile
+              if [ -f "$CADDYFILE" ]; then
+                if ! grep -q "mail.skale.club" "$CADDYFILE"; then
+                  echo "Adding mail.skale.club block to Caddyfile..."
+                  printf '\nmail.skale.club {\n  encode zstd gzip\n\n  reverse_proxy localhost:9001\n}\n' >> "$CADDYFILE"
+                  caddy reload --config "$CADDYFILE"
+                  echo "Caddy reloaded with mail.skale.club"
+                else
+                  echo "mail.skale.club already present in Caddyfile, skipping"
+                fi
+              else
+                echo "⚠️  Caddyfile not found at $CADDYFILE — skipping Caddy config"
+              fi
             else
-              echo "mail.skale.club already present in Caddyfile, skipping"
+              echo "ℹ️  Traefik labels attached — Coolify/Traefik handles HTTP routing automatically"
+              echo "     Route: mail.skale.club → container port 9001 (via Traefik label)"
             fi
             echo "::endgroup::"
-            
+
             echo "::group::🏥 Health Check"
-            # Wait for container to be ready and check health
             echo "Waiting for application to start..."
             HEALTH_PASSED=false
-            
+
             for i in $(seq 1 $HEALTH_CHECK_RETRIES); do
               sleep $HEALTH_CHECK_INTERVAL
               echo "Health check attempt $i/$HEALTH_CHECK_RETRIES..."
-              
+
               if curl -sf "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
                 HEALTH_PASSED=true
                 echo "✅ Health check passed!"
                 break
               fi
-              
-              # Check if container is still running
+
               if ! docker ps --filter "name=$IMAGE_NAME" --filter "status=running" -q | grep -q .; then
                 echo "❌ Container is not running!"
                 docker logs $IMAGE_NAME --tail 50 2>&1 || true
                 break
               fi
             done
-            
+
             if [ "$HEALTH_PASSED" = "false" ]; then
               echo "❌ Health check failed after $HEALTH_CHECK_RETRIES attempts"
               echo ""
               echo "Container logs:"
               docker logs $IMAGE_NAME --tail 100 2>&1 || true
               echo ""
-              
+
               echo "::group::⏪ Rolling back to previous version"
               if docker images $IMAGE_NAME:previous --format "{{.ID}}" | grep -q .; then
                 echo "Rolling back to previous image..."
@@ -250,17 +287,28 @@ jobs:
                   -e SMTP_INBOUND_PORT=25 \
                   -e IMAP_PORT=993 \
                   -e ENABLE_MAIL_SERVER=true \
+                  --label "traefik.enable=true" \
+                  --label "traefik.http.routers.skaleclub-mail.rule=Host(\`mail.skale.club\`)" \
+                  --label "traefik.http.routers.skaleclub-mail.entrypoints=https" \
+                  --label "traefik.http.routers.skaleclub-mail.tls=true" \
+                  --label "traefik.http.routers.skaleclub-mail.tls.certresolver=letsencrypt" \
+                  --label "traefik.http.services.skaleclub-mail.loadbalancer.server.port=9001" \
                   $IMAGE_NAME:previous
+
+                if [ "$USING_COOLIFY" = "true" ]; then
+                  docker network connect coolify $IMAGE_NAME || true
+                fi
+
                 echo "Rollback completed"
               else
                 echo "No previous image available for rollback"
               fi
               echo "::endgroup::"
-              
+
               exit 1
             fi
             echo "::endgroup::"
-            
+
             echo "::group::🧹 Cleanup"
             # Remove old commit-tagged images (keep only latest and previous)
             docker images $IMAGE_NAME --format '{{.Tag}}' \
@@ -272,7 +320,7 @@ jobs:
             echo "Disk usage after cleanup:"
             df -h /
             echo "::endgroup::"
-            
+
             echo ""
             echo "=========================================="
             echo "✅ DEPLOYMENT SUCCESSFUL"
@@ -285,7 +333,7 @@ jobs:
         run: |
           cat >> $GITHUB_STEP_SUMMARY <<EOF
           ## 🚀 Deployment Summary
-          
+
           | Field | Value |
           |-------|-------|
           | **Status** | ${{ job.status == 'success' && '✅ Success' || '❌ Failed' }} |

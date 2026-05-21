@@ -11,19 +11,20 @@ if (!connectionString) {
 // Determine if we're in development
 const isDev = process.env.NODE_ENV === 'development'
 
-// Optimized connection pool configuration for Supabase
-// Using transaction mode (port 6543) with Supavisor
+// Connection pool configuration for Supabase Supavisor.
+// IMPORTANT: prepare MUST be false when DATABASE_URL targets the transaction
+// pooler (port 6543). Supavisor reuses backend connections across requests so
+// prepared statements created in one request vanish for the next, causing
+// "prepared statement does not exist" / "already exists" 500 errors.
+// Session pooler (port 5432) supports prepared statements, but false is safe
+// for both modes and avoids connection-specific state issues.
 export const queryClient = postgres(connectionString, {
-    // Increase pool size for better concurrency
     max: Number(process.env.DB_POOL_MAX || 20),
-    // Reduce idle timeout to free connections faster
     idle_timeout: Number(process.env.DB_IDLE_TIMEOUT_SECONDS || 10),
-    // Connection timeout
     connect_timeout: Number(process.env.DB_CONNECT_TIMEOUT_SECONDS || 30),
-    // Max lifetime of a connection (30 minutes)
     max_lifetime: Number(process.env.DB_MAX_LIFETIME_SECONDS || 60 * 30),
-    // Prepare statement cache for repeated queries
-    prepare: true,
+    // Must be false for Supabase transaction pooler (port 6543)
+    prepare: false,
     // Enable debug in development
     debug: isDev,
     // Transform undefined to null
