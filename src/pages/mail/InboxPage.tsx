@@ -1,8 +1,9 @@
 import React, { useState } from 'react'
-import { Link, useLocation } from 'wouter'
+import { useLocation } from 'wouter'
 import { MailLayout } from '../../components/mail/MailLayout'
 import { EmailList, EmailItem, EmailToolbar } from '../../components/mail/EmailList'
 import { LoadingState } from '../../components/mail/EmailParts'
+import { ConnectMailboxDialog } from '../../components/mail/ConnectMailboxDialog'
 import { toast } from '../../components/ui/toaster'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useMailbox } from '../../hooks/useMailbox'
@@ -21,7 +22,7 @@ import {
 } from '../../hooks/useMail'
 import { EmailHtmlViewer } from '../../components/mail/EmailHtmlViewer'
 import { EmailMessageHeader } from '../../components/mail/EmailMessageHeader'
-import { Inbox as InboxIcon, Mail, MailOpen, AlertCircle } from 'lucide-react'
+import { Inbox as InboxIcon, Mail, MailOpen, AlertCircle, Search, X } from 'lucide-react'
 import { ResizablePanels } from '../../components/mail/ResizablePanels'
 
 export default function InboxPage() {
@@ -33,6 +34,8 @@ export default function InboxPage() {
     const [selectedEmail, setSelectedEmail] = React.useState<string | null>(null)
     const [selectedEmails, setSelectedEmails] = React.useState<Set<string>>(new Set())
     const [filter, setFilter] = React.useState<'all' | 'unread' | 'starred' | 'attachments'>('all')
+    const [searchQuery, setSearchQuery] = React.useState('')
+    const [showConnectDialog, setShowConnectDialog] = React.useState(false)
     const { data, isLoading, isFetching, refetch } = useMessages('inbox', 1, 50)
     const updateMessage = useUpdateMessage()
     const deleteMessage = useDeleteMessage()
@@ -43,16 +46,26 @@ export default function InboxPage() {
 
     const { emails, unreadCount } = React.useMemo(() => {
         const baseEmails = data?.messages ? data.messages.map(mapMessageToEmailItem) : []
-        
+
         const totalUnread = baseEmails.filter(e => !e.read).length
 
         let filtered = baseEmails
         if (filter === 'unread') filtered = filtered.filter(e => !e.read)
         if (filter === 'starred') filtered = filtered.filter(e => e.starred)
         if (filter === 'attachments') filtered = filtered.filter(e => e.hasAttachments)
-        
+
+        if (searchQuery.trim()) {
+            const q = searchQuery.toLowerCase()
+            filtered = filtered.filter(e =>
+                e.subject.toLowerCase().includes(q) ||
+                e.from.name.toLowerCase().includes(q) ||
+                e.from.email.toLowerCase().includes(q) ||
+                e.snippet.toLowerCase().includes(q)
+            )
+        }
+
         return { emails: filtered, unreadCount: totalUnread }
-    }, [data, filter])
+    }, [data, filter, searchQuery])
 
     const currentIndex = React.useMemo(() => {
         if (!selectedEmail) return -1
@@ -127,7 +140,11 @@ export default function InboxPage() {
     }
 
     const handleDelete = (id: string) => {
-        if (selectedEmail === id) setSelectedEmail(null)
+        if (selectedEmail === id) {
+            const idx = emails.findIndex(e => e.id === id)
+            const next = emails[idx + 1] ?? emails[idx - 1] ?? null
+            setSelectedEmail(next?.id ?? null)
+        }
         if (selectedMailbox) deleteMessage.mutate(id)
         setSelectedEmails(prev => {
             const newSet = new Set(prev)
@@ -291,14 +308,20 @@ export default function InboxPage() {
                         <p className="text-muted-foreground mb-6">
                             Add an email account to start sending and receiving emails.
                         </p>
-                        <Link
-                            href="/mail/settings"
+                        <button
+                            type="button"
+                            onClick={() => setShowConnectDialog(true)}
                             className="inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg font-medium transition-colors"
                         >
                             Add Email Account
-                        </Link>
+                        </button>
                     </div>
                 </div>
+                <ConnectMailboxDialog
+                    open={showConnectDialog}
+                    onOpenChange={setShowConnectDialog}
+                    onConnected={() => navigate('/mail/inbox')}
+                />
             </MailLayout>
         )
     }
@@ -319,6 +342,21 @@ export default function InboxPage() {
                                 <button onClick={() => setFilter('starred')} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'starred' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Starred</button>
                                 <button onClick={() => setFilter('attachments')} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'attachments' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Attachments</button>
                             </div>
+                        </div>
+                        <div className="relative mt-2">
+                            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                            <input
+                                type="text"
+                                placeholder="Search emails..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="w-full pl-8 pr-8 py-1.5 text-sm bg-muted border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                            />
+                            {searchQuery && (
+                                <button onClick={() => setSearchQuery('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                                    <X className="w-4 h-4" />
+                                </button>
+                            )}
                         </div>
                     </div>
 
@@ -374,6 +412,21 @@ export default function InboxPage() {
                                         <button onClick={() => setFilter('starred')} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'starred' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Starred</button>
                                         <button onClick={() => setFilter('attachments')} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'attachments' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Attachments</button>
                                     </div>
+                                </div>
+                                <div className="relative mt-2">
+                                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                                    <input
+                                        type="text"
+                                        placeholder="Search emails..."
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        className="w-full pl-8 pr-8 py-1.5 text-sm bg-muted border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                                    />
+                                    {searchQuery && (
+                                        <button onClick={() => setSearchQuery('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                                            <X className="w-4 h-4" />
+                                        </button>
+                                    )}
                                 </div>
                             </div>
 

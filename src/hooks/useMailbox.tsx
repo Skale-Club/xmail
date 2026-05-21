@@ -1,5 +1,6 @@
 import React from 'react'
 import { apiFetch } from '../lib/api-client'
+import { APP_CONSTANTS, getSelectedMailboxStorageKey } from '../lib/constants'
 import { useAuth } from './useAuth'
 import { useMultiSession } from './useMultiSession'
 
@@ -32,6 +33,10 @@ export function MailboxProvider({ children }: { children: React.ReactNode }) {
     const [mailboxes, setMailboxes] = React.useState<Mailbox[]>([])
     const [selectedMailbox, setSelectedMailbox] = React.useState<Mailbox | null>(null)
     const [isLoading, setIsLoading] = React.useState(true)
+    const storageKey = React.useMemo(
+        () => getSelectedMailboxStorageKey(activeSessionId || user?.id || null),
+        [activeSessionId, user?.id]
+    )
 
     const refreshMailboxes = React.useCallback(async () => {
         setIsLoading(true)
@@ -39,10 +44,25 @@ export function MailboxProvider({ children }: { children: React.ReactNode }) {
             const data = await apiFetch<{ mailboxes: Mailbox[] }>('/api/mail/mailboxes')
             const fetchedMailboxes = data.mailboxes || []
 
-            const savedId = localStorage.getItem('selectedMailboxId')
+            const savedId = localStorage.getItem(storageKey)
+            const legacySavedId = localStorage.getItem(APP_CONSTANTS.STORAGE.SELECTED_MAILBOX_KEY)
             const saved = savedId ? fetchedMailboxes.find((m: Mailbox) => m.id === savedId) : null
+            const legacySaved = !saved && legacySavedId
+                ? fetchedMailboxes.find((m: Mailbox) => m.id === legacySavedId)
+                : null
             const defaultMailbox = fetchedMailboxes.find((m: Mailbox) => m.isDefault)
-            const selected = saved || defaultMailbox || fetchedMailboxes[0] || null
+            const selected = saved || legacySaved || defaultMailbox || fetchedMailboxes[0] || null
+
+            if (legacySaved) {
+                localStorage.setItem(storageKey, legacySaved.id)
+            }
+            localStorage.removeItem(APP_CONSTANTS.STORAGE.SELECTED_MAILBOX_KEY)
+
+            if (selected) {
+                localStorage.setItem(storageKey, selected.id)
+            } else {
+                localStorage.removeItem(storageKey)
+            }
 
             // Batch state updates together to avoid multiple re-renders
             React.startTransition(() => {
@@ -54,11 +74,12 @@ export function MailboxProvider({ children }: { children: React.ReactNode }) {
             console.error('Error fetching mailboxes:', error)
             setIsLoading(false)
         }
-    }, [])
+    }, [storageKey])
 
     React.useEffect(() => {
         if (authLoading) return
         if (!user) {
+            localStorage.removeItem(APP_CONSTANTS.STORAGE.SELECTED_MAILBOX_KEY)
             React.startTransition(() => {
                 setMailboxes([])
                 setSelectedMailbox(null)
@@ -71,12 +92,13 @@ export function MailboxProvider({ children }: { children: React.ReactNode }) {
 
     const handleSetSelectedMailbox = React.useCallback((mailbox: Mailbox | null) => {
         setSelectedMailbox(mailbox)
+        localStorage.removeItem(APP_CONSTANTS.STORAGE.SELECTED_MAILBOX_KEY)
         if (mailbox) {
-            localStorage.setItem('selectedMailboxId', mailbox.id)
+            localStorage.setItem(storageKey, mailbox.id)
         } else {
-            localStorage.removeItem('selectedMailboxId')
+            localStorage.removeItem(storageKey)
         }
-    }, [])
+    }, [storageKey])
 
     const contextValue = React.useMemo(() => ({
         mailboxes,

@@ -11,6 +11,7 @@ import { decryptSecret } from './crypto'
 import { interpolateTemplate, type LeadForTemplate } from './template-variables'
 import { injectTracking } from './tracking'
 import { sendMessageWithOutlook } from './outlook'
+import { generateUnsubscribeLink } from '../routes/outreach/unsubscribe'
 
 interface SendOutreachEmailParams {
     account: typeof emailAccounts.$inferSelect
@@ -18,6 +19,7 @@ interface SendOutreachEmailParams {
     campaign: typeof campaigns.$inferSelect
     step: typeof sequenceSteps.$inferSelect
     campaignLeadId: string
+    trackingToken: string
     trackOpens?: boolean
     trackClicks?: boolean
     trackingBaseUrl?: string
@@ -30,6 +32,7 @@ interface SendResult {
     error?: string
     finalHtml?: string
     finalText?: string
+    trackingToken?: string
 }
 
 export function createSmtpTransporter(account: typeof emailAccounts.$inferSelect): nodemailer.Transporter {
@@ -73,7 +76,10 @@ export function isWithinSendWindow(campaign: typeof campaigns.$inferSelect, now:
     return currentTimeMinutes >= startTimeMinutes && currentTimeMinutes <= endTimeMinutes
 }
 
-export function canSendFromAccount(account: typeof emailAccounts.$inferSelect): boolean {
+export function canSendFromAccount(
+    account: typeof emailAccounts.$inferSelect,
+    now: Date = new Date()
+): boolean {
     if (account.status !== 'verified') {
         return false
     }
@@ -82,7 +88,37 @@ export function canSendFromAccount(account: typeof emailAccounts.$inferSelect): 
         return false
     }
 
+    // Phase 16 — INBOX-THROTTLE: per-inbox min-spacing enforcement.
+    // lastSentAt is null on never-sent accounts (post-migration-021 default), in which
+    // case the throttle is inapplicable. When set, require min*60s elapsed since the
+    // last send before the next send can be claimed by processOutreachSequences.
+    if (account.lastSentAt) {
+        const minMs = account.minMinutesBetweenEmails * 60_000
+        const earliestNextSend = account.lastSentAt.getTime() + minMs
+        if (earliestNextSend > now.getTime()) {
+            return false
+        }
+    }
+
     return true
+}
+
+/**
+ * Phase 16 — INBOX-THROTTLE: compute a jittered "next eligible send" timestamp.
+ * Returns a Date in the future, offset by a uniform-random number of MINUTES in
+ * [min, max). Used by processOutreachSequences (Plan 16-02) to spread out the
+ * `nextScheduledAt` of pending leads on the same campaign/inbox so they do not
+ * all become eligible at the same cron tick.
+ *
+ * Degenerate range (min === max) returns exactly `min` minutes in the future.
+ * Caller is responsible for clamping min/max to sane values (schema defaults
+ * are min=5, max=30 per email_accounts.minMinutesBetweenEmails column).
+ */
+export function applySendJitter(min: number, max: number, now: Date = new Date()): Date {
+    const lo = Math.max(0, min)
+    const hi = Math.max(lo, max)
+    const minutes = lo + Math.random() * (hi - lo)
+    return new Date(now.getTime() + minutes * 60_000)
 }
 
 export function getNextStepForLead(
@@ -101,12 +137,19 @@ export function calculateNextScheduledAt(step: typeof sequenceSteps.$inferSelect
 }
 
 export async function sendOutreachEmail(params: SendOutreachEmailParams): Promise<SendResult> {
-    const { account, lead, campaign, step, campaignLeadId, trackOpens, trackClicks, trackingBaseUrl, abVariant } = params
+    const { account, lead, campaign, step, campaignLeadId, trackingToken, trackOpens, trackClicks, trackingBaseUrl, abVariant } = params
 
     try {
         const subjectTemplate = abVariant === 'b' && step.subjectB ? step.subjectB : step.subject
         const htmlTemplate = abVariant === 'b' && step.htmlBodyB ? step.htmlBodyB : step.htmlBody
         const plainTemplate = abVariant === 'b' && step.plainBodyB ? step.plainBodyB : step.plainBody
+
+        const baseUrl = trackingBaseUrl || process.env.FRONTEND_URL || 'http://localhost:9000'
+        const unsubscribeUrl = generateUnsubscribeLink(campaignLeadId, campaign.id, baseUrl)
+        // Phase 15.1 fix: trackingToken is now passed from the caller (processor) so the token
+        // injected into the email HTML matches the one persisted in outreach_emails.tracking_token.
+        // Previously the sender generated its own token (always different from the processor's claim
+        // token), causing track.ts lookups to silently miss and opens/clicks to stay at 0%.
 
         const leadForTemplate: LeadForTemplate = {
             email: lead.email,
@@ -123,17 +166,30 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
             customFields: lead.customFields as Record<string, any> | null,
         }
 
-        const subject = interpolateTemplate(subjectTemplate || '', leadForTemplate)
-        let html = htmlTemplate ? interpolateTemplate(htmlTemplate, leadForTemplate) : undefined
-        const text = plainTemplate ? interpolateTemplate(plainTemplate, leadForTemplate) : undefined
+        // P0-03: {{unsubscribeUrl}} resolves via the template context (Plan 14-05 added support in template-variables.ts).
+        const tplContext = { unsubscribeUrl }
+        const subject = interpolateTemplate(subjectTemplate || '', leadForTemplate, tplContext)
+        let html = htmlTemplate ? interpolateTemplate(htmlTemplate, leadForTemplate, tplContext) : undefined
+        const text = plainTemplate ? interpolateTemplate(plainTemplate, leadForTemplate, tplContext) : undefined
 
         if (html && (trackOpens || trackClicks)) {
-            const baseUrl = trackingBaseUrl || process.env.FRONTEND_URL || 'http://localhost:9000'
-            const trackingToken = campaignLeadId
+            // Use the signed HMAC tracking token (NOT the raw campaignLeadId) so /t/open/:token
+            // and /t/click/:token can lookup outreach_emails.tracking_token (see Plan 14-05 track.ts edit).
             html = injectTracking(html, trackingToken, baseUrl, trackOpens ?? false, trackClicks ?? false)
         }
 
+        // P0-03: Inject List-Unsubscribe headers for Gmail/Yahoo bulk-sender compliance (RFC 8058 one-click).
+        // Build the mailto fallback from the campaign's reply-to domain, else fall back to MAIL_DOMAIN env.
+        const replyToDomain = campaign.replyToEmail?.split('@')[1] || process.env.MAIL_DOMAIN || 'example.com'
+        const headers: Record<string, string> = {
+            'List-Unsubscribe': `<${unsubscribeUrl}>, <mailto:unsubscribe@${replyToDomain}?subject=unsubscribe>`,
+            'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        }
+
         if (account.provider === 'outlook' && account.outlookMailboxId) {
+            // NOTE: sendMessageWithOutlook does not currently accept arbitrary headers (Graph API
+            // limits header customization). List-Unsubscribe via Outlook is a known P1 limitation
+            // documented in deferred ideas (phase 15). For SMTP accounts the headers go through.
             await sendMessageWithOutlook({
                 organizationId: account.organizationId,
                 mailboxId: account.outlookMailboxId,
@@ -148,6 +204,7 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
                 success: true,
                 finalHtml: html,
                 finalText: text,
+                trackingToken,
             }
         }
 
@@ -163,6 +220,7 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
             html,
             text,
             replyTo: campaign.replyToEmail || undefined,
+            headers,
         }
 
         const info = await transporter.sendMail(mailOptions)
@@ -172,6 +230,7 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
             messageId: info.messageId,
             finalHtml: html,
             finalText: text,
+            trackingToken,
         }
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error sending email'
@@ -180,36 +239,6 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
             error: errorMessage,
         }
     }
-}
-
-export async function recordOutreachEmail(params: {
-    organizationId: string
-    campaignId: string
-    campaignLeadId: string
-    sequenceStepId: string
-    emailAccountId: string
-    subject: string
-    plainBody: string | null
-    htmlBody: string | null
-    abVariant: 'a' | 'b' | null
-    messageId?: string
-}): Promise<typeof outreachEmails.$inferSelect> {
-    const [record] = await db.insert(outreachEmails).values({
-        organizationId: params.organizationId,
-        campaignId: params.campaignId,
-        campaignLeadId: params.campaignLeadId,
-        sequenceStepId: params.sequenceStepId,
-        emailAccountId: params.emailAccountId,
-        subject: params.subject,
-        plainBody: params.plainBody,
-        htmlBody: params.htmlBody,
-        abVariant: params.abVariant,
-        messageId: params.messageId,
-        status: 'sent',
-        sentAt: new Date(),
-    }).returning()
-
-    return record
 }
 
 export async function updateCampaignLeadProgress(

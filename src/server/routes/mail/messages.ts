@@ -446,15 +446,18 @@ router.delete('/:mailboxId/messages/:messageId', async (req: Request, res: Respo
             return res.status(400).json({ error: 'Trash folder is not available for this mailbox' })
         }
 
-        if (!mailbox.isNative && message.remoteUid && currentFolder?.remoteId && trashFolder.remoteId) {
-            await moveRemoteMessage(mailbox, currentFolder.remoteId, trashFolder.remoteId, message.remoteUid)
-        }
-
+        // Update DB first so the UI stays consistent, then move on remote in background
         await db.update(mailMessages)
             .set({ folderId: trashFolder.id, updatedAt: new Date() })
             .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
 
         res.json({ success: true })
+
+        // Move on remote IMAP server in the background (don't block the response)
+        if (!mailbox.isNative && message.remoteUid && currentFolder?.remoteId && trashFolder.remoteId) {
+            moveRemoteMessage(mailbox, currentFolder.remoteId, trashFolder.remoteId, message.remoteUid)
+                .catch((err) => console.error('Background IMAP move to trash failed:', err))
+        }
     } catch (error) {
         console.error('Error deleting message:', error)
         res.status(500).json({ error: 'Internal server error' })
@@ -496,15 +499,16 @@ router.post('/:mailboxId/messages/:messageId/restore', async (req: Request, res:
             return res.status(400).json({ error: 'Inbox folder is not available for this mailbox' })
         }
 
-        if (!mailbox.isNative && message.remoteUid && currentFolder?.remoteId && inboxFolder.remoteId) {
-            await moveRemoteMessage(mailbox, currentFolder.remoteId, inboxFolder.remoteId, message.remoteUid)
-        }
-
         await db.update(mailMessages)
             .set({ folderId: inboxFolder.id, updatedAt: new Date() })
             .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
 
         res.json({ success: true })
+
+        if (!mailbox.isNative && message.remoteUid && currentFolder?.remoteId && inboxFolder.remoteId) {
+            moveRemoteMessage(mailbox, currentFolder.remoteId, inboxFolder.remoteId, message.remoteUid)
+                .catch((err) => console.error('Background IMAP restore failed:', err))
+        }
     } catch (error) {
         console.error('Error restoring message:', error)
         res.status(500).json({ error: 'Internal server error' })
@@ -551,15 +555,16 @@ router.post('/:mailboxId/messages/:messageId/archive', async (req: Request, res:
             return res.status(400).json({ error: 'Archive folder is not available for this mailbox' })
         }
 
-        if (!mailbox.isNative && message.remoteUid && currentFolder.remoteId && archiveFolder.remoteId) {
-            await moveRemoteMessage(mailbox, currentFolder.remoteId, archiveFolder.remoteId, message.remoteUid)
-        }
-
         await db.update(mailMessages)
             .set({ folderId: archiveFolder.id, updatedAt: new Date() })
             .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
 
         res.json({ success: true })
+
+        if (!mailbox.isNative && message.remoteUid && currentFolder.remoteId && archiveFolder.remoteId) {
+            moveRemoteMessage(mailbox, currentFolder.remoteId, archiveFolder.remoteId, message.remoteUid)
+                .catch((err) => console.error('Background IMAP archive failed:', err))
+        }
     } catch (error) {
         console.error('Error archiving message:', error)
         res.status(500).json({ error: 'Internal server error' })
@@ -609,15 +614,16 @@ router.post('/:mailboxId/messages/:messageId/spam', async (req: Request, res: Re
             return res.status(400).json({ error: `Target ${isSpam ? 'spam' : 'inbox'} folder is not available for this mailbox` })
         }
 
-        if (!mailbox.isNative && message.remoteUid && currentFolder.remoteId && targetFolder.remoteId) {
-            await moveRemoteMessage(mailbox, currentFolder.remoteId, targetFolder.remoteId, message.remoteUid)
-        }
-
         await db.update(mailMessages)
             .set({ folderId: targetFolder.id, updatedAt: new Date() })
             .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
 
         res.json({ success: true })
+
+        if (!mailbox.isNative && message.remoteUid && currentFolder.remoteId && targetFolder.remoteId) {
+            moveRemoteMessage(mailbox, currentFolder.remoteId, targetFolder.remoteId, message.remoteUid)
+                .catch((err) => console.error('Background IMAP spam move failed:', err))
+        }
     } catch (error) {
         console.error('Error marking message as spam:', error)
         res.status(500).json({ error: 'Internal server error' })
@@ -757,18 +763,21 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
                 if (nonTrashMsgs.length > 0) {
                     const trashFolder = await resolveTrashFolder(mailboxId, mailbox.isNative)
                     if (trashFolder) {
-                        if (!mailbox.isNative && trashFolder.remoteId) {
-                            for (const msg of nonTrashMsgs) {
-                                const srcFolder = batchFoldersById.get(msg.folderId)
-                                if (msg.remoteUid && srcFolder?.remoteId) {
-                                    await moveRemoteMessage(mailbox, srcFolder.remoteId, trashFolder.remoteId, msg.remoteUid).catch(() => {})
-                                }
-                            }
-                        }
-
+                        // Update DB first, then move on remote in background
                         await db.update(mailMessages)
                             .set({ folderId: trashFolder.id, updatedAt: new Date() })
                             .where(inArray(mailMessages.id, nonTrashMsgs.map((m) => m.id)))
+
+                        if (!mailbox.isNative && trashFolder.remoteId) {
+                            (async () => {
+                                for (const msg of nonTrashMsgs) {
+                                    const srcFolder = batchFoldersById.get(msg.folderId)
+                                    if (msg.remoteUid && srcFolder?.remoteId) {
+                                        await moveRemoteMessage(mailbox, srcFolder.remoteId, trashFolder.remoteId, msg.remoteUid).catch(() => {})
+                                    }
+                                }
+                            })().catch((err) => console.error('Background IMAP batch delete failed:', err))
+                        }
                     }
                 }
                 break
@@ -800,34 +809,35 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
             }
         }
 
+        // Capture source folder mapping BEFORE DB update (needed for background IMAP move)
+        let sourceFolderMap: Map<string, { remoteUid: number; sourceRemoteId: string }> | null = null
         if (!mailbox.isNative && remoteTargetFolder?.remoteId && ['archive', 'spam', 'unspam', 'restore'].includes(data.action)) {
-            const messages = await db.query.mailMessages.findMany({
+            const msgs = await db.query.mailMessages.findMany({
                 where: and(
                     inArray(mailMessages.id, data.messageIds),
                     eq(mailMessages.mailboxId, mailboxId)
                 ),
             })
 
-            const folderIds = [...new Set(messages.map((message) => message.folderId))]
+            const folderIds = [...new Set(msgs.map((m) => m.folderId))]
             const folders = await db.query.mailFolders.findMany({
                 where: and(
                     eq(mailFolders.mailboxId, mailboxId),
                     inArray(mailFolders.id, folderIds)
                 ),
             })
+            const foldersById = new Map(folders.map((f) => [f.id, f]))
 
-            const foldersById = new Map(folders.map((folder) => [folder.id, folder]))
-
-            for (const message of messages) {
-                const sourceFolder = foldersById.get(message.folderId)
-                if (!message.remoteUid || !sourceFolder?.remoteId) {
-                    continue
+            sourceFolderMap = new Map()
+            for (const msg of msgs) {
+                const srcFolder = foldersById.get(msg.folderId)
+                if (msg.remoteUid && srcFolder?.remoteId) {
+                    sourceFolderMap.set(msg.id, { remoteUid: msg.remoteUid, sourceRemoteId: srcFolder.remoteId })
                 }
-
-                await moveRemoteMessage(mailbox, sourceFolder.remoteId, remoteTargetFolder.remoteId, message.remoteUid)
             }
         }
 
+        // Update DB first so the UI stays consistent
         await db.update(mailMessages)
             .set(updateData)
             .where(and(inArray(mailMessages.id, data.messageIds), eq(mailMessages.mailboxId, mailboxId)))
@@ -837,6 +847,19 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
         }
 
         res.json({ success: true })
+
+        // Move on remote IMAP server in the background (don't block the response)
+        if (sourceFolderMap && sourceFolderMap.size > 0 && remoteTargetFolder?.remoteId) {
+            (async () => {
+                try {
+                    for (const [, { remoteUid, sourceRemoteId }] of sourceFolderMap!) {
+                        await moveRemoteMessage(mailbox, sourceRemoteId, remoteTargetFolder!.remoteId, remoteUid)
+                    }
+                } catch (err) {
+                    console.error('Background IMAP batch move failed:', err)
+                }
+            })()
+        }
     } catch (error) {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: error.errors })

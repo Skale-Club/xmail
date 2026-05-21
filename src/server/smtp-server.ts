@@ -15,7 +15,12 @@ import { mailboxes, mailFolders, mailMessages } from '../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { parseRawEmail } from './lib/mail'
 import { authenticateNativeUser, findLocalUser } from './lib/native-mail'
-import { processInboundEmail, deliverViaRoutes } from './lib/route-matcher'
+import { processInboundEmail, deliverViaRoutes, type MatchedRoute } from './lib/route-matcher'
+import { getMailTLSOptions } from './lib/mail-tls'
+import { isIpLocked, recordAuthFailure, clearAuthFailures } from './lib/auth-throttle'
+import { emitFolderChange } from './lib/mail-events'
+import { allocateNextUid, recomputeFolderCounts } from './lib/folder-counts'
+import { getDkimConfigForEmail, toNodemailerDkim } from './lib/dkim'
 
 // Find the companion mailboxes entry (for folder/message storage)
 async function getCompanionMailbox(email: string, userId: string) {
@@ -47,6 +52,7 @@ async function storeMessage(
     }
 
     const messageId = parsed.messageId || `<${uuidv4()}@skaleclub.mail>`
+    const assignedUid = await allocateNextUid(folder.id)
 
     await db.insert(mailMessages).values({
         mailboxId,
@@ -71,9 +77,13 @@ async function storeMessage(
         })) as object[],
         isRead,
         isDraft: false,
+        remoteUid: assignedUid,
         remoteDate: parsed.date,
         receivedAt: parsed.date || new Date(),
     }).onConflictDoNothing()
+
+    await recomputeFolderCounts(folder.id)
+    emitFolderChange({ folderId: folder.id, mailboxId, kind: 'new' })
 }
 
 // Relay outbound email through configured SMTP relay or direct
@@ -82,6 +92,16 @@ async function relayMessage(
     toAddresses: string[],
     rawEmail: Buffer
 ): Promise<void> {
+    // DKIM signing config (per-sender-domain). Falls through to unsigned if
+    // the domain has no key or isn't registered.
+    const dkimConfig = await getDkimConfigForEmail(fromAddress)
+    const dkim = dkimConfig ? toNodemailerDkim(dkimConfig) : undefined
+    if (dkim) {
+        console.log(`[SMTP:Relay] DKIM enabled: selector=${dkim.keySelector} domain=${dkim.domainName}`)
+    } else {
+        console.warn(`[SMTP:Relay] ⚠️  No DKIM key for ${fromAddress} — message will be unsigned`)
+    }
+
     // Use system SMTP relay if configured, otherwise try direct delivery
     if (process.env.SMTP_HOST && process.env.SMTP_USER) {
         console.log(`[SMTP:Relay] Using SMTP relay: host=${process.env.SMTP_HOST} port=${process.env.SMTP_PORT || '587'} user=${process.env.SMTP_USER}`)
@@ -93,6 +113,7 @@ async function relayMessage(
                 user: process.env.SMTP_USER,
                 pass: process.env.SMTP_PASS,
             },
+            dkim,
         })
 
         const info = await transporter.sendMail({
@@ -106,6 +127,7 @@ async function relayMessage(
         const transporter = nodemailer.createTransport({
             direct: true,
             name: process.env.MAIL_DOMAIN || 'localhost',
+            dkim,
         } as nodemailer.TransportOptions)
 
         try {
@@ -129,33 +151,56 @@ async function isLocalAddress(email: string): Promise<string | null> {
 
 export function createSMTPServer() {
     const port = parseInt(process.env.SMTP_SUBMISSION_PORT || '2587')
+    const tlsOpts = getMailTLSOptions()
 
     const server = new SMTPServer({
         name: process.env.MAIL_DOMAIN || 'skaleclub.mail',
-        // Allow unencrypted auth in dev; in prod, set up TLS certs
-        secure: false,
-        allowInsecureAuth: true,
-        // authOptional defaults to false = require auth (no open relay)
+        // Implicit TLS only when binding to port 465; on 587 we offer STARTTLS
+        // when certs are present, otherwise plaintext (dev mode).
+        secure: port === 465 && !!tlsOpts,
+        key: tlsOpts?.key,
+        cert: tlsOpts?.cert,
+        // Offer STARTTLS upgrade when certs present; force plaintext only when absent.
+        hideSTARTTLS: !tlsOpts,
+        // In prod (certs present), refuse plaintext AUTH. In dev (no certs), allow it.
+        allowInsecureAuth: !tlsOpts,
         authOptional: false,
+        size: 25 * 1024 * 1024, // 25 MB max message size
 
-        onAuth(auth, _session, callback) {
+        onConnect(session, callback) {
+            const ip = session.remoteAddress || 'unknown'
+            if (isIpLocked(ip)) {
+                return callback(new Error('Too many failed auth attempts from this IP, try again later'))
+            }
+            callback()
+        },
+
+        onAuth(auth, session, callback) {
+            const ip = session.remoteAddress || 'unknown'
+            if (isIpLocked(ip)) {
+                return callback(new Error('Too many failed attempts'))
+            }
+
             const username = auth.username?.toLowerCase()
             const password = auth.password
 
             if (!username || !password) {
+                recordAuthFailure(ip)
                 return callback(new Error('Username and password required'))
             }
 
             authenticateNativeUser(username, password)
                 .then(account => {
                     if (!account) {
+                        recordAuthFailure(ip)
                         return callback(new Error('Invalid credentials'))
                     }
-                    console.log(`[SMTP] Auth success: ${username}`)
-                    // Return user object; this becomes session.user
+                    clearAuthFailures(ip)
+                    console.log(`[SMTP] Auth ok: ${username} (ip=${ip} tls=${session.secure})`)
                     callback(null, { user: JSON.stringify({ email: account.email, userId: account.id }) })
                 })
                 .catch(err => {
+                    recordAuthFailure(ip)
                     console.error('[SMTP] Auth error:', err)
                     callback(new Error('Authentication failed'))
                 })
@@ -267,12 +312,18 @@ export function createSMTPServer() {
     return {
         start() {
             server.listen(port, '0.0.0.0', () => {
-                console.log(`[SMTP] Submission server listening on port ${port}`)
-                console.log(`[SMTP] Configure Thunderbird: SMTP → mail.skale.club:${port} (STARTTLS)`)
+                const mode = port === 465 && tlsOpts
+                    ? 'implicit TLS (SMTPS)'
+                    : tlsOpts
+                        ? 'plaintext + STARTTLS'
+                        : 'plaintext only (dev)'
+                console.log(`[SMTP] Submission server listening on port ${port} — ${mode}`)
             })
         },
-        close() {
-            server.close()
+        close(): Promise<void> {
+            return new Promise((resolve) => {
+                server.close(() => resolve())
+            })
         },
     }
 }

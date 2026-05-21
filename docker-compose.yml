@@ -8,6 +8,9 @@ services:
       - "25:25"
       - "587:587"
       - "993:993"
+    volumes:
+      # Mount Let's Encrypt certs read-only (Linux host only; mkcert on dev Mac/Win)
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     environment:
       - NODE_ENV=production
       - PORT=9001
@@ -19,6 +22,9 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - OUTLOOK_TOKEN_ENCRYPTION_KEY=${OUTLOOK_TOKEN_ENCRYPTION_KEY}
       - MAIL_DOMAIN=${MAIL_DOMAIN:-skale.club}
+      - MAIL_HOST=${MAIL_HOST:-mail.skale.club}
+      - MAIL_TLS_CERT_PATH=${MAIL_TLS_CERT_PATH:-/etc/letsencrypt/live/mail.skale.club/fullchain.pem}
+      - MAIL_TLS_KEY_PATH=${MAIL_TLS_KEY_PATH:-/etc/letsencrypt/live/mail.skale.club/privkey.pem}
       - SMTP_SUBMISSION_PORT=587
       - SMTP_INBOUND_PORT=25
       - IMAP_PORT=993

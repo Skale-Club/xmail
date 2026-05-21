@@ -16,6 +16,16 @@ type ToastInput = Omit<ToastItem, 'id'>
 
 const listeners = new Set<(toasts: ToastItem[]) => void>()
 let toastState: ToastItem[] = []
+let toastCounter = 0
+
+function createToastId() {
+    if (typeof globalThis.crypto?.randomUUID === 'function') {
+        return globalThis.crypto.randomUUID()
+    }
+
+    toastCounter += 1
+    return `toast-${Date.now()}-${toastCounter}`
+}
 
 function emit() {
     for (const listener of listeners) {
@@ -31,8 +41,8 @@ function removeToast(id: string) {
 export function toast(input: ToastInput | string) {
     const nextToast: ToastItem =
         typeof input === 'string'
-            ? { id: crypto.randomUUID(), title: input, variant: 'default' }
-            : { id: crypto.randomUUID(), variant: 'default', ...input }
+            ? { id: createToastId(), title: input, variant: 'default' }
+            : { id: createToastId(), variant: 'default', ...input }
 
     toastState = [...toastState, nextToast]
     emit()

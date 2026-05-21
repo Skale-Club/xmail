@@ -1,21 +1,29 @@
 /**
- * Native IMAP Server (RFC 3501)
+ * Native IMAP Server (RFC 3501 + STARTTLS + IDLE + LITERAL+).
  *
- * Listens on IMAP_PORT (default 2993 for dev, 993 for prod).
+ * Listens on IMAP_PORT (993 prod, 2993 dev).
+ * Uses implicit TLS when MAIL_TLS_CERT_PATH/MAIL_TLS_KEY_PATH are set,
+ * otherwise plain text with STARTTLS offered when certs are available later.
+ *
  * Allows Thunderbird and other email clients to read/manage mail
  * stored in the mailboxes / mailMessages database tables.
- *
- * Implemented using raw Node.js net module for maximum compatibility.
- * Supports: LOGIN, CAPABILITY, LIST, LSUB, SELECT, EXAMINE, FETCH,
- *           STORE, EXPUNGE, SEARCH, APPEND, NOOP, LOGOUT, UID
  */
 
 import net from 'net'
+import tls from 'tls'
+import { randomUUID } from 'crypto'
 import { db } from '../db'
 import { mailboxes, mailFolders, mailMessages } from '../db/schema'
-import { eq, and, asc } from 'drizzle-orm'
+import { eq, and, asc, sql } from 'drizzle-orm'
 import { getCachedBranding } from './lib/serverBranding'
 import { authenticateNativeUser } from './lib/native-mail'
+import { getMailTLSOptions } from './lib/mail-tls'
+import { isIpLocked, recordAuthFailure, clearAuthFailures } from './lib/auth-throttle'
+import { mailEvents, emitFolderChange, type MailEventPayload } from './lib/mail-events'
+import { parseRawEmail } from './lib/mail'
+import { allocateNextUid, recomputeFolderCounts } from './lib/folder-counts'
+
+const MAX_BUFFER_BYTES = 10 * 1024 * 1024 // 10 MB hard cap per session
 
 let _imapAppName = process.env.APP_APPLICATION_NAME ?? ''
 
@@ -26,15 +34,43 @@ export async function loadImapBranding() {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+type IMAPSocket = net.Socket | tls.TLSSocket
+
+interface PendingLiteral {
+    tag: string
+    type: 'APPEND'
+    folderName: string
+    flags: string[]
+    chunks: Buffer[]
+    remaining: number
+    noResponse: boolean
+}
+
+interface PendingAuth {
+    tag: string
+    mechanism: 'PLAIN' | 'LOGIN'
+    step: number          // LOGIN: 0=waiting user, 1=waiting pass
+    username: string | null
+}
+
 interface IMAPSession {
-    socket: net.Socket
+    socket: IMAPSocket
+    ip: string
+    isTLS: boolean
     state: 'not_authenticated' | 'authenticated' | 'selected' | 'logout'
     userId: string | null
     userEmail: string | null
     selectedMailboxId: string | null
     selectedFolderId: string | null
     selectedReadOnly: boolean
-    buffer: string
+    selectedUidValidity: number
+    buffer: Buffer
+    pendingLiteral: PendingLiteral | null
+    pendingAuth: PendingAuth | null
+    idleTag: string | null
+    idleListener: ((payload: MailEventPayload) => void) | null
+    knownMessageCount: number
+    processing: boolean
 }
 
 interface DBFolder {
@@ -45,32 +81,18 @@ interface DBFolder {
     type: string | null
     unreadCount: number
     totalCount: number
-}
-
-// ─── Auth ─────────────────────────────────────────────────────────────────────
-
-async function authenticate(email: string, password: string) {
-    return authenticateNativeUser(email, password)
-}
-
-async function getCompanionMailbox(email: string, userId: string) {
-    return db.query.mailboxes.findFirst({
-        where: and(
-            eq(mailboxes.email, email.toLowerCase()),
-            eq(mailboxes.userId, userId)
-        ),
-    })
+    uidValidity: number
+    uidNext: number
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function sendLine(socket: net.Socket, line: string) {
-    socket.write(line + '\r\n')
+function sendLine(socket: IMAPSocket, line: string) {
+    if (socket.writable) socket.write(line + '\r\n')
 }
 
 function escapeLiteral(s: string | null): string {
-    if (!s) return 'NIL'
-    // If contains special chars, use literal syntax
+    if (s === null || s === undefined) return 'NIL'
     if (/[\r\n"]/.test(s)) {
         const bytes = Buffer.byteLength(s, 'utf8')
         return `{${bytes}}\r\n${s}`
@@ -98,10 +120,6 @@ function folderTypeToAttributes(type: string | null): string {
     }
 }
 
-/**
- * Build an RFC 2822-compatible raw message from a DB record.
- * In a production system you'd store the raw bytes; here we reconstruct them.
- */
 function buildRawMessage(msg: typeof mailMessages.$inferSelect): string {
     const to = (msg.toAddresses as Array<{ name?: string; address?: string }> | null) || []
     const cc = (msg.ccAddresses as Array<{ name?: string; address?: string }> | null) || []
@@ -208,6 +226,30 @@ async function buildFetchResponse(
         } else if (upper === 'RFC822.HEADER' || upper === 'BODY[HEADER]' || upper === 'BODY.PEEK[HEADER]') {
             const header = buildHeader(msg)
             parts.push(`${upper.includes('PEEK') ? 'BODY[HEADER]' : upper} {${Buffer.byteLength(header, 'utf8')}}\r\n${header}`)
+        } else if (upper.startsWith('BODY[HEADER.FIELDS') || upper.startsWith('BODY.PEEK[HEADER.FIELDS')) {
+            const isPeek = upper.startsWith('BODY.PEEK')
+            const fieldsMatch = upper.match(/HEADER\.FIELDS(?:\.NOT)?\s+\(([^)]+)\)/)
+            const requestedFields = fieldsMatch ? fieldsMatch[1].split(/\s+/) : []
+            const to = (msg.toAddresses as Array<{ name?: string; address?: string }> | null) || []
+            const cc = (msg.ccAddresses as Array<{ name?: string; address?: string }> | null) || []
+            const date = (msg.remoteDate || msg.receivedAt || new Date()).toUTCString()
+            let header = ''
+            for (const field of requestedFields) {
+                if (field === 'DATE') header += `Date: ${date}\r\n`
+                else if (field === 'FROM') header += `From: ${msg.fromName ? `"${msg.fromName}" ` : ''}<${msg.fromAddress || ''}>\r\n`
+                else if (field === 'SUBJECT' && msg.subject) header += `Subject: ${msg.subject}\r\n`
+                else if (field === 'TO') { const s = to.map(a => a.name ? `"${a.name}" <${a.address}>` : a.address).join(', '); if (s) header += `To: ${s}\r\n` }
+                else if (field === 'CC') { const s = cc.map(a => a.name ? `"${a.name}" <${a.address}>` : a.address).join(', '); if (s) header += `Cc: ${s}\r\n` }
+                else if (field === 'MESSAGE-ID') header += `Message-ID: ${msg.messageId || `<${msg.id}@skaleclub.mail>`}\r\n`
+                else if (field === 'IN-REPLY-TO' && msg.inReplyTo) header += `In-Reply-To: ${msg.inReplyTo}\r\n`
+                else if (field === 'REFERENCES' && msg.references) header += `References: ${msg.references}\r\n`
+            }
+            header += '\r\n'
+            const responseKey = `BODY[HEADER.FIELDS (${fieldsMatch?.[1] || ''})]`
+            parts.push(`${responseKey} {${Buffer.byteLength(header, 'utf8')}}\r\n${header}`)
+            if (!isPeek && !msg.isRead) {
+                await db.update(mailMessages).set({ isRead: true, updatedAt: new Date() }).where(eq(mailMessages.id, msg.id))
+            }
         } else if (upper === 'RFC822.TEXT' || upper === 'BODY[TEXT]' || upper === 'BODY.PEEK[TEXT]') {
             const body = (msg.plainBody || msg.htmlBody || '')
             parts.push(`${upper.includes('PEEK') ? 'BODY[TEXT]' : upper} {${Buffer.byteLength(body, 'utf8')}}\r\n${body}`)
@@ -231,20 +273,15 @@ async function buildFetchResponse(
     return `* ${seqNum} FETCH (${parts.join(' ')})`
 }
 
-// ─── Parse fetch items ────────────────────────────────────────────────────────
-
 function parseFetchItems(itemStr: string): string[] {
     const upper = itemStr.toUpperCase().trim()
 
-    // Macros
     if (upper === 'ALL') return ['FLAGS', 'INTERNALDATE', 'RFC822.SIZE', 'ENVELOPE']
     if (upper === 'FAST') return ['FLAGS', 'INTERNALDATE', 'RFC822.SIZE']
     if (upper === 'FULL') return ['FLAGS', 'INTERNALDATE', 'RFC822.SIZE', 'ENVELOPE', 'BODY']
 
-    // Strip outer parens
     const inner = upper.startsWith('(') ? upper.slice(1, -1).trim() : upper
 
-    // Split by spaces but keep BODY[...] together
     const items: string[] = []
     let current = ''
     let depth = 0
@@ -261,8 +298,6 @@ function parseFetchItems(itemStr: string): string[] {
     if (current) items.push(current)
     return items
 }
-
-// ─── Sequence / UID range parser ──────────────────────────────────────────────
 
 function parseSequenceSet(set: string, max: number): number[] {
     const nums: number[] = []
@@ -283,6 +318,31 @@ function parseSequenceSet(set: string, max: number): number[] {
     return [...new Set(nums)].sort((a, b) => a - b)
 }
 
+// ─── Current message count (for IDLE delta detection) ────────────────────────
+
+async function countFolderMessages(folderId: string): Promise<number> {
+    const rows = await db.select({ c: sql<number>`count(*)::int` })
+        .from(mailMessages)
+        .where(and(
+            eq(mailMessages.folderId, folderId),
+            eq(mailMessages.isDeleted, false)
+        ))
+    return rows[0]?.c ?? 0
+}
+
+// ─── Capability ──────────────────────────────────────────────────────────────
+
+function capabilities(session: IMAPSession): string {
+    const caps = ['IMAP4rev1', 'LITERAL+', 'IDLE', 'UIDPLUS']
+    if (session.state === 'not_authenticated') {
+        caps.push('AUTH=PLAIN', 'AUTH=LOGIN')
+        if (!session.isTLS && getMailTLSOptions()) caps.push('STARTTLS')
+    } else {
+        caps.push('AUTH=PLAIN', 'AUTH=LOGIN')
+    }
+    return caps.join(' ')
+}
+
 // ─── Command Handler ──────────────────────────────────────────────────────────
 
 async function handleCommand(session: IMAPSession, tag: string, command: string, args: string) {
@@ -291,14 +351,26 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
 
     // ── CAPABILITY ──
     if (cmd === 'CAPABILITY') {
-        sendLine(socket, '* CAPABILITY IMAP4rev1 AUTH=PLAIN AUTH=LOGIN LITERAL+ IDLE')
+        sendLine(socket, `* CAPABILITY ${capabilities(session)}`)
         sendLine(socket, `${tag} OK CAPABILITY completed`)
         return
     }
 
-    // ── NOOP ──
-    if (cmd === 'NOOP') {
-        sendLine(socket, `${tag} OK NOOP completed`)
+    // ── NOOP / CHECK ──
+    // RFC 3501 §6.1.2 / §6.4.1: servers SHOULD send any pending untagged
+    // responses (EXISTS, RECENT, EXPUNGE, FETCH) before the tagged OK.
+    // Thunderbird uses NOOP and CHECK to poll for new mail when not in IDLE.
+    if (cmd === 'NOOP' || cmd === 'CHECK') {
+        if (session.state === 'selected' && session.selectedFolderId) {
+            const newCount = await countFolderMessages(session.selectedFolderId)
+            if (newCount !== session.knownMessageCount) {
+                const delta = Math.max(0, newCount - session.knownMessageCount)
+                sendLine(socket, `* ${newCount} EXISTS`)
+                sendLine(socket, `* ${delta} RECENT`)
+                session.knownMessageCount = newCount
+            }
+        }
+        sendLine(socket, `${tag} OK ${cmd} completed`)
         return
     }
 
@@ -311,66 +383,103 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         return
     }
 
+    // ── STARTTLS ──
+    if (cmd === 'STARTTLS') {
+        const opts = getMailTLSOptions()
+        if (!opts) { sendLine(socket, `${tag} NO TLS not available`); return }
+        if (session.isTLS) { sendLine(socket, `${tag} NO Already using TLS`); return }
+        sendLine(socket, `${tag} OK Begin TLS negotiation now`)
+        upgradeToTLS(session, opts)
+        return
+    }
+
     // ── LOGIN ──
     if (cmd === 'LOGIN') {
-        // Parse: LOGIN "user" "pass"  or  LOGIN user pass
+        if (isIpLocked(session.ip)) {
+            sendLine(socket, `${tag} NO [AUTHENTICATIONFAILED] Too many failed attempts, try again later`)
+            return
+        }
         const match = args.match(/^"?([^"\s]+)"?\s+"?(.+?)"?$/)
         if (!match) {
             sendLine(socket, `${tag} BAD LOGIN syntax error`)
             return
         }
         const [, email, password] = match
-        const account = await authenticate(email, password)
+        const account = await authenticateNativeUser(email, password)
         if (!account) {
-            sendLine(socket, `${tag} NO LOGIN failed - invalid credentials`)
+            recordAuthFailure(session.ip)
+            sendLine(socket, `${tag} NO [AUTHENTICATIONFAILED] Invalid credentials`)
             return
         }
+        clearAuthFailures(session.ip)
         session.state = 'authenticated'
         session.userId = account.id
         session.userEmail = account.email
-        console.log(`[IMAP] Login: ${email}`)
-        sendLine(socket, `${tag} OK LOGIN completed`)
+        console.log(`[IMAP] Login ok: ${email} (ip=${session.ip} tls=${session.isTLS})`)
+        sendLine(socket, `${tag} OK [CAPABILITY ${capabilities(session)}] LOGIN completed`)
         return
     }
 
-    // ── AUTHENTICATE ──
+    // ── AUTHENTICATE PLAIN / LOGIN ──
     if (cmd === 'AUTHENTICATE') {
-        // Basic PLAIN auth support
-        if (args.toUpperCase().startsWith('PLAIN')) {
-            sendLine(socket, '+ ')
-            // The client will send base64 on next line - for now just ask for credentials another way
-            // Full SASL PLAIN: "\0username\0password" base64 encoded
-            sendLine(socket, `${tag} NO Use LOGIN command instead`)
+        if (isIpLocked(session.ip)) {
+            sendLine(socket, `${tag} NO [AUTHENTICATIONFAILED] Too many failed attempts`)
             return
         }
-        sendLine(socket, `${tag} NO AUTHENTICATE mechanism not supported, use LOGIN`)
+        const mech = args.trim().toUpperCase().split(/\s+/)[0]
+        if (mech === 'PLAIN') {
+            // RFC 4616 — base64("\0user\0pass"). Can be inlined as initial response.
+            const initialMatch = args.match(/^\S+\s+(\S+)$/)
+            if (initialMatch) {
+                await completeAuthPlain(session, tag, initialMatch[1])
+                return
+            }
+            session.pendingAuth = { tag, mechanism: 'PLAIN', step: 0, username: null }
+            sendLine(socket, '+ ')
+            return
+        }
+        if (mech === 'LOGIN') {
+            session.pendingAuth = { tag, mechanism: 'LOGIN', step: 0, username: null }
+            sendLine(socket, '+ ' + Buffer.from('Username:').toString('base64'))
+            return
+        }
+        sendLine(socket, `${tag} NO AUTHENTICATE mechanism not supported`)
         return
     }
 
-    // All commands below require authentication
     if (session.state === 'not_authenticated') {
         sendLine(socket, `${tag} NO Please authenticate first`)
         return
     }
 
-    const companion = await getCompanionMailbox(session.userEmail!, session.userId!)
+    const companion = await db.query.mailboxes.findFirst({
+        where: and(
+            eq(mailboxes.email, session.userEmail!.toLowerCase()),
+            eq(mailboxes.userId, session.userId!)
+        ),
+    })
     if (!companion) {
         sendLine(socket, `${tag} NO Mailbox not found`)
         return
     }
 
-    // ── LIST ──
+    // ── LIST / LSUB ──
     if (cmd === 'LIST' || cmd === 'LSUB') {
-        // LIST "" "*"  or  LIST "" "INBOX"
         const folders = await db.query.mailFolders.findMany({
             where: eq(mailFolders.mailboxId, companion.id),
         })
-
         for (const folder of folders) {
             const attrs = folderTypeToAttributes(folder.type)
             sendLine(socket, `* ${cmd} (${attrs}) "/" "${folder.remoteId}"`)
         }
         sendLine(socket, `${tag} OK ${cmd} completed`)
+        return
+    }
+
+    // ── NAMESPACE ──
+    if (cmd === 'NAMESPACE') {
+        sendLine(socket, '* NAMESPACE (("" "/")) NIL NIL')
+        sendLine(socket, `${tag} OK NAMESPACE completed`)
         return
     }
 
@@ -386,16 +495,26 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
                 eq(mailFolders.mailboxId, companion.id),
                 eq(mailFolders.remoteId, folderName)
             ),
-        })
+        }) as DBFolder | undefined
 
         if (!folder) { sendLine(socket, `${tag} NO STATUS no such mailbox`); return }
 
+        const totalCount = await countFolderMessages(folder.id)
+        const unreadRows = await db.select({ c: sql<number>`count(*)::int` })
+            .from(mailMessages)
+            .where(and(
+                eq(mailMessages.folderId, folder.id),
+                eq(mailMessages.isDeleted, false),
+                eq(mailMessages.isRead, false)
+            ))
+        const unread = unreadRows[0]?.c ?? 0
+
         const items: string[] = []
-        if (requestedItems.includes('MESSAGES')) items.push(`MESSAGES ${folder.totalCount}`)
+        if (requestedItems.includes('MESSAGES')) items.push(`MESSAGES ${totalCount}`)
         if (requestedItems.includes('RECENT')) items.push('RECENT 0')
-        if (requestedItems.includes('UNSEEN')) items.push(`UNSEEN ${folder.unreadCount}`)
-        if (requestedItems.includes('UIDNEXT')) items.push(`UIDNEXT ${folder.totalCount + 1}`)
-        if (requestedItems.includes('UIDVALIDITY')) items.push('UIDVALIDITY 1')
+        if (requestedItems.includes('UNSEEN')) items.push(`UNSEEN ${unread}`)
+        if (requestedItems.includes('UIDNEXT')) items.push(`UIDNEXT ${folder.uidNext || totalCount + 1}`)
+        if (requestedItems.includes('UIDVALIDITY')) items.push(`UIDVALIDITY ${folder.uidValidity || 1}`)
 
         sendLine(socket, `* STATUS "${folderName}" (${items.join(' ')})`)
         sendLine(socket, `${tag} OK STATUS completed`)
@@ -421,6 +540,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         session.selectedMailboxId = companion.id
         session.selectedFolderId = folder.id
         session.selectedReadOnly = cmd === 'EXAMINE'
+        session.selectedUidValidity = folder.uidValidity || 1
 
         const msgs = await db.query.mailMessages.findMany({
             where: and(
@@ -429,17 +549,17 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
             ),
             columns: { isRead: true },
         })
-
         const total = msgs.length
         const unseen = msgs.filter(m => !m.isRead).length
+        session.knownMessageCount = total
 
         sendLine(socket, `* ${total} EXISTS`)
         sendLine(socket, '* 0 RECENT')
         if (unseen > 0) {
             sendLine(socket, `* OK [UNSEEN ${total - unseen + 1}] Message ${total - unseen + 1} is the first unseen`)
         }
-        sendLine(socket, '* OK [UIDVALIDITY 1] UIDs valid')
-        sendLine(socket, `* OK [UIDNEXT ${total + 1}] Predicted next UID`)
+        sendLine(socket, `* OK [UIDVALIDITY ${session.selectedUidValidity}] UIDs valid`)
+        sendLine(socket, `* OK [UIDNEXT ${folder.uidNext || total + 1}] Predicted next UID`)
         sendLine(socket, `* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)`)
         sendLine(socket, `* OK [PERMANENTFLAGS (\\Deleted \\Seen \\Flagged \\Draft \\*)] Flags permitted`)
 
@@ -464,6 +584,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
             remoteId: folderName,
             name: folderName,
             type: 'custom',
+            uidValidity: Math.floor(Date.now() / 1000),
         })
         sendLine(socket, `${tag} OK CREATE completed`)
         return
@@ -485,7 +606,6 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         return
     }
 
-    // Commands that require a selected folder
     if (cmd === 'FETCH' || cmd === 'STORE' || cmd === 'EXPUNGE' || cmd === 'SEARCH' || cmd === 'UID' || cmd === 'COPY' || cmd === 'MOVE') {
         if (session.state !== 'selected' || !session.selectedFolderId) {
             sendLine(socket, `${tag} NO No mailbox selected`)
@@ -518,16 +638,19 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         }
 
         // Mark as seen if BODY[] fetched (not PEEK)
-        const fetchesBody = items.some(i => i.includes('BODY[') && !i.includes('PEEK'))
-        if (fetchesBody) {
+        const fetchesBody = items.some(i => /BODY\[(?!.*PEEK)/.test(i.toUpperCase()) || i.toUpperCase() === 'RFC822')
+        if (fetchesBody && !session.selectedReadOnly) {
+            let updated = false
             for (const seqNum of seqNums) {
                 const msg = msgs[seqNum - 1]
                 if (msg && !msg.isRead) {
                     await db.update(mailMessages)
                         .set({ isRead: true, updatedAt: new Date() })
                         .where(eq(mailMessages.id, msg.id))
+                    updated = true
                 }
             }
+            if (updated) await recomputeFolderCounts(session.selectedFolderId!)
         }
 
         sendLine(socket, `${tag} OK FETCH completed`)
@@ -536,6 +659,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
 
     // ── STORE ──
     if (cmd === 'STORE') {
+        if (session.selectedReadOnly) { sendLine(socket, `${tag} NO Folder is read-only`); return }
         const match = args.match(/^(\S+)\s+([+-]?FLAGS(?:\.SILENT)?)\s+(.+)$/)
         if (!match) { sendLine(socket, `${tag} BAD STORE syntax error`); return }
         const [, seqSet, flagOp, flagList] = match
@@ -572,7 +696,6 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
             } else if (flagOp.startsWith('-')) {
                 flags.forEach(f => applyFlag(f, false))
             } else {
-                // Replace flags
                 updates.isRead = flags.includes('\\SEEN')
                 updates.isStarred = flags.includes('\\FLAGGED')
                 updates.isDeleted = flags.includes('\\DELETED')
@@ -589,39 +712,61 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
             }
         }
 
+        await recomputeFolderCounts(session.selectedFolderId!)
+        emitFolderChange({
+            folderId: session.selectedFolderId!,
+            mailboxId: session.selectedMailboxId!,
+            kind: 'flags',
+        })
+
         sendLine(socket, `${tag} OK STORE completed`)
         return
     }
 
     // ── EXPUNGE ──
     if (cmd === 'EXPUNGE') {
-        const msgs = await db.query.mailMessages.findMany({
-            where: and(
-                eq(mailMessages.folderId, session.selectedFolderId!),
-                eq(mailMessages.isDeleted, false)
-            ),
+        if (session.selectedReadOnly) { sendLine(socket, `${tag} NO Folder is read-only`); return }
+        // Ordered list of ALL messages (so we can compute sequence numbers);
+        // then walk from high to low, deleting and emitting EXPUNGE for each flagged.
+        const allMsgs = await db.query.mailMessages.findMany({
+            where: eq(mailMessages.folderId, session.selectedFolderId!),
             orderBy: [asc(mailMessages.receivedAt)],
         })
 
-        const deleted = await db.query.mailMessages.findMany({
-            where: and(
-                eq(mailMessages.folderId, session.selectedFolderId!),
-                eq(mailMessages.isDeleted, true)
-            ),
-        })
+        // IMAP sequence numbers are 1-based, counting only messages visible in
+        // the current SELECT session (non-deleted). Since the current SELECT
+        // returned only non-deleted messages, compute seqnums on that subset.
+        const visible = allMsgs.filter(m => !m.isDeleted)
+        const flaggedForDeletion = allMsgs.filter(m => m.isDeleted)
 
-        for (let i = msgs.length; i >= 1; i--) {
-            const msg = msgs[i - 1]
-            if (msg.isDeleted) {
-                await db.delete(mailMessages).where(eq(mailMessages.id, msg.id))
-                sendLine(socket, `* ${i} EXPUNGE`)
-            }
+        // Messages still in the visible set that will be removed (by STORE
+        // earlier in same session) have already had isDeleted=true set, so
+        // they are in `flaggedForDeletion` and not in `visible`.
+        // But if they came in via \Deleted flag and are also in `visible`
+        // list (unlikely given our query), handle them explicitly.
+
+        // Walk descending by position-in-visible so sequence numbers stay
+        // stable as we emit them.
+        for (let i = visible.length - 1; i >= 0; i--) {
+            const msg = visible[i]
+            if (!msg.isDeleted) continue
+            await db.delete(mailMessages).where(eq(mailMessages.id, msg.id))
+            sendLine(socket, `* ${i + 1} EXPUNGE`)
         }
 
-        // Also clean up already-deleted
-        for (const msg of deleted) {
+        // Remove any messages that were already marked deleted outside of SELECT
+        // visibility — no EXPUNGE response needed since client didn't see them.
+        for (const msg of flaggedForDeletion) {
+            if (visible.find(v => v.id === msg.id)) continue
             await db.delete(mailMessages).where(eq(mailMessages.id, msg.id))
         }
+
+        await recomputeFolderCounts(session.selectedFolderId!)
+        emitFolderChange({
+            folderId: session.selectedFolderId!,
+            mailboxId: session.selectedMailboxId!,
+            kind: 'expunge',
+        })
 
         sendLine(socket, `${tag} OK EXPUNGE completed`)
         return
@@ -640,7 +785,6 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         const upperArgs = args.toUpperCase()
         const results: number[] = []
 
-        // Simple search criteria
         for (let i = 0; i < msgs.length; i++) {
             const msg = msgs[i]
             let match = true
@@ -651,11 +795,9 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
             if (upperArgs.includes('UNFLAGGED') && msg.isStarred) match = false
             if (upperArgs.includes('DRAFT') && !msg.isDraft) match = false
 
-            // Subject search
             const subjectMatch = args.match(/SUBJECT\s+"([^"]+)"/i)
             if (subjectMatch && !msg.subject?.toLowerCase().includes(subjectMatch[1].toLowerCase())) match = false
 
-            // From search
             const fromMatch = args.match(/FROM\s+"([^"]+)"/i)
             if (fromMatch && !msg.fromAddress?.toLowerCase().includes(fromMatch[1].toLowerCase())) match = false
 
@@ -666,30 +808,6 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
 
         sendLine(socket, `* SEARCH ${results.join(' ')}`)
         sendLine(socket, `${tag} OK SEARCH completed`)
-        return
-    }
-
-    // ── APPEND ──
-    if (cmd === 'APPEND') {
-        // APPEND "Folder" (\Seen) "date" {size}
-        const match = args.match(/^"?([^"\s]+)"?\s+/)
-        if (!match) { sendLine(socket, `${tag} BAD APPEND syntax error`); return }
-        const folderName = match[1]
-
-        const folder = await db.query.mailFolders.findFirst({
-            where: and(
-                eq(mailFolders.mailboxId, companion.id),
-                eq(mailFolders.remoteId, folderName)
-            ),
-        })
-
-        if (!folder) {
-            sendLine(socket, `${tag} NO [TRYCREATE] No such mailbox`)
-            return
-        }
-
-        // For a full implementation we'd read the literal; for now acknowledge
-        sendLine(socket, `${tag} OK APPEND completed`)
         return
     }
 
@@ -719,6 +837,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         for (const seqNum of seqNums) {
             const msg = msgs[seqNum - 1]
             if (!msg) continue
+            const newUid = await allocateNextUid(destFolder.id)
             await db.insert(mailMessages).values({
                 mailboxId: msg.mailboxId,
                 folderId: destFolder.id,
@@ -738,110 +857,602 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
                 attachments: msg.attachments as object[],
                 isRead: msg.isRead,
                 isDraft: msg.isDraft,
+                remoteUid: newUid,
                 remoteDate: msg.remoteDate,
                 receivedAt: new Date(),
             }).onConflictDoNothing()
         }
 
+        await recomputeFolderCounts(destFolder.id)
+        emitFolderChange({ folderId: destFolder.id, mailboxId: companion.id, kind: 'new' })
+
         sendLine(socket, `${tag} OK COPY completed`)
         return
     }
 
-    // ── UID (prefix for FETCH/STORE/SEARCH/COPY with UIDs) ──
+    // ── UID ──
     if (cmd === 'UID') {
         const spaceIdx = args.indexOf(' ')
+        if (spaceIdx === -1) { sendLine(socket, `${tag} BAD UID syntax error`); return }
         const subCmd = args.substring(0, spaceIdx).toUpperCase()
         const subArgs = args.substring(spaceIdx + 1)
-
-        // Re-dispatch as the sub-command but treat sequence numbers as UIDs
-        // For simplicity, treat UID == sequence number here
-        await handleCommand(session, tag, subCmd, subArgs)
+        await handleUidCommand(session, tag, subCmd, subArgs)
         return
     }
 
     // ── IDLE ──
     if (cmd === 'IDLE') {
+        if (session.state !== 'selected' || !session.selectedFolderId) {
+            sendLine(socket, `${tag} NO No mailbox selected`)
+            return
+        }
         sendLine(socket, '+ idling')
-        // When client sends DONE, exit idle
-        // We handle this in the data handler - for now just respond
+        session.idleTag = tag
+        session.knownMessageCount = await countFolderMessages(session.selectedFolderId)
+
+        const listener = async (payload: MailEventPayload) => {
+            if (payload.folderId !== session.selectedFolderId) return
+            try {
+                const newCount = await countFolderMessages(session.selectedFolderId!)
+                if (newCount !== session.knownMessageCount) {
+                    const delta = Math.max(0, newCount - session.knownMessageCount)
+                    // RFC 3501: send EXISTS then RECENT so clients (e.g. Thunderbird)
+                    // know there are new messages to fetch.
+                    sendLine(session.socket, `* ${newCount} EXISTS`)
+                    sendLine(session.socket, `* ${delta} RECENT`)
+                    session.knownMessageCount = newCount
+                }
+            } catch (err) {
+                console.error('[IMAP] IDLE listener error:', err)
+            }
+        }
+        session.idleListener = listener
+        mailEvents.on('folder-change', listener)
         return
     }
 
-    // Unknown command
     sendLine(socket, `${tag} BAD Unknown command: ${command}`)
 }
 
-// ─── Connection Handler ───────────────────────────────────────────────────────
+// ─── AUTHENTICATE completion ──────────────────────────────────────────────────
 
-function handleConnection(socket: net.Socket) {
-    const session: IMAPSession = {
-        socket,
-        state: 'not_authenticated',
-        userId: null,
-        userEmail: null,
-        selectedMailboxId: null,
-        selectedFolderId: null,
-        selectedReadOnly: false,
-        buffer: '',
+async function tryAuthenticate(session: IMAPSession, tag: string, email: string, password: string): Promise<boolean> {
+    const account = await authenticateNativeUser(email, password)
+    if (!account) {
+        recordAuthFailure(session.ip)
+        sendLine(session.socket, `${tag} NO [AUTHENTICATIONFAILED] Invalid credentials`)
+        return false
+    }
+    clearAuthFailures(session.ip)
+    session.state = 'authenticated'
+    session.userId = account.id
+    session.userEmail = account.email
+    console.log(`[IMAP] Auth ok (SASL): ${email} (ip=${session.ip} tls=${session.isTLS})`)
+    sendLine(session.socket, `${tag} OK [CAPABILITY ${capabilities(session)}] AUTHENTICATE completed`)
+    return true
+}
+
+async function completeAuthPlain(session: IMAPSession, tag: string, b64: string) {
+    try {
+        const decoded = Buffer.from(b64, 'base64').toString('utf8')
+        // Expected: "\0user\0pass" or "authzid\0user\0pass"
+        const parts = decoded.split('\0')
+        if (parts.length < 3) {
+            recordAuthFailure(session.ip)
+            sendLine(session.socket, `${tag} NO [AUTHENTICATIONFAILED] Malformed SASL PLAIN`)
+            return
+        }
+        const [, username, password] = parts
+        await tryAuthenticate(session, tag, username, password)
+    } catch {
+        recordAuthFailure(session.ip)
+        sendLine(session.socket, `${tag} NO [AUTHENTICATIONFAILED] Bad base64`)
+    }
+    session.pendingAuth = null
+}
+
+async function completeAuthLoginUsername(session: IMAPSession, b64: string) {
+    try {
+        session.pendingAuth!.username = Buffer.from(b64, 'base64').toString('utf8')
+        session.pendingAuth!.step = 1
+        sendLine(session.socket, '+ ' + Buffer.from('Password:').toString('base64'))
+    } catch {
+        const tag = session.pendingAuth!.tag
+        session.pendingAuth = null
+        recordAuthFailure(session.ip)
+        sendLine(session.socket, `${tag} NO [AUTHENTICATIONFAILED] Bad base64`)
+    }
+}
+
+async function completeAuthLoginPassword(session: IMAPSession, b64: string) {
+    const tag = session.pendingAuth!.tag
+    const username = session.pendingAuth!.username || ''
+    try {
+        const password = Buffer.from(b64, 'base64').toString('utf8')
+        await tryAuthenticate(session, tag, username, password)
+    } catch {
+        recordAuthFailure(session.ip)
+        sendLine(session.socket, `${tag} NO [AUTHENTICATIONFAILED] Bad base64`)
+    }
+    session.pendingAuth = null
+}
+
+// ─── UID command dispatch ─────────────────────────────────────────────────────
+
+async function handleUidCommand(session: IMAPSession, tag: string, subCmd: string, subArgs: string) {
+    const socket = session.socket
+
+    if (session.state !== 'selected' || !session.selectedFolderId) {
+        sendLine(socket, `${tag} NO No mailbox selected`)
+        return
     }
 
-    socket.setEncoding('utf8')
-    sendLine(socket, `* OK [CAPABILITY IMAP4rev1 AUTH=PLAIN AUTH=LOGIN] ${_imapAppName} IMAP server ready`)
+    const msgs = await db.query.mailMessages.findMany({
+        where: and(
+            eq(mailMessages.folderId, session.selectedFolderId!),
+            eq(mailMessages.isDeleted, false),
+        ),
+        orderBy: [asc(mailMessages.receivedAt)],
+    })
 
-    socket.on('data', (data: string) => {
-        session.buffer += data
+    // Build UID ↔ sequence number map. For legacy rows with remote_uid=null,
+    // fall back to sequence number as UID.
+    const byUid = new Map<number, { msg: typeof mailMessages.$inferSelect; seqNum: number }>()
+    let maxUid = 0
+    msgs.forEach((m, i) => {
+        const uid = m.remoteUid ?? (i + 1)
+        byUid.set(uid, { msg: m, seqNum: i + 1 })
+        if (uid > maxUid) maxUid = uid
+    })
 
-        // Process complete lines
-        let lineEnd: number
-        while ((lineEnd = session.buffer.indexOf('\r\n')) !== -1) {
-            const line = session.buffer.substring(0, lineEnd)
-            session.buffer = session.buffer.substring(lineEnd + 2)
+    function uidSetToEntries(set: string) {
+        const uids = parseSequenceSet(set, maxUid || 1)
+        return uids
+            .map(u => byUid.get(u))
+            .filter((e): e is NonNullable<typeof e> => !!e)
+    }
+
+    if (subCmd === 'FETCH') {
+        const match = subArgs.match(/^(\S+)\s+(.+)$/)
+        if (!match) { sendLine(socket, `${tag} BAD UID FETCH syntax error`); return }
+        const [, uidSet, itemStr] = match
+        const items = parseFetchItems(itemStr)
+        if (!items.map(i => i.toUpperCase()).includes('UID')) items.push('UID')
+        const entries = uidSetToEntries(uidSet)
+        for (const { msg, seqNum } of entries) {
+            sendLine(socket, await buildFetchResponse(seqNum, msg, items))
+        }
+        // Mark as seen for non-PEEK BODY fetches
+        const fetchesBody = items.some(i => /BODY\[(?!.*PEEK)/.test(i.toUpperCase()) || i.toUpperCase() === 'RFC822')
+        if (fetchesBody && !session.selectedReadOnly) {
+            for (const { msg } of entries) {
+                if (!msg.isRead) {
+                    await db.update(mailMessages)
+                        .set({ isRead: true, updatedAt: new Date() })
+                        .where(eq(mailMessages.id, msg.id))
+                }
+            }
+            await recomputeFolderCounts(session.selectedFolderId!)
+        }
+        sendLine(socket, `${tag} OK UID FETCH completed`)
+        return
+    }
+
+    if (subCmd === 'STORE') {
+        if (session.selectedReadOnly) { sendLine(socket, `${tag} NO Folder is read-only`); return }
+        const match = subArgs.match(/^(\S+)\s+([+-]?FLAGS(?:\.SILENT)?)\s+(.+)$/)
+        if (!match) { sendLine(socket, `${tag} BAD UID STORE syntax error`); return }
+        const [, uidSet, flagOp, flagList] = match
+        const flagStr = flagList.replace(/[()]/g, '').toUpperCase()
+        const silent = flagOp.includes('.SILENT')
+        const flags = flagStr.split(/\s+/)
+
+        for (const { msg, seqNum } of uidSetToEntries(uidSet)) {
+            const updates: Partial<{ isRead: boolean; isStarred: boolean; isDeleted: boolean; isDraft: boolean; updatedAt: Date }> = { updatedAt: new Date() }
+            const applyFlag = (flag: string, value: boolean) => {
+                if (flag === '\\SEEN') updates.isRead = value
+                if (flag === '\\FLAGGED') updates.isStarred = value
+                if (flag === '\\DELETED') updates.isDeleted = value
+                if (flag === '\\DRAFT') updates.isDraft = value
+            }
+            if (flagOp.startsWith('+')) flags.forEach(f => applyFlag(f, true))
+            else if (flagOp.startsWith('-')) flags.forEach(f => applyFlag(f, false))
+            else {
+                updates.isRead = flags.includes('\\SEEN')
+                updates.isStarred = flags.includes('\\FLAGGED')
+                updates.isDeleted = flags.includes('\\DELETED')
+                updates.isDraft = flags.includes('\\DRAFT')
+            }
+            await db.update(mailMessages).set(updates).where(eq(mailMessages.id, msg.id))
+            if (!silent) {
+                const updated = { ...msg, ...updates }
+                sendLine(socket, `* ${seqNum} FETCH (UID ${msg.remoteUid ?? seqNum} FLAGS ${flagsToIMAP(updated as typeof msg)})`)
+            }
+        }
+        await recomputeFolderCounts(session.selectedFolderId!)
+        emitFolderChange({
+            folderId: session.selectedFolderId!,
+            mailboxId: session.selectedMailboxId!,
+            kind: 'flags',
+        })
+        sendLine(socket, `${tag} OK UID STORE completed`)
+        return
+    }
+
+    if (subCmd === 'COPY') {
+        const match = subArgs.match(/^(\S+)\s+"?([^"\s]+)"?$/)
+        if (!match) { sendLine(socket, `${tag} BAD UID COPY syntax error`); return }
+        const [, uidSet, destFolderName] = match
+
+        const destFolder = await db.query.mailFolders.findFirst({
+            where: and(
+                eq(mailFolders.mailboxId, session.selectedMailboxId!),
+                eq(mailFolders.remoteId, destFolderName),
+            ),
+        })
+        if (!destFolder) { sendLine(socket, `${tag} NO [TRYCREATE] No such mailbox`); return }
+
+        const copiedUids: number[] = []
+        const srcUids: number[] = []
+        for (const { msg } of uidSetToEntries(uidSet)) {
+            const newUid = await allocateNextUid(destFolder.id)
+            await db.insert(mailMessages).values({
+                mailboxId: msg.mailboxId,
+                folderId: destFolder.id,
+                messageId: msg.messageId,
+                inReplyTo: msg.inReplyTo,
+                references: msg.references,
+                subject: msg.subject,
+                fromAddress: msg.fromAddress,
+                fromName: msg.fromName,
+                toAddresses: msg.toAddresses as object[],
+                ccAddresses: msg.ccAddresses as object[],
+                bccAddresses: msg.bccAddresses as object[],
+                plainBody: msg.plainBody,
+                htmlBody: msg.htmlBody,
+                headers: msg.headers as object,
+                hasAttachments: msg.hasAttachments,
+                attachments: msg.attachments as object[],
+                isRead: msg.isRead,
+                isDraft: msg.isDraft,
+                remoteUid: newUid,
+                remoteDate: msg.remoteDate,
+                receivedAt: new Date(),
+            }).onConflictDoNothing()
+            copiedUids.push(newUid)
+            srcUids.push(msg.remoteUid ?? 0)
+        }
+        await recomputeFolderCounts(destFolder.id)
+        emitFolderChange({ folderId: destFolder.id, mailboxId: session.selectedMailboxId!, kind: 'new' })
+
+        const uidValidity = destFolder.uidValidity || 1
+        sendLine(socket, `${tag} OK [COPYUID ${uidValidity} ${srcUids.join(',')} ${copiedUids.join(',')}] UID COPY completed`)
+        return
+    }
+
+    if (subCmd === 'SEARCH') {
+        const upperArgs = subArgs.toUpperCase()
+        const results: number[] = []
+        for (const { msg } of Array.from(byUid.values()).sort((a, b) => a.seqNum - b.seqNum)) {
+            let match = true
+            if (upperArgs.includes('UNSEEN') && msg.isRead) match = false
+            if (upperArgs.includes('SEEN') && !msg.isRead) match = false
+            if (upperArgs.includes('FLAGGED') && !msg.isStarred) match = false
+            if (upperArgs.includes('UNFLAGGED') && msg.isStarred) match = false
+            if (upperArgs.includes('DRAFT') && !msg.isDraft) match = false
+            const subjectMatch = subArgs.match(/SUBJECT\s+"([^"]+)"/i)
+            if (subjectMatch && !msg.subject?.toLowerCase().includes(subjectMatch[1].toLowerCase())) match = false
+            const fromMatch = subArgs.match(/FROM\s+"([^"]+)"/i)
+            if (fromMatch && !msg.fromAddress?.toLowerCase().includes(fromMatch[1].toLowerCase())) match = false
+            if (upperArgs === 'ALL') match = true
+            if (match) results.push(msg.remoteUid ?? 0)
+        }
+        sendLine(socket, `* SEARCH ${results.filter(u => u > 0).join(' ')}`)
+        sendLine(socket, `${tag} OK UID SEARCH completed`)
+        return
+    }
+
+    sendLine(socket, `${tag} BAD Unknown UID subcommand: ${subCmd}`)
+}
+
+// ─── APPEND literal completion ────────────────────────────────────────────────
+
+async function completeAppend(session: IMAPSession, pending: PendingLiteral, literal: Buffer) {
+    const socket = session.socket
+    if (session.state === 'not_authenticated') {
+        sendLine(socket, `${pending.tag} NO Authenticate first`)
+        return
+    }
+
+    const companion = await db.query.mailboxes.findFirst({
+        where: and(
+            eq(mailboxes.email, session.userEmail!.toLowerCase()),
+            eq(mailboxes.userId, session.userId!)
+        ),
+    })
+    if (!companion) {
+        sendLine(socket, `${pending.tag} NO Mailbox not found`)
+        return
+    }
+
+    const folder = await db.query.mailFolders.findFirst({
+        where: and(
+            eq(mailFolders.mailboxId, companion.id),
+            eq(mailFolders.remoteId, pending.folderName)
+        ),
+    }) as DBFolder | undefined
+
+    if (!folder) {
+        sendLine(socket, `${pending.tag} NO [TRYCREATE] No such mailbox`)
+        return
+    }
+
+    try {
+        const parsed = await parseRawEmail(literal)
+        const messageId = parsed.messageId || `<${randomUUID()}@skaleclub.mail>`
+        const flags = pending.flags
+        const assignedUid = await allocateNextUid(folder.id)
+
+        await db.insert(mailMessages).values({
+            mailboxId: companion.id,
+            folderId: folder.id,
+            messageId,
+            inReplyTo: parsed.inReplyTo,
+            references: parsed.references,
+            subject: parsed.subject,
+            fromAddress: parsed.from.address,
+            fromName: parsed.from.name,
+            toAddresses: parsed.to as object[],
+            ccAddresses: parsed.cc as object[],
+            bccAddresses: parsed.bcc as object[],
+            plainBody: parsed.plainBody,
+            htmlBody: parsed.htmlBody,
+            headers: parsed.headers as object,
+            hasAttachments: parsed.hasAttachments,
+            attachments: parsed.attachments.map(a => ({
+                filename: a.filename,
+                contentType: a.contentType,
+                size: a.size,
+            })) as object[],
+            isRead: flags.includes('\\SEEN'),
+            isStarred: flags.includes('\\FLAGGED'),
+            isDeleted: flags.includes('\\DELETED'),
+            isDraft: flags.includes('\\DRAFT') || folder.type === 'drafts',
+            remoteUid: assignedUid,
+            remoteDate: parsed.date,
+            receivedAt: parsed.date || new Date(),
+            size: literal.length,
+        }).onConflictDoNothing()
+
+        await recomputeFolderCounts(folder.id)
+        emitFolderChange({ folderId: folder.id, mailboxId: companion.id, kind: 'new' })
+
+        sendLine(socket, `${pending.tag} OK [APPENDUID ${folder.uidValidity || 1} ${assignedUid}] APPEND completed`)
+    } catch (err) {
+        console.error('[IMAP] APPEND error:', (err as Error).message)
+        sendLine(socket, `${pending.tag} NO APPEND failed: ${(err as Error).message}`)
+    }
+}
+
+// ─── Buffer processor ─────────────────────────────────────────────────────────
+
+async function processBuffer(session: IMAPSession) {
+    if (session.processing) return
+    session.processing = true
+    try {
+        while (true) {
+            if (session.pendingLiteral) {
+                const need = session.pendingLiteral.remaining
+                if (session.buffer.length >= need) {
+                    session.pendingLiteral.chunks.push(session.buffer.subarray(0, need))
+                    session.buffer = session.buffer.subarray(need)
+                    const full = Buffer.concat(session.pendingLiteral.chunks)
+                    const pending = session.pendingLiteral
+                    session.pendingLiteral = null
+                    await completeAppend(session, pending, full)
+                    // After literal, consume optional trailing CRLF
+                    if (session.buffer.length >= 2 && session.buffer[0] === 0x0D && session.buffer[1] === 0x0A) {
+                        session.buffer = session.buffer.subarray(2)
+                    }
+                    continue
+                } else {
+                    session.pendingLiteral.chunks.push(session.buffer)
+                    session.pendingLiteral.remaining -= session.buffer.length
+                    session.buffer = Buffer.alloc(0)
+                    break
+                }
+            }
+
+            const crlfIdx = session.buffer.indexOf('\r\n')
+            if (crlfIdx === -1) break
+            const line = session.buffer.subarray(0, crlfIdx).toString('utf8')
+            session.buffer = session.buffer.subarray(crlfIdx + 2)
 
             if (!line.trim()) continue
 
-            // Handle IDLE DONE
-            if (line.trim().toUpperCase() === 'DONE') {
-                sendLine(socket, '* OK [IDLE] Idle terminated')
+            // IDLE DONE
+            if (session.idleListener && line.trim().toUpperCase() === 'DONE') {
+                mailEvents.off('folder-change', session.idleListener)
+                session.idleListener = null
+                sendLine(session.socket, `${session.idleTag} OK IDLE terminated`)
+                session.idleTag = null
                 continue
             }
 
-            // Parse: tag command [args]
+            // SASL continuation (AUTHENTICATE in-flight)
+            if (session.pendingAuth) {
+                const trimmed = line.trim()
+                // Client cancellation per RFC 3501 §6.2.2
+                if (trimmed === '*') {
+                    const tag = session.pendingAuth.tag
+                    session.pendingAuth = null
+                    sendLine(session.socket, `${tag} BAD AUTHENTICATE cancelled`)
+                    continue
+                }
+                if (session.pendingAuth.mechanism === 'PLAIN') {
+                    await completeAuthPlain(session, session.pendingAuth.tag, trimmed)
+                } else if (session.pendingAuth.mechanism === 'LOGIN') {
+                    if (session.pendingAuth.step === 0) {
+                        await completeAuthLoginUsername(session, trimmed)
+                    } else {
+                        await completeAuthLoginPassword(session, trimmed)
+                    }
+                }
+                continue
+            }
+
+            // APPEND with literal — detect before dispatch
+            const appendLiteralMatch = line.match(/^(\S+)\s+APPEND\s+(.+?)\s*\{(\d+)(\+?)\}\s*$/i)
+            if (appendLiteralMatch) {
+                const [, tag, appendArgs, sizeStr, plus] = appendLiteralMatch
+                const size = parseInt(sizeStr)
+                if (size > MAX_BUFFER_BYTES) {
+                    sendLine(session.socket, `${tag} NO Message too large`)
+                    continue
+                }
+
+                // Extract folder + flag list from appendArgs
+                const folderMatch = appendArgs.match(/^"?([^"\s(]+)"?\s*(\([^)]*\))?\s*(".*")?$/)
+                const folderName = folderMatch?.[1] || appendArgs.trim()
+                const flagsPart = folderMatch?.[2] || ''
+                const flags = (flagsPart.match(/\\\w+/g) || []).map(f => f.toUpperCase())
+
+                if (session.state === 'not_authenticated') {
+                    sendLine(session.socket, `${tag} NO Authenticate first`)
+                    continue
+                }
+
+                session.pendingLiteral = {
+                    tag,
+                    type: 'APPEND',
+                    folderName,
+                    flags,
+                    chunks: [],
+                    remaining: size,
+                    noResponse: plus === '+',
+                }
+                if (!session.pendingLiteral.noResponse) {
+                    sendLine(session.socket, '+ Ready for literal data')
+                }
+                continue
+            }
+
+            // Parse tag command [args]
             const firstSpace = line.indexOf(' ')
             if (firstSpace === -1) continue
-
             const tag = line.substring(0, firstSpace)
             const rest = line.substring(firstSpace + 1)
             const secondSpace = rest.indexOf(' ')
             const command = secondSpace === -1 ? rest : rest.substring(0, secondSpace)
             const args = secondSpace === -1 ? '' : rest.substring(secondSpace + 1)
 
-            handleCommand(session, tag, command, args).catch(err => {
+            try {
+                await handleCommand(session, tag, command, args)
+            } catch (err) {
                 console.error(`[IMAP] Command error (${command}):`, err)
-                sendLine(socket, `${tag} NO Internal server error`)
-            })
+                sendLine(session.socket, `${tag} NO Internal server error`)
+            }
 
             if (session.state === 'logout') break
         }
+    } finally {
+        session.processing = false
+    }
+}
+
+// ─── Socket wiring ───────────────────────────────────────────────────────────
+
+function attachSocketHandlers(session: IMAPSession) {
+    const socket = session.socket
+
+    socket.on('data', (chunk: Buffer) => {
+        if (session.buffer.length + chunk.length > MAX_BUFFER_BYTES) {
+            sendLine(socket, '* BYE Input buffer exceeded')
+            socket.destroy()
+            return
+        }
+        session.buffer = Buffer.concat([session.buffer, chunk])
+        processBuffer(session).catch(err => console.error('[IMAP] processBuffer error:', err))
     })
 
     socket.on('error', (err: Error) => {
-        // Ignore common disconnect errors
         if ((err as NodeJS.ErrnoException).code !== 'ECONNRESET') {
             console.error('[IMAP] Socket error:', err.message)
         }
     })
 
     socket.on('close', () => {
-        // Clean up
+        if (session.idleListener) {
+            mailEvents.off('folder-change', session.idleListener)
+            session.idleListener = null
+        }
     })
+}
+
+function detachSocketHandlers(socket: IMAPSocket) {
+    socket.removeAllListeners('data')
+    socket.removeAllListeners('error')
+    socket.removeAllListeners('close')
+}
+
+function upgradeToTLS(session: IMAPSession, opts: { key: Buffer; cert: Buffer }) {
+    detachSocketHandlers(session.socket)
+    const secure = new tls.TLSSocket(session.socket as net.Socket, {
+        isServer: true,
+        key: opts.key,
+        cert: opts.cert,
+    })
+    session.socket = secure
+    session.isTLS = true
+    session.buffer = Buffer.alloc(0) // Reset — any buffered plaintext is invalid now
+    attachSocketHandlers(session)
+}
+
+function handleConnection(socket: IMAPSocket, isTLS: boolean) {
+    const ip = socket.remoteAddress || 'unknown'
+
+    if (isIpLocked(ip)) {
+        sendLine(socket, '* BYE Too many failed auth attempts from this IP')
+        socket.destroy()
+        return
+    }
+
+    const session: IMAPSession = {
+        socket,
+        ip,
+        isTLS,
+        state: 'not_authenticated',
+        userId: null,
+        userEmail: null,
+        selectedMailboxId: null,
+        selectedFolderId: null,
+        selectedReadOnly: false,
+        selectedUidValidity: 1,
+        buffer: Buffer.alloc(0),
+        pendingLiteral: null,
+        pendingAuth: null,
+        idleTag: null,
+        idleListener: null,
+        knownMessageCount: 0,
+        processing: false,
+    }
+
+    sendLine(socket, `* OK [CAPABILITY ${capabilities(session)}] ${_imapAppName} IMAP server ready`)
+    attachSocketHandlers(session)
 }
 
 // ─── Server Bootstrap ─────────────────────────────────────────────────────────
 
 export function createIMAPServer() {
     const port = parseInt(process.env.IMAP_PORT || '2993')
+    const tlsOpts = getMailTLSOptions()
 
-    const server = net.createServer(handleConnection)
+    const server: net.Server | tls.Server = tlsOpts
+        ? tls.createServer(
+            { key: tlsOpts.key, cert: tlsOpts.cert },
+            (socket) => handleConnection(socket, true)
+        )
+        : net.createServer((socket) => handleConnection(socket, false))
 
     server.on('error', (err: Error) => {
         console.error('[IMAP] Server error:', err.message)
@@ -850,12 +1461,14 @@ export function createIMAPServer() {
     return {
         start() {
             server.listen(port, '0.0.0.0', () => {
-                console.log(`[IMAP] Server listening on port ${port}`)
-                console.log(`[IMAP] Configure Thunderbird: IMAP → mail.skale.club:${port} (SSL)`)
+                const proto = tlsOpts ? 'SSL/TLS (implicit)' : 'plaintext (STARTTLS unavailable)'
+                console.log(`[IMAP] Server listening on port ${port} — ${proto}`)
             })
         },
-        close() {
-            server.close()
+        close(): Promise<void> {
+            return new Promise((resolve) => {
+                server.close(() => resolve())
+            })
         },
     }
 }

@@ -32,6 +32,8 @@ export async function processQueue(): Promise<void> {
             return true
         })
 
+        if (readyDeliveries.length === 0) return
+
         // Batch-load all unique messages for these deliveries
         const messageIds = [...new Set(readyDeliveries.map((d) => d.messageId))]
         const allMessages = await db.query.messages.findMany({
@@ -41,9 +43,9 @@ export async function processQueue(): Promise<void> {
 
         // Batch-load all unique organizations from the fetched messages
         const orgIds = [...new Set(allMessages.map((m) => m.organizationId))]
-        const allOrgs = await db.query.organizations.findMany({
+        const allOrgs = orgIds.length > 0 ? await db.query.organizations.findMany({
             where: inArray(organizations.id, orgIds),
-        })
+        }) : []
         const orgsMap = new Map(allOrgs.map((o) => [o.id, o]))
 
         for (const delivery of readyDeliveries) {

@@ -7,13 +7,6 @@ import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import {
-    Dialog,
-    DialogContent,
-    DialogHeader,
-    DialogTitle,
-    DialogDescription,
-} from '../../components/ui/Dialog'
-import {
     User,
     Bell,
     Shield,
@@ -27,13 +20,14 @@ import {
     Filter,
     Trash,
     PenTool,
-    Eye,
-    EyeOff,
-    Lock,
+    Copy,
+    Download,
+    Smartphone,
 } from 'lucide-react'
 import { Switch } from '../../components/ui/switch'
 import { apiFetch } from '../../lib/api-client'
-import { useMailbox } from '../../hooks/useMailbox'
+import { ConnectMailboxDialog } from '../../components/mail/ConnectMailboxDialog'
+import { useAuth } from '../../hooks/useAuth'
 
 type TabId = 'profile' | 'notifications' | 'security' | 'appearance' | 'accounts' | 'filters' | 'signatures'
 
@@ -95,28 +89,30 @@ interface Signature {
     updatedAt: string
 }
 
+interface MailServerInfo {
+    smtp: { host: string; port: number; security: string; auth: string; description: string }
+    imap: { host: string; port: number; security: string; auth: string; description: string }
+}
+
 export default function MailSettingsPage() {
-    const { refreshMailboxes, setSelectedMailbox } = useMailbox()
     const [, navigate] = useLocation()
+    const { user } = useAuth()
+    const [mailServerInfo, setMailServerInfo] = React.useState<MailServerInfo | null>(null)
     const [activeTab, setActiveTab] = React.useState<TabId>('accounts')
     const [isSaving, setIsSaving] = React.useState(false)
     const [showAddAccountDialog, setShowAddAccountDialog] = React.useState(false)
-    const [showPassword, setShowPassword] = React.useState(false)
     const [showAddFilter, setShowAddFilter] = React.useState(false)
     const [selectedMailboxId, setSelectedMailboxId] = React.useState<string | null>(null)
     const [isLoadingMailboxes, setIsLoadingMailboxes] = React.useState(false)
     const [isLoadingFilters, setIsLoadingFilters] = React.useState(false)
     const [mailboxes, setMailboxes] = React.useState<Mailbox[]>([])
     const [filters, setFilters] = React.useState<MailFilter[]>([])
-    const [isSavingAccount, setIsSavingAccount] = React.useState(false)
     const [isSavingFilter, setIsSavingFilter] = React.useState(false)
     const [signatures, setSignatures] = React.useState<Signature[]>([])
     const [isLoadingSignatures, setIsLoadingSignatures] = React.useState(false)
     const [showAddSignature, setShowAddSignature] = React.useState(false)
     const [isSavingSignature, setIsSavingSignature] = React.useState(false)
     const [editingSignature, setEditingSignature] = React.useState<Signature | null>(null)
-
-    const [newAccount, setNewAccount] = React.useState({ email: '', password: '' })
 
     const [newFilter, setNewFilter] = React.useState({
         name: '',
@@ -158,6 +154,20 @@ export default function MailSettingsPage() {
     }, [fetchMailboxes])
 
     React.useEffect(() => {
+        fetch('/api/system/mail-server-info')
+            .then(r => r.ok ? r.json() as Promise<MailServerInfo> : null)
+            .then(data => { if (data) setMailServerInfo(data) })
+            .catch(() => { /* ignore — feature is optional */ })
+    }, [])
+
+    const copyToClipboard = (text: string, label: string) => {
+        navigator.clipboard.writeText(text).then(
+            () => toast({ title: `${label} copied`, variant: 'success' }),
+            () => toast({ title: 'Copy failed', variant: 'destructive' })
+        )
+    }
+
+    React.useEffect(() => {
         if (selectedMailboxId && activeTab === 'filters') {
             fetchFilters()
         }
@@ -181,38 +191,6 @@ export default function MailSettingsPage() {
             fetchSignatures()
         }
     }, [selectedMailboxId, activeTab, fetchSignatures])
-
-    const handleAddAccount = async () => {
-        setIsSavingAccount(true)
-        try {
-            const data = await apiFetch<{ mailbox: { id: string; email: string; displayName: string | null; isDefault: boolean; isActive: boolean } }>('/api/mail/mailboxes/connect', {
-                method: 'POST',
-                body: JSON.stringify(newAccount),
-            })
-            setShowAddAccountDialog(false)
-            setShowPassword(false)
-            setNewAccount({ email: '', password: '' })
-            await refreshMailboxes()
-            if (data.mailbox) {
-                setSelectedMailbox({
-                    id: data.mailbox.id,
-                    email: data.mailbox.email,
-                    displayName: data.mailbox.displayName,
-                    isDefault: data.mailbox.isDefault,
-                    isActive: data.mailbox.isActive,
-                    lastSyncAt: null,
-                    syncError: null,
-                })
-                navigate('/mail/inbox')
-            }
-            toast({ title: 'Account connected successfully', variant: 'success' })
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to connect account'
-            toast({ title: 'Failed to connect account', description: message, variant: 'destructive' })
-        } finally {
-            setIsSavingAccount(false)
-        }
-    }
 
     const handleDeleteMailbox = async (id: string) => {
         try {
@@ -428,80 +406,140 @@ export default function MailSettingsPage() {
                                         </CardContent>
                                     </Card>
 
+                                    {mailServerInfo && (
+                                        <Card>
+                                            <CardHeader>
+                                                <CardTitle className="flex items-center gap-2">
+                                                    <Smartphone className="w-5 h-5" />
+                                                    Use this account in Thunderbird / Outlook / Apple Mail
+                                                </CardTitle>
+                                                <CardDescription>
+                                                    Connect any IMAP client to your inbox. Use your account email and the password you log in with.
+                                                </CardDescription>
+                                            </CardHeader>
+                                            <CardContent className="space-y-4">
+                                                <div className="grid gap-4 md:grid-cols-2">
+                                                    <div className="p-4 rounded-xl border border-border bg-muted/40">
+                                                        <h4 className="font-medium mb-3 flex items-center gap-2">
+                                                            <Mail className="w-4 h-4" /> Incoming (IMAP)
+                                                        </h4>
+                                                        <dl className="space-y-2 text-sm">
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <dt className="text-muted-foreground">Server</dt>
+                                                                <dd className="flex items-center gap-1">
+                                                                    <code className="font-mono">{mailServerInfo.imap.host}</code>
+                                                                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(mailServerInfo.imap.host, 'IMAP server')}>
+                                                                        <Copy className="w-3 h-3" />
+                                                                    </Button>
+                                                                </dd>
+                                                            </div>
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <dt className="text-muted-foreground">Port</dt>
+                                                                <dd className="flex items-center gap-1">
+                                                                    <code className="font-mono">{mailServerInfo.imap.port}</code>
+                                                                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(String(mailServerInfo.imap.port), 'IMAP port')}>
+                                                                        <Copy className="w-3 h-3" />
+                                                                    </Button>
+                                                                </dd>
+                                                            </div>
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <dt className="text-muted-foreground">Security</dt>
+                                                                <dd className="font-mono">{mailServerInfo.imap.security}</dd>
+                                                            </div>
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <dt className="text-muted-foreground">Auth</dt>
+                                                                <dd className="font-mono">{mailServerInfo.imap.auth}</dd>
+                                                            </div>
+                                                        </dl>
+                                                    </div>
 
-                                    <Dialog
-                                        open={showAddAccountDialog}
-                                        onOpenChange={(open) => {
-                                            if (!open) {
-                                                setNewAccount({ email: '', password: '' })
-                                                setShowPassword(false)
-                                            }
-                                            setShowAddAccountDialog(open)
-                                        }}
-                                    >
-                                        <DialogContent className="sm:max-w-md">
-                                            <DialogHeader>
-                                                <DialogTitle>Connect Email Account</DialogTitle>
-                                                <DialogDescription>
-                                                    Enter the credentials of an account registered on this server
-                                                </DialogDescription>
-                                            </DialogHeader>
-                                            <div className="space-y-4 mt-2">
-                                                <div className="space-y-2">
-                                                    <Label>Email Address</Label>
-                                                    <div className="relative">
-                                                        <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                                                        <Input
-                                                            type="email"
-                                                            value={newAccount.email}
-                                                            onChange={(e) => setNewAccount({ ...newAccount, email: e.target.value })}
-                                                            placeholder="your@email.com"
-                                                            className="h-11 pl-10 bg-background"
-                                                            autoComplete="email"
-                                                        />
+                                                    <div className="p-4 rounded-xl border border-border bg-muted/40">
+                                                        <h4 className="font-medium mb-3 flex items-center gap-2">
+                                                            <Server className="w-4 h-4" /> Outgoing (SMTP)
+                                                        </h4>
+                                                        <dl className="space-y-2 text-sm">
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <dt className="text-muted-foreground">Server</dt>
+                                                                <dd className="flex items-center gap-1">
+                                                                    <code className="font-mono">{mailServerInfo.smtp.host}</code>
+                                                                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(mailServerInfo.smtp.host, 'SMTP server')}>
+                                                                        <Copy className="w-3 h-3" />
+                                                                    </Button>
+                                                                </dd>
+                                                            </div>
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <dt className="text-muted-foreground">Port</dt>
+                                                                <dd className="flex items-center gap-1">
+                                                                    <code className="font-mono">{mailServerInfo.smtp.port}</code>
+                                                                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(String(mailServerInfo.smtp.port), 'SMTP port')}>
+                                                                        <Copy className="w-3 h-3" />
+                                                                    </Button>
+                                                                </dd>
+                                                            </div>
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <dt className="text-muted-foreground">Security</dt>
+                                                                <dd className="font-mono">{mailServerInfo.smtp.security}</dd>
+                                                            </div>
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <dt className="text-muted-foreground">Auth</dt>
+                                                                <dd className="font-mono">{mailServerInfo.smtp.auth}</dd>
+                                                            </div>
+                                                        </dl>
                                                     </div>
                                                 </div>
-                                                <div className="space-y-2">
-                                                    <Label>Password</Label>
-                                                    <div className="relative">
-                                                        <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                                                        <Input
-                                                            type={showPassword ? 'text' : 'password'}
-                                                            value={newAccount.password}
-                                                            onChange={(e) => setNewAccount({ ...newAccount, password: e.target.value })}
-                                                            placeholder="••••••••"
-                                                            className="h-11 pl-10 pr-10 bg-background"
-                                                            autoComplete="current-password"
-                                                        />
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setShowPassword(!showPassword)}
-                                                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+
+                                                {user?.email && (
+                                                    <div className="p-4 rounded-xl border border-border bg-muted/40 flex items-center justify-between gap-3">
+                                                        <div>
+                                                            <p className="text-xs text-muted-foreground">Username</p>
+                                                            <p className="font-mono text-sm">{user.email}</p>
+                                                        </div>
+                                                        <Button variant="outline" size="sm" onClick={() => copyToClipboard(user.email, 'Username')}>
+                                                            <Copy className="w-3 h-3 mr-1" /> Copy
+                                                        </Button>
+                                                    </div>
+                                                )}
+
+                                                <div className="flex flex-wrap gap-2">
+                                                    {user?.email && (
+                                                        <a
+                                                            href={`/api/system/mail-config/apple.mobileconfig?email=${encodeURIComponent(user.email)}`}
+                                                            className="inline-flex"
                                                         >
-                                                            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                                                        </button>
-                                                    </div>
+                                                            <Button variant="outline" size="sm">
+                                                                <Download className="w-3 h-3 mr-1" /> Apple .mobileconfig
+                                                            </Button>
+                                                        </a>
+                                                    )}
+                                                    {user?.email && (
+                                                        <a
+                                                            href={`/.well-known/autoconfig/mail/config-v1.1.xml?emailaddress=${encodeURIComponent(user.email)}`}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className="inline-flex"
+                                                        >
+                                                            <Button variant="outline" size="sm">
+                                                                <ExternalLink className="w-3 h-3 mr-1" /> Thunderbird autoconfig
+                                                            </Button>
+                                                        </a>
+                                                    )}
                                                 </div>
-                                                <div className="flex gap-3 pt-2">
-                                                    <Button
-                                                        variant="outline"
-                                                        className="flex-1"
-                                                        onClick={() => setShowAddAccountDialog(false)}
-                                                        disabled={isSavingAccount}
-                                                    >
-                                                        Cancel
-                                                    </Button>
-                                                    <Button
-                                                        className="flex-1"
-                                                        onClick={handleAddAccount}
-                                                        disabled={isSavingAccount || !newAccount.email || !newAccount.password}
-                                                    >
-                                                        {isSavingAccount ? 'Connecting...' : 'Connect Account'}
-                                                    </Button>
+
+                                                <div className="p-3 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 text-sm text-yellow-800 dark:text-yellow-200">
+                                                    <strong>Password:</strong> use the same password you sign into this account with. If you change it on the web, update it in your mail client too.
                                                 </div>
-                                            </div>
-                                        </DialogContent>
-                                    </Dialog>
+                                            </CardContent>
+                                        </Card>
+                                    )}
+
+                                    <ConnectMailboxDialog
+                                        open={showAddAccountDialog}
+                                        onOpenChange={setShowAddAccountDialog}
+                                        onConnected={() => {
+                                            fetchMailboxes()
+                                            navigate('/mail/inbox')
+                                        }}
+                                    />
                                 </div>
                             )}
 

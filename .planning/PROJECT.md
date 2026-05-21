@@ -2,22 +2,7 @@
 
 ## What This Is
 
-SkaleClub Mail is a multi-tenant email server management platform. The outreach module provides cold email campaign tooling: leads management, email sequence building, campaign orchestration, reply/bounce detection, and analytics. After hardening DB layer in v1.1, focus shifts to security, correctness, and tooling hygiene revealed by the 2026-05-16 system-wide audit.
-
-## Current State
-
-**Latest shipped:** v1.2 — Security & Tech Debt Remediation (2026-05-16). All 27 requirements satisfied across 5 phases (21 plans). See [`MILESTONES.md`](MILESTONES.md) and [`v1.2-MILESTONE-AUDIT.md`](v1.2-MILESTONE-AUDIT.md).
-
-**Current milestone:** None — run `/gsd:new-milestone` to start v1.3.
-
-## Next Milestone Goals (v1.3 candidates)
-
-- Error log sink (Sentry / Datadog / structured stdout) — deferred from v1.2 CI-04.
-- Per-user rate limiting (replace per-IP limiter).
-- Persistent webhook dead-letter queue.
-- Drizzle migration regeneration / full schema sync.
-- Testing framework setup (Vitest + Supertest).
-- Email warm-up automation (sending logic).
+SkaleClub Mail is a multi-tenant email server management platform. The outreach module provides cold email campaign tooling: leads management, email sequence building, campaign orchestration, reply/bounce detection, and analytics. Now focused on hardening the database layer so the system is fast and changes don't break things.
 
 ## Core Value
 
@@ -59,39 +44,38 @@ A user can create a campaign, build a sequence, add leads, and have emails actua
 - ✓ Outreach sequences batch-load suppressions/idempotency — v1.1 Phase 08
 - ✓ CHECK constraints on sequenceSteps (delayHours >= 0, stepOrder >= 1) — v1.1 Phase 09
 - ✓ Old migration file deprecated with comment header — v1.1 Phase 09
-- ✓ Cascade delete transactional + cross-org user preservation — v1.2 Phase 10 (CRIT-01)
-- ✓ `/health/ready` returns 503 on DB failure — v1.2 Phase 10 (CRIT-02)
-- ✓ `/test-connection` auth + SSRF + rate-limit — v1.2 Phase 10 (CRIT-03)
-- ✓ RLS doc honesty + `access.ts` consolidation — v1.2 Phase 10 (CRIT-04)
-- ✓ Centralized SSRF guard (`network-guard.ts`) — v1.2 Phase 11 (SEC-01)
-- ✓ IMAP TLS hardening + per-mailbox `skipTlsVerify` — v1.2 Phase 11 (SEC-02)
-- ✓ JWT auth cache (60s LRU+TTL) — v1.2 Phase 11 (SEC-03)
-- ✓ Cron jobs use Postgres advisory locks — v1.2 Phase 11 (SEC-04)
-- ✓ Webhook timeout + retry/backoff + attempts counter — v1.2 Phase 12 (COR-01, COR-02)
-- ✓ Click tracking replay dedup (60s window) — v1.2 Phase 12 (COR-03)
-- ✓ Outreach global-toggle Zod + audit response — v1.2 Phase 12 (COR-04)
-- ✓ `/move` folder ownership validation — v1.2 Phase 12 (COR-05)
-- ✓ Suppression integration in `POST /messages` — v1.2 Phase 12 (COR-06)
-- ✓ ESLint config + zero-warning baseline — v1.2 Phase 12 (COR-07)
-- ✓ `tsc --noEmit` zero errors (both configs) — v1.2 Phase 13 (QUA-01)
-- ✓ Migration 013 archived + schema workflow doc — v1.2 Phase 13 (QUA-02)
-- ✓ RLS consolidation migration 020 — v1.2 Phase 13 (QUA-03)
-- ✓ Domain name lowercase normalize + backfill — v1.2 Phase 13 (QUA-04)
-- ✓ CSP hardened (frame-ancestors, object-src, base-uri) — v1.2 Phase 13 (QUA-05)
-- ✓ PII logs gated behind `if (!isProd)` — v1.2 Phase 13 (QUA-06)
-- ✓ authLimiter recalibrated to 10/15min — v1.2 Phase 13 (QUA-07)
-- ✓ Schema fields camelCase (ownerId, outreachEnabled) — v1.2 Phase 13 (QUA-08)
-- ✓ mail-diag testEmail from query param — v1.2 Phase 14 (CLN-01)
-- ✓ Repo cleanup (nul + scripts/_) — v1.2 Phase 14 (CLN-02)
-- ✓ Vite build warning suppressed — v1.2 Phase 14 (CLN-03)
-- ✓ `MAX_WEBHOOK_RESPONSE_BODY` constant extracted — v1.2 Phase 14 (CLN-04)
-- ✓ CI lint + tsc gates active — v1.2 Phase 14 (CI-01, CI-02)
-- ✓ `/health/ready` runbook (`docs/runbook.md`) — v1.2 Phase 14 (CI-03)
-- ✓ Error log sink decision recorded (deferred to v1.3) — v1.2 Phase 14 (CI-04)
 
-### Active
+### Active (v1.2 — Mail Server Production Readiness)
 
-v1.2 complete. Next milestone requirements TBD via `/gsd:new-milestone`.
+**Milestone goal:** end-users can configure `user@skale.club` in Thunderbird / Outlook / Apple Mail and send/receive email with DKIM-signed outbound and SPF/DMARC-verified inbound.
+
+- TLS-01, TLS-02, TLS-03: Let's Encrypt certificates for mail ports (Phase 10)
+- DNS-01, DNS-02, DISCO-01: DNS records + autoconfig CNAME (Phase 11) ← **next**
+- DKIM-01, AUTH-01, AUTH-02: outbound DKIM signing + inbound mailauth (Phase 12)
+- OPS-01, MX-01, MX-02: Hetzner port 25 unblock + rate-limit/greylist/DNSBL (Phase 13)
+
+See `.planning/milestones/v1.2-REQUIREMENTS.md` and `v1.2-ROADMAP.md` for details.
+
+## Deployment
+
+**Hetzner VPS** (NOT Vercel) via `.github/workflows/deploy-hetzner.yml`:
+- Single Docker container (`Dockerfile`)
+- Exposed: 9001 (HTTP via Caddy), 25 (MX), 587 (SMTP submission), 993 (IMAP)
+- Caddy reverse-proxy for `mail.skale.club:443` only
+- Mail ports are raw TCP direct from container
+- Auto-rollback on health-check failure
+
+## Key Decisions (running log)
+
+| Date | Decision | Reason |
+|---|---|---|
+| 2026-03-31 | Phase ordering: RLS → indexes → pagination → query opt → schema hardening | Research-recommended dependency order |
+| 2026-03-31 | Indexes via Drizzle `index()` in schema.ts | Single source of truth |
+| 2026-03-31 | `CREATE INDEX CONCURRENTLY` via `sql/indexes.sql`, not `db:push` | `db:push` wraps in transaction, blocks writes |
+| 2026-04-15 | Hetzner over Vercel for mail server | Vercel Functions are HTTP-only; mail needs long-lived TCP |
+| 2026-04-15 | `mx-server.ts` replaces `smtp-inbound.ts` | More complete (TLS, UID alloc, count recompute) |
+| 2026-04-15 | DKIM/SPF/DMARC via `mailauth` (inbound) + nodemailer `dkim` (outbound) | Off-the-shelf, RFC-compliant |
+| 2026-04-15 | Let's Encrypt via dedicated certbot, not Caddy's internal certs | Standard path, clear renewal hook |
 
 ### Out of Scope
 
@@ -125,11 +109,6 @@ v1.2 complete. Next milestone requirements TBD via `/gsd:new-milestone`.
 | Use lib/api-client.ts across all outreach pages | Consistent error handling and retry logic vs lib/api.ts | ✓ v1.0 |
 | Module-level isSequenceProcessing flag | Prevents cron overlap without DB locks; .finally() resets unconditionally | ✓ v1.0 |
 | Consolidate is_outreach_org_member into is_org_member | Identical function body; reduces maintenance surface | ✓ v1.1 Phase 05 |
-| RLS is defense-in-depth, JS-side is source of truth | App connection uses `DATABASE_URL` role that bypasses RLS; every route must call `checkAccess` | v1.2 Phase 10 (C4) |
-| Centralize SSRF guard in `network-guard.ts` | Webhooks, click tracking, IMAP/SMTP test connection all need it — DRY | v1.2 Phase 11 |
-| Postgres advisory locks for cron jobs | Multi-instance safe without external infra (Redis); leverages existing DB | v1.2 Phase 11 |
-| Defer Drizzle migration regeneration | Schema drift is too large; team-of-one writes manual SQL in `supabase/migrations/`. Document the pattern; deprecate `db:generate` workflow rather than producing a massive auto-diff | v1.2 Phase 13 |
-| Defer error log sink (Sentry/Datadog) to v1.3 | Requires budget + ops infra decision (vendor selection, retention policy, PII handling). `/health/ready` (CRIT-02) plus CI lint + `tsc --noEmit` gates (CI-01, CI-02) provide the v1.2 first-line defense. Avoid premature commitment to a vendor before observability requirements are scoped. | v1.2 Phase 14 — CI-04 deferred; tracked in `Future Requirements` for v1.3 |
 
 ## Evolution
 
@@ -149,4 +128,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-16 — v1.2 Security & Tech Debt Remediation shipped & archived*
+*Last updated: 2026-03-31 after v1.1 Phase 05 (RLS & migration safety)*

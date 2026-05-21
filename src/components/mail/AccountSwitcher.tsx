@@ -3,7 +3,7 @@ import { Link } from 'wouter'
 import { useMailbox, getProviderColor, getProviderIcon, type Mailbox } from '../../hooks/useMailbox'
 import { useMultiSession } from '../../hooks/useMultiSession'
 import { useAuth } from '../../hooks/useAuth'
-import { AddAccountDialog } from './AddAccountDialog'
+import { ConnectMailboxDialog } from './ConnectMailboxDialog'
 import { Plus, Check, AlertCircle, ChevronDown, Mail, RefreshCw, Settings, LogOut, Copy, Trash2 } from 'lucide-react'
 import { toast } from '../../components/ui/toaster'
 
@@ -18,7 +18,7 @@ export function AccountSwitcher({ compact = false, showSignOut = false, onSignOu
     const { mailboxes, selectedMailbox, setSelectedMailbox, isLoading, refreshMailboxes } = useMailbox()
     const { sessions, activeSessionId, switchSession, removeAccount } = useMultiSession()
     const [isOpen, setIsOpen] = React.useState(false)
-    const [showAddDialog, setShowAddDialog] = React.useState(false)
+    const [showConnectDialog, setShowConnectDialog] = React.useState(false)
     const [switchingId, setSwitchingId] = React.useState<string | null>(null)
 
     if (isLoading) {
@@ -30,20 +30,31 @@ export function AccountSwitcher({ compact = false, showSignOut = false, onSignOu
         )
     }
 
-    if (mailboxes.length === 0) {
+    if (mailboxes.length === 0 && !showSignOut) {
         return (
-            <button
-                onClick={() => setShowAddDialog(true)}
-                className="flex items-center gap-2 px-3 py-2 bg-primary/10 text-primary rounded-lg hover:bg-primary/20 transition-colors"
-            >
-                <Plus className="w-5 h-5" />
-                <span className="text-sm font-medium">Add Account</span>
-            </button>
+            <>
+                <button
+                    onClick={() => setShowConnectDialog(true)}
+                    className="flex items-center gap-2 px-3 py-2 bg-primary/10 text-primary rounded-lg hover:bg-primary/20 transition-colors"
+                >
+                    <Plus className="w-5 h-5" />
+                    <span className="text-sm font-medium">Add Account</span>
+                </button>
+                <ConnectMailboxDialog
+                    open={showConnectDialog}
+                    onOpenChange={setShowConnectDialog}
+                />
+            </>
         )
     }
 
     const userInitial = user?.user_metadata?.firstName?.[0]?.toUpperCase() || user?.email?.[0]?.toUpperCase() || 'U'
     const userName = user?.user_metadata?.firstName || user?.email?.split('@')[0] || 'User'
+    const mailboxContextLabel = selectedMailbox
+        ? selectedMailbox.email.toLowerCase() === user?.email?.toLowerCase()
+            ? `Mailbox: ${selectedMailbox.email}`
+            : `Viewing: ${selectedMailbox.email}`
+        : 'No mailbox selected'
 
     const hasMultipleSessions = sessions.length > 1
 
@@ -96,9 +107,14 @@ export function AccountSwitcher({ compact = false, showSignOut = false, onSignOu
                             <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-primary flex items-center justify-center text-primary-foreground font-semibold text-sm">
                                 {userInitial}
                             </div>
-                            <span className="hidden sm:block text-sm font-medium text-foreground">
-                                {userName}
-                            </span>
+                            <div className="hidden sm:flex flex-col items-start min-w-0">
+                                <span className="text-sm font-medium text-foreground truncate max-w-[180px]">
+                                    {userName}
+                                </span>
+                                <span className="text-xs text-muted-foreground truncate max-w-[180px]">
+                                    {mailboxContextLabel}
+                                </span>
+                            </div>
                         </>
                     ) : selectedMailbox ? (
                         <>
@@ -141,9 +157,9 @@ export function AccountSwitcher({ compact = false, showSignOut = false, onSignOu
                             {hasMultipleSessions && (
                                 <>
                                     <div className="px-3 pt-3 pb-1">
-                                        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Accounts</span>
+                                        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Sessions</span>
                                     </div>
-                                    <div className="max-h-48 overflow-y-auto">
+                                    <div className="max-h-32 overflow-y-auto">
                                         {sessions.map((session) => (
                                             <SessionItem
                                                 key={session.userId}
@@ -160,26 +176,22 @@ export function AccountSwitcher({ compact = false, showSignOut = false, onSignOu
                                 </>
                             )}
 
-                            {!hasMultipleSessions && (
-                                <>
-                                    <div className="px-3 pt-2 pb-1">
-                                        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Accounts</span>
-                                    </div>
-                                    <div className="max-h-48 overflow-y-auto">
-                                        {mailboxes.map((mailbox) => (
-                                            <AccountItem
-                                                key={mailbox.id}
-                                                mailbox={mailbox}
-                                                isSelected={selectedMailbox?.id === mailbox.id}
-                                                onSelect={() => {
-                                                    setSelectedMailbox(mailbox)
-                                                    setIsOpen(false)
-                                                }}
-                                            />
-                                        ))}
-                                    </div>
-                                </>
-                            )}
+                            <div className="px-3 pt-2 pb-1">
+                                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Accounts</span>
+                            </div>
+                            <div className="max-h-48 overflow-y-auto">
+                                {mailboxes.map((mailbox) => (
+                                    <AccountItem
+                                        key={mailbox.id}
+                                        mailbox={mailbox}
+                                        isSelected={selectedMailbox?.id === mailbox.id}
+                                        onSelect={() => {
+                                            setSelectedMailbox(mailbox)
+                                            setIsOpen(false)
+                                        }}
+                                    />
+                                ))}
+                            </div>
 
                             <div className="border-t border-border pt-2 px-2 space-y-1">
                                 <button
@@ -203,7 +215,7 @@ export function AccountSwitcher({ compact = false, showSignOut = false, onSignOu
                                 <button
                                     onClick={() => {
                                         setIsOpen(false)
-                                        setShowAddDialog(true)
+                                        setShowConnectDialog(true)
                                     }}
                                     className="flex items-center gap-3 w-full px-3 py-2 text-sm text-primary hover:bg-primary/10 rounded-lg transition-colors font-medium"
                                 >
@@ -231,9 +243,9 @@ export function AccountSwitcher({ compact = false, showSignOut = false, onSignOu
                 )}
             </div>
 
-            <AddAccountDialog
-                open={showAddDialog}
-                onOpenChange={setShowAddDialog}
+            <ConnectMailboxDialog
+                open={showConnectDialog}
+                onOpenChange={setShowConnectDialog}
             />
         </>
     )

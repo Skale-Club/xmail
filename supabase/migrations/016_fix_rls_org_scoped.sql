@@ -332,8 +332,7 @@ CREATE POLICY webhooks_delete_admin
 -- ============================================================================
 -- is_outreach_org_member is identical to is_org_member. Drop it and update
 -- outreach policies to use is_org_member directly.
-
-DROP FUNCTION IF EXISTS public.is_outreach_org_member(uuid);
+-- Must drop dependent policies BEFORE dropping the function.
 
 -- Email Accounts: update to use is_org_member
 DROP POLICY IF EXISTS email_accounts_select ON public.email_accounts;
@@ -462,3 +461,6 @@ CREATE POLICY outreach_analytics_update ON public.outreach_analytics FOR UPDATE
     TO authenticated
     USING (public.is_org_member(organization_id) OR public.is_platform_admin())
     WITH CHECK (public.is_org_member(organization_id) OR public.is_platform_admin());
+
+-- Now safe to drop the redundant function (all dependent policies already replaced above)
+DROP FUNCTION IF EXISTS public.is_outreach_org_member(uuid);

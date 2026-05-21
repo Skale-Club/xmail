@@ -180,7 +180,7 @@ router.post('/update-password', async (req: Request, res: Response) => {
         if (updatedData?.user) {
             const userId = updatedData.user.id
             const dbUser = await db.query.users.findFirst({ where: eq(users.id, userId) })
-            if (dbUser && !dbUser.isAdmin) {
+            if (dbUser) {
                 const newHash = await hashPassword(password)
                 await db.update(users)
                     .set({ passwordHash: newHash, updatedAt: new Date() })

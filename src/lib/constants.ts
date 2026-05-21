@@ -17,6 +17,7 @@ export const APP_CONSTANTS = {
     
     STORAGE: {
         SELECTED_MAILBOX_KEY: 'selectedMailboxId',
+        SELECTED_MAILBOX_KEY_PREFIX: 'selectedMailboxId:',
         THEME_KEY: 'theme',
         SIDEBAR_STATE_KEY: 'sidebarOpen'
     },
@@ -58,6 +59,10 @@ export const APP_CONSTANTS = {
         CUSTOM: 'custom'
     }
 } as const
+
+export function getSelectedMailboxStorageKey(sessionId: string | null | undefined): string {
+    return `${APP_CONSTANTS.STORAGE.SELECTED_MAILBOX_KEY_PREFIX}${sessionId || 'anonymous'}`
+}
 
 export const PROVIDER_CONFIG = {
     gmail: {

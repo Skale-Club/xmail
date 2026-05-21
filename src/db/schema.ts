@@ -343,7 +343,9 @@ export const suppressions = pgTable('suppressions', {
     id: uuid('id').primaryKey().defaultRandom(),
     organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
     emailAddress: text('email_address').notNull(),
-    reason: text('reason').notNull(), // 'bounce', 'complaint', 'manual'
+    // Provenance of the suppression — constrained at DB layer (see migration 020).
+    source: text('source').notNull().default('manual'), // 'bounce' | 'complaint' | 'unsubscribe' | 'manual'
+    reason: text('reason').notNull(), // 'bounce', 'complaint', 'manual' (free-text reason; superseded by source going forward but kept for compat)
     createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
     orgEmailUnique: uniqueIndex('suppression_org_email_unique').on(table.organizationId, table.emailAddress),
@@ -781,7 +783,7 @@ export const campaigns = pgTable('campaigns', {
 // Sequences (email sequences for campaigns)
 export const sequences = pgTable('sequences', {
     id: uuid('id').primaryKey().defaultRandom(),
-    campaignId: uuid('campaign_id').references(() => campaigns.id).notNull(),
+    campaignId: uuid('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }).notNull(),
     name: text('name').notNull(),
     description: text('description'),
     isActive: boolean('is_active').default(true).notNull(),
@@ -794,7 +796,7 @@ export const sequences = pgTable('sequences', {
 // Sequence Steps (individual emails in a sequence)
 export const sequenceSteps = pgTable('sequence_steps', {
     id: uuid('id').primaryKey().defaultRandom(),
-    sequenceId: uuid('sequence_id').references(() => sequences.id).notNull(),
+    sequenceId: uuid('sequence_id').references(() => sequences.id, { onDelete: 'cascade' }).notNull(),
     // Step order
     stepOrder: integer('step_order').notNull(),
     // Type
@@ -829,12 +831,12 @@ export const sequenceSteps = pgTable('sequence_steps', {
 // Campaign Leads (junction table - leads assigned to campaigns)
 export const campaignLeads = pgTable('campaign_leads', {
     id: uuid('id').primaryKey().defaultRandom(),
-    campaignId: uuid('campaign_id').references(() => campaigns.id).notNull(),
-    leadId: uuid('lead_id').references(() => leads.id).notNull(),
+    campaignId: uuid('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }).notNull(),
+    leadId: uuid('lead_id').references(() => leads.id, { onDelete: 'cascade' }).notNull(),
     // Assignment
     assignedEmailAccountId: uuid('assigned_email_account_id').references(() => emailAccounts.id),
     // Progress
-    currentStepId: uuid('current_step_id').references(() => sequenceSteps.id),
+    currentStepId: uuid('current_step_id').references(() => sequenceSteps.id, { onDelete: 'set null' }),
     currentStepOrder: integer('current_step_order').default(0).notNull(),
     // Status
     status: leadStatusEnum('status').default('new').notNull(),
@@ -865,12 +867,14 @@ export const campaignLeads = pgTable('campaign_leads', {
 export const outreachEmails = pgTable('outreach_emails', {
     id: uuid('id').primaryKey().defaultRandom(),
     organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
-    campaignId: uuid('campaign_id').references(() => campaigns.id).notNull(),
-    campaignLeadId: uuid('campaign_lead_id').references(() => campaignLeads.id).notNull(),
-    sequenceStepId: uuid('sequence_step_id').references(() => sequenceSteps.id).notNull(),
+    campaignId: uuid('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }).notNull(),
+    campaignLeadId: uuid('campaign_lead_id').references(() => campaignLeads.id, { onDelete: 'cascade' }).notNull(),
+    sequenceStepId: uuid('sequence_step_id').references(() => sequenceSteps.id, { onDelete: 'cascade' }).notNull(),
     emailAccountId: uuid('email_account_id').references(() => emailAccounts.id).notNull(),
     // Message details
     messageId: text('message_id'), // RFC 2822 Message-ID
+    // Stateless HMAC-signed tracking token (see src/server/lib/outreach-tokens.ts in Plan 14-05)
+    trackingToken: text('tracking_token').notNull(),
     // Content sent
     subject: text('subject').notNull(),
     plainBody: text('plain_body'),
@@ -894,11 +898,16 @@ export const outreachEmails = pgTable('outreach_emails', {
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
     campaignLeadStepUnique: uniqueIndex('outreach_emails_campaign_lead_step_unique').on(table.campaignLeadId, table.sequenceStepId),
+    trackingTokenUnique: uniqueIndex('outreach_emails_tracking_token_unique').on(table.trackingToken),
     idxOutreachEmailsOrganizationId: index('idx_outreach_emails_organization_id').on(table.organizationId),
     idxOutreachEmailsCampaignId: index('idx_outreach_emails_campaign_id').on(table.campaignId),
     idxOutreachEmailsCampaignLeadId: index('idx_outreach_emails_campaign_lead_id').on(table.campaignLeadId),
     idxOutreachEmailsSequenceStepId: index('idx_outreach_emails_sequence_step_id').on(table.sequenceStepId),
     idxOutreachEmailsEmailAccountId: index('idx_outreach_emails_email_account_id').on(table.emailAccountId),
+    // Phase 17 — every aggregate query in the health endpoint filters on
+    // (sent_at >= window AND status = ?). Composite index makes those scans
+    // index-only for the common 1h/24h/7d rolling windows.
+    idxOutreachEmailsSentAtStatus: index('idx_outreach_emails_sent_at_status').on(table.sentAt, table.status),
 }))
 
 // Outreach Analytics (daily aggregated stats)
@@ -1142,6 +1151,8 @@ export const mailFolders = pgTable('mail_folders', {
     type: text('type').default('custom'), // 'inbox', 'sent', 'drafts', 'trash', 'spam', 'custom'
     unreadCount: integer('unread_count').default(0).notNull(),
     totalCount: integer('total_count').default(0).notNull(),
+    uidValidity: integer('uid_validity').default(1).notNull(),
+    uidNext: integer('uid_next').default(1).notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -1186,7 +1197,7 @@ export const mailMessages = pgTable('mail_messages', {
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
-    mailboxUidUnique: uniqueIndex('mail_message_mailbox_uid_unique').on(table.mailboxId, table.remoteUid),
+    folderUidUnique: uniqueIndex('mail_message_folder_uid_unique').on(table.folderId, table.remoteUid),
     idxMailMessagesMailboxId: index('idx_mail_messages_mailbox_id').on(table.mailboxId),
     idxMailMessagesFolderId: index('idx_mail_messages_folder_id').on(table.folderId),
 }))

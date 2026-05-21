@@ -197,6 +197,10 @@ export function useUpdateMessage() {
             return mailApi.updateMessage(selectedMailbox.id, messageId, data)
         },
         onMutate: async ({ messageId, data }) => {
+            await queryClient.cancelQueries({
+                predicate: (query) => isMailboxMessagesQuery(query.queryKey, selectedMailbox?.id),
+            })
+
             const snapshots = snapshotMailboxMessageQueries(queryClient, selectedMailbox?.id)
 
             patchMailboxMessageQueries(queryClient, selectedMailbox?.id, (message) => {
@@ -217,7 +221,7 @@ export function useUpdateMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSuccess: () => {
+        onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
@@ -234,6 +238,10 @@ export function useDeleteMessage() {
             return mailApi.deleteMessage(selectedMailbox.id, messageId)
         },
         onMutate: async (messageId: string) => {
+            await queryClient.cancelQueries({
+                predicate: (query) => isMailboxMessagesQuery(query.queryKey, selectedMailbox?.id),
+            })
+
             const snapshots = snapshotMailboxMessageQueries(queryClient, selectedMailbox?.id)
 
             patchMailboxMessageQueries(queryClient, selectedMailbox?.id, (message) =>
@@ -247,7 +255,7 @@ export function useDeleteMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSuccess: () => {
+        onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
@@ -264,6 +272,10 @@ export function useArchiveMessage() {
             return mailApi.archiveMessage(selectedMailbox.id, messageId)
         },
         onMutate: async (messageId: string) => {
+            await queryClient.cancelQueries({
+                predicate: (query) => isMailboxMessagesQuery(query.queryKey, selectedMailbox?.id),
+            })
+
             const snapshots = snapshotMailboxMessageQueries(queryClient, selectedMailbox?.id)
 
             patchMailboxMessageQueries(queryClient, selectedMailbox?.id, (message) =>
@@ -277,7 +289,7 @@ export function useArchiveMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSuccess: () => {
+        onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
@@ -300,6 +312,10 @@ export function useSpamMessage() {
             return mailApi.spamMessage(selectedMailbox.id, messageId, isSpam)
         },
         onMutate: async ({ messageId, isSpam }) => {
+            await queryClient.cancelQueries({
+                predicate: (query) => isMailboxMessagesQuery(query.queryKey, selectedMailbox?.id),
+            })
+
             const snapshots = snapshotMailboxMessageQueries(queryClient, selectedMailbox?.id)
 
             patchMailboxMessageQueries(queryClient, selectedMailbox?.id, (message) => {
@@ -314,7 +330,7 @@ export function useSpamMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSuccess: () => {
+        onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
@@ -331,6 +347,10 @@ export function useRestoreMessage() {
             return mailApi.restoreMessage(selectedMailbox.id, messageId)
         },
         onMutate: async (messageId: string) => {
+            await queryClient.cancelQueries({
+                predicate: (query) => isMailboxMessagesQuery(query.queryKey, selectedMailbox?.id),
+            })
+
             const snapshots = snapshotMailboxMessageQueries(queryClient, selectedMailbox?.id)
 
             patchMailboxMessageQueries(queryClient, selectedMailbox?.id, (message) =>
@@ -344,7 +364,7 @@ export function useRestoreMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSuccess: () => {
+        onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
@@ -367,6 +387,10 @@ export function useMoveMessage() {
             return mailApi.moveMessage(selectedMailbox.id, messageId, folderId)
         },
         onMutate: async ({ messageId }) => {
+            await queryClient.cancelQueries({
+                predicate: (query) => isMailboxMessagesQuery(query.queryKey, selectedMailbox?.id),
+            })
+
             const snapshots = snapshotMailboxMessageQueries(queryClient, selectedMailbox?.id)
 
             patchMailboxMessageQueries(queryClient, selectedMailbox?.id, (message) =>
@@ -380,7 +404,7 @@ export function useMoveMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSuccess: () => {
+        onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
@@ -405,6 +429,10 @@ export function useBatchUpdate() {
             return mailApi.batchUpdate(selectedMailbox.id, messageIds, action, folderId)
         },
         onMutate: async ({ messageIds, action }) => {
+            await queryClient.cancelQueries({
+                predicate: (query) => isMailboxMessagesQuery(query.queryKey, selectedMailbox?.id),
+            })
+
             const snapshots = snapshotMailboxMessageQueries(queryClient, selectedMailbox?.id)
             const messageIdSet = new Set(messageIds)
 
@@ -439,7 +467,7 @@ export function useBatchUpdate() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSuccess: () => {
+        onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },

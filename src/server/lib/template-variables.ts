@@ -21,6 +21,13 @@ type LeadForTemplate = {
     customFields: Record<string, any> | null
 }
 
+// Context passed by the caller (e.g., outreach-sender.ts) for variables that depend
+// on per-send state, not on the lead row itself. Keep this minimal — anything that
+// can be derived from `lead` belongs in BUILTIN_VARIABLES instead.
+export interface TemplateContext {
+    unsubscribeUrl?: string
+}
+
 // Default values for when fields are null
 const DEFAULT_VALUES: Record<string, string> = {
     firstName: 'there',
@@ -72,7 +79,7 @@ const VARIABLE_REGEX = /\{\{([a-zA-Z0-9_]+)\}\}/g
  * const result = interpolateTemplate(template, lead)
  * // Result: "Hi John, thanks for your interest in Acme Corp!"
  */
-export function interpolateTemplate(template: string, lead: LeadForTemplate): string {
+export function interpolateTemplate(template: string, lead: LeadForTemplate, context: TemplateContext = {}): string {
     if (!template) return template
 
     let result = template
@@ -87,6 +94,7 @@ export function interpolateTemplate(template: string, lead: LeadForTemplate): st
 
     // Then handle any remaining {{variable}} patterns (custom fields)
     result = result.replace(VARIABLE_REGEX, (match, variableName) => {
+        if (variableName === 'unsubscribeUrl') return context.unsubscribeUrl ?? ''
         // Check if it's a custom field
         if (lead.customFields && variableName in lead.customFields) {
             const value = lead.customFields[variableName]

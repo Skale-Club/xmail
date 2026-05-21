@@ -171,8 +171,8 @@ export function ComposeDialog() {
                 inReplyTo: originalMessage?.message?.messageId,
                 references: originalMessage?.message?.references,
             })
-            toast({ title: 'Email sent successfully!', variant: 'success' })
             closeCompose()
+            toast({ title: 'Email sent successfully!', variant: 'success' })
         } catch (error) {
             toast({
                 title: 'Failed to send email',

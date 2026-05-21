@@ -44,6 +44,7 @@ coverage
 .kilo/node_modules/
 .kilo/bun.lock
 .kilo/package.json
+.kilo/package-lock.json
 
 # Drizzle ORM
 drizzle/meta

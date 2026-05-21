@@ -115,6 +115,65 @@ npm run build
 npm start
 ```
 
+## Deployment — Hetzner VPS
+
+**Production hosts on Hetzner** (not Vercel, not Railway). Deployment is fully automated via GitHub Actions on push to `main`.
+
+### Architecture
+
+```
+GitHub Actions (on push to main)
+      ↓ SSH
+Hetzner VPS (Ubuntu)
+      ↓
+Docker (skaleclub-mail:latest)
+      ├─ :9001  (HTTP API + SPA)  ──► Caddy reverse-proxy (mail.skale.club)
+      ├─ :25    (SMTP MX inbound)  ──► direct TCP, raw (Let's Encrypt TLS inside Node)
+      ├─ :587   (SMTP submission)  ──► direct TCP, raw (Thunderbird etc.)
+      └─ :993   (IMAP)             ──► direct TCP, raw (Thunderbird etc.)
+```
+
+### Workflow
+
+1. `git push origin main` → GitHub Actions triggers `.github/workflows/deploy-hetzner.yml`
+2. Action SSHes into `HETZNER_HOST`, pulls latest, builds fresh Docker image with `--no-cache`
+3. Tags current `:latest` as `:previous` for rollback
+4. Stops old container, waits for clean shutdown (up to 30s), starts new container
+5. Caddyfile check: adds `mail.skale.club { reverse_proxy localhost:9001 }` block if missing
+6. Health-checks `http://localhost:9001/health` up to 12× with 5s interval
+7. On failure: automatic rollback to `:previous` image; previous image reused with same env vars
+8. On success: prunes old images, emits deploy summary
+
+### Required GitHub Secrets
+
+| Secret | Purpose |
+|---|---|
+| `HETZNER_HOST` | Server IP/hostname for SSH |
+| `HETZNER_SSH_KEY` | Private SSH key for root access |
+| `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | Supabase backend |
+| `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | Client-side Supabase |
+| `DATABASE_URL` | Postgres pooler connection |
+| `JWT_SECRET`, `ENCRYPTION_KEY`, `OUTLOOK_TOKEN_ENCRYPTION_KEY` | Signing/crypto |
+| `MAIL_HOST`, `MAIL_DOMAIN` | Public mail hostnames |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Outbound relay (fallback) |
+| `FRONTEND_URL` | Frontend URL for CORS |
+| `APP_COMPANY_NAME`, `APP_APPLICATION_NAME` | Branding |
+
+### Local parity
+
+```bash
+docker build -t skaleclub-mail:local .
+docker compose up      # uses docker-compose.yml, ports 9001/25/587/993
+```
+
+### Files related to deploy
+
+| File | Purpose |
+|---|---|
+| `Dockerfile` | Node 20 Alpine, builds client + server, runs `dist/server/index.js` |
+| `docker-compose.yml` | Local parity; same port mapping as production |
+| `.github/workflows/deploy-hetzner.yml` | CI/CD pipeline with rollback |
+
 ## Project Structure
 
 ```

@@ -91,6 +91,18 @@ export default defineConfig(({ mode }) => {
                 },
                 workbox: {
                     globPatterns: ['**/*.{js,css,html,svg,woff2}'],
+                    // Drop precaches from prior builds so old chunk hashes
+                    // can't be served after a deploy. Combined with
+                    // skipWaiting + clientsClaim this means a new SW
+                    // takes over immediately rather than waiting for
+                    // every tab to close.
+                    cleanupOutdatedCaches: true,
+                    skipWaiting: true,
+                    clientsClaim: true,
+                    // Never cache the API response shells themselves with
+                    // the precache; only the runtimeCaching entry below
+                    // applies.
+                    navigateFallbackDenylist: [/^\/api\//],
                     runtimeCaching: [
                         {
                             urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/'),

@@ -13,7 +13,56 @@ import AdminLayout from './components/admin/AdminLayout'
 import { OrganizationProvider } from './hooks/useOrganization'
 import { ComposeProvider } from './hooks/useCompose'
 import { MailLayout } from './components/mail/MailLayout'
+import { AppErrorBoundary } from './components/AppErrorBoundary'
 import './index.css'
+
+// ---------------------------------------------------------------------------
+// Stale-chunk recovery
+// ---------------------------------------------------------------------------
+// When a new Docker build deploys, Workbox installs and activates the new SW
+// (skipWaiting + clientsClaim), but does NOT reload open tabs.  Those tabs
+// still hold the old index.html in memory, so any lazy import() referencing
+// an old content-hash chunk (e.g. SentPage-DsScGhek.js) returns a text/html
+// fallback from Express and the browser throws:
+//   TypeError: Failed to fetch dynamically imported module
+// This lands as an unhandledrejection — outside React's error boundary — and
+// causes a blank screen.  The listener below catches it, nukes the stale SW
+// cache, and reloads so the user gets the new build automatically.
+const CHUNK_LOAD_RE = /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk/i
+
+window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason
+    const message = reason instanceof Error ? reason.message : String(reason ?? '')
+    if (!CHUNK_LOAD_RE.test(message)) return
+
+    console.warn('[GSD] Stale chunk detected — clearing SW cache and reloading', message)
+    event.preventDefault()
+
+    const doReset = async () => {
+        try {
+            if ('serviceWorker' in navigator) {
+                const regs = await navigator.serviceWorker.getRegistrations()
+                await Promise.all(regs.map((r) => r.unregister()))
+            }
+            if ('caches' in window) {
+                const keys = await caches.keys()
+                await Promise.all(keys.map((k) => caches.delete(k)))
+            }
+        } catch { /* best-effort */ }
+        window.location.reload()
+    }
+
+    void doReset()
+})
+
+// When a new SW takes over (controllerchange), reload immediately so the tab
+// starts using the new index.html with updated chunk hashes.
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+        console.info('[GSD] New service worker active — reloading for fresh build')
+        window.location.reload()
+    })
+}
 
 const Login = React.lazy(() => import('./pages/Login'))
 
@@ -29,6 +78,8 @@ const MessagesPage = React.lazy(() => import('./pages/admin/MessagesPage'))
 
 const OutreachDashboard = React.lazy(() => import('./pages/outreach/OutreachDashboard'))
 const CampaignsPage = React.lazy(() => import('./pages/outreach/CampaignsPage'))
+const NewCampaignPage = React.lazy(() => import('./pages/outreach/campaigns/NewCampaignPage'))
+const CampaignDetailPage = React.lazy(() => import('./pages/outreach/campaigns/CampaignDetailPage'))
 const LeadsPage = React.lazy(() => import('./pages/outreach/LeadsPage'))
 const InboxesPage = React.lazy(() => import('./pages/outreach/InboxesPage'))
 const NewInboxPage = React.lazy(() => import('./pages/outreach/inboxes/NewInboxPage'))
@@ -390,10 +441,24 @@ function App() {
                                         </OrganizationProvider>
                                     </AdminCheck>
                                 </Route>
+                                <Route path="/outreach/campaigns/new">
+                                    <AdminCheck>
+                                        <OrganizationProvider>
+                                            <PageSuspense><NewCampaignPage /></PageSuspense>
+                                        </OrganizationProvider>
+                                    </AdminCheck>
+                                </Route>
                                 <Route path="/outreach/campaigns/:id/sequences/new">
                                     <AdminCheck>
                                         <OrganizationProvider>
                                             <PageSuspense><NewSequencePage /></PageSuspense>
+                                        </OrganizationProvider>
+                                    </AdminCheck>
+                                </Route>
+                                <Route path="/outreach/campaigns/:id">
+                                    <AdminCheck>
+                                        <OrganizationProvider>
+                                            <PageSuspense><CampaignDetailPage /></PageSuspense>
                                         </OrganizationProvider>
                                     </AdminCheck>
                                 </Route>
@@ -468,6 +533,8 @@ export default App
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
-        <App />
+        <AppErrorBoundary>
+            <App />
+        </AppErrorBoundary>
     </React.StrictMode>
 )

@@ -1,9 +1,12 @@
 import { Router, Request, Response } from 'express'
 import { db } from '../../db'
-import { messages, organizations } from '../../db/schema'
-import { eq, and, or, lt, isNull, sql } from 'drizzle-orm'
+import { messages, organizations, outreachEmails, campaignLeads, campaigns, emailAccounts } from '../../db/schema'
+import { eq, sql } from 'drizzle-orm'
 import { fireWebhooks, incrementStat } from '../lib/tracking'
 import { isPrivateHost } from '../lib/network-guard'
+import { createLogger } from '../lib/logger'
+
+const log = createLogger('outreach.track')
 
 const router = Router()
 
@@ -30,6 +33,39 @@ router.get('/open/:token', async (req: Request, res: Response) => {
     // Async tracking — never blocks the response
     const { token } = req.params
     try {
+        // Outreach lookup first (token shape: base64url(payload).base64url(hmac) — see outreach-tokens.ts).
+        // We do NOT HMAC-verify here; the DB lookup `WHERE tracking_token = ?` is the gate.
+        // A forged token simply will not match any row. Skipping verify avoids a CPU op per pixel hit (high volume).
+        const outreachEmail = await db.query.outreachEmails.findFirst({
+            where: eq(outreachEmails.trackingToken, token),
+        })
+
+        if (outreachEmail) {
+            const now = new Date()
+            await db.update(outreachEmails)
+                .set({
+                    openedAt: outreachEmail.openedAt ?? now,
+                    openedCount: sql`${outreachEmails.openedCount} + 1`,
+                    updatedAt: now,
+                })
+                .where(eq(outreachEmails.id, outreachEmail.id))
+
+            await Promise.allSettled([
+                db.update(campaignLeads).set({ totalOpens: sql`${campaignLeads.totalOpens} + 1`, updatedAt: now }).where(eq(campaignLeads.id, outreachEmail.campaignLeadId)),
+                db.update(campaigns).set({ totalOpens: sql`${campaigns.totalOpens} + 1`, updatedAt: now }).where(eq(campaigns.id, outreachEmail.campaignId)),
+                db.update(emailAccounts).set({ totalOpens: sql`${emailAccounts.totalOpens} + 1`, updatedAt: now }).where(eq(emailAccounts.id, outreachEmail.emailAccountId)),
+            ])
+            log.debug({
+                action: 'outreach.track.open',
+                outreachEmailId: outreachEmail.id,
+                campaignId: outreachEmail.campaignId,
+                campaignLeadId: outreachEmail.campaignLeadId,
+                emailAccountId: outreachEmail.emailAccountId,
+            }, 'open recorded')
+            return
+        }
+
+        // Fallback: transactional message lookup (existing behaviour for non-outreach mail).
         const message = await db.query.messages.findFirst({
             where: eq(messages.token, token),
         })
@@ -61,7 +97,12 @@ router.get('/open/:token', async (req: Request, res: Response) => {
             }),
         ])
     } catch (err) {
-        console.error('Open tracking error:', err)
+        const e = err instanceof Error ? err : new Error(String(err))
+        log.error({
+            action: 'outreach.track.open_error',
+            token: token.slice(0, 12) + '...',
+            error: { message: e.message, stack: e.stack },
+        }, 'open tracking failed')
     }
 })
 
@@ -97,39 +138,51 @@ router.get('/click/:token', async (req: Request, res: Response) => {
     // Async tracking with 60s dedup window (COR-03, audit H4)
     // COR-03 — see audit H4. Dedup gate is atomic; replay within 60s returns 0 rows from UPDATE.
     try {
-        // Atomic dedup gate: write clicked_at = NOW() only if it was NULL or older than 60s.
-        // The .returning() tells us whether THIS request was the "winning" first/refresh.
-        // Postgres row-level locking serializes concurrent UPDATEs on the same row, so
-        // only one competing request gets a returned row; replays get updated.length === 0.
-        const updated = await db
-            .update(messages)
-            .set({ clickedAt: new Date(), updatedAt: new Date() })
-            .where(
-                and(
-                    eq(messages.token, token),
-                    or(
-                        isNull(messages.clickedAt),
-                        lt(messages.clickedAt, sql`NOW() - INTERVAL '60 seconds'`)
-                    )
-                )
-            )
-            .returning({
-                id: messages.id,
-                organizationId: messages.organizationId,
-                subject: messages.subject,
-                fromAddress: messages.fromAddress,
-            })
+        // Outreach lookup first — same rationale as /open above.
+        const outreachEmail = await db.query.outreachEmails.findFirst({
+            where: eq(outreachEmails.trackingToken, token),
+        })
 
-        if (updated.length === 0) {
-            // Replay within 60s — token matched a message but dedup window blocked the UPDATE.
-            // (Or the token doesn't exist at all — indistinguishable here, but we silently no-op either way.)
+        if (outreachEmail) {
+            const now = new Date()
+            await db.update(outreachEmails)
+                .set({
+                    clickedAt: outreachEmail.clickedAt ?? now,
+                    clickedCount: sql`${outreachEmails.clickedCount} + 1`,
+                    updatedAt: now,
+                })
+                .where(eq(outreachEmails.id, outreachEmail.id))
+
+            await Promise.allSettled([
+                db.update(campaignLeads).set({ totalClicks: sql`${campaignLeads.totalClicks} + 1`, updatedAt: now }).where(eq(campaignLeads.id, outreachEmail.campaignLeadId)),
+                db.update(campaigns).set({ totalClicks: sql`${campaigns.totalClicks} + 1`, updatedAt: now }).where(eq(campaigns.id, outreachEmail.campaignId)),
+                db.update(emailAccounts).set({ totalClicks: sql`${emailAccounts.totalClicks} + 1`, updatedAt: now }).where(eq(emailAccounts.id, outreachEmail.emailAccountId)),
+            ])
+            log.debug({
+                action: 'outreach.track.click',
+                outreachEmailId: outreachEmail.id,
+                campaignId: outreachEmail.campaignId,
+                campaignLeadId: outreachEmail.campaignLeadId,
+                emailAccountId: outreachEmail.emailAccountId,
+                targetUrl,
+            }, 'click recorded')
             return
         }
 
-        const message = updated[0]
+        // Fallback: transactional message lookup (existing behaviour for non-outreach mail).
+        const message = await db.query.messages.findFirst({
+            where: eq(messages.token, token),
+        })
+
+        if (!message) return
+
         const trackClicks = true
         const privacyMode = false
         if (!trackClicks || privacyMode) return
+
+        await db.update(messages)
+            .set({ clickedAt: new Date(), updatedAt: new Date() })
+            .where(eq(messages.token, token))
 
         await Promise.allSettled([
             incrementStat(message.organizationId, 'linksClicked'),
@@ -141,7 +194,12 @@ router.get('/click/:token', async (req: Request, res: Response) => {
             }),
         ])
     } catch (err) {
-        console.error('Click tracking error:', err)
+        const e = err instanceof Error ? err : new Error(String(err))
+        log.error({
+            action: 'outreach.track.click_error',
+            token: token.slice(0, 12) + '...',
+            error: { message: e.message, stack: e.stack },
+        }, 'click tracking failed')
     }
 })
 

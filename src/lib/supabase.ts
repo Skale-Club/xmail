@@ -10,15 +10,6 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
-export function createTempSupabaseClient() {
-    return createClient(supabaseUrl, supabaseAnonKey, {
-        auth: {
-            persistSession: false,
-            autoRefreshToken: false,
-        },
-    })
-}
-
 // Types for Supabase auth
 export interface AuthUser {
     id: string

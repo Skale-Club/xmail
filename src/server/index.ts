@@ -20,12 +20,15 @@ import systemRoutes from './routes/system'
 import trackRoutes from './routes/track'
 import templateRoutes from './routes/templates'
 import outreachRoutes from './routes/outreach'
+import outreachHealthRoutes from './routes/admin/outreach-health'
+import unsubscribeRoutes from './routes/outreach/unsubscribe'
 import outlookRoutes from './routes/outlook'
 import mailRoutes from './routes/mail'
 import notificationRoutes from './routes/notifications'
+import autodiscoverRoutes from './routes/autodiscover'
 import { createSMTPServer } from './smtp-server'
-import { createInboundSMTPServer } from './smtp-inbound'
 import { createIMAPServer, loadImapBranding } from './imap-server'
+import { createMXServer } from './mx-server'
 import { runReadinessChecks } from './lib/health'
 import { resolveUserFromToken } from './lib/auth-cache'
 
@@ -93,8 +96,19 @@ const testConnectionLimiter = rateLimit({
     message: { error: 'Too many connection tests; please wait a minute.' },
 })
 
+// Public unsubscribe endpoint — pre-empts P1-20. Tighter limit than /t/ because
+// /o/u/ is human-interactive (one click per recipient), not pixel-hit volume.
+const unsubscribeLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    message: { error: 'Too many unsubscribe requests, please try again later.' },
+})
+app.use('/o/u/', unsubscribeLimiter)
+
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
+// Outlook autodiscover sends XML bodies; accept them as raw text
+app.use(express.text({ type: ['application/xml', 'text/xml'], limit: '100kb' }))
 
 // Prevent browsers from caching API responses
 app.use('/api/', (_req, res, next) => {
@@ -175,10 +189,17 @@ const PUBLIC_PATHS = [
     '/api/system/mail-server-info',
 ]
 
+const PUBLIC_PATH_PREFIXES = [
+    '/api/system/mail-config/',
+]
+
 app.use('/api', async (req, res, next) => {
     const path = req.originalUrl.split('?')[0]
 
     if (PUBLIC_PATHS.some(p => path === p)) {
+        return next()
+    }
+    if (PUBLIC_PATH_PREFIXES.some(p => path.startsWith(p))) {
         return next()
     }
 
@@ -204,11 +225,22 @@ app.use('/api', async (req, res, next) => {
     next()
 })
 
+type MailServer = { start: () => void; close: () => Promise<void> }
+let runningSmtpServer: MailServer | null = null
+let runningImapServer: MailServer | null = null
+let runningMxServer: MailServer | null = null
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
-        void closeDatabaseConnection().finally(() => {
-            process.exit(0)
-        })
+        console.log(`[shutdown] Received ${signal}, closing mail servers and DB...`)
+        const closers: Promise<void>[] = []
+        if (runningSmtpServer) closers.push(runningSmtpServer.close().catch(() => undefined))
+        if (runningImapServer) closers.push(runningImapServer.close().catch(() => undefined))
+        if (runningMxServer) closers.push(runningMxServer.close().catch(() => undefined))
+        const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5000))
+        void Promise.race([Promise.all(closers), timeout])
+            .then(() => closeDatabaseConnection())
+            .finally(() => process.exit(0))
     })
 }
 
@@ -223,10 +255,22 @@ app.use('/api/routes', routeRoutes)
 app.use('/api/system', systemRoutes)
 app.use('/api/templates', templateRoutes)
 app.use('/api/outreach', outreachRoutes)
+// Phase 17 — platform-admin observability endpoints (GET /api/admin/outreach/health).
+// JWT auth is applied by the /api middleware above; the route handler additionally
+// gates on isPlatformAdmin so non-admin users get 403 instead of 200.
+app.use('/api/admin/outreach', outreachHealthRoutes)
 app.use('/api/outlook', outlookRoutes)
 app.use('/api/mail/mailboxes/test-connection', testConnectionLimiter)
 app.use('/api/mail', mailRoutes)
 app.use('/api/notifications', notificationRoutes)
+
+// Mail client autodiscovery — Thunderbird/Outlook use paths outside /api,
+// so mounted on root. Apple .mobileconfig is under /api/system/mail-config/.
+app.use('/', autodiscoverRoutes)
+
+// Public unsubscribe endpoint — mounted OUTSIDE /api so the JWT middleware does
+// not 401 recipients clicking the link from their inbox. The HMAC token IS the auth.
+app.use('/o/u', unsubscribeRoutes)
 
 app.use('/t', trackRoutes)
 
@@ -244,6 +288,22 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 const clientDist = join(process.cwd(), 'dist', 'client')
 
 if (existsSync(clientDist)) {
+    // sw.js and registerSW.js must never be cached by HTTP intermediaries.
+    // The browser's SW update algorithm compares the byte content of the
+    // new sw.js against the installed copy; if an HTTP cache returns the
+    // old sw.js the browser thinks nothing changed and won't install the
+    // new build's service worker, causing stale-chunk blank screens.
+    app.get('/sw.js', (_req, res) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+        res.setHeader('Content-Type', 'application/javascript')
+        res.sendFile(join(clientDist, 'sw.js'))
+    })
+    app.get('/registerSW.js', (_req, res) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+        res.setHeader('Content-Type', 'application/javascript')
+        res.sendFile(join(clientDist, 'registerSW.js'))
+    })
+
     app.use(express.static(clientDist))
     // SPA fallback — serve index.html for all non-API routes
     app.use((_req: express.Request, res: express.Response) => {
@@ -255,40 +315,40 @@ if (existsSync(clientDist)) {
     })
 }
 
-if (!process.env.VERCEL) {
-    app.listen(PORT, async () => {
-        console.log(`Server running on port ${PORT}`)
+app.listen(PORT, async () => {
+    console.log(`Server running on port ${PORT}`)
 
-        // Warn if no platform admin exists
-        try {
-            const adminUser = await db.query.users.findFirst({ where: eq(users.isAdmin, true) })
-            if (!adminUser) {
-                console.warn('⚠️  No platform admin found. Run: npx tsx scripts/set-admin.ts <email>')
-            }
-        } catch { /* ignore */ }
-
-        import('./jobs/index').then((jobs) => jobs.startJobs())
-
-        // Start native SMTP + IMAP servers
-        const enableMailServer = process.env.ENABLE_MAIL_SERVER === 'true'
-        if (enableMailServer || !process.env.RAILWAY_ENVIRONMENT) {
-            try {
-                const smtpServer = createSMTPServer()
-                const inboundServer = createInboundSMTPServer()
-                const imapServer = createIMAPServer()
-                smtpServer.start()
-                inboundServer.start()
-                loadImapBranding().then(() => imapServer.start()).catch((err) => {
-                    console.warn('⚠️  IMAP branding load failed, starting IMAP server anyway:', (err as Error).message)
-                    imapServer.start()
-                })
-            } catch (err) {
-                console.warn('⚠️  SMTP/IMAP servers failed to start:', (err as Error).message)
-            }
-        } else {
-            console.log('ℹ️  SMTP/IMAP servers disabled on Railway (set ENABLE_MAIL_SERVER=true to enable)')
+    // Warn if no platform admin exists
+    try {
+        const adminUser = await db.query.users.findFirst({ where: eq(users.isAdmin, true) })
+        if (!adminUser) {
+            console.warn('⚠️  No platform admin found. Run: npx tsx scripts/set-admin.ts <email>')
         }
-    })
-}
+    } catch { /* ignore */ }
+
+    import('./jobs/index').then((jobs) => jobs.startJobs())
+
+    // Start native SMTP + IMAP + MX servers (always on in production; set
+    // ENABLE_MAIL_SERVER=false to disable for dev/CI runs).
+    if (process.env.ENABLE_MAIL_SERVER !== 'false') {
+        try {
+            runningSmtpServer = createSMTPServer()
+            runningImapServer = createIMAPServer()
+            runningMxServer = createMXServer()
+            runningSmtpServer.start()
+            runningMxServer.start()
+            loadImapBranding()
+                .then(() => runningImapServer!.start())
+                .catch((err) => {
+                    console.warn('⚠️  IMAP branding load failed, starting IMAP server anyway:', (err as Error).message)
+                    runningImapServer!.start()
+                })
+        } catch (err) {
+            console.warn('⚠️  SMTP/IMAP/MX servers failed to start:', (err as Error).message)
+        }
+    } else {
+        console.log('ℹ️  SMTP/IMAP/MX servers disabled (ENABLE_MAIL_SERVER=false)')
+    }
+})
 
 export default app

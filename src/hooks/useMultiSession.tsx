@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react'
-import { supabase, createTempSupabaseClient } from '../lib/supabase'
+import { supabase } from '../lib/supabase'
 import { clearTokenCache } from '../lib/api-client'
 import {
     type StoredSession,
@@ -19,11 +19,7 @@ interface MultiSessionContextType {
     sessions: SessionInfo[]
     activeSessionId: string | null
     switchSession: (userId: string) => Promise<void>
-    addAccount: (email: string, password: string) => Promise<void>
     removeAccount: (userId: string) => Promise<void>
-    isAddingAccount: boolean
-    addAccountError: string | null
-    clearAddAccountError: () => void
 }
 
 const MultiSessionContext = createContext<MultiSessionContextType | null>(null)
@@ -31,8 +27,6 @@ const MultiSessionContext = createContext<MultiSessionContextType | null>(null)
 export function MultiSessionProvider({ children }: { children: React.ReactNode }) {
     const [sessions, setSessions] = useState<SessionInfo[]>([])
     const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null)
-    const [isAddingAccount, setIsAddingAccount] = useState(false)
-    const [addAccountError, setAddAccountError] = useState<string | null>(null)
     const [initialized, setInitialized] = useState(false)
 
     const refreshSessions = useCallback(() => {
@@ -150,38 +144,6 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
         setActiveSessionId(userId)
     }, [activeSessionId, refreshSessions])
 
-    const addAccount = useCallback(async (email: string, password: string) => {
-        setIsAddingAccount(true)
-        setAddAccountError(null)
-
-        try {
-            const tempClient = createTempSupabaseClient()
-            const { data, error } = await tempClient.auth.signInWithPassword({ email, password })
-
-            if (error) {
-                setAddAccountError(error.message)
-                throw error
-            }
-
-            if (!data.session) {
-                setAddAccountError('No session returned')
-                throw new Error('No session returned')
-            }
-
-            const stored = supabaseSessionToStored(data.session)
-            const existing = getStoredSessions().find(s => s.userId === stored.userId)
-            if (existing) {
-                setAddAccountError('This account is already added')
-                throw new Error('Account already added')
-            }
-
-            addStoredSession(stored)
-            refreshSessions()
-        } finally {
-            setIsAddingAccount(false)
-        }
-    }, [refreshSessions])
-
     const removeAccount = useCallback(async (userId: string) => {
         const wasActive = userId === activeSessionId
         const stored = getStoredSessions()
@@ -219,20 +181,12 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
         }
     }, [activeSessionId, refreshSessions])
 
-    const clearAddAccountError = useCallback(() => {
-        setAddAccountError(null)
-    }, [])
-
     const value = React.useMemo<MultiSessionContextType>(() => ({
         sessions,
         activeSessionId,
         switchSession,
-        addAccount,
         removeAccount,
-        isAddingAccount,
-        addAccountError,
-        clearAddAccountError,
-    }), [sessions, activeSessionId, switchSession, addAccount, removeAccount, isAddingAccount, addAccountError, clearAddAccountError])
+    }), [sessions, activeSessionId, switchSession, removeAccount])
 
     return (
         <MultiSessionContext.Provider value={value}>

@@ -158,6 +158,8 @@ export function EmailList({
                         <Star className={`w-4 h-4 ${email.starred ? 'fill-current' : ''}`} />
                     </button>
 
+                    <SenderAvatar name={email.from.name} email={email.from.email} />
+
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 min-w-0">
                             <span className={`truncate text-sm ${!email.read ? 'text-foreground' : 'text-foreground/80'}`}>
@@ -194,8 +196,6 @@ export function EmailList({
                             </div>
                         )}
                     </div>
-
-                    <SenderAvatar name={email.from.name} email={email.from.email} />
 
                     <div className="flex-shrink-0 flex items-center gap-1">
                         <span className={`text-xs ${!email.read ? 'text-foreground/90' : 'text-muted-foreground'}`}>

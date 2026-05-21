@@ -167,8 +167,8 @@ export default function ComposePage() {
                 inReplyTo: originalMessage?.message?.messageId,
                 references: originalMessage?.message?.references,
             })
-            toast({ title: 'Email sent successfully!', variant: 'success' })
             setLocation('/mail/sent')
+            toast({ title: 'Email sent successfully!', variant: 'success' })
         } catch (error) {
             toast({
                 title: 'Failed to send email',
