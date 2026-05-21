@@ -5,7 +5,7 @@
 
 import nodemailer from 'nodemailer'
 import { db } from '../../db'
-import { campaigns, sequenceSteps, campaignLeads, leads, emailAccounts, outreachEmails } from '../../db/schema'
+import { campaigns, sequenceSteps, campaignLeads, leads, emailAccounts } from '../../db/schema'
 import { eq, sql } from 'drizzle-orm'
 import { decryptSecret } from './crypto'
 import { interpolateTemplate, type LeadForTemplate } from './template-variables'

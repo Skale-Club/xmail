@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
-import { campaigns, sequences, sequenceSteps, campaignLeads, leads, emailAccounts, organizationUsers, outreachEmails } from '../../../db/schema'
+import { campaigns, sequences, sequenceSteps, campaignLeads, leads, organizationUsers, outreachEmails } from '../../../db/schema'
 import { eq, and, sql, inArray, desc, asc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'

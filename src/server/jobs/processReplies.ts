@@ -255,7 +255,7 @@ async function processAccountReplies(account: EmailAccountWithImap): Promise<num
     return replyCount
 }
 
-function extractFirstReference(references: string | null): string | null {
+function _extractFirstReference(references: string | null): string | null {
     if (!references) return null
     const refs = references.split(/\s+/).filter(Boolean)
     return refs.length > 0 ? refs[0] : null

@@ -18,7 +18,7 @@ import { generateOutreachToken, verifyOutreachToken } from '../../lib/outreach-t
 
 const router = Router()
 
-function generateUnsubscribeHtml(leadEmail: string, campaignName: string): string {
+function generateUnsubscribeHtml(leadEmail: string, _campaignName: string): string {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>

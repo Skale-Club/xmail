@@ -1240,7 +1240,7 @@ async function processBuffer(session: IMAPSession) {
     if (session.processing) return
     session.processing = true
     try {
-        while (true) {
+        while (true) { // eslint-disable-line no-constant-condition
             if (session.pendingLiteral) {
                 const need = session.pendingLiteral.remaining
                 if (session.buffer.length >= need) {
