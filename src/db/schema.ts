@@ -383,6 +383,15 @@ export const systemBranding = pgTable('system_branding', {
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 })
 
+export const systemIntegrations = pgTable('system_integrations', {
+    id: text('id').primaryKey().$defaultFn(() => 'default'),
+    telegramBotToken: text('telegram_bot_token'),       // encrypted
+    telegramChatId: text('telegram_chat_id'),           // plaintext
+    telegramEnabled: boolean('telegram_enabled').default(false).notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+})
+export type SystemIntegrations = typeof systemIntegrations.$inferSelect
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
     organizations: many(organizationUsers),

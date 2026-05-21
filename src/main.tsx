@@ -71,6 +71,7 @@ const OrganizationsPage = React.lazy(() => import('./pages/admin/OrganizationsPa
 const OrganizationDetailPage = React.lazy(() => import('./pages/admin/OrganizationDetailPage'))
 const AdminsPage = React.lazy(() => import('./pages/admin/AdminsPage'))
 const BrandingPage = React.lazy(() => import('./pages/admin/BrandingPage'))
+const IntegrationsPage = React.lazy(() => import('./pages/admin/IntegrationsPage'))
 const CredentialsPage = React.lazy(() => import('./pages/admin/CredentialsPage'))
 const RoutesPage = React.lazy(() => import('./pages/admin/RoutesPage'))
 const WebhooksPage = React.lazy(() => import('./pages/admin/WebhooksPage'))
@@ -402,6 +403,13 @@ function App() {
                                     <AdminCheck>
                                         <AdminLayout>
                                             <PageSuspense><BrandingPage /></PageSuspense>
+                                        </AdminLayout>
+                                    </AdminCheck>
+                                </Route>
+                                <Route path="/admin/integrations">
+                                    <AdminCheck>
+                                        <AdminLayout>
+                                            <PageSuspense><IntegrationsPage /></PageSuspense>
                                         </AdminLayout>
                                     </AdminCheck>
                                 </Route>
