@@ -23,6 +23,8 @@ import {
     Copy,
     Download,
     Smartphone,
+    Server,
+    ExternalLink,
 } from 'lucide-react'
 import { Switch } from '../../components/ui/switch'
 import { apiFetch } from '../../lib/api-client'
