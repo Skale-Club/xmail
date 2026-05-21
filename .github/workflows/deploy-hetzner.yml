@@ -67,6 +67,17 @@ jobs:
             fi
             echo "::endgroup::"
             
+            echo "::group::💾 Disk space check"
+            DISK_FREE_KB=$(df / | awk 'NR==2 {print $4}')
+            DISK_FREE_GB=$((DISK_FREE_KB / 1024 / 1024))
+            echo "Espaço livre: ${DISK_FREE_GB}GB"
+            if [ "$DISK_FREE_GB" -lt 4 ]; then
+              echo "❌ Menos de 4GB livres — abortando build para não travar o servidor"
+              exit 1
+            fi
+            echo "✅ Espaço OK (${DISK_FREE_GB}GB livre)"
+            echo "::endgroup::"
+
             echo "::group::🔧 Building Docker image"
             # Save previous image for rollback
             if docker images $IMAGE_NAME:latest --format "{{.ID}}" | grep -q .; then

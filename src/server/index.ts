@@ -21,6 +21,7 @@ import trackRoutes from './routes/track'
 import templateRoutes from './routes/templates'
 import outreachRoutes from './routes/outreach'
 import outreachHealthRoutes from './routes/admin/outreach-health'
+import healthEmailRoutes from './routes/health-email'
 import unsubscribeRoutes from './routes/outreach/unsubscribe'
 import outlookRoutes from './routes/outlook'
 import mailRoutes from './routes/mail'
@@ -259,6 +260,9 @@ app.use('/api/outreach', outreachRoutes)
 // JWT auth is applied by the /api middleware above; the route handler additionally
 // gates on isPlatformAdmin so non-admin users get 403 instead of 200.
 app.use('/api/admin/outreach', outreachHealthRoutes)
+// Platform-admin email-subsystem health (GET /api/health/email).
+// JWT auth applied by the /api middleware; handler gates on isPlatformAdmin.
+app.use('/api/health/email', healthEmailRoutes)
 app.use('/api/outlook', outlookRoutes)
 app.use('/api/mail/mailboxes/test-connection', testConnectionLimiter)
 app.use('/api/mail', mailRoutes)
