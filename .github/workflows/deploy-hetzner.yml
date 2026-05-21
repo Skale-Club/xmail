@@ -251,8 +251,15 @@ jobs:
             echo "::endgroup::"
             
             echo "::group::🧹 Cleanup"
-            # Prune old images (keep latest, previous, and current version)
+            # Remove old commit-tagged images (keep only latest and previous)
+            docker images $IMAGE_NAME --format '{{.Tag}}' \
+              | grep -v -E '^(latest|previous)$' \
+              | xargs -r -I{} docker rmi $IMAGE_NAME:{} || true
+            # Remove dangling images and unused build cache
             docker image prune -f
+            docker builder prune -f --keep-storage=500MB || true
+            echo "Disk usage after cleanup:"
+            df -h /
             echo "::endgroup::"
             
             echo ""
