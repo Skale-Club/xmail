@@ -120,6 +120,20 @@ jobs:
               fi
             fi
 
+            # Free mail ports 25 / 587 / 993 from any other container that may
+            # be holding them (e.g. a Coolify-managed instance of this same app
+            # that was running before this GitHub Actions deploy took over).
+            echo "Checking for port conflicts on mail ports 25/587/993..."
+            for PORT in 25 587 993; do
+              CONFLICTING=$(docker ps -q --filter "publish=$PORT" 2>/dev/null || true)
+              if [ -n "$CONFLICTING" ]; then
+                echo "⚠️  Port $PORT held by container(s): $CONFLICTING — stopping them..."
+                echo "$CONFLICTING" | xargs -r docker stop || true
+                echo "$CONFLICTING" | xargs -r docker rm -f || true
+                echo "✅ Port $PORT freed"
+              fi
+            done
+
             # Detect reverse proxy in use:
             # - Coolify installs Traefik and creates a 'coolify' Docker network
             # - Legacy setups use Caddy running on the host
