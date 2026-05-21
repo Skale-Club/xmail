@@ -205,9 +205,42 @@ jobs:
               $IMAGE_NAME:latest
 
             echo "Container started"
-            # Container was started directly in the coolify network (--network coolify
-            # flag above), so Traefik can reach port 9001 via the container's internal
-            # IP.  No secondary 'docker network connect' needed.
+
+            # Write a Traefik file-provider config so routing is explicit and
+            # not dependent on Docker label discovery timing.
+            # Uses the container NAME (skaleclub-mail) as backend URL — Docker
+            # resolves this to the container's coolify-network IP via DNS.
+            if [ "$USING_COOLIFY" = "true" ]; then
+              TRAEFIK_DYN="/data/coolify/proxy/dynamic/skaleclub-mail.yaml"
+              if [ -d "$(dirname $TRAEFIK_DYN)" ]; then
+                echo "Writing Traefik file config → $TRAEFIK_DYN"
+                printf '%s\n' \
+                  'http:' \
+                  '  routers:' \
+                  '    skaleclub-mail-https:' \
+                  '      rule: "Host(`mail.skale.club`)"' \
+                  '      service: skaleclub-mail-svc' \
+                  '      entryPoints:' \
+                  '        - websecure' \
+                  '      tls:' \
+                  '        certResolver: letsencrypt' \
+                  '    skaleclub-mail-http:' \
+                  '      rule: "Host(`mail.skale.club`)"' \
+                  '      service: skaleclub-mail-svc' \
+                  '      entryPoints:' \
+                  '        - web' \
+                  '  services:' \
+                  '    skaleclub-mail-svc:' \
+                  '      loadBalancer:' \
+                  '        servers:' \
+                  '          - url: "http://skaleclub-mail:9001"' \
+                  '        passHostHeader: true' \
+                  > "$TRAEFIK_DYN"
+                echo "✅ Traefik file config written (backend: http://skaleclub-mail:9001)"
+              else
+                echo "⚠️  /data/coolify/proxy/dynamic not found — using Docker labels only"
+              fi
+            fi
 
             echo "::endgroup::"
 
