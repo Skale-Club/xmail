@@ -146,14 +146,20 @@ jobs:
             fi
 
             # Run new container.
-            # Notes:
-            #   - Port 9001 is always published to host (health checks + Caddy fallback)
-            #   - Mail ports 25/587/993 are raw TCP — NOT routed through Traefik HTTP proxy
-            #   - Traefik labels are harmless when Traefik is not present
+            # When Coolify/Traefik is present, start the container directly in
+            # the 'coolify' Docker network so Traefik can reach port 9001 via
+            # the container's network IP (no secondary 'network connect' needed).
+            # Port 9001 is still published to the host for health checks.
+            # Mail ports 25/587/993 are raw TCP — bypass Traefik entirely.
+            NETWORK_FLAG=""
+            if [ "$USING_COOLIFY" = "true" ]; then
+              NETWORK_FLAG="--network coolify"
+            fi
             echo "Starting new container..."
             docker run -d \
               --name $IMAGE_NAME \
               --restart unless-stopped \
+              $NETWORK_FLAG \
               -p 9001:9001 \
               -p 25:25 \
               -p 587:587 \
@@ -198,66 +204,9 @@ jobs:
               $IMAGE_NAME:latest
 
             echo "Container started"
-
-            # If Coolify is present, attach container to its Docker network AND
-            # write a Traefik file-provider config that points directly to the
-            # host port 9001.  File config overrides any stale Coolify-managed
-            # service config that may still reference a dead backend.
-            if [ "$USING_COOLIFY" = "true" ]; then
-              echo "Connecting container to Coolify network for Traefik routing..."
-              docker network connect coolify $IMAGE_NAME || true
-              echo "✅ Connected to Coolify network"
-
-              # Write authoritative Traefik dynamic config for mail.skale.club.
-              # Routes via host IP (172.17.0.1:9001) which is always reachable
-              # from any Docker container regardless of network topology.
-              TRAEFIK_DYN="/data/coolify/proxy/dynamic/skaleclub-mail.yaml"
-              if [ -d "$(dirname $TRAEFIK_DYN)" ]; then
-                echo "Writing Traefik dynamic config → $TRAEFIK_DYN"
-                # Use printf instead of heredoc — heredocs with unindented content
-                # break GitHub Actions YAML parsing (the parser sees 'http:' as a
-                # top-level YAML key and rejects the workflow file).
-                printf '%s\n' \
-                  'http:' \
-                  '  routers:' \
-                  '    skaleclub-mail-https:' \
-                  '      rule: "Host(`mail.skale.club`)"' \
-                  '      service: skaleclub-mail-svc' \
-                  '      entryPoints:' \
-                  '        - websecure' \
-                  '      tls:' \
-                  '        certResolver: letsencrypt' \
-                  '      priority: 100' \
-                  '    skaleclub-mail-http:' \
-                  '      rule: "Host(`mail.skale.club`)"' \
-                  '      service: skaleclub-mail-svc' \
-                  '      entryPoints:' \
-                  '        - web' \
-                  '      middlewares:' \
-                  '        - redirect-to-https@docker' \
-                  '      priority: 100' \
-                  '  services:' \
-                  '    skaleclub-mail-svc:' \
-                  '      loadBalancer:' \
-                  '        servers:' \
-                  '          - url: "http://172.17.0.1:9001"' \
-                  '        passHostHeader: true' \
-                  > "$TRAEFIK_DYN"
-                echo "✅ Traefik config written"
-              else
-                echo "⚠️  /data/coolify/proxy/dynamic not found — skipping file config"
-              fi
-
-              # Remove any old Coolify-managed configs that may conflict
-              for f in /data/coolify/proxy/dynamic/*.yaml /data/coolify/proxy/dynamic/*.yml; do
-                [ -f "$f" ] || continue
-                [ "$f" = "$TRAEFIK_DYN" ] && continue
-                if grep -q "mail.skale.club" "$f" 2>/dev/null; then
-                  echo "⚠️  Removing conflicting Traefik config: $f"
-                  rm -f "$f"
-                fi
-              done
-            fi
+            # Container was started directly in the coolify network (--network coolify
+            # flag above), so Traefik can reach port 9001 via the container's internal
+            # IP.  No secondary 'docker network connect' needed.
 
             echo "::endgroup::"
 
@@ -326,6 +275,7 @@ jobs:
                 docker run -d \
                   --name $IMAGE_NAME \
                   --restart unless-stopped \
+                  $NETWORK_FLAG \
                   -p 9001:9001 \
                   -p 25:25 \
                   -p 587:587 \
