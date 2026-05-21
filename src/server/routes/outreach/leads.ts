@@ -445,6 +445,8 @@ router.put('/:id', async (req: Request, res: Response) => {
             .where(eq(leads.id, leadId))
             .returning()
 
+        if (!updatedLead) return res.status(500).json({ error: 'Update failed — record not found' })
+
         res.json({ lead: updatedLead })
     } catch (error) {
         if (error instanceof z.ZodError) {

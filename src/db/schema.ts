@@ -919,6 +919,32 @@ export const outreachEmails = pgTable('outreach_emails', {
     idxOutreachEmailsSentAtStatus: index('idx_outreach_emails_sent_at_status').on(table.sentAt, table.status),
 }))
 
+// Outreach Settings (per-org defaults for campaigns)
+export const outreachSettings = pgTable('outreach_settings', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull().unique().references(() => organizations.id, { onDelete: 'cascade' }),
+    // general
+    defaultTimezone: text('default_timezone').default('UTC').notNull(),
+    defaultSendStartTime: text('default_send_start_time').default('09:00').notNull(),
+    defaultSendEndTime: text('default_send_end_time').default('17:00').notNull(),
+    sendOnWeekends: boolean('send_on_weekends').default(false).notNull(),
+    trackOpens: boolean('track_opens').default(true).notNull(),
+    trackClicks: boolean('track_clicks').default(true).notNull(),
+    // sending
+    defaultDailyLimit: integer('default_daily_limit').default(50).notNull(),
+    defaultMinMinutesBetweenEmails: integer('default_min_minutes_between_emails').default(5).notNull(),
+    warmupEnabled: boolean('warmup_enabled').default(true).notNull(),
+    warmupDays: integer('warmup_days').default(21).notNull(),
+    // notifications
+    notifyOnReply: boolean('notify_on_reply').default(true).notNull(),
+    notifyOnBounce: boolean('notify_on_bounce').default(true).notNull(),
+    notifyOnUnsubscribe: boolean('notify_on_unsubscribe').default(false).notNull(),
+    weeklyReport: boolean('weekly_report').default(true).notNull(),
+    // meta
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+})
+
 // Outreach Analytics (daily aggregated stats)
 export const outreachAnalytics = pgTable('outreach_analytics', {
     id: uuid('id').primaryKey().defaultRandom(),
@@ -1062,6 +1088,13 @@ export const outreachAnalyticsRelations = relations(outreachAnalytics, ({ one })
     }),
 }))
 
+export const outreachSettingsRelations = relations(outreachSettings, ({ one }) => ({
+    organization: one(organizations, {
+        fields: [outreachSettings.organizationId],
+        references: [organizations.id],
+    }),
+}))
+
 // Zod schemas for outreach module
 export const insertEmailAccountSchema = createInsertSchema(emailAccounts)
 export const selectEmailAccountSchema = createSelectSchema(emailAccounts)
@@ -1114,6 +1147,9 @@ export type NewOutreachEmail = typeof outreachEmails.$inferInsert
 
 export type OutreachAnalytic = typeof outreachAnalytics.$inferSelect
 export type NewOutreachAnalytic = typeof outreachAnalytics.$inferInsert
+
+export type OutreachSettings = typeof outreachSettings.$inferSelect
+export type NewOutreachSettings = typeof outreachSettings.$inferInsert
 
 // ============================================
 // USER MAIL MODULE (Webmail)

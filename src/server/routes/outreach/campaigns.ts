@@ -514,6 +514,8 @@ router.put('/:id', async (req: Request, res: Response) => {
             .where(eq(campaigns.id, campaignId))
             .returning()
 
+        if (!updatedCampaign) return res.status(500).json({ error: 'Update failed — record not found' })
+
         res.json({ campaign: updatedCampaign })
     } catch (error) {
         if (error instanceof z.ZodError) {
@@ -763,6 +765,8 @@ router.put('/sequences/steps/:stepId', async (req: Request, res: Response) => {
             })
             .where(eq(sequenceSteps.id, stepId))
             .returning()
+
+        if (!updatedStep) return res.status(500).json({ error: 'Update failed — record not found' })
 
         res.json({ step: updatedStep })
     } catch (error) {

@@ -2,6 +2,7 @@ import { Router } from 'express'
 import emailAccountsRouter from './email-accounts'
 import leadsRouter from './leads'
 import campaignsRouter from './campaigns'
+import settingsRouter from './settings'
 
 const router = Router()
 
@@ -21,5 +22,8 @@ router.use('/leads', leadsRouter)
 
 // Campaigns routes
 router.use('/campaigns', campaignsRouter)
+
+// Settings routes
+router.use('/settings', settingsRouter)
 
 export default router

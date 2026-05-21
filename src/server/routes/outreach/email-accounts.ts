@@ -270,6 +270,8 @@ router.put('/:id', async (req: Request, res: Response) => {
             .where(eq(emailAccounts.id, accountId))
             .returning()
 
+        if (!updatedAccount) return res.status(500).json({ error: 'Update failed — record not found' })
+
         res.json({
             emailAccount: {
                 ...updatedAccount,
