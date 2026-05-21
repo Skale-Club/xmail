@@ -214,32 +214,35 @@ jobs:
               TRAEFIK_DYN="/data/coolify/proxy/dynamic/skaleclub-mail.yaml"
               if [ -d "$(dirname $TRAEFIK_DYN)" ]; then
                 echo "Writing Traefik dynamic config → $TRAEFIK_DYN"
-                cat > "$TRAEFIK_DYN" <<'YAMLEOF'
-http:
-  routers:
-    skaleclub-mail-https:
-      rule: "Host(`mail.skale.club`)"
-      service: skaleclub-mail-svc
-      entryPoints:
-        - websecure
-      tls:
-        certResolver: letsencrypt
-      priority: 100
-    skaleclub-mail-http:
-      rule: "Host(`mail.skale.club`)"
-      service: skaleclub-mail-svc
-      entryPoints:
-        - web
-      middlewares:
-        - redirect-to-https@docker
-      priority: 100
-  services:
-    skaleclub-mail-svc:
-      loadBalancer:
-        servers:
-          - url: "http://172.17.0.1:9001"
-        passHostHeader: true
-YAMLEOF
+                # Use printf instead of heredoc — heredocs with unindented content
+                # break GitHub Actions YAML parsing (the parser sees 'http:' as a
+                # top-level YAML key and rejects the workflow file).
+                printf '%s\n' \
+                  'http:' \
+                  '  routers:' \
+                  '    skaleclub-mail-https:' \
+                  '      rule: "Host(`mail.skale.club`)"' \
+                  '      service: skaleclub-mail-svc' \
+                  '      entryPoints:' \
+                  '        - websecure' \
+                  '      tls:' \
+                  '        certResolver: letsencrypt' \
+                  '      priority: 100' \
+                  '    skaleclub-mail-http:' \
+                  '      rule: "Host(`mail.skale.club`)"' \
+                  '      service: skaleclub-mail-svc' \
+                  '      entryPoints:' \
+                  '        - web' \
+                  '      middlewares:' \
+                  '        - redirect-to-https@docker' \
+                  '      priority: 100' \
+                  '  services:' \
+                  '    skaleclub-mail-svc:' \
+                  '      loadBalancer:' \
+                  '        servers:' \
+                  '          - url: "http://172.17.0.1:9001"' \
+                  '        passHostHeader: true' \
+                  > "$TRAEFIK_DYN"
                 echo "✅ Traefik config written"
               else
                 echo "⚠️  /data/coolify/proxy/dynamic not found — skipping file config"
