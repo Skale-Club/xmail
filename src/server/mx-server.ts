@@ -9,7 +9,8 @@
  * All other recipients are rejected at RCPT TO. This prevents this server
  * from being used as an open relay.
  *
- * Disabled by default; enable with ENABLE_MX_RECEIVER=true.
+ * Started with the rest of the embedded mail servers unless
+ * ENABLE_MAIL_SERVER=false is set.
  */
 
 import { SMTPServer } from 'smtp-server'
@@ -32,6 +33,16 @@ import {
     hasValidFromHeader,
     isDateTooOld,
 } from './lib/mx-guard'
+
+async function findLocalNativeMailbox(recipient: string, userId: string) {
+    return db.query.mailboxes.findFirst({
+        where: and(
+            eq(mailboxes.email, recipient.toLowerCase()),
+            eq(mailboxes.userId, userId),
+            eq(mailboxes.isNative, true),
+        ),
+    })
+}
 
 async function storeInbound(
     mailboxId: string,
@@ -164,13 +175,22 @@ export function createMXServer() {
 
             try {
                 const localUser = await findLocalUser(rcpt)
-                const hasRoute = localUser
-                    ? true
-                    : await (async () => {
+                let hasRoute: true | false | 'reject' = false
+
+                if (localUser) {
+                    const companion = await findLocalNativeMailbox(rcpt, localUser.userId)
+                    if (!companion) {
+                        console.error(`[MX] Local user has no native mailbox: ${rcpt}`)
+                        return callback(new Error('451 4.2.1 Mailbox not provisioned; please retry later'))
+                    }
+                    hasRoute = true
+                } else {
+                    hasRoute = await (async () => {
                         const r = await processInboundEmail(rcpt)
                         if (r.action === 'reject') return 'reject' as const
                         return r.action !== 'none' && r.routes.length > 0
                     })()
+                }
 
                 if (hasRoute === 'reject') {
                     return callback(new Error('550 5.1.1 Recipient rejected by policy'))
@@ -231,12 +251,11 @@ export function createMXServer() {
                     for (const rcpt of rcpts) {
                         const localUser = await findLocalUser(rcpt)
                         if (localUser) {
-                            const companion = await db.query.mailboxes.findFirst({
-                                where: and(
-                                    eq(mailboxes.email, rcpt.toLowerCase()),
-                                    eq(mailboxes.userId, localUser.userId),
-                                ),
-                            })
+                            const companion = await findLocalNativeMailbox(rcpt, localUser.userId)
+                            if (!companion) {
+                                console.error(`[MX] Accepted local recipient has no native mailbox: ${rcpt}`)
+                                throw new Error(`Mailbox not provisioned for ${rcpt}`)
+                            }
                             if (companion) {
                                 await storeInbound(companion.id, parsed, { isSpam })
                                 const tag = isSpam ? 'SPAM' : 'INBOX'

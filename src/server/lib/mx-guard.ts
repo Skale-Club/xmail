@@ -47,9 +47,10 @@ export async function isSpamhausListed(ip: string): Promise<boolean> {
 
     const reversed = ip.split('.').reverse().join('.')
     try {
-        await dns.resolve4(`${reversed}.zen.spamhaus.org`)
-        dnsblCache.set(ip, { listed: true, at: Date.now() })
-        return true
+        const answers = await dns.resolve4(`${reversed}.zen.spamhaus.org`)
+        const listed = answers.some((answer) => /^127\.0\.0\.(2|3|4|5|6|7|10|11)$/.test(answer))
+        dnsblCache.set(ip, { listed, at: Date.now() })
+        return listed
     } catch {
         dnsblCache.set(ip, { listed: false, at: Date.now() })
         return false
