@@ -44,6 +44,21 @@ async function findLocalNativeMailbox(recipient: string, userId: string) {
     })
 }
 
+async function hasDeliveredFromSender(mailboxId: string, sender: string): Promise<boolean> {
+    const normalizedSender = sender.trim().toLowerCase()
+    if (!normalizedSender || !normalizedSender.includes('@')) return false
+
+    const existing = await db.query.mailMessages.findFirst({
+        where: and(
+            eq(mailMessages.mailboxId, mailboxId),
+            eq(mailMessages.fromAddress, normalizedSender),
+        ),
+        columns: { id: true },
+    })
+
+    return !!existing
+}
+
 function smtpError(message: string, responseCode: number): Error {
     const err = new Error(message) as Error & { responseCode?: number }
     err.responseCode = responseCode
@@ -182,6 +197,7 @@ export function createMXServer() {
             try {
                 const localUser = await findLocalUser(rcpt)
                 let hasRoute: true | false | 'reject' = false
+                let localMailboxId: string | null = null
 
                 if (localUser) {
                     const companion = await findLocalNativeMailbox(rcpt, localUser.userId)
@@ -189,6 +205,7 @@ export function createMXServer() {
                         console.error(`[MX] Local user has no native mailbox: ${rcpt}`)
                         return callback(smtpError('4.2.1 Mailbox not provisioned; please retry later', 451))
                     }
+                    localMailboxId = companion.id
                     hasRoute = true
                 } else {
                     hasRoute = await (async () => {
@@ -205,7 +222,11 @@ export function createMXServer() {
                     return callback(smtpError('5.1.1 User unknown in virtual mailbox table', 550))
                 }
 
-                // Greylist new (ip, from, to) triples. Legit MTAs retry; most bots don't.
+                if (localMailboxId && await hasDeliveredFromSender(localMailboxId, from)) {
+                    return callback()
+                }
+
+                // Greylist new sender/recipient pairs. Legit MTAs retry; most bots don't.
                 if (shouldGreylist(ip, from, rcpt)) {
                     console.log(`[MX] Greylisted: ${ip} ${from} -> ${rcpt}`)
                     return callback(smtpError('4.7.1 Greylisted; please retry in 5 minutes', 451))
