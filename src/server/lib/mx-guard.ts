@@ -3,7 +3,7 @@
  *
  *   • Per-IP connection rate-limit (sliding window)
  *   • Spamhaus DNSBL lookup with cache
- *   • Greylisting of (IP, from, to) triples
+ *   • Greylisting of envelope sender/recipient pairs
  *   • Header-level validation helpers
  *
  * All state is in-memory; acceptable for a single-container deploy.
@@ -64,11 +64,12 @@ const GREY_HOLD_MS = 5 * 60 * 1000
 const GREY_TTL_MS = 24 * 60 * 60 * 1000
 
 /**
- * Returns true if the triple should be greylisted (reject with 451 now).
+ * Returns true if the sender/recipient pair should be greylisted (reject with 451 now).
  * Returns false if sufficient time has elapsed since first contact — accept.
  */
 export function shouldGreylist(ip: string, from: string, to: string): boolean {
-    const key = `${ip}|${from.toLowerCase()}|${to.toLowerCase()}`
+    const sender = from.trim().toLowerCase() || ip
+    const key = `${sender}|${to.trim().toLowerCase()}`
     const first = greylist.get(key)
     const now = Date.now()
     if (!first) {
