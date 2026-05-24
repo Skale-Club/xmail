@@ -1,4 +1,4 @@
-# CLAUDE.md — SkaleClub Mail
+# AGENTS.md — SkaleClub Mail
 
 ## Project Overview
 

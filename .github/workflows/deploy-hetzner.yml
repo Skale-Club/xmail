@@ -189,7 +189,7 @@ jobs:
               -e SMTP_FROM="${{ secrets.SMTP_FROM }}" \
               -e FRONTEND_URL="${{ secrets.FRONTEND_URL }}" \
               -e SMTP_SUBMISSION_PORT=587 \
-              -e SMTP_INBOUND_PORT=25 \
+              -e MX_PORT=25 \
               -e IMAP_PORT=993 \
               -e ENABLE_MAIL_SERVER=true \
               --label "traefik.enable=true" \
@@ -336,18 +336,17 @@ jobs:
                   -e SMTP_FROM="${{ secrets.SMTP_FROM }}" \
                   -e FRONTEND_URL="${{ secrets.FRONTEND_URL }}" \
                   -e SMTP_SUBMISSION_PORT=587 \
-                  -e SMTP_INBOUND_PORT=25 \
+                  -e MX_PORT=25 \
                   -e IMAP_PORT=993 \
                   -e ENABLE_MAIL_SERVER=true \
                   --label "traefik.enable=true" \
                   --label "traefik.http.routers.skaleclub-mail.rule=Host(\`mail.skale.club\`)" \
-                  --label "traefik.http.routers.skaleclub-mail.entrypoints=websecure" \
+                  --label "traefik.http.routers.skaleclub-mail.entrypoints=https" \
                   --label "traefik.http.routers.skaleclub-mail.tls=true" \
                   --label "traefik.http.routers.skaleclub-mail.tls.certresolver=letsencrypt" \
                   --label "traefik.http.services.skaleclub-mail.loadbalancer.server.port=9001" \
                   --label "traefik.http.routers.skaleclub-mail-http.rule=Host(\`mail.skale.club\`)" \
-                  --label "traefik.http.routers.skaleclub-mail-http.entrypoints=web" \
-                  --label "traefik.http.routers.skaleclub-mail-http.middlewares=redirect-to-https" \
+                  --label "traefik.http.routers.skaleclub-mail-http.entrypoints=http" \
                   $IMAGE_NAME:previous
 
                 if [ "$USING_COOLIFY" = "true" ]; then

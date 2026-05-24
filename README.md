@@ -115,23 +115,46 @@ npm run build
 npm start
 ```
 
-## Deployment — Hetzner VPS
+## Deployment - Hetzner VPS + Coolify/Traefik
 
-**Production hosts on Hetzner** (not Vercel, not Railway). Deployment is fully automated via GitHub Actions on push to `main`.
+**Production hosts on Hetzner** (not Vercel, not Railway). Deployment is fully automated via GitHub Actions on push to `main`. Coolify/Traefik is now the primary HTTP routing layer when the host has the `coolify` Docker network.
 
 ### Architecture
 
+```text
+GitHub Actions (push to main)
+      |
+      | SSH
+      v
+Hetzner VPS (Ubuntu + Docker)
+      |
+      v
+Docker container: skaleclub-mail:latest
+      |
+      +-- :9001 HTTP API + SPA
+      |      Published on host for health checks.
+      |      In Coolify mode, Traefik routes:
+      |      mail.skale.club -> http://skaleclub-mail:9001
+      |
+      +-- :25 SMTP MX inbound
+      |      Direct public TCP to the Node MX server.
+      |
+      +-- :587 SMTP submission
+      |      Direct public TCP to the Node SMTP server.
+      |
+      +-- :993 IMAP
+             Direct public TCP to the Node IMAP server.
 ```
-GitHub Actions (on push to main)
-      ↓ SSH
-Hetzner VPS (Ubuntu)
-      ↓
-Docker (skaleclub-mail:latest)
-      ├─ :9001  (HTTP API + SPA)  ──► Caddy reverse-proxy (mail.skale.club)
-      ├─ :25    (SMTP MX inbound)  ──► direct TCP, raw (Let's Encrypt TLS inside Node)
-      ├─ :587   (SMTP submission)  ──► direct TCP, raw (Thunderbird etc.)
-      └─ :993   (IMAP)             ──► direct TCP, raw (Thunderbird etc.)
-```
+
+HTTP is the only traffic handled by Traefik/Coolify. Mail ports `25`, `587`, and `993` bypass Traefik and Caddy completely; TLS for those ports is loaded by the Node mail servers from `MAIL_TLS_CERT_PATH` and `MAIL_TLS_KEY_PATH`.
+
+Production mail identity currently uses:
+
+| Purpose | Host |
+|---|---|
+| Web app / API | `mail.skale.club` |
+| Mail host / certificate path | `mx.skale.club` |
+| MX DNS target for `skale.club` | `mx.skale.club` |
 
 ### Workflow
 
@@ -139,10 +162,13 @@ Docker (skaleclub-mail:latest)
 2. Action SSHes into `HETZNER_HOST`, pulls latest, builds fresh Docker image with `--no-cache`
 3. Tags current `:latest` as `:previous` for rollback
 4. Stops old container, waits for clean shutdown (up to 30s), starts new container
-5. Caddyfile check: adds `mail.skale.club { reverse_proxy localhost:9001 }` block if missing
-6. Health-checks `http://localhost:9001/health` up to 12× with 5s interval
-7. On failure: automatic rollback to `:previous` image; previous image reused with same env vars
-8. On success: prunes old images, emits deploy summary
+5. Detects whether Docker network `coolify` exists.
+6. In Coolify mode, starts the container on `--network coolify`, attaches Traefik labels, and writes `/data/coolify/proxy/dynamic/skaleclub-mail.yaml` when that directory exists.
+7. In legacy mode without Coolify, falls back to adding a Caddy reverse-proxy block for `mail.skale.club -> localhost:9001` when Caddy exists.
+8. Publishes `9001`, `25`, `587`, and `993` directly from the container.
+9. Health-checks `http://localhost:9001/health` up to 12 times with 5s interval.
+10. On failure: automatic rollback to `:previous` image; previous image reused with the same env vars.
+11. On success: prunes old images, emits deploy summary.
 
 ### Required GitHub Secrets
 
@@ -154,10 +180,12 @@ Docker (skaleclub-mail:latest)
 | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | Client-side Supabase |
 | `DATABASE_URL` | Postgres pooler connection |
 | `JWT_SECRET`, `ENCRYPTION_KEY`, `OUTLOOK_TOKEN_ENCRYPTION_KEY` | Signing/crypto |
-| `MAIL_HOST`, `MAIL_DOMAIN` | Public mail hostnames |
+| `MAIL_DOMAIN` | Primary mail domain, e.g. `skale.club` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Outbound relay (fallback) |
 | `FRONTEND_URL` | Frontend URL for CORS |
 | `APP_COMPANY_NAME`, `APP_APPLICATION_NAME` | Branding |
+
+`MAIL_HOST` is currently set inside the deploy workflow to `mx.skale.club`, not read from a GitHub secret.
 
 ### Local parity
 
@@ -173,6 +201,23 @@ docker compose up      # uses docker-compose.yml, ports 9001/25/587/993
 | `Dockerfile` | Node 20 Alpine, builds client + server, runs `dist/server/index.js` |
 | `docker-compose.yml` | Local parity; same port mapping as production |
 | `.github/workflows/deploy-hetzner.yml` | CI/CD pipeline with rollback |
+
+### Production diagnostics
+
+```bash
+# App health from the host
+curl -sf http://localhost:9001/health
+curl -sS http://localhost:9001/health/mail
+
+# Check published containers and ports
+docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+
+# Mail arrival and routing logs
+docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
+
+# SMTP submission / IMAP auth logs
+docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[SMTP\]|\[IMAP\]'
+```
 
 ## Project Structure
 

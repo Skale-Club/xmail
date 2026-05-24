@@ -17,9 +17,57 @@ for the right job:
 | `/health/db`    | Database probe only (Drizzle/Postgres).                                 | none | yes          | no             |
 | `/health/auth`  | Supabase Auth probe only.                                               | none | no           | yes            |
 | `/health/ready` | **Readiness — full dependency check.** Use this for K8s/uptime probes.  | none | yes          | yes            |
+| `/health/mail`  | Mail server env/TLS/port diagnostic.                                    | none | no           | no             |
 
 > **Source:** `src/server/index.ts` (`app.get('/health/...')`) and
 > `src/server/lib/health.ts` (`runReadinessChecks`).
+
+---
+
+## Production Routing
+
+Production runs on a Hetzner VPS as a single Docker container named
+`skaleclub-mail`. GitHub Actions still owns the deploy flow; Coolify/Traefik
+owns HTTP routing when the host has the `coolify` Docker network.
+
+Current routing model:
+
+| Traffic | Public entry | Runtime path |
+| ------- | ------------ | ------------ |
+| Web app/API | `https://mail.skale.club` | Traefik/Coolify -> `http://skaleclub-mail:9001` |
+| Health check from host | `http://localhost:9001/health` | host-published Docker port -> Express |
+| SMTP MX inbound | `mx.skale.club:25` | direct Docker port -> Node MX server |
+| SMTP submission | `mx.skale.club:587` | direct Docker port -> Node SMTP server |
+| IMAP | `mx.skale.club:993` | direct Docker port -> Node IMAP server |
+
+Mail ports `25`, `587`, and `993` do not pass through Traefik or Caddy.
+TLS for those ports is loaded inside Node from `MAIL_TLS_CERT_PATH` and
+`MAIL_TLS_KEY_PATH`.
+
+Deploy details to remember:
+
+- `.github/workflows/deploy-hetzner.yml` detects Docker network `coolify`.
+- In Coolify mode it runs the container with `--network coolify`, attaches
+  Traefik labels, and writes `/data/coolify/proxy/dynamic/skaleclub-mail.yaml`
+  when that directory exists.
+- If Coolify is absent, Caddy remains a legacy fallback for HTTP only.
+- Production sets `MAIL_HOST=mx.skale.club` and `MX_PORT=25`.
+
+Useful commands:
+
+```bash
+# Container and port view
+docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+
+# Mail TLS and port diagnostic
+curl -sS http://localhost:9001/health/mail | jq
+
+# Inbound delivery, route matching, and SPF/DKIM/DMARC logs
+docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
+
+# SMTP submission and IMAP auth logs
+docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[SMTP\]|\[IMAP\]'
+```
 
 ---
 
@@ -183,7 +231,7 @@ the issue is the Node process.
 | Readiness             | shipped | `/health/ready` (CRIT-02)                         |
 | Structured access log | partial | `morgan` not enabled; ad-hoc `console.log` only.  |
 | Error log sink        | **deferred to v1.3** | See PROJECT.md "Key Decisions" — CI-04 |
-| Metrics (RED/USE)     | not shipped | Future. Candidates: `prom-client`, Vercel Analytics. |
+| Metrics (RED/USE)     | not shipped | Future. Candidate: `prom-client` exported from the long-running Node process. |
 | Tracing               | not shipped | Future.                                        |
 
 **Why no Sentry/Datadog yet?** See CI-04 decision in `.planning/PROJECT.md`.
@@ -210,6 +258,12 @@ curl -sS http://localhost:9001/health/db | jq
 
 # Auth only
 curl -sS http://localhost:9001/health/auth | jq
+
+# Mail ports/TLS diagnostic
+curl -sS http://localhost:9001/health/mail | jq
+
+# Recent inbound mail arrival/routing logs
+docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
 ```
 
 ---

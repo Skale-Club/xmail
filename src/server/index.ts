@@ -187,7 +187,7 @@ app.get('/health/mail', (_req, res) => {
         MAIL_TLS_CERT_PATH:              process.env.MAIL_TLS_CERT_PATH || '(not set)',
         MAIL_TLS_KEY_PATH:               process.env.MAIL_TLS_KEY_PATH || '(not set)',
         ENABLE_MAIL_SERVER:              process.env.ENABLE_MAIL_SERVER || '(not set, defaults on)',
-        ENABLE_MX_RECEIVER:              process.env.ENABLE_MX_RECEIVER || '(not set, defaults off)',
+        MX_PORT:                         process.env.MX_PORT || '(not set, defaults to 25 in prod / 2525 in dev)',
         SMTP_HOST:                       process.env.SMTP_HOST ? '✓ set' : '(not set)',
     }
 
