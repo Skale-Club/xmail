@@ -44,6 +44,12 @@ async function findLocalNativeMailbox(recipient: string, userId: string) {
     })
 }
 
+function smtpError(message: string, responseCode: number): Error {
+    const err = new Error(message) as Error & { responseCode?: number }
+    err.responseCode = responseCode
+    return err
+}
+
 async function storeInbound(
     mailboxId: string,
     parsed: Awaited<ReturnType<typeof parseRawEmail>>,
@@ -157,12 +163,12 @@ export function createMXServer() {
 
             if (!checkConnectRate(ip)) {
                 console.log(`[MX] Rate-limited: ${ip}`)
-                return callback(new Error('421 4.7.0 Too many connections from your IP'))
+                return callback(smtpError('4.7.0 Too many connections from your IP', 421))
             }
 
             if (await isSpamhausListed(ip)) {
                 console.log(`[MX] Spamhaus-listed IP rejected: ${ip}`)
-                return callback(new Error('554 5.7.1 Blacklisted by Spamhaus'))
+                return callback(smtpError('5.7.1 Blacklisted by Spamhaus', 554))
             }
 
             callback()
@@ -181,7 +187,7 @@ export function createMXServer() {
                     const companion = await findLocalNativeMailbox(rcpt, localUser.userId)
                     if (!companion) {
                         console.error(`[MX] Local user has no native mailbox: ${rcpt}`)
-                        return callback(new Error('451 4.2.1 Mailbox not provisioned; please retry later'))
+                        return callback(smtpError('4.2.1 Mailbox not provisioned; please retry later', 451))
                     }
                     hasRoute = true
                 } else {
@@ -193,22 +199,22 @@ export function createMXServer() {
                 }
 
                 if (hasRoute === 'reject') {
-                    return callback(new Error('550 5.1.1 Recipient rejected by policy'))
+                    return callback(smtpError('5.1.1 Recipient rejected by policy', 550))
                 }
                 if (!hasRoute) {
-                    return callback(new Error('550 5.1.1 User unknown in virtual mailbox table'))
+                    return callback(smtpError('5.1.1 User unknown in virtual mailbox table', 550))
                 }
 
                 // Greylist new (ip, from, to) triples. Legit MTAs retry; most bots don't.
                 if (shouldGreylist(ip, from, rcpt)) {
                     console.log(`[MX] Greylisted: ${ip} ${from} -> ${rcpt}`)
-                    return callback(new Error('451 4.7.1 Greylisted; please retry in 5 minutes'))
+                    return callback(smtpError('4.7.1 Greylisted; please retry in 5 minutes', 451))
                 }
 
                 callback()
             } catch (err) {
                 console.error('[MX] onRcptTo error:', err)
-                callback(new Error('451 4.3.0 Temporary failure'))
+                callback(smtpError('4.3.0 Temporary failure', 451))
             }
         },
 
@@ -232,7 +238,7 @@ export function createMXServer() {
 
                     if (auth?.verdict === 'reject') {
                         console.log(`[MX] AUTH REJECT ${sender} -> ${rcpts.join(',')}: ${auth.reason}`)
-                        return callback(new Error('550 5.7.1 DMARC policy violation'))
+                        return callback(smtpError('5.7.1 DMARC policy violation', 550))
                     }
 
                     const sealed = auth ? sealWithAuthHeader(raw, auth.headers) : raw
@@ -242,10 +248,10 @@ export function createMXServer() {
 
                     // Basic header sanity
                     if (!hasValidFromHeader(parsed)) {
-                        return callback(new Error('550 5.6.0 Missing or invalid From header'))
+                        return callback(smtpError('5.6.0 Missing or invalid From header', 550))
                     }
                     if (isDateTooOld(parsed)) {
-                        return callback(new Error('550 5.6.0 Message Date header older than 30 days'))
+                        return callback(smtpError('5.6.0 Message Date header older than 30 days', 550))
                     }
 
                     for (const rcpt of rcpts) {
@@ -274,7 +280,7 @@ export function createMXServer() {
                     callback()
                 } catch (err) {
                     console.error('[MX] Processing error:', err)
-                    callback(new Error('451 4.3.0 Temporary failure, try again later'))
+                    callback(smtpError('4.3.0 Temporary failure, try again later', 451))
                 }
             })
             stream.on('error', (err: Error) => {
