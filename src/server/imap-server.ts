@@ -120,6 +120,34 @@ function folderTypeToAttributes(type: string | null): string {
     }
 }
 
+function parseListArgs(args: string): { reference: string; mailbox: string } | null {
+    const match = args.match(/^"([^"]*)"\s+"([^"]*)"$/) || args.match(/^(\S+)\s+(\S+)$/)
+    if (!match) return null
+    return {
+        reference: match[1].replace(/^"|"$/g, ''),
+        mailbox: match[2].replace(/^"|"$/g, ''),
+    }
+}
+
+function listPatternToRegex(pattern: string): RegExp {
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*/g, '.*')
+        .replace(/%/g, '[^/]*')
+    return new RegExp(`^${escaped}$`, 'i')
+}
+
+function folderMatchesListPattern(remoteId: string, reference: string, mailbox: string): boolean {
+    if (!mailbox) return false
+
+    const normalizedReference = reference.replace(/^\/+|\/+$/g, '')
+    const normalizedMailbox = mailbox.replace(/^\/+/, '')
+    const pattern = normalizedReference && !normalizedMailbox.startsWith(normalizedReference)
+        ? `${normalizedReference}/${normalizedMailbox}`
+        : normalizedMailbox
+
+    return listPatternToRegex(pattern).test(remoteId)
+}
+
 function buildRawMessage(msg: typeof mailMessages.$inferSelect): string {
     const to = (msg.toAddresses as Array<{ name?: string; address?: string }> | null) || []
     const cc = (msg.ccAddresses as Array<{ name?: string; address?: string }> | null) || []
@@ -465,10 +493,13 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
 
     // ── LIST / LSUB ──
     if (cmd === 'LIST' || cmd === 'LSUB') {
+        const listArgs = parseListArgs(args)
+        if (!listArgs) { sendLine(socket, `${tag} BAD ${cmd} syntax error`); return }
+
         const folders = await db.query.mailFolders.findMany({
             where: eq(mailFolders.mailboxId, companion.id),
         })
-        for (const folder of folders) {
+        for (const folder of folders.filter(folder => folderMatchesListPattern(folder.remoteId, listArgs.reference, listArgs.mailbox))) {
             const attrs = folderTypeToAttributes(folder.type)
             sendLine(socket, `* ${cmd} (${attrs}) "/" "${folder.remoteId}"`)
         }
