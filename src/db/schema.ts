@@ -177,6 +177,7 @@ export const smtpEndpoints = pgTable('smtp_endpoints', {
     sslMode: text('ssl_mode').default('auto').notNull(),
     username: text('username'),
     password: text('password'),
+    passwordEncrypted: text('password_encrypted'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

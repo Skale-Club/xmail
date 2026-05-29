@@ -303,6 +303,31 @@ export async function markAsBounced(
     }, 'marked as bounced')
 }
 
+// P0-06 — advisory lock prevents concurrent runs across multiple Node instances.
+// Same pattern as runOutreachProcessorWithLock in processOutreachSequences.ts.
+// Inspect held locks: SELECT * FROM pg_locks WHERE locktype='advisory';
+const LOCK_ID_BOUNCE_PROCESSOR = 4015
+
+export async function runBouncesProcessorWithLock(): Promise<{ acquired: boolean; result?: { processed: number; bounces: number; errors: number } }> {
+    const lockResult = await db.execute(sql`SELECT pg_try_advisory_lock(${LOCK_ID_BOUNCE_PROCESSOR}) AS acquired`)
+    const acquired = Array.isArray(lockResult)
+        ? (lockResult as unknown as Array<{ acquired: boolean }>)[0]?.acquired === true
+        : (lockResult as unknown as { rows: Array<{ acquired: boolean }> }).rows?.[0]?.acquired === true
+    if (!acquired) {
+        log.debug({
+            action: 'outreach.bounce.lock_contended',
+            lockId: LOCK_ID_BOUNCE_PROCESSOR,
+        }, 'advisory lock held by another instance — skipping tick')
+        return { acquired: false }
+    }
+    try {
+        const result = await processBounces()
+        return { acquired: true, result }
+    } finally {
+        await db.execute(sql`SELECT pg_advisory_unlock(${LOCK_ID_BOUNCE_PROCESSOR})`)
+    }
+}
+
 export async function processBounces(): Promise<{ processed: number; bounces: number; errors: number }> {
     const result = { processed: 0, bounces: 0, errors: 0 }
 

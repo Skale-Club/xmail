@@ -12,6 +12,7 @@
 import { db } from '../../db'
 import { routes, smtpEndpoints, httpEndpoints, addressEndpoints, domains } from '../../db/schema'
 import { eq, and } from 'drizzle-orm'
+import { decryptSecret } from './crypto'
 import nodemailer from 'nodemailer'
 import { v4 as uuidv4 } from 'uuid'
 import { messages } from '../../db/schema'
@@ -79,6 +80,17 @@ export async function findMatchingRoutes(
                     where: eq(smtpEndpoints.id, route.smtpEndpointId),
                 })
                 if (smtpEp) {
+                    let password: string | null = null
+                    if (smtpEp.passwordEncrypted) {
+                        try {
+                            password = decryptSecret(smtpEp.passwordEncrypted)
+                        } catch {
+                            password = null
+                        }
+                    } else if (smtpEp.password) {
+                        // Legacy plaintext — kept for rows not yet backfilled
+                        password = smtpEp.password
+                    }
                     endpoint = {
                         type: 'smtp',
                         config: {
@@ -86,7 +98,7 @@ export async function findMatchingRoutes(
                             port: smtpEp.port,
                             sslMode: smtpEp.sslMode,
                             username: smtpEp.username,
-                            password: smtpEp.password,
+                            password,
                         },
                     }
                 }

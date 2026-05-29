@@ -3,8 +3,8 @@ import { processQueue } from './processQueue'
 import { processHeldMessages } from './processHeld'
 import { cleanupOldMessages } from './cleanupMessages'
 import { runOutreachProcessorWithLock, resetDailyLimits } from './processOutreachSequences'
-import { processReplies } from './processReplies'
-import { processBounces } from './processBounces'
+import { runRepliesProcessorWithLock } from './processReplies'
+import { runBouncesProcessorWithLock } from './processBounces'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
 import { createLogger } from '../lib/logger'
@@ -13,13 +13,10 @@ const log = createLogger('outreach.jobs')
 
 // P0-06: the previous in-memory mutex was removed in plan 14-06. It only protected
 // within a single Node process; multi-instance deploys (blue-green overlap, future
-// horizontal scale) could still double-send. The DB-level lock now lives inside
-// runOutreachProcessorWithLock — see processOutreachSequences.ts.
-//
-// TODO(phase-15): also wrap processReplies and processBounces in advisory locks
-//   (LOCK_ID_REPLY_PROCESSOR = 4016 / LOCK_ID_BOUNCE_PROCESSOR = 4015 — same pattern
-//   as outreach). Lower priority because both jobs are already idempotent at the
-//   per-message level.
+// horizontal scale) could still double-send. The DB-level advisory locks now live inside
+// runOutreachProcessorWithLock, runRepliesProcessorWithLock, and runBouncesProcessorWithLock.
+// See processOutreachSequences.ts, processReplies.ts, processBounces.ts.
+// Lock IDs: outreach=4014, bounces=4015, replies=4016.
 
 export function startJobs(): void {
     log.info({ action: 'outreach.jobs.scheduler_start' }, 'starting background job scheduler')
@@ -98,9 +95,9 @@ export function startJobs(): void {
         })
     }, { timezone: 'UTC' })
 
-    // Process replies every 15 minutes
+    // Process replies every 15 minutes (advisory-locked at the DB layer)
     cron.schedule('*/15 * * * *', () => {
-        processReplies().catch((err) => {
+        runRepliesProcessorWithLock().catch((err) => {
             const e = err instanceof Error ? err : new Error(String(err))
             log.error({
                 action: 'outreach.jobs.processReplies_failed',
@@ -109,9 +106,9 @@ export function startJobs(): void {
         })
     })
 
-    // Process bounces every 30 minutes
+    // Process bounces every 30 minutes (advisory-locked at the DB layer)
     cron.schedule('*/30 * * * *', () => {
-        processBounces().catch((err) => {
+        runBouncesProcessorWithLock().catch((err) => {
             const e = err instanceof Error ? err : new Error(String(err))
             log.error({
                 action: 'outreach.jobs.processBounces_failed',
