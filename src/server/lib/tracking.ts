@@ -151,15 +151,15 @@ export async function createUserNotificationsForEvent(
 ): Promise<void> {
     try {
         const typeMap: Record<WebhookEvent, string> = {
-            message_sent: 'bounce',
-            message_delivered: 'bounce',
+            message_sent: 'message_sent',
+            message_delivered: 'message_delivered',
             message_bounced: 'bounce',
             message_held: 'held',
-            message_opened: 'bounce',
-            link_clicked: 'bounce',
-            domain_verified: 'domain_verification_failed',
+            message_opened: 'message_opened',
+            link_clicked: 'link_clicked',
+            domain_verified: 'domain_verified',
             spam_alert: 'spam_alert',
-            test: 'bounce',
+            test: 'test',
         }
 
         const titleMap: Record<WebhookEvent, string> = {

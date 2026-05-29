@@ -5,7 +5,7 @@ import { db } from '../../../db'
 import { mailboxes, mailFolders, users } from '../../../db/schema'
 import { encryptSecret } from '../../lib/crypto'
 import { authenticateNativeUser, createUserMailbox, deleteMailboxById } from '../../lib/native-mail'
-import { isPrivateHost } from '../../lib/network-guard'
+import { isPrivateHostWithDns } from '../../lib/network-guard'
 
 /** Structured error for missing encryption key — helps diagnose Coolify env var issues */
 function isMissingEncryptionKey(err: unknown): boolean {
@@ -269,6 +269,7 @@ router.post('/', async (req: Request, res: Response) => {
             imapUsername: z.string(),
             imapPassword: z.string(),
             imapSecure: z.boolean().default(true),
+            skipTlsVerify: z.boolean().default(false),
             isDefault: z.boolean().default(false),
         })
 
@@ -294,6 +295,7 @@ router.post('/', async (req: Request, res: Response) => {
             imapUsername: data.imapUsername,
             imapPasswordEncrypted: encryptSecret(data.imapPassword),
             imapSecure: data.imapSecure,
+            skipTlsVerify: data.skipTlsVerify,
             isDefault: data.isDefault,
         }
 
@@ -407,6 +409,12 @@ router.delete('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Mailbox not found' })
         }
 
+        // Native mailboxes are automatically managed and cannot be deleted.
+        // They are re-created on login / GET /api/mail/mailboxes if missing.
+        if (existing.isNative) {
+            return res.status(403).json({ error: 'Native (server) mailboxes cannot be deleted.' })
+        }
+
         await deleteMailboxById(mailboxId)
 
         res.json({ success: true })
@@ -440,7 +448,12 @@ router.post('/test-connection', async (req: Request, res: Response) => {
 
         const smtpHost = data.smtpHost.trim()
         const imapHost = data.imapHost.trim()
-        if (isPrivateHost(smtpHost) || isPrivateHost(imapHost)) {
+        // Use DNS-resolving variant to prevent DNS-rebinding SSRF bypass
+        const [smtpPrivate, imapPrivate] = await Promise.all([
+            isPrivateHostWithDns(smtpHost),
+            isPrivateHostWithDns(imapHost),
+        ])
+        if (smtpPrivate || imapPrivate) {
             return res.status(400).json({ error: 'Connection to private/loopback/link-local hosts is not allowed' })
         }
 

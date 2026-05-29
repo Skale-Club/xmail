@@ -72,7 +72,11 @@ export async function createUserMailbox(userId: string, _email: string): Promise
     const imapPort = parseInt(process.env.IMAP_PORT || '2993')
     const placeholder = encryptSecret('__NATIVE__')
 
-    const [companion] = await db.insert(mailboxes).values({
+    // ON CONFLICT DO NOTHING handles the race condition where two concurrent
+    // requests both pass the "existing?" check above. The unique index
+    // mailboxes_native_email_unique (migration 026) enforces the constraint.
+    // After the upsert, re-query for the canonical row (new or pre-existing).
+    await db.insert(mailboxes).values({
         userId,
         email: normalizedEmail,
         smtpHost: mailHost,
@@ -87,17 +91,29 @@ export async function createUserMailbox(userId: string, _email: string): Promise
         imapSecure: false,
         isDefault: true,
         isNative: true,
-    }).returning()
+    }).onConflictDoNothing()
 
+    const companion = await db.query.mailboxes.findFirst({
+        where: and(
+            eq(mailboxes.userId, userId),
+            eq(mailboxes.email, normalizedEmail),
+            eq(mailboxes.isNative, true)
+        ),
+    })
+
+    if (!companion) return null
+
+    // Create default folders only if they don't already exist (idempotent).
     const uidValidity = Math.floor(Date.now() / 1000)
-    await db.insert(mailFolders).values([
+    const defaultFolders = [
         { mailboxId: companion.id, remoteId: 'INBOX', name: 'Inbox', type: 'inbox', uidValidity },
         { mailboxId: companion.id, remoteId: 'Sent', name: 'Sent', type: 'sent', uidValidity },
         { mailboxId: companion.id, remoteId: 'Drafts', name: 'Drafts', type: 'drafts', uidValidity },
         { mailboxId: companion.id, remoteId: 'Archive', name: 'Archive', type: 'archive', uidValidity },
         { mailboxId: companion.id, remoteId: 'Trash', name: 'Trash', type: 'trash', uidValidity },
         { mailboxId: companion.id, remoteId: 'Spam', name: 'Spam', type: 'spam', uidValidity },
-    ])
+    ]
+    await db.insert(mailFolders).values(defaultFolders).onConflictDoNothing()
 
     return companion.id
 }
