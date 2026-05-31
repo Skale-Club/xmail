@@ -38,7 +38,11 @@ export async function paginate<T extends Table>(
     // Count query
     const countResult = await database
         .select({ count: sql<string>`count(*)` })
-        .from(table)
+        // drizzle 0.45's `.from()` rejects a bare generic `T extends Table`
+        // (TableLikeHasEmptySelection guard). Cast is type-only; the real
+        // table object is passed at runtime. Matches the `as any` on the
+        // relational query below.
+        .from(table as any)
         .where(where)
 
     const total = Number(countResult[0]?.count || 0)
