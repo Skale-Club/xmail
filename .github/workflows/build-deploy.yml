@@ -137,8 +137,10 @@ jobs:
             done
 
             NETWORK_FLAG=""
+            USING_COOLIFY=false
             if docker network ls --format "{{.Name}}" | grep -qE "^coolify$"; then
               NETWORK_FLAG="--network coolify"
+              USING_COOLIFY=true
               echo "Coolify network detected"
             fi
 
@@ -183,6 +185,44 @@ jobs:
               --label "traefik.http.routers.xmail.tls.certresolver=letsencrypt" \
               --label "traefik.http.services.xmail.loadbalancer.server.port=9001" \
               xmail:latest
+
+            if [ "$USING_COOLIFY" = "true" ]; then
+              TRAEFIK_DYN="/data/coolify/proxy/dynamic/xmail.yaml"
+              LEGACY_TRAFIK_DYN="/data/coolify/proxy/dynamic/skaleclub""-mail.yaml"
+              if [ -d "$(dirname "$TRAEFIK_DYN")" ]; then
+                rm -f "$LEGACY_TRAFIK_DYN"
+                printf '%s\n' \
+                  'http:' \
+                  '  routers:' \
+                  '    xmail-https:' \
+                  '      rule: "Host(`mail.skale.club`)"' \
+                  '      service: xmail-svc' \
+                  '      entryPoints:' \
+                  '        - https' \
+                  '      tls:' \
+                  '        certResolver: letsencrypt' \
+                  '    xmail-http:' \
+                  '      rule: "Host(`mail.skale.club`)"' \
+                  '      service: xmail-svc' \
+                  '      entryPoints:' \
+                  '        - http' \
+                  '      middlewares:' \
+                  '        - redirect-to-https' \
+                  '  middlewares:' \
+                  '    redirect-to-https:' \
+                  '      redirectScheme:' \
+                  '        scheme: https' \
+                  '        permanent: true' \
+                  '  services:' \
+                  '    xmail-svc:' \
+                  '      loadBalancer:' \
+                  '        servers:' \
+                  '          - url: "http://xmail:9001"' \
+                  '        passHostHeader: true' \
+                  > "$TRAEFIK_DYN"
+                echo "Traefik file config written: $TRAEFIK_DYN"
+              fi
+            fi
             echo "::endgroup::"
 
             echo "::group::🏥 Health check"
