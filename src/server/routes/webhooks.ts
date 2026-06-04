@@ -340,7 +340,7 @@ router.post('/:id/test', async (req: Request, res: Response) => {
                 name: organization.name,
             },
             data: {
-                message: 'This is a test webhook from SkaleClub Mail',
+                message: 'This is a test webhook from Xmail',
             },
         }
 

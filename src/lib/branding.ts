@@ -14,7 +14,7 @@ const defaultLogoUrl = `${supabaseUrl}/storage/v1/object/public/branding-assets/
 
 export const defaultBranding: BrandingSettings = {
     companyName: '',
-    applicationName: 'Skale Club Mail',
+    applicationName: 'Xmail',
     logoUrl: defaultLogoUrl,
     faviconUrl: defaultLogoUrl,
     mailHost: 'mx.skaleclub.com',

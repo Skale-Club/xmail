@@ -199,10 +199,10 @@ export const mockEmailDetails: Record<string, {
     attachments?: { name: string; size: string; type: string }[]
 }> = {
     '1': {
-        subject: 'Welcome to Skale Club Mail!',
+        subject: 'Welcome to Xmail!',
         body: `Dear User,
 
-Thank you for using Skale Club Mail! We are thrilled to have you as part of our growing community.
+Thank you for using Xmail! We are thrilled to have you as part of our growing community.
 
 Here's what you can do with your new email account:
 
@@ -218,7 +218,7 @@ Best regards,
 The Skale Club Team
 
 ---
-Skale Club Mail - Professional Email Made Simple
+Xmail - Professional Email Made Simple
 Website: https://skaleclub.com
 Support: support@skaleclub.com`,
         from: { name: 'Skale Club Team', email: 'noreply@skaleclub.com' },

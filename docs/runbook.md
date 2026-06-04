@@ -1,6 +1,6 @@
-# SkaleClub Mail — Operations Runbook
+# Xmail — Operations Runbook
 
-This runbook documents operational behavior of the SkaleClub Mail service for
+This runbook documents operational behavior of the Xmail service for
 deployment, health monitoring, and triage. It is the source of truth for
 ops/SRE concerns; product features live in `README.md` and code comments.
 
@@ -27,14 +27,14 @@ for the right job:
 ## Production Routing
 
 Production runs on a Hetzner VPS as a single Docker container named
-`skaleclub-mail`. GitHub Actions still owns the deploy flow; Coolify/Traefik
+`xmail`. GitHub Actions still owns the deploy flow; Coolify/Traefik
 owns HTTP routing when the host has the `coolify` Docker network.
 
 Current routing model:
 
 | Traffic | Public entry | Runtime path |
 | ------- | ------------ | ------------ |
-| Web app/API | `https://mail.skale.club` | Traefik/Coolify -> `http://skaleclub-mail:9001` |
+| Web app/API | `https://mail.skale.club` | Traefik/Coolify -> `http://xmail:9001` |
 | Health check from host | `http://localhost:9001/health` | host-published Docker port -> Express |
 | SMTP MX inbound | `mx.skale.club:25` | direct Docker port -> Node MX server |
 | SMTP submission | `mx.skale.club:587` | direct Docker port -> Node SMTP server |
@@ -48,7 +48,7 @@ Deploy details to remember:
 
 - `.github/workflows/deploy-hetzner.yml` detects Docker network `coolify`.
 - In Coolify mode it runs the container with `--network coolify`, attaches
-  Traefik labels, and writes `/data/coolify/proxy/dynamic/skaleclub-mail.yaml`
+  Traefik labels, and writes `/data/coolify/proxy/dynamic/xmail.yaml`
   when that directory exists.
 - If Coolify is absent, Caddy remains a legacy fallback for HTTP only.
 - Production sets `MAIL_HOST=mx.skale.club` and `MX_PORT=25`.
@@ -63,10 +63,10 @@ docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
 curl -sS http://localhost:9001/health/mail | jq
 
 # Inbound delivery, route matching, and SPF/DKIM/DMARC logs
-docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
+docker logs xmail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
 
 # SMTP submission and IMAP auth logs
-docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[SMTP\]|\[IMAP\]'
+docker logs xmail --since 24h 2>&1 | grep -E '\[SMTP\]|\[IMAP\]'
 ```
 
 ---
@@ -263,7 +263,7 @@ curl -sS http://localhost:9001/health/auth | jq
 curl -sS http://localhost:9001/health/mail | jq
 
 # Recent inbound mail arrival/routing logs
-docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
+docker logs xmail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
 ```
 
 ---

@@ -66,6 +66,22 @@ async function checkOrgMembership(userId: string, organizationId: string) {
     return membership
 }
 
+function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembership>>): boolean {
+    return membership?.role === 'admin' || membership?.role === 'member'
+}
+
+async function validateLeadListAccess(organizationId: string, leadListId: string | undefined): Promise<boolean> {
+    if (!leadListId) return true
+    const list = await db.query.leadLists.findFirst({
+        where: and(
+            eq(leadLists.id, leadListId),
+            eq(leadLists.organizationId, organizationId)
+        ),
+        columns: { id: true },
+    })
+    return Boolean(list)
+}
+
 // ============ LEAD LISTS ============
 
 // List all lead lists
@@ -121,6 +137,9 @@ router.post('/lists', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         const validatedData = createLeadListSchema.parse(req.body)
 
@@ -160,6 +179,9 @@ router.delete('/lists/:id', async (req: Request, res: Response) => {
         const membership = await checkOrgMembership(userId, list.organizationId)
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
         }
 
         // Remove list from leads (set leadListId to null)
@@ -302,8 +324,14 @@ router.post('/', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         const validatedData = createLeadSchema.parse(req.body)
+        if (!(await validateLeadListAccess(organizationId, validatedData.leadListId))) {
+            return res.status(400).json({ error: 'Lead list not found or access denied' })
+        }
 
         // Check for duplicate email
         const existing = await db.query.leads.findFirst({
@@ -359,8 +387,27 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         const validatedData = bulkImportSchema.parse(req.body)
+        const leadListIds = [...new Set([
+            validatedData.leadListId,
+            ...validatedData.leads.map(lead => lead.leadListId),
+        ].filter((id): id is string => Boolean(id)))]
+        if (leadListIds.length > 0) {
+            const accessibleLists = await db.query.leadLists.findMany({
+                where: and(
+                    eq(leadLists.organizationId, organizationId),
+                    inArray(leadLists.id, leadListIds)
+                ),
+                columns: { id: true },
+            })
+            if (accessibleLists.length !== leadListIds.length) {
+                return res.status(400).json({ error: 'One or more lead lists were not found or access denied' })
+            }
+        }
 
         // Get existing emails
         const existingLeads = await db.query.leads.findMany({
@@ -434,6 +481,9 @@ router.put('/:id', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         const validatedData = updateLeadSchema.parse(req.body)
 
@@ -479,6 +529,9 @@ router.delete('/:id', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         await db.delete(leads).where(eq(leads.id, leadId))
 
@@ -520,6 +573,9 @@ router.post('/bulk-delete', async (req: Request, res: Response) => {
         const membership = await checkOrgMembership(userId, organizationId)
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
         }
 
         // Verify all leads belong to the organization

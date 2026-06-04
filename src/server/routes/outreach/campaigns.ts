@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
-import { campaigns, sequences, sequenceSteps, campaignLeads, leads, organizationUsers, outreachEmails } from '../../../db/schema'
+import { campaigns, sequences, sequenceSteps, campaignLeads, leads, organizationUsers, outreachEmails, emailAccounts } from '../../../db/schema'
 import { eq, and, sql, inArray, desc, asc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
@@ -72,6 +72,61 @@ async function checkOrgMembership(userId: string, organizationId: string) {
         ),
     })
     return membership
+}
+
+function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembership>>): boolean {
+    return membership?.role === 'admin' || membership?.role === 'member'
+}
+
+async function validateCampaignReadyForActivation(campaignId: string, organizationId: string): Promise<string[]> {
+    const errors: string[] = []
+
+    const campaignSequences = await db.query.sequences.findMany({
+        where: eq(sequences.campaignId, campaignId),
+        columns: { id: true },
+    })
+    const sequenceIds = campaignSequences.map(sequence => sequence.id)
+
+    if (sequenceIds.length === 0) {
+        errors.push('Campaign needs at least one sequence')
+    } else {
+        const firstStep = await db.query.sequenceSteps.findFirst({
+            where: inArray(sequenceSteps.sequenceId, sequenceIds),
+            columns: { id: true },
+        })
+        if (!firstStep) {
+            errors.push('Campaign sequence needs at least one step')
+        }
+    }
+
+    const assignedLeads = await db.query.campaignLeads.findMany({
+        where: eq(campaignLeads.campaignId, campaignId),
+        columns: { assignedEmailAccountId: true },
+    })
+    if (assignedLeads.length === 0) {
+        errors.push('Campaign needs at least one lead')
+    }
+
+    const assignedAccountIds = [...new Set(assignedLeads.map(lead => lead.assignedEmailAccountId).filter((id): id is string => Boolean(id)))]
+    if (assignedAccountIds.length !== assignedLeads.length) {
+        errors.push('Every campaign lead needs an assigned sending inbox')
+    }
+
+    if (assignedAccountIds.length > 0) {
+        const verifiedAccounts = await db.query.emailAccounts.findMany({
+            where: and(
+                eq(emailAccounts.organizationId, organizationId),
+                eq(emailAccounts.status, 'verified'),
+                inArray(emailAccounts.id, assignedAccountIds)
+            ),
+            columns: { id: true },
+        })
+        if (verifiedAccounts.length !== assignedAccountIds.length) {
+            errors.push('Every assigned sending inbox must belong to this organization and be verified')
+        }
+    }
+
+    return errors
 }
 
 // ============ CAMPAIGNS ============
@@ -447,6 +502,9 @@ router.post('/', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         const validatedData = createCampaignSchema.parse(req.body)
 
@@ -497,6 +555,9 @@ router.put('/:id', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         const validatedData = updateCampaignSchema.parse(req.body)
 
@@ -504,6 +565,13 @@ router.put('/:id', async (req: Request, res: Response) => {
 
         // Handle status changes
         if (validatedData.status === 'active' && campaign.status !== 'active') {
+            const readinessErrors = await validateCampaignReadyForActivation(campaignId, campaign.organizationId)
+            if (readinessErrors.length > 0) {
+                return res.status(400).json({
+                    error: 'Campaign is not ready to activate',
+                    details: readinessErrors,
+                })
+            }
             updateData.startedAt = new Date()
         } else if (validatedData.status === 'completed' && campaign.status !== 'completed') {
             updateData.completedAt = new Date()
@@ -547,6 +615,9 @@ router.delete('/:id', async (req: Request, res: Response) => {
         const membership = await checkOrgMembership(userId, campaign.organizationId)
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
         }
 
         // Wrap in transaction for defense-in-depth. The schema-level ON DELETE CASCADE
@@ -627,6 +698,9 @@ router.post('/:campaignId/sequences', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         const validatedData = createSequenceSchema.parse(req.body)
 
@@ -670,6 +744,9 @@ router.delete('/sequences/:sequenceId', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         await db.delete(sequenceSteps).where(eq(sequenceSteps.sequenceId, sequenceId))
         await db.delete(sequences).where(eq(sequences.id, sequenceId))
@@ -707,6 +784,9 @@ router.post('/sequences/:sequenceId/steps', async (req: Request, res: Response) 
         const membership = await checkOrgMembership(userId, sequence.campaign.organizationId)
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
         }
 
         const validatedData = createSequenceStepSchema.parse(req.body)
@@ -754,6 +834,9 @@ router.put('/sequences/steps/:stepId', async (req: Request, res: Response) => {
         const membership = await checkOrgMembership(userId, step.sequence.campaign.organizationId)
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
         }
 
         const validatedData = createSequenceStepSchema.partial().parse(req.body)
@@ -806,6 +889,9 @@ router.delete('/sequences/steps/:stepId', async (req: Request, res: Response) =>
         const membership = await checkOrgMembership(userId, step.sequence.campaign.organizationId)
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
         }
 
         await db.delete(sequenceSteps).where(eq(sequenceSteps.id, stepId))
@@ -930,8 +1016,24 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         const validatedData = addLeadsToCampaignSchema.parse(req.body)
+
+        if (validatedData.emailAccountId) {
+            const account = await db.query.emailAccounts.findFirst({
+                where: and(
+                    eq(emailAccounts.id, validatedData.emailAccountId),
+                    eq(emailAccounts.organizationId, campaign.organizationId)
+                ),
+                columns: { id: true },
+            })
+            if (!account) {
+                return res.status(400).json({ error: 'Email account not found or access denied' })
+            }
+        }
 
         // Verify leads exist and belong to organization
         const leadsList = await db.query.leads.findMany({
@@ -1046,6 +1148,9 @@ router.delete('/:campaignId/leads/:leadId', async (req: Request, res: Response) 
         const membership = await checkOrgMembership(userId, campaign.organizationId)
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
         }
 
         await db.delete(campaignLeads)

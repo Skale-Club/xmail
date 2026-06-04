@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: skaleclub-mail
-  DEPLOY_DIR: /opt/skaleclub-mail
+  IMAGE_NAME: xmail
+  DEPLOY_DIR: /opt/xmail
   HEALTH_CHECK_URL: http://localhost:9001/health
   HEALTH_CHECK_RETRIES: 12
   HEALTH_CHECK_INTERVAL: 5
@@ -41,9 +41,10 @@ jobs:
           script: |
             set -euo pipefail
 
-            REPO_URL="https://github.com/Skale-Club/skaleclub-mail.git"
+            REPO_URL="https://github.com/Skale-Club/xmail.git"
             DEPLOY_VERSION="${{ steps.meta.outputs.version }}"
             DEPLOYED_AT="${{ steps.meta.outputs.deployed_at }}"
+            LEGACY_IMAGE_NAME="skaleclub""-mail"
 
             echo "::group::📦 Preparing server"
             # Install Docker if not present
@@ -83,6 +84,9 @@ jobs:
             if docker images $IMAGE_NAME:latest --format "{{.ID}}" | grep -q .; then
               echo "Saving previous image as $IMAGE_NAME:previous..."
               docker tag $IMAGE_NAME:latest $IMAGE_NAME:previous || true
+            elif docker images $LEGACY_IMAGE_NAME:latest --format "{{.ID}}" | grep -q .; then
+              echo "Saving legacy image $LEGACY_IMAGE_NAME:latest as $IMAGE_NAME:previous..."
+              docker tag $LEGACY_IMAGE_NAME:latest $IMAGE_NAME:previous || true
             fi
 
             # Build new image with --no-cache to ensure fresh build
@@ -90,7 +94,7 @@ jobs:
             docker build --no-cache \
               --build-arg VITE_SUPABASE_URL="${{ secrets.VITE_SUPABASE_URL }}" \
               --build-arg VITE_SUPABASE_ANON_KEY="${{ secrets.VITE_SUPABASE_ANON_KEY }}" \
-              --build-arg VITE_APP_NAME="Skale Club Mail" \
+              --build-arg VITE_APP_NAME="Xmail" \
               -t $IMAGE_NAME:latest \
               -t $IMAGE_NAME:$DEPLOY_VERSION \
               .
@@ -99,26 +103,32 @@ jobs:
             echo "::endgroup::"
 
             echo "::group::🚀 Deploying new container"
-            # Stop and remove old container (only after successful build)
-            if docker ps -a --filter "name=$IMAGE_NAME" --format "{{.ID}}" | grep -q .; then
-              echo "Stopping old container..."
-              docker stop $IMAGE_NAME || true
-              docker rm -f $IMAGE_NAME || true
+            # Stop and remove old containers (only after successful build).
+            # The legacy container name is handled for the first deploy after
+            # the repository/container rename to xmail.
+            for CONTAINER_NAME in "$IMAGE_NAME" "$LEGACY_IMAGE_NAME"; do
+              if ! docker ps -a --filter "name=^/${CONTAINER_NAME}$" --format "{{.ID}}" | grep -q .; then
+                continue
+              fi
 
-              echo "Waiting for old container to be fully removed..."
+              echo "Stopping old container $CONTAINER_NAME..."
+              docker stop "$CONTAINER_NAME" || true
+              docker rm -f "$CONTAINER_NAME" || true
+
+              echo "Waiting for old container $CONTAINER_NAME to be fully removed..."
               for i in $(seq 1 15); do
-                if ! docker ps -a --filter "name=^/${IMAGE_NAME}$" --format "{{.ID}}" | grep -q .; then
+                if ! docker ps -a --filter "name=^/${CONTAINER_NAME}$" --format "{{.ID}}" | grep -q .; then
                   break
                 fi
                 sleep 2
               done
 
-              if docker ps -a --filter "name=^/${IMAGE_NAME}$" --format "{{.ID}}" | grep -q .; then
-                echo "❌ Old container still exists after waiting"
-                docker ps -a --filter "name=^/${IMAGE_NAME}$"
+              if docker ps -a --filter "name=^/${CONTAINER_NAME}$" --format "{{.ID}}" | grep -q .; then
+                echo "❌ Old container $CONTAINER_NAME still exists after waiting"
+                docker ps -a --filter "name=^/${CONTAINER_NAME}$"
                 exit 1
               fi
-            fi
+            done
 
             # Free mail ports 25 / 587 / 993 from any other container that may
             # be holding them (e.g. a Coolify-managed instance of this same app
@@ -194,14 +204,14 @@ jobs:
               -e ENABLE_MAIL_SERVER=true \
               --label "traefik.enable=true" \
               --label "traefik.docker.network=coolify" \
-              --label "traefik.http.routers.skaleclub-mail.rule=Host(\`mail.skale.club\`)" \
-              --label "traefik.http.routers.skaleclub-mail.entrypoints=https" \
-              --label "traefik.http.routers.skaleclub-mail.tls=true" \
-              --label "traefik.http.routers.skaleclub-mail.tls.certresolver=letsencrypt" \
-              --label "traefik.http.services.skaleclub-mail.loadbalancer.server.port=9001" \
-              --label "traefik.http.routers.skaleclub-mail-http.rule=Host(\`mail.skale.club\`)" \
-              --label "traefik.http.routers.skaleclub-mail-http.entrypoints=http" \
-              --label "traefik.http.routers.skaleclub-mail-http.middlewares=redirect-to-https@docker" \
+              --label "traefik.http.routers.xmail.rule=Host(\`mail.skale.club\`)" \
+              --label "traefik.http.routers.xmail.entrypoints=https" \
+              --label "traefik.http.routers.xmail.tls=true" \
+              --label "traefik.http.routers.xmail.tls.certresolver=letsencrypt" \
+              --label "traefik.http.services.xmail.loadbalancer.server.port=9001" \
+              --label "traefik.http.routers.xmail-http.rule=Host(\`mail.skale.club\`)" \
+              --label "traefik.http.routers.xmail-http.entrypoints=http" \
+              --label "traefik.http.routers.xmail-http.middlewares=redirect-to-https@docker" \
               --label "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https" \
               --label "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true" \
               $IMAGE_NAME:latest
@@ -210,25 +220,27 @@ jobs:
 
             # Write a Traefik file-provider config so routing is explicit and
             # not dependent on Docker label discovery timing.
-            # Uses the container NAME (skaleclub-mail) as backend URL — Docker
+            # Uses the container NAME (xmail) as backend URL — Docker
             # resolves this to the container's coolify-network IP via DNS.
             if [ "$USING_COOLIFY" = "true" ]; then
-              TRAEFIK_DYN="/data/coolify/proxy/dynamic/skaleclub-mail.yaml"
+              TRAEFIK_DYN="/data/coolify/proxy/dynamic/xmail.yaml"
+              LEGACY_TRAFIK_DYN="/data/coolify/proxy/dynamic/skaleclub""-mail.yaml"
               if [ -d "$(dirname $TRAEFIK_DYN)" ]; then
+                rm -f "$LEGACY_TRAFIK_DYN"
                 echo "Writing Traefik file config → $TRAEFIK_DYN"
                 printf '%s\n' \
                   'http:' \
                   '  routers:' \
-                  '    skaleclub-mail-https:' \
+                  '    xmail-https:' \
                   '      rule: "Host(`mail.skale.club`)"' \
-                  '      service: skaleclub-mail-svc' \
+                  '      service: xmail-svc' \
                   '      entryPoints:' \
                   '        - https' \
                   '      tls:' \
                   '        certResolver: letsencrypt' \
-                  '    skaleclub-mail-http:' \
+                  '    xmail-http:' \
                   '      rule: "Host(`mail.skale.club`)"' \
-                  '      service: skaleclub-mail-svc' \
+                  '      service: xmail-svc' \
                   '      entryPoints:' \
                   '        - http' \
                   '      middlewares:' \
@@ -239,13 +251,13 @@ jobs:
                   '        scheme: https' \
                   '        permanent: true' \
                   '  services:' \
-                  '    skaleclub-mail-svc:' \
+                  '    xmail-svc:' \
                   '      loadBalancer:' \
                   '        servers:' \
-                  '          - url: "http://skaleclub-mail:9001"' \
+                  '          - url: "http://xmail:9001"' \
                   '        passHostHeader: true' \
                   > "$TRAEFIK_DYN"
-                echo "✅ Traefik file config written (backend: http://skaleclub-mail:9001)"
+                echo "✅ Traefik file config written (backend: http://xmail:9001)"
               else
                 echo "⚠️  /data/coolify/proxy/dynamic not found — using Docker labels only"
               fi
@@ -351,14 +363,14 @@ jobs:
                   -e ENABLE_MAIL_SERVER=true \
                   --label "traefik.enable=true" \
                   --label "traefik.docker.network=coolify" \
-                  --label "traefik.http.routers.skaleclub-mail.rule=Host(\`mail.skale.club\`)" \
-                  --label "traefik.http.routers.skaleclub-mail.entrypoints=https" \
-                  --label "traefik.http.routers.skaleclub-mail.tls=true" \
-                  --label "traefik.http.routers.skaleclub-mail.tls.certresolver=letsencrypt" \
-                  --label "traefik.http.services.skaleclub-mail.loadbalancer.server.port=9001" \
-                  --label "traefik.http.routers.skaleclub-mail-http.rule=Host(\`mail.skale.club\`)" \
-                  --label "traefik.http.routers.skaleclub-mail-http.entrypoints=http" \
-                  --label "traefik.http.routers.skaleclub-mail-http.middlewares=redirect-to-https@docker" \
+                  --label "traefik.http.routers.xmail.rule=Host(\`mail.skale.club\`)" \
+                  --label "traefik.http.routers.xmail.entrypoints=https" \
+                  --label "traefik.http.routers.xmail.tls=true" \
+                  --label "traefik.http.routers.xmail.tls.certresolver=letsencrypt" \
+                  --label "traefik.http.services.xmail.loadbalancer.server.port=9001" \
+                  --label "traefik.http.routers.xmail-http.rule=Host(\`mail.skale.club\`)" \
+                  --label "traefik.http.routers.xmail-http.entrypoints=http" \
+                  --label "traefik.http.routers.xmail-http.middlewares=redirect-to-https@docker" \
                   $IMAGE_NAME:previous
 
                 echo "Rollback completed"

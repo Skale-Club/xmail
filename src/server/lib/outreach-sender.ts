@@ -54,16 +54,15 @@ export function createSmtpTransporter(account: typeof emailAccounts.$inferSelect
 }
 
 export function isWithinSendWindow(campaign: typeof campaigns.$inferSelect, now: Date): boolean {
-    const dayOfWeek = now.getDay()
+    const zoned = getZonedDateParts(now, campaign.timezone)
+    const dayOfWeek = zoned.weekday
     const isWeekend = dayOfWeek === 0 || dayOfWeek === 6
 
     if (isWeekend && !campaign.sendOnWeekends) {
         return false
     }
 
-    const currentHour = now.getHours()
-    const currentMinute = now.getMinutes()
-    const currentTimeMinutes = currentHour * 60 + currentMinute
+    const currentTimeMinutes = zoned.hour * 60 + zoned.minute
 
     const parseTime = (timeStr: string): number => {
         const [hours, minutes] = timeStr.split(':').map(Number)
@@ -76,6 +75,57 @@ export function isWithinSendWindow(campaign: typeof campaigns.$inferSelect, now:
     return currentTimeMinutes >= startTimeMinutes && currentTimeMinutes <= endTimeMinutes
 }
 
+function getZonedDateParts(date: Date, timeZone: string): { weekday: number; hour: number; minute: number } {
+    let parts: Intl.DateTimeFormatPart[]
+    try {
+        parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: timeZone || 'UTC',
+            weekday: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23',
+        }).formatToParts(date)
+    } catch {
+        parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'UTC',
+            weekday: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23',
+        }).formatToParts(date)
+    }
+
+    const value = (type: string) => parts.find(part => part.type === type)?.value
+    const weekdays: Record<string, number> = {
+        Sun: 0,
+        Mon: 1,
+        Tue: 2,
+        Wed: 3,
+        Thu: 4,
+        Fri: 5,
+        Sat: 6,
+    }
+
+    return {
+        weekday: weekdays[value('weekday') || 'Sun'] ?? 0,
+        hour: Number(value('hour') || 0),
+        minute: Number(value('minute') || 0),
+    }
+}
+
+export function getEffectiveDailySendLimit(account: typeof emailAccounts.$inferSelect): number {
+    const fullLimit = Math.max(1, account.dailySendLimit)
+    if (!account.warmupEnabled) return fullLimit
+
+    const warmupDays = Math.max(1, account.warmupDays)
+    const currentDay = Math.max(0, Math.min(account.warmupCurrentDay, warmupDays))
+    if (currentDay >= warmupDays) return fullLimit
+
+    const startLimit = Math.min(5, fullLimit)
+    const progress = currentDay / warmupDays
+    return Math.max(1, Math.min(fullLimit, Math.ceil(startLimit + (fullLimit - startLimit) * progress)))
+}
+
 export function canSendFromAccount(
     account: typeof emailAccounts.$inferSelect,
     now: Date = new Date()
@@ -84,7 +134,7 @@ export function canSendFromAccount(
         return false
     }
 
-    if (account.currentDailySent >= account.dailySendLimit) {
+    if (account.currentDailySent >= getEffectiveDailySendLimit(account)) {
         return false
     }
 

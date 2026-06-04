@@ -24,7 +24,7 @@ const startSchema = z.object({
 
 const sendTestSchema = z.object({
     to: z.string().email(),
-    subject: z.string().min(1).default('SkaleClub Mail Outlook test'),
+    subject: z.string().min(1).default('Xmail Outlook test'),
     body: z.string().min(1).default('This is a test message sent through Microsoft Graph.'),
 })
 

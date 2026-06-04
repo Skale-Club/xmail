@@ -160,7 +160,7 @@ router.post('/test', async (req: Request, res: Response) => {
         }
 
         const chatId = row.telegramChatId
-        const text = `[SkaleClub Mail] Test message from admin panel — integrations are working correctly.`
+        const text = `[Xmail] Test message from admin panel — integrations are working correctly.`
 
         const telegramUrl = `https://api.telegram.org/bot${token}/sendMessage`
         const response = await fetch(telegramUrl, {

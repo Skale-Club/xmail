@@ -13,11 +13,12 @@ import { createHash } from 'crypto'
 import { performance } from 'node:perf_hooks'
 import { db } from '../../db'
 import { campaigns, sequenceSteps, campaignLeads, leads, emailAccounts, outreachEmails, suppressions } from '../../db/schema'
-import { eq, and, lte, gt, inArray, notInArray, sql } from 'drizzle-orm'
+import { eq, and, lte, inArray, notInArray, sql } from 'drizzle-orm'
 import {
     sendOutreachEmail,
     isWithinSendWindow,
     canSendFromAccount,
+    getEffectiveDailySendLimit,
     incrementAccountStats,
     incrementCampaignStats,
     applySendJitter,
@@ -66,24 +67,18 @@ function calculateNextScheduledAt(
     const next = new Date()
     next.setHours(next.getHours() + delayHours)
 
-    const [startHour] = (sendStartTime || '09:00').split(':').map(Number)
-    const [endHour] = (sendEndTime || '17:00').split(':').map(Number)
+    const scheduleProbe = {
+        timezone,
+        sendStartTime,
+        sendEndTime,
+        sendOnWeekends,
+    } as typeof campaigns.$inferSelect
 
-    const hour = next.getHours()
-    if (hour < startHour) {
-        next.setHours(startHour, 0, 0, 0)
-    } else if (hour >= endHour) {
-        next.setDate(next.getDate() + 1)
-        next.setHours(startHour, 0, 0, 0)
-    }
-
-    if (!sendOnWeekends) {
-        const day = next.getDay()
-        if (day === 0) {
-            next.setDate(next.getDate() + 1)
-        } else if (day === 6) {
-            next.setDate(next.getDate() + 2)
+    for (let i = 0; i < 14 * 48; i++) {
+        if (isWithinSendWindow(scheduleProbe, next)) {
+            return next
         }
+        next.setMinutes(next.getMinutes() + 30)
     }
 
     return next
@@ -264,12 +259,20 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
             // in Plan 16-01 to check (lastSentAt + minMinutesBetweenEmails*60s > now).
             // We discriminate the cause to emit the correct skip reason for ops visibility.
             if (!canSendFromAccount(emailAccount, now)) {
-                if (emailAccount.currentDailySent >= emailAccount.dailySendLimit) {
+                const effectiveDailyLimit = getEffectiveDailySendLimit(emailAccount)
+                if (emailAccount.currentDailySent >= effectiveDailyLimit) {
                     logSkip('daily_limit_reached', {
                         campaignId: campaign.id,
                         emailAccountId: emailAccount.id,
                         campaignLeadId: campaignLead.id,
-                        extra: { currentDailySent: emailAccount.currentDailySent, dailySendLimit: emailAccount.dailySendLimit },
+                        extra: {
+                            currentDailySent: emailAccount.currentDailySent,
+                            dailySendLimit: emailAccount.dailySendLimit,
+                            effectiveDailyLimit,
+                            warmupEnabled: emailAccount.warmupEnabled,
+                            warmupCurrentDay: emailAccount.warmupCurrentDay,
+                            warmupDays: emailAccount.warmupDays,
+                        },
                     })
                 } else {
                     // Implied cause: lastSentAt + min*60s > now (the only other branch in canSendFromAccount).
@@ -483,8 +486,17 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
 
 export async function resetDailyLimits(): Promise<void> {
     const result = await db.update(emailAccounts)
-        .set({ currentDailySent: 0 })
-        .where(gt(emailAccounts.currentDailySent, 0))
+        .set({
+            currentDailySent: 0,
+            warmupCurrentDay: sql`CASE
+                WHEN ${emailAccounts.warmupEnabled} = TRUE
+                    AND ${emailAccounts.warmupCurrentDay} < ${emailAccounts.warmupDays}
+                THEN ${emailAccounts.warmupCurrentDay} + 1
+                ELSE ${emailAccounts.warmupCurrentDay}
+            END`,
+            updatedAt: new Date(),
+        })
+        .where(sql`${emailAccounts.currentDailySent} > 0 OR (${emailAccounts.warmupEnabled} = TRUE AND ${emailAccounts.warmupCurrentDay} < ${emailAccounts.warmupDays})`)
         .returning({ id: emailAccounts.id })
     log.info({
         action: 'outreach.processor.reset_daily_limits',

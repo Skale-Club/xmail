@@ -6,6 +6,7 @@ import { eq, and, desc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { encryptSecret, decryptSecret } from '../../lib/crypto'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
+import { getEffectiveDailySendLimit } from '../../lib/outreach-sender'
 import nodemailer from 'nodemailer'
 import { ImapFlow } from 'imapflow'
 
@@ -66,6 +67,10 @@ async function checkOrgMembership(userId: string, organizationId: string) {
     return membership
 }
 
+function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembership>>): boolean {
+    return membership?.role === 'admin' || membership?.role === 'member'
+}
+
 // NOTE: getDecryptedCredentials helper previously defined here was removed (Phase 12 COR-07 lint
 // cleanup); routes inline `decryptSecret` calls. Re-add helper if needed by future routes.
 
@@ -100,6 +105,13 @@ router.get('/', async (req: Request, res: Response) => {
         // Remove sensitive data
         const safeAccounts = result.data.map((account) => ({
             ...account,
+            dailyLimit: getEffectiveDailySendLimit(account),
+            configuredDailyLimit: account.dailySendLimit,
+            sentToday: account.currentDailySent,
+            warmupDay: account.warmupCurrentDay,
+            warmupProgress: account.warmupEnabled
+                ? Math.min(100, Math.round((account.warmupCurrentDay / Math.max(1, account.warmupDays)) * 100))
+                : 100,
             smtpPassword: undefined,
             imapPassword: undefined,
         }))
@@ -137,6 +149,13 @@ router.get('/:id', async (req: Request, res: Response) => {
         res.json({
             emailAccount: {
                 ...account,
+                dailyLimit: getEffectiveDailySendLimit(account),
+                configuredDailyLimit: account.dailySendLimit,
+                sentToday: account.currentDailySent,
+                warmupDay: account.warmupCurrentDay,
+                warmupProgress: account.warmupEnabled
+                    ? Math.min(100, Math.round((account.warmupCurrentDay / Math.max(1, account.warmupDays)) * 100))
+                    : 100,
                 smtpPassword: undefined,
                 imapPassword: undefined,
             },
@@ -164,6 +183,9 @@ router.post('/', async (req: Request, res: Response) => {
         const membership = await checkOrgMembership(userId, organizationId)
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
         }
 
         const validatedData = createEmailAccountSchema.parse(req.body)
@@ -240,6 +262,9 @@ router.put('/:id', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         const validatedData = updateEmailAccountSchema.parse(req.body)
 
@@ -310,6 +335,9 @@ router.delete('/:id', async (req: Request, res: Response) => {
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
         }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
 
         await db.delete(emailAccounts).where(eq(emailAccounts.id, accountId))
 
@@ -341,6 +369,9 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
         const membership = await checkOrgMembership(userId, account.organizationId)
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
         }
 
         const smtpPassword = account.smtpPassword ? decryptSecret(account.smtpPassword) : null

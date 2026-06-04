@@ -1,5 +1,5 @@
 {
-    "name": "skaleclub-mail",
+    "name": "xmail",
     "version": "1.0.0",
     "description": "Complete email system with React, Express, and Supabase",
     "type": "module",

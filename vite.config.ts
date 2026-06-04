@@ -42,7 +42,7 @@ export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, process.cwd(), '')
     const supabaseUrl = env.VITE_SUPABASE_URL || env.SUPABASE_URL || ''
     const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || ''
-    const appName = env.VITE_APP_NAME || 'Skale Club Mail'
+    const appName = env.VITE_APP_NAME || 'Xmail'
 
     const storageBase = `${supabaseUrl}/storage/v1/object/public/branding-assets`
     const faviconUrl     = `${storageBase}/favicon.svg`

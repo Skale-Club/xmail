@@ -48,7 +48,7 @@ function buildThunderbirdConfig(email: string): string {
 <clientConfig version="1.1">
     <emailProvider id="${xmlEscape(mailDomain)}">
         <domain>${xmlEscape(mailDomain)}</domain>
-        <displayName>${xmlEscape(process.env.APP_APPLICATION_NAME || 'Skale Club Mail')}</displayName>
+        <displayName>${xmlEscape(process.env.APP_APPLICATION_NAME || 'Xmail')}</displayName>
         <displayShortName>${xmlEscape(mailDomain)}</displayShortName>
         <incomingServer type="imap">
             <hostname>${xmlEscape(mailHost)}</hostname>
@@ -126,7 +126,7 @@ router.post(['/autodiscover/autodiscover.xml', '/Autodiscover/Autodiscover.xml']
 router.get('/api/system/mail-config/apple.mobileconfig', (req: Request, res: Response) => {
     const email = String(req.query.email || '')
     const { mailHost, smtpPort, imapPort, hasTLS } = mailConfig()
-    const appName = process.env.APP_APPLICATION_NAME || 'Skale Club Mail'
+    const appName = process.env.APP_APPLICATION_NAME || 'Xmail'
     const profileUUID = randomUUID().toUpperCase()
     const payloadUUID = randomUUID().toUpperCase()
 

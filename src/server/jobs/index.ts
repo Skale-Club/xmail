@@ -84,7 +84,7 @@ export function startJobs(): void {
     // Timezone pinned to UTC matching the resetDailyLimits cron above; depends on
     // outreach-metrics.ts aggregate helpers (Plan 17-03). The digest is one log
     // line with action='outreach.digest.daily' — grep with:
-    //   docker logs skaleclub-mail 2>&1 | jq 'select(.action=="outreach.digest.daily")'
+    //   docker logs xmail 2>&1 | jq 'select(.action=="outreach.digest.daily")'
     cron.schedule('0 9 * * *', () => {
         dailyOutreachDigest().catch((err) => {
             const e = err instanceof Error ? err : new Error(String(err))

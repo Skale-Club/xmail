@@ -1,4 +1,4 @@
-# SkaleClub Mail
+# Xmail
 
 A complete email system built with modern web technologies, inspired by Postal. This application provides a full-featured email management platform with organization-based access control.
 
@@ -61,8 +61,8 @@ supabase/migrations/002_outlook_integration.sql
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/Skale-Club/skaleclub-mail.git
-cd skaleclub-mail
+git clone https://github.com/Skale-Club/xmail.git
+cd xmail
 ```
 
 2. Install dependencies:
@@ -129,12 +129,12 @@ GitHub Actions (push to main)
 Hetzner VPS (Ubuntu + Docker)
       |
       v
-Docker container: skaleclub-mail:latest
+Docker container: xmail:latest
       |
       +-- :9001 HTTP API + SPA
       |      Published on host for health checks.
       |      In Coolify mode, Traefik routes:
-      |      mail.skale.club -> http://skaleclub-mail:9001
+      |      mail.skale.club -> http://xmail:9001
       |
       +-- :25 SMTP MX inbound
       |      Direct public TCP to the Node MX server.
@@ -163,7 +163,7 @@ Production mail identity currently uses:
 3. Tags current `:latest` as `:previous` for rollback
 4. Stops old container, waits for clean shutdown (up to 30s), starts new container
 5. Detects whether Docker network `coolify` exists.
-6. In Coolify mode, starts the container on `--network coolify`, attaches Traefik labels, and writes `/data/coolify/proxy/dynamic/skaleclub-mail.yaml` when that directory exists.
+6. In Coolify mode, starts the container on `--network coolify`, attaches Traefik labels, and writes `/data/coolify/proxy/dynamic/xmail.yaml` when that directory exists.
 7. In legacy mode without Coolify, falls back to adding a Caddy reverse-proxy block for `mail.skale.club -> localhost:9001` when Caddy exists.
 8. Publishes `9001`, `25`, `587`, and `993` directly from the container.
 9. Health-checks `http://localhost:9001/health` up to 12 times with 5s interval.
@@ -190,7 +190,7 @@ Production mail identity currently uses:
 ### Local parity
 
 ```bash
-docker build -t skaleclub-mail:local .
+docker build -t xmail:local .
 docker compose up      # uses docker-compose.yml, ports 9001/25/587/993
 ```
 
@@ -213,16 +213,16 @@ curl -sS http://localhost:9001/health/mail
 docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
 
 # Mail arrival and routing logs
-docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
+docker logs xmail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
 
 # SMTP submission / IMAP auth logs
-docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[SMTP\]|\[IMAP\]'
+docker logs xmail --since 24h 2>&1 | grep -E '\[SMTP\]|\[IMAP\]'
 ```
 
 ## Project Structure
 
 ```
-skaleclub-mail/
+xmail/
 ├── src/
 │   ├── components/         # React components
 │   │   └── ui/            # shadcn/ui components

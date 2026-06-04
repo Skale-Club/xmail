@@ -13,7 +13,7 @@ export default function Login() {
     const { branding } = useBranding()
     const applicationName =
         branding.applicationName === defaultBranding.applicationName
-            ? 'Skale Club Mail'
+            ? 'Xmail'
             : branding.applicationName
     const [email, setEmail] = useState('')
     const [password, setPassword] = useState('')

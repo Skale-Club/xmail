@@ -226,14 +226,31 @@ function escapeHtml(s: string): string {
     return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
 }
 
-async function processUnsubscribe(leadId: string, campaignId: string): Promise<{ success: boolean; lead?: typeof leads.$inferSelect; error?: string }> {
-    const lead = await db.query.leads.findFirst({
-        where: eq(leads.id, leadId),
+async function resolveUnsubscribeTarget(campaignLeadId: string, campaignId: string): Promise<{
+    campaignLead: typeof campaignLeads.$inferSelect
+    lead: typeof leads.$inferSelect
+} | null> {
+    const campaignLead = await db.query.campaignLeads.findFirst({
+        where: and(
+            eq(campaignLeads.id, campaignLeadId),
+            eq(campaignLeads.campaignId, campaignId)
+        ),
+        with: { lead: true },
     })
 
-    if (!lead) {
+    if (!campaignLead?.lead) return null
+
+    return { campaignLead, lead: campaignLead.lead }
+}
+
+async function processUnsubscribe(campaignLeadId: string, campaignId: string): Promise<{ success: boolean; lead?: typeof leads.$inferSelect; error?: string }> {
+    const target = await resolveUnsubscribeTarget(campaignLeadId, campaignId)
+
+    if (!target) {
         return { success: false, error: 'Lead not found' }
     }
+
+    const { campaignLead, lead } = target
 
     if (lead.unsubscribedAt) {
         return { success: true, lead }
@@ -247,17 +264,15 @@ async function processUnsubscribe(leadId: string, campaignId: string): Promise<{
             unsubscribedAt: now,
             updatedAt: now,
         })
-        .where(eq(leads.id, leadId))
+        .where(eq(leads.id, lead.id))
 
     await db.update(campaignLeads)
         .set({
             status: 'unsubscribed',
+            nextScheduledAt: null,
             updatedAt: now,
         })
-        .where(and(
-            eq(campaignLeads.leadId, leadId),
-            eq(campaignLeads.campaignId, campaignId)
-        ))
+        .where(eq(campaignLeads.id, campaignLead.id))
 
     await db.update(campaigns)
         .set({
@@ -273,7 +288,7 @@ async function processUnsubscribe(leadId: string, campaignId: string): Promise<{
         })
         .where(and(
             eq(outreachEmails.campaignId, campaignId),
-            sql`${outreachEmails.campaignLeadId} IN (SELECT id FROM campaign_leads WHERE lead_id = ${leadId})`
+            eq(outreachEmails.campaignLeadId, campaignLead.id)
         ))
 
     // Suppress the email address at the org level so any subsequent campaign in the SAME
@@ -304,18 +319,16 @@ router.get('/:token', async (req, res: Response) => {
         return res.status(400).send(generateErrorHtml('Invalid or expired unsubscribe link'))
     }
 
-    const leadId = decoded.clid
+    const campaignLeadId = decoded.clid
     const campaignId = decoded.cid
 
     // Look up lead + campaign for personalization in the confirmation page — but DO NOT
     // mutate anything. Read-only is safe under RFC 8058 / URL prefetch.
-    const lead = await db.query.leads.findFirst({
-        where: eq(leads.id, leadId),
-        columns: { email: true, unsubscribedAt: true },
-    })
-    if (!lead) {
+    const target = await resolveUnsubscribeTarget(campaignLeadId, campaignId)
+    if (!target) {
         return res.status(404).send(generateErrorHtml('Unsubscribe link not found'))
     }
+    const { lead } = target
 
     const campaign = await db.query.campaigns.findFirst({
         where: eq(campaigns.id, campaignId),
@@ -345,10 +358,10 @@ router.post('/:token', async (req, res: Response) => {
         return res.status(400).send(generateErrorHtml('Invalid or expired unsubscribe link'))
     }
 
-    const leadId = decoded.clid
+    const campaignLeadId = decoded.clid
     const campaignId = decoded.cid
 
-    const result = await processUnsubscribe(leadId, campaignId)
+    const result = await processUnsubscribe(campaignLeadId, campaignId)
 
     if (!result.success) {
         if ((req.headers.accept || '').includes('application/json')) {

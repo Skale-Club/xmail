@@ -1,28 +1,28 @@
-# AGENTS.md — SkaleClub Mail
+# AGENTS.md — Xmail
 
 ## Project Overview
 
-SkaleClub Mail is a multi-tenant email server management platform inspired by Postal. It provides organization-based access control, domain verification, message tracking, email routing, webhooks, and analytics.
+Xmail is a multi-tenant email server management platform inspired by Postal. It provides organization-based access control, domain verification, message tracking, email routing, webhooks, and analytics.
 
 ## Deployment (Hetzner + Coolify/Traefik - NOT Vercel)
 
 **Production runs on a Hetzner VPS**, deployed via GitHub Actions on push to `main`. Coolify/Traefik is the primary HTTP routing layer when the `coolify` Docker network exists on the host.
 
 - **Host:** Hetzner VPS (see `HETZNER_HOST` secret in GitHub Actions)
-- **Process model:** single Docker container (`skaleclub-mail:latest`) running Node 20-alpine
+- **Process model:** single Docker container (`xmail:latest`) running Node 20-alpine
 - **Container:** `Dockerfile` at repo root builds + runs `dist/server/index.js`
-- **Container network:** if Docker network `coolify` exists, deploy runs the app with `--network coolify` so Traefik can reach `http://skaleclub-mail:9001`
+- **Container network:** if Docker network `coolify` exists, deploy runs the app with `--network coolify` so Traefik can reach `http://xmail:9001`
 - **Published ports:**
   - `9001` - HTTP API + SPA, published for health checks and routed by Traefik as `mail.skale.club`
   - `25` - SMTP MX inbound, direct public TCP to the Node MX server
   - `587` - SMTP submission, direct public TCP to the Node SMTP server
   - `993` - IMAP, direct public TCP to the Node IMAP server
-- **CI/CD:** `.github/workflows/deploy-hetzner.yml` SSHes into the host, pulls `main`, builds `skaleclub-mail:latest` with `--no-cache`, stops the old container, starts the new one, health-checks `http://localhost:9001/health`, and rolls back to `:previous` on failure
-- **HTTP reverse proxy:** Traefik via Coolify is primary. The deploy script attaches Traefik labels and, when available, writes `/data/coolify/proxy/dynamic/skaleclub-mail.yaml` pointing `mail.skale.club` to `http://skaleclub-mail:9001`.
+- **CI/CD:** `.github/workflows/deploy-hetzner.yml` SSHes into the host, pulls `main`, builds `xmail:latest` with `--no-cache`, stops the old container, starts the new one, health-checks `http://localhost:9001/health`, and rolls back to `:previous` on failure
+- **HTTP reverse proxy:** Traefik via Coolify is primary. The deploy script attaches Traefik labels and, when available, writes `/data/coolify/proxy/dynamic/xmail.yaml` pointing `mail.skale.club` to `http://xmail:9001`.
 - **Legacy fallback:** if the `coolify` network is absent and Caddy exists, the deploy script can still add a Caddy reverse-proxy block for `mail.skale.club -> localhost:9001`.
 - **Mail ports bypass proxies:** ports `25`, `587`, and `993` are **not** behind Traefik or Caddy. They are raw TCP published from the container to the internet. TLS for mail ports is handled inside Node via `MAIL_TLS_CERT_PATH` / `MAIL_TLS_KEY_PATH`.
 - **Mail identity:** production sets `MAIL_HOST=mx.skale.club`; MX DNS for `skale.club` points at `mx.skale.club`.
-- **Logs:** production mail arrival logs are in Docker stdout/stderr, e.g. `docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'`.
+- **Logs:** production mail arrival logs are in Docker stdout/stderr, e.g. `docker logs xmail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'`.
 
 **No Vercel, no serverless, no edge functions.** Traditional long-running Node process in Docker.
 
@@ -30,7 +30,7 @@ SkaleClub Mail is a multi-tenant email server management platform inspired by Po
 
 ```bash
 # Local build parity
-docker build -t skaleclub-mail:local .
+docker build -t xmail:local .
 docker compose up
 
 # Production deploy: automatic on git push to main

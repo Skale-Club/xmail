@@ -1,6 +1,6 @@
 # Native SMTP, IMAP, and MX Servers
 
-SkaleClub Mail runs embedded mail servers inside the same long-running Node process as the Express API. This makes the app a small email provider: users can read mail over IMAP, send mail over SMTP submission, and receive public internet mail through the MX listener.
+Xmail runs embedded mail servers inside the same long-running Node process as the Express API. This makes the app a small email provider: users can read mail over IMAP, send mail over SMTP submission, and receive public internet mail through the MX listener.
 
 ## Runtime Components
 
@@ -17,7 +17,7 @@ SkaleClub Mail runs embedded mail servers inside the same long-running Node proc
 
 ```text
 HTTP UI/API:
-  browser -> Traefik/Coolify -> skaleclub-mail:9001
+  browser -> Traefik/Coolify -> xmail:9001
 
 Mail clients:
   Thunderbird/Outlook -> SMTP 587 -> Node SMTP server -> DB + relay/routing
@@ -33,7 +33,7 @@ Only HTTP goes through Traefik/Coolify. Ports `25`, `587`, and `993` are publish
 
 Production on Hetzner is deployed by `.github/workflows/deploy-hetzner.yml`:
 
-- Runs one Docker container named `skaleclub-mail`.
+- Runs one Docker container named `xmail`.
 - Joins Docker network `coolify` when present so Traefik can route HTTP.
 - Publishes `9001`, `25`, `587`, and `993` from the container.
 - Mounts `/etc/letsencrypt` read-only for mail TLS certificates.
@@ -70,10 +70,10 @@ Mail server logs go to Docker stdout/stderr. There are no local `.log` files for
 
 ```bash
 # MX arrival, route matching, and mail authentication
-docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
+docker logs xmail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'
 
 # SMTP submission and IMAP logins
-docker logs skaleclub-mail --since 24h 2>&1 | grep -E '\[SMTP\]|\[IMAP\]'
+docker logs xmail --since 24h 2>&1 | grep -E '\[SMTP\]|\[IMAP\]'
 ```
 
 Useful success lines:
@@ -126,6 +126,6 @@ curl -sS "https://mail.skale.club/api/system/mail-diag?testEmail=user@skale.club
 | SMTP port | `587` |
 | SMTP security | STARTTLS |
 | Username | full email address |
-| Password | user's SkaleClub Mail password |
+| Password | user's Xmail password |
 
 Autodiscovery endpoints expose these settings publicly without leaking user data.

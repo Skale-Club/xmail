@@ -21,6 +21,10 @@ async function checkOrgMembership(userId: string, organizationId: string) {
     return membership
 }
 
+function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembership>>): boolean {
+    return membership?.role === 'admin' || membership?.role === 'member'
+}
+
 // Default values used when no settings row exists yet
 const DEFAULTS = {
     defaultTimezone: 'UTC',
@@ -137,6 +141,9 @@ router.patch('/', async (req: Request, res: Response) => {
         const membership = await checkOrgMembership(userId, organizationId)
         if (!membership) {
             return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
         }
 
         const validatedData = updateSettingsSchema.parse(req.body)

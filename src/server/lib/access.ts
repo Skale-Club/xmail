@@ -1,5 +1,5 @@
 /**
- * Centralized access-control helpers for SkaleClub Mail.
+ * Centralized access-control helpers for Xmail.
  *
  * IMPORTANT: This module is the canonical import surface for every
  * authorization check. See CLAUDE.md "Authentication Flow" for context.

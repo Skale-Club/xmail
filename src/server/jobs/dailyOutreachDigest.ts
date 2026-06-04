@@ -8,9 +8,9 @@
  *   action='outreach.digest.daily'
  *
  * NOT an email, NOT a slack message, NOT a webhook. Just a log line that
- * lands in `docker logs skaleclub-mail`. Operator's grep query:
+ * lands in `docker logs xmail`. Operator's grep query:
  *
- *   docker logs skaleclub-mail 2>&1 | jq 'select(.action=="outreach.digest.daily")'
+ *   docker logs xmail 2>&1 | jq 'select(.action=="outreach.digest.daily")'
  *
  * Phase 18+ can wire this same payload to webhook/email/Slack — the payload
  * shape is intentionally a complete snapshot so a downstream transport

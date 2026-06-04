@@ -1,8 +1,8 @@
 name: Build and Deploy
 
-# CI→GHCR→SSH-pull pipeline for skaleclub-mail.
+# CI→GHCR→SSH-pull pipeline for xmail.
 #
-# Unlike Coolify apps, skaleclub-mail runs directly on Hetzner via SSH
+# Unlike Coolify apps, xmail runs directly on Hetzner via SSH
 # (ports 25/587/993 need raw TCP, bypassing Traefik). The pattern is:
 #   1. Build Docker image here in CI (off the VPS — avoids OOM on the 8GB box)
 #   2. Push to GHCR
@@ -30,7 +30,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/skale-club/skaleclub-mail
+  IMAGE_NAME: ghcr.io/skale-club/xmail
   HEALTH_CHECK_URL: http://localhost:9001/health
   HEALTH_CHECK_RETRIES: 12
   HEALTH_CHECK_INTERVAL: 5
@@ -72,7 +72,7 @@ jobs:
           build-args: |
             VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}
             VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}
-            VITE_APP_NAME=Skale Club Mail
+            VITE_APP_NAME=Xmail
 
       - name: Deploy to Hetzner (pull prebuilt image + restart)
         uses: appleboy/ssh-action@v1.0.0
@@ -86,16 +86,11 @@ jobs:
             set -euo pipefail
             DEPLOY_VERSION="${{ steps.meta.outputs.version }}"
             DEPLOYED_AT="${{ steps.meta.outputs.deployed_at }}"
+            LEGACY_IMAGE_NAME="skaleclub""-mail"
 
             echo "::group::🔑 Log in to GHCR"
             echo "${{ secrets.GITHUB_TOKEN }}" | \
               docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            echo "::endgroup::"
-
-            echo "::group::📦 Pull prebuilt image (no build on VPS)"
-            docker pull "${IMAGE_NAME}:latest"
-            docker tag  "${IMAGE_NAME}:latest" skaleclub-mail:latest
-            docker tag  "${IMAGE_NAME}:latest" "skaleclub-mail:${DEPLOY_VERSION}"
             echo "::endgroup::"
 
             echo "::group::💾 Disk space check"
@@ -109,12 +104,20 @@ jobs:
             echo "✅ Disk OK"
             echo "::endgroup::"
 
-            echo "::group::🚀 Restart container"
             # Save previous for rollback
-            if docker images skaleclub-mail:latest --format "{{.ID}}" | grep -q .; then
-              docker tag skaleclub-mail:latest skaleclub-mail:previous || true
+            if docker images xmail:latest --format "{{.ID}}" | grep -q .; then
+              docker tag xmail:latest xmail:previous || true
+            elif docker images "${LEGACY_IMAGE_NAME}:latest" --format "{{.ID}}" | grep -q .; then
+              docker tag "${LEGACY_IMAGE_NAME}:latest" xmail:previous || true
             fi
 
+            echo "::group::📦 Pull prebuilt image (no build on VPS)"
+            docker pull "${IMAGE_NAME}:latest"
+            docker tag  "${IMAGE_NAME}:latest" xmail:latest
+            docker tag  "${IMAGE_NAME}:latest" "xmail:${DEPLOY_VERSION}"
+            echo "::endgroup::"
+
+            echo "::group::🚀 Restart container"
             # Free mail ports from any conflicting container
             for PORT in 25 587 993; do
               CONFLICTING=$(docker ps -q --filter "publish=$PORT" 2>/dev/null || true)
@@ -125,11 +128,13 @@ jobs:
               fi
             done
 
-            # Stop old container
-            if docker ps -a --filter "name=^/skaleclub-mail$" --format "{{.ID}}" | grep -q .; then
-              docker stop skaleclub-mail || true
-              docker rm -f skaleclub-mail || true
-            fi
+            # Stop old containers, including the legacy name from before the rename.
+            for CONTAINER_NAME in xmail "$LEGACY_IMAGE_NAME"; do
+              if docker ps -a --filter "name=^/${CONTAINER_NAME}$" --format "{{.ID}}" | grep -q .; then
+                docker stop "$CONTAINER_NAME" || true
+                docker rm -f "$CONTAINER_NAME" || true
+              fi
+            done
 
             NETWORK_FLAG=""
             if docker network ls --format "{{.Name}}" | grep -qE "^coolify$"; then
@@ -138,7 +143,7 @@ jobs:
             fi
 
             docker run -d \
-              --name skaleclub-mail \
+              --name xmail \
               --restart unless-stopped \
               $NETWORK_FLAG \
               -p 9001:9001 -p 25:25 -p 587:587 -p 993:993 \
@@ -172,12 +177,12 @@ jobs:
               -e ENABLE_MAIL_SERVER=true \
               --label "traefik.enable=true" \
               --label "traefik.docker.network=coolify" \
-              --label "traefik.http.routers.skaleclub-mail.rule=Host(\`mail.skale.club\`)" \
-              --label "traefik.http.routers.skaleclub-mail.entrypoints=https" \
-              --label "traefik.http.routers.skaleclub-mail.tls=true" \
-              --label "traefik.http.routers.skaleclub-mail.tls.certresolver=letsencrypt" \
-              --label "traefik.http.services.skaleclub-mail.loadbalancer.server.port=9001" \
-              skaleclub-mail:latest
+              --label "traefik.http.routers.xmail.rule=Host(\`mail.skale.club\`)" \
+              --label "traefik.http.routers.xmail.entrypoints=https" \
+              --label "traefik.http.routers.xmail.tls=true" \
+              --label "traefik.http.routers.xmail.tls.certresolver=letsencrypt" \
+              --label "traefik.http.services.xmail.loadbalancer.server.port=9001" \
+              xmail:latest
             echo "::endgroup::"
 
             echo "::group::🏥 Health check"
@@ -191,17 +196,17 @@ jobs:
             done
             if [ "$HEALTH_PASSED" = "false" ]; then
               echo "❌ Health check failed"
-              docker logs skaleclub-mail --tail 50 2>&1 || true
+              docker logs xmail --tail 50 2>&1 || true
               # Rollback
-              if docker images skaleclub-mail:previous --format "{{.ID}}" | grep -q .; then
-                docker stop skaleclub-mail || true; docker rm -f skaleclub-mail || true
-                docker run -d --name skaleclub-mail --restart unless-stopped \
+              if docker images xmail:previous --format "{{.ID}}" | grep -q .; then
+                docker stop xmail || true; docker rm -f xmail || true
+                docker run -d --name xmail --restart unless-stopped \
                   $NETWORK_FLAG -p 9001:9001 -p 25:25 -p 587:587 -p 993:993 \
                   -v /etc/letsencrypt:/etc/letsencrypt:ro \
                   -e NODE_ENV=production -e PORT=9001 \
                   -e SUPABASE_URL="${{ secrets.SUPABASE_URL }}" \
                   -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
-                  skaleclub-mail:previous
+                  xmail:previous
                 echo "⏪ Rolled back to previous"
               fi
               exit 1
