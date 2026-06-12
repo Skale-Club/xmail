@@ -1,0 +1,3 @@
+# nunca comitar a env com secrets nem o código upstream clonado
+hermes.env
+vendor/

@@ -92,6 +92,11 @@ jobs:
 
             echo "::group::Log in to GHCR"
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            # The GITHUB_TOKEN is an ephemeral GitHub App installation token (ghs_*,
+            # ~1h TTL). Leaving it in /root/.docker/config.json after the run poisons
+            # every later ghcr.io pull on the host (e.g. Coolify self-updates) with
+            # "denied" once it expires. Drop it on exit no matter how the script ends.
+            trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
             echo "::endgroup::"
 
             echo "::group::Disk space check"

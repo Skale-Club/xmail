@@ -1,0 +1,30 @@
+# Lean Hermes Agent — convive com o xmail no mesmo host Hetzner
+# (2 vCPU / 3.7 GB RAM + 2 GB swap). Roda SÓ o gateway (sem dashboard)
+# pra poupar RAM. LLM 100% externo (sem GPU local).
+#
+# O build usa o código upstream clonado em ./vendor/hermes-agent (ver README).
+services:
+  hermes:
+    build:
+      context: ./vendor/hermes-agent
+    image: hermes-agent:local
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+    env_file:
+      - ./hermes.env
+    environment:
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+    volumes:
+      # Memória persistente do agente (~/.hermes upstream) — sobrevive a deploys.
+      - hermes-data:/opt/data
+    # --- Guard-rails de recurso: o Hermes NUNCA pode derrubar o email por OOM ---
+    mem_limit: 1g          # teto duro de RAM (sobra ~2.7 GB + swap pro resto)
+    memswap_limit: 2g      # 1 GB RAM + até 1 GB swap de folga sob pressão
+    cpus: 1.0              # no máximo 1 dos 2 vCPU
+    # Sem portas publicadas: canais (Telegram/email) usam polling de saída;
+    # o CLI você acessa via `docker exec`. Isolado da rede do xmail.
+
+volumes:
+  hermes-data:
