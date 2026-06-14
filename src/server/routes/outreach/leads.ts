@@ -415,16 +415,25 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
                 eq(leads.organizationId, organizationId),
                 inArray(leads.email, validatedData.leads.map(l => l.email))
             ),
-            columns: { email: true },
+            columns: { id: true, email: true },
         })
 
         const existingEmails = new Set(existingLeads.map(l => l.email))
+        const existingLeadIds = existingLeads.map(l => l.id)
 
         // Filter out duplicates
         const newLeads = validatedData.leads.filter(l => !existingEmails.has(l.email))
 
         if (newLeads.length === 0) {
-            return res.status(400).json({ error: 'All leads already exist', imported: 0, duplicates: validatedData.leads.length })
+            // Not an error for orchestration callers (e.g. Xphere enrolling prospects):
+            // every submitted lead already exists, so return their ids so the caller
+            // can still enroll them in a campaign. Idempotent re-imports must succeed.
+            return res.status(200).json({
+                imported: 0,
+                duplicates: validatedData.leads.length,
+                leads: [],
+                leadIds: existingLeadIds,
+            })
         }
 
         // Insert new leads
@@ -449,6 +458,9 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
             imported: insertedLeads.length,
             duplicates: validatedData.leads.length - insertedLeads.length,
             leads: insertedLeads,
+            // All resolved lead ids (newly inserted + pre-existing) for the submitted
+            // emails, so an orchestrator can enroll the full set in a campaign.
+            leadIds: [...insertedLeads.map(l => l.id), ...existingLeadIds],
         })
     } catch (error) {
         if (error instanceof z.ZodError) {
