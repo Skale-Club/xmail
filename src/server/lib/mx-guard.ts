@@ -11,6 +11,7 @@
  */
 
 import { promises as dns } from 'dns'
+import { queryClient } from '../../db'
 
 // ─── Connection rate limit ───────────────────────────────────────────────────
 
@@ -59,24 +60,42 @@ export async function isSpamhausListed(ip: string): Promise<boolean> {
 
 // ─── Greylisting ─────────────────────────────────────────────────────────────
 
-const greylist = new Map<string, number>()
-const GREY_HOLD_MS = 5 * 60 * 1000
+const GREY_HOLD_MINUTES = 5
 const GREY_TTL_MS = 24 * 60 * 60 * 1000
 
 /**
  * Returns true if the sender/recipient pair should be greylisted (reject with 451 now).
  * Returns false if sufficient time has elapsed since first contact — accept.
+ *
+ * State is persisted in the `greylist` table so it survives container restarts.
+ * Previously this lived in an in-memory Map that was wiped on every redeploy,
+ * which meant a legit MTA's retry was treated as a fresh first contact and
+ * greylisted forever (the message could never get through). The whole thing is
+ * resolved in a single atomic UPSERT:
+ *   - first contact          → row inserted with passed=false → greylist (451)
+ *   - retry within hold       → passed stays false            → greylist (451)
+ *   - retry after hold window → passed flips to true          → accept
+ *
+ * Fail-open: if the DB is unreachable we accept rather than block legit mail.
  */
-export function shouldGreylist(ip: string, from: string, to: string): boolean {
+export async function shouldGreylist(ip: string, from: string, to: string): Promise<boolean> {
     const sender = from.trim().toLowerCase() || ip
     const key = `${sender}|${to.trim().toLowerCase()}`
-    const first = greylist.get(key)
-    const now = Date.now()
-    if (!first) {
-        greylist.set(key, now)
-        return true
+    try {
+        const rows = await queryClient<{ passed: boolean }[]>`
+            INSERT INTO greylist (key) VALUES (${key})
+            ON CONFLICT (key) DO UPDATE
+                SET last_seen = now(),
+                    passed = greylist.passed
+                        OR (now() - greylist.first_seen) >= (${GREY_HOLD_MINUTES} * interval '1 minute')
+            RETURNING passed
+        `
+        // passed === true → enough time elapsed (or already cleared) → accept.
+        return !(rows[0]?.passed ?? false)
+    } catch (err) {
+        console.error('[MX] greylist DB error, failing open:', (err as Error)?.message)
+        return false
     }
-    return now - first < GREY_HOLD_MS
 }
 
 // ─── Header validation ───────────────────────────────────────────────────────
@@ -97,11 +116,14 @@ const cleanup = setInterval(() => {
     for (const [ip, e] of connectsByIp) {
         if (now - e.windowStart > CONN_WINDOW_MS * 2) connectsByIp.delete(ip)
     }
-    for (const [k, t] of greylist) {
-        if (now - t > GREY_TTL_MS) greylist.delete(k)
-    }
     for (const [ip, e] of dnsblCache) {
         if (now - e.at > DNSBL_TTL_MS) dnsblCache.delete(ip)
     }
+    // Evict stale greylist rows so the table doesn't grow unbounded. An expired
+    // pair simply gets greylisted once more on its next contact — harmless.
+    const ttlMinutes = Math.round(GREY_TTL_MS / 60_000)
+    queryClient`
+        DELETE FROM greylist WHERE last_seen < now() - (${ttlMinutes} * interval '1 minute')
+    `.catch((err) => console.error('[MX] greylist cleanup error:', (err as Error)?.message))
 }, 60 * 60 * 1000)
 cleanup.unref()

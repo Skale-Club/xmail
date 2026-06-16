@@ -1390,3 +1390,19 @@ export const userNotificationsRelations = relations(userNotifications, ({ one })
 
 export type UserNotification = typeof userNotifications.$inferSelect
 export type NewUserNotification = typeof userNotifications.$inferInsert
+
+// Greylist table — persists MX greylisting state across container restarts.
+// In-memory greylisting was reset on every redeploy, so legit MTAs that retry
+// after the hold window kept getting a fresh 451 and could never get through.
+export const greylist = pgTable('greylist', {
+    // key = `${envelopeSender}|${recipient}` (lowercased)
+    key: text('key').primaryKey(),
+    firstSeen: timestamp('first_seen', { withTimezone: true }).defaultNow().notNull(),
+    lastSeen: timestamp('last_seen', { withTimezone: true }).defaultNow().notNull(),
+    passed: boolean('passed').default(false).notNull(),
+}, (table) => ({
+    idxGreylistLastSeen: index('idx_greylist_last_seen').on(table.lastSeen),
+}))
+
+export type GreylistEntry = typeof greylist.$inferSelect
+export type NewGreylistEntry = typeof greylist.$inferInsert

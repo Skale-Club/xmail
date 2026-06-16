@@ -227,7 +227,7 @@ export function createMXServer() {
                 }
 
                 // Greylist new sender/recipient pairs. Legit MTAs retry; most bots don't.
-                if (shouldGreylist(ip, from, rcpt)) {
+                if (await shouldGreylist(ip, from, rcpt)) {
                     console.log(`[MX] Greylisted: ${ip} ${from} -> ${rcpt}`)
                     return callback(smtpError('4.7.1 Greylisted; please retry in 5 minutes', 451))
                 }
