@@ -200,6 +200,9 @@ jobs:
               -e MX_PORT=25 \
               -e IMAP_PORT=993 \
               -e ENABLE_MAIL_SERVER=true \
+              -e XMAIL_SERVICE_KEY="${{ secrets.XMAIL_SERVICE_KEY }}" \
+              -e XPHERE_EVENTS_URL="${{ secrets.XPHERE_EVENTS_URL }}" \
+              -e XPHERE_EVENTS_API_KEY="${{ secrets.XPHERE_EVENTS_API_KEY }}" \
               --label "traefik.enable=true" \
               --label "traefik.docker.network=coolify" \
               --label "traefik.http.routers.xmail.rule=Host(\`mail.skale.club\`)" \
@@ -359,6 +362,9 @@ jobs:
                   -e MX_PORT=25 \
                   -e IMAP_PORT=993 \
                   -e ENABLE_MAIL_SERVER=true \
+                  -e XMAIL_SERVICE_KEY="${{ secrets.XMAIL_SERVICE_KEY }}" \
+                  -e XPHERE_EVENTS_URL="${{ secrets.XPHERE_EVENTS_URL }}" \
+                  -e XPHERE_EVENTS_API_KEY="${{ secrets.XPHERE_EVENTS_API_KEY }}" \
                   --label "traefik.enable=true" \
                   --label "traefik.docker.network=coolify" \
                   --label "traefik.http.routers.xmail.rule=Host(\`mail.skale.club\`)" \
