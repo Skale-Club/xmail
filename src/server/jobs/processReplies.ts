@@ -17,6 +17,7 @@ import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns } from '
 import { eq, and, isNotNull, sql, gte } from 'drizzle-orm'
 import { decryptSecret } from '../lib/crypto'
 import { createLogger } from '../lib/logger'
+import { sendXphereOutreachEvent } from '../lib/xphere-events'
 
 const log = createLogger('outreach.replies')
 
@@ -455,4 +456,18 @@ export async function markAsReplied(
             })
             .where(eq(emailAccounts.id, accountId)),
     ])
+
+    // Notify Xphere — light lookup for lead identity, not already in scope here.
+    const lead = await db.query.leads.findFirst({
+        where: eq(leads.id, leadId),
+        columns: { email: true, customFields: true },
+    })
+    if (lead) {
+        sendXphereOutreachEvent('replied', {
+            email: lead.email,
+            campaign_id: campaignId,
+            lead_id: leadId,
+            customFields: lead.customFields,
+        })
+    }
 }

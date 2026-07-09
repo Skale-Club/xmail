@@ -15,6 +15,7 @@ import { db } from '../../../db'
 import { campaigns, campaignLeads, leads, outreachEmails, suppressions } from '../../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
 import { generateOutreachToken, verifyOutreachToken } from '../../lib/outreach-tokens'
+import { sendXphereOutreachEvent } from '../../lib/xphere-events'
 
 const router = Router()
 
@@ -306,6 +307,13 @@ async function processUnsubscribe(campaignLeadId: string, campaignId: string): P
             reason: 'User clicked unsubscribe link',
         }).onConflictDoNothing()
     }
+
+    sendXphereOutreachEvent('unsubscribed', {
+        email: lead.email,
+        campaign_id: campaignId,
+        lead_id: lead.id,
+        customFields: lead.customFields,
+    })
 
     return { success: true, lead }
 }

@@ -5,6 +5,7 @@ import { eq, sql } from 'drizzle-orm'
 import { fireWebhooks, incrementStat } from '../lib/tracking'
 import { isPrivateHost } from '../lib/network-guard'
 import { createLogger } from '../lib/logger'
+import { sendXphereOutreachEvent } from '../lib/xphere-events'
 
 const log = createLogger('outreach.track')
 
@@ -15,6 +16,28 @@ const PIXEL = Buffer.from(
     'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
     'base64'
 )
+
+// Notify Xphere of an outreach open/click event. Fire-and-forget — never
+// awaited by callers, must not add latency to the pixel/redirect response.
+async function notifyXphereOfOutreachEvent(event: 'opened' | 'clicked', campaignId: string, campaignLeadId: string) {
+    try {
+        const campaignLead = await db.query.campaignLeads.findFirst({
+            where: eq(campaignLeads.id, campaignLeadId),
+            columns: { leadId: true },
+            with: { lead: { columns: { email: true, customFields: true } } },
+        })
+        if (!campaignLead?.lead) return
+
+        sendXphereOutreachEvent(event, {
+            email: campaignLead.lead.email,
+            campaign_id: campaignId,
+            lead_id: campaignLead.leadId,
+            customFields: campaignLead.lead.customFields,
+        })
+    } catch {
+        // Best-effort only — never let Xphere notification break tracking.
+    }
+}
 
 // ---------------------------------------------------------------------------
 // GET /t/open/:token  — open-tracking pixel
@@ -62,6 +85,7 @@ router.get('/open/:token', async (req: Request, res: Response) => {
                 campaignLeadId: outreachEmail.campaignLeadId,
                 emailAccountId: outreachEmail.emailAccountId,
             }, 'open recorded')
+            void notifyXphereOfOutreachEvent('opened', outreachEmail.campaignId, outreachEmail.campaignLeadId)
             return
         }
 
@@ -166,6 +190,7 @@ router.get('/click/:token', async (req: Request, res: Response) => {
                 emailAccountId: outreachEmail.emailAccountId,
                 targetUrl,
             }, 'click recorded')
+            void notifyXphereOfOutreachEvent('clicked', outreachEmail.campaignId, outreachEmail.campaignLeadId)
             return
         }
 

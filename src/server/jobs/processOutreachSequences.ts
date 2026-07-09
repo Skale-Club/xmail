@@ -25,6 +25,7 @@ import {
 } from '../lib/outreach-sender'
 import { generateOutreachToken } from '../lib/outreach-tokens'
 import { createLogger, OUTREACH_PROCESSOR_SLOW_MS } from '../lib/logger'
+import { sendXphereOutreachEvent } from '../lib/xphere-events'
 
 const log = createLogger('outreach.processor')
 
@@ -384,6 +385,13 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                     updatedAt: new Date(),
                 })
                 .where(eq(outreachEmails.id, claimedEmailId))
+
+            sendXphereOutreachEvent('sent', {
+                email: lead.email,
+                campaign_id: campaign.id,
+                lead_id: lead.id,
+                customFields: lead.customFields,
+            })
 
             const isFirstContact = !campaignLead.firstContactedAt
             await db.update(campaignLeads)
