@@ -43,9 +43,12 @@ export async function paginate<T extends Table>(
 
     const total = Number(countResult[0]?.count || 0)
 
-    // Get the query key from the table name
+    // Get the query key from the table name. db.query is keyed by the schema
+    // EXPORT names (camelCase, e.g. emailAccounts), not the SQL table names
+    // (snake_case, e.g. email_accounts) — convert, or every multi-word table
+    // crashes with "Cannot read properties of undefined (reading 'findMany')".
     const tableName = getTableName(table)
-    const queryKey = tableName as keyof typeof database.query
+    const queryKey = tableName.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()) as keyof typeof database.query
 
     // Data query using db.query relational API
     const data = await (database.query[queryKey] as any).findMany({
