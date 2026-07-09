@@ -6,6 +6,7 @@ import { existsSync } from 'fs'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
 import { eq } from 'drizzle-orm'
+import crypto from 'crypto'
 import { closeDatabaseConnection, db } from '../db'
 import { users } from '../db/schema'
 import authRoutes from './routes/auth'
@@ -241,6 +242,17 @@ const PUBLIC_PATH_PREFIXES = [
     '/api/system/mail-config/',
 ]
 
+function timingSafeEqual(a: string, b: string): boolean {
+    const bufA = Buffer.from(a)
+    const bufB = Buffer.from(b)
+    if (bufA.length !== bufB.length) {
+        // Still run comparison to avoid timing leak on length
+        crypto.timingSafeEqual(bufA, Buffer.alloc(bufA.length))
+        return false
+    }
+    return crypto.timingSafeEqual(bufA, bufB)
+}
+
 app.use('/api', async (req, res, next) => {
     const path = req.originalUrl.split('?')[0]
 
@@ -249,6 +261,23 @@ app.use('/api', async (req, res, next) => {
     }
     if (PUBLIC_PATH_PREFIXES.some(p => path.startsWith(p))) {
         return next()
+    }
+
+    // Machine-to-machine auth for the Xphere orchestrator, which drives
+    // outreach campaigns server-to-server and cannot hold a Supabase
+    // session. Only active when XMAIL_SERVICE_KEY is configured (fails
+    // closed — unset env means this bypass does not exist at all). The
+    // trusted caller supplies its own x-user-id; downstream org-membership
+    // checks (checkOrgMembership) still enforce authorization per request.
+    const serviceKey = process.env.XMAIL_SERVICE_KEY
+    if (path.startsWith('/api/outreach/') && serviceKey) {
+        const providedKey = req.headers['x-service-key']
+        if (typeof providedKey === 'string' && providedKey.length > 0) {
+            if (!timingSafeEqual(providedKey, serviceKey)) {
+                return res.status(401).json({ error: 'Unauthorized' })
+            }
+            return next()
+        }
     }
 
     const authHeader = req.headers.authorization

@@ -1062,7 +1062,11 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
         const newLeadIds = validatedData.leadIds.filter(id => !existingLeadIds.has(id))
 
         if (newLeadIds.length === 0) {
-            return res.status(400).json({ error: 'All leads already in campaign', added: 0, existing: existingLeadIds.size })
+            // Not an error for orchestration callers (e.g. Xphere enrolling prospects):
+            // every submitted lead is already in the campaign. Idempotent retries must
+            // succeed rather than fail with a 400 — see leads.ts bulk-import for the
+            // matching fix.
+            return res.status(200).json({ added: 0, existing: existingLeadIds.size, campaignLeads: [] })
         }
 
         // Get first step of sequence — two sequential queries (the previous subquery was

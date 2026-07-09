@@ -19,6 +19,7 @@ import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, suppres
 import { eq, and, isNotNull, sql, desc } from 'drizzle-orm'
 import { decryptSecret } from '../lib/crypto'
 import { createLogger } from '../lib/logger'
+import { sendXphereOutreachEvent } from '../lib/xphere-events'
 
 const log = createLogger('outreach.bounce')
 
@@ -272,24 +273,34 @@ export async function markAsBounced(
         })
         .where(eq(emailAccounts.id, accountId))
 
+    // Fetch once — used for both the hard-bounce suppression insert below and the
+    // Xphere outbound notification.
+    const lead = await db.query.leads.findFirst({
+        where: eq(leads.id, leadId),
+        columns: { email: true, customFields: true },
+    })
+
     // P0-07: Hard bounces go into the org-level suppression list so we never re-mail them
     // from any future campaign in this org. The pattern matches the audit's heuristic
     // (audit P0-07, fix sugerido). Mirrors the unsubscribe-path insert in unsubscribe.ts
     // (Plan 14-05) that already covers source='unsubscribe'.
     const isHardBounce = /permanent|hard|550|551|553|user unknown|no such user|address not found|mailbox unavailable|does not exist|recipient rejected|invalid recipient/i.test(reason)
-    if (isHardBounce) {
-        const lead = await db.query.leads.findFirst({
-            where: eq(leads.id, leadId),
-            columns: { email: true },
+    if (isHardBounce && lead) {
+        await db.insert(suppressions).values({
+            organizationId,
+            emailAddress: lead.email.toLowerCase(),
+            source: 'bounce',
+            reason: reason.slice(0, 500),  // cap to avoid pathological inputs
+        }).onConflictDoNothing()
+    }
+
+    if (lead) {
+        sendXphereOutreachEvent('bounced', {
+            email: lead.email,
+            campaign_id: campaignId,
+            lead_id: leadId,
+            customFields: lead.customFields,
         })
-        if (lead) {
-            await db.insert(suppressions).values({
-                organizationId,
-                emailAddress: lead.email.toLowerCase(),
-                source: 'bounce',
-                reason: reason.slice(0, 500),  // cap to avoid pathological inputs
-            }).onConflictDoNothing()
-        }
     }
 
     log.info({

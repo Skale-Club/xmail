@@ -149,7 +149,7 @@ npm run db:studio        # Open Drizzle Studio
 
 Required: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `DATABASE_URL`
 
-Optional: `PORT` (default 9001), `NODE_ENV`, `JWT_SECRET`, `FRONTEND_URL` (default http://localhost:9000), `SMTP_HOST/PORT/USER/PASS/FROM`
+Optional: `PORT` (default 9001), `NODE_ENV`, `JWT_SECRET`, `FRONTEND_URL` (default http://localhost:9000), `SMTP_HOST/PORT/USER/PASS/FROM`, `XMAIL_SERVICE_KEY` (machine-to-machine auth for the Xphere orchestrator on `/api/outreach/*`, fails closed if unset), `XPHERE_EVENTS_URL`/`XPHERE_EVENTS_API_KEY` (outbound outreach event notifications to Xphere; both required together)
 
 See `.env.example` for full list.
 
