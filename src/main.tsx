@@ -183,6 +183,25 @@ function RootRedirect() {
     return null
 }
 
+// audit-2026-07 (frontend C4): catch-all for unmatched routes. Several in-app links
+// (e.g. /outreach/leads/:id, /outreach/inboxes/:id) point at paths with no registered
+// Route; without this fallback wouter rendered a blank page (no layout, no way back).
+function NotFound() {
+    const [, navigate] = useLocation()
+    return (
+        <div className="min-h-screen flex flex-col items-center justify-center gap-4 text-center p-8">
+            <p className="text-2xl font-semibold text-foreground">Page not found</p>
+            <p className="text-muted-foreground">The page you’re looking for doesn’t exist or isn’t available yet.</p>
+            <button
+                onClick={() => navigate('/')}
+                className="mt-2 inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+                Go back home
+            </button>
+        </div>
+    )
+}
+
 function BrandingHead() {
     const { branding, isSuccess } = useBranding()
 
@@ -498,6 +517,13 @@ function App() {
                                         </OrganizationProvider>
                                     </AdminCheck>
                                 </Route>
+                                <Route path="/outreach/sequences/new">
+                                    <AdminCheck>
+                                        <OrganizationProvider>
+                                            <PageSuspense><SequencesPage /></PageSuspense>
+                                        </OrganizationProvider>
+                                    </AdminCheck>
+                                </Route>
                                 <Route path="/outreach/sequences">
                                     <AdminCheck>
                                         <OrganizationProvider>
@@ -522,6 +548,10 @@ function App() {
 
                                 <Route path="/">
                                     <RootRedirect />
+                                </Route>
+
+                                <Route>
+                                    <NotFound />
                                 </Route>
                             </Switch>
                                 )}

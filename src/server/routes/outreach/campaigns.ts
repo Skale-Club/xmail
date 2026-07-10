@@ -180,7 +180,54 @@ router.get('/', async (req: Request, res: Response) => {
             },
         })
 
-        res.json({ campaigns: result.data, pagination: result.pagination })
+        // audit-2026-07 (frontend C1 / data M2): the list UI renders emailsSent, openRate,
+        // clickRate, replyRate and bounceRate per campaign — fields the raw campaign row does
+        // NOT contain, so the client crashed on `undefined.toFixed()`. Compute them here from
+        // outreach_emails using the SAME cohort/semantics as the admin health endpoint
+        // (src/server/lib/outreach-metrics.ts): denominator = emails actually sent, numerators
+        // = unique emails with the corresponding timestamp set. Single grouped query.
+        const campaignRows = result.data as Array<Record<string, unknown> & { id: string }>
+        const campaignIdList = campaignRows.map(c => c.id)
+        const metricsByCampaign = new Map<string, {
+            emailsSent: number; openRate: number; clickRate: number; replyRate: number; bounceRate: number
+        }>()
+
+        if (campaignIdList.length > 0) {
+            const agg = await db
+                .select({
+                    campaignId: outreachEmails.campaignId,
+                    sent: sql<number>`count(*) FILTER (WHERE ${outreachEmails.sentAt} IS NOT NULL)`,
+                    opened: sql<number>`count(*) FILTER (WHERE ${outreachEmails.openedAt} IS NOT NULL)`,
+                    clicked: sql<number>`count(*) FILTER (WHERE ${outreachEmails.clickedAt} IS NOT NULL)`,
+                    replied: sql<number>`count(*) FILTER (WHERE ${outreachEmails.repliedAt} IS NOT NULL)`,
+                    bounced: sql<number>`count(*) FILTER (WHERE ${outreachEmails.bouncedAt} IS NOT NULL)`,
+                })
+                .from(outreachEmails)
+                .where(and(
+                    eq(outreachEmails.organizationId, organizationId),
+                    inArray(outreachEmails.campaignId, campaignIdList),
+                ))
+                .groupBy(outreachEmails.campaignId)
+
+            for (const row of agg) {
+                const sent = Number(row.sent) || 0
+                const rate = (n: number) => (sent > 0 ? Math.round((Number(n) / sent) * 1000) / 10 : 0)
+                metricsByCampaign.set(row.campaignId, {
+                    emailsSent: sent,
+                    openRate: rate(row.opened),
+                    clickRate: rate(row.clicked),
+                    replyRate: rate(row.replied),
+                    bounceRate: rate(row.bounced),
+                })
+            }
+        }
+
+        const campaignsWithMetrics = campaignRows.map(c => ({
+            ...c,
+            ...(metricsByCampaign.get(c.id) ?? { emailsSent: 0, openRate: 0, clickRate: 0, replyRate: 0, bounceRate: 0 }),
+        }))
+
+        res.json({ campaigns: campaignsWithMetrics, pagination: result.pagination })
     } catch (error) {
         console.error('Error fetching campaigns:', error)
         res.status(500).json({ error: 'Internal server error' })

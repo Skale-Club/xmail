@@ -19,6 +19,7 @@ import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { PaginationControls } from '../../components/ui/PaginationControls'
 import { apiFetch, apiRequest } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
+import { toast } from '../../components/ui/toaster'
 
 interface Campaign {
     id: string
@@ -165,21 +166,21 @@ function CampaignCard({ campaign, onStatusChange, onDelete }: {
                     <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
                         <Mail className="w-4 h-4" />
                     </div>
-                    <p className="text-lg font-semibold text-foreground">{campaign.emailsSent}</p>
+                    <p className="text-lg font-semibold text-foreground">{campaign.emailsSent ?? 0}</p>
                     <p className="text-xs text-muted-foreground">Sent</p>
                 </div>
                 <div className="text-center">
                     <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
                         <TrendingUp className="w-4 h-4" />
                     </div>
-                    <p className="text-lg font-semibold text-foreground">{campaign.openRate.toFixed(1)}%</p>
+                    <p className="text-lg font-semibold text-foreground">{(campaign.openRate ?? 0).toFixed(1)}%</p>
                     <p className="text-xs text-muted-foreground">Opens</p>
                 </div>
                 <div className="text-center">
                     <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
                         <Target className="w-4 h-4" />
                     </div>
-                    <p className="text-lg font-semibold text-foreground">{campaign.replyRate.toFixed(1)}%</p>
+                    <p className="text-lg font-semibold text-foreground">{(campaign.replyRate ?? 0).toFixed(1)}%</p>
                     <p className="text-xs text-muted-foreground">Replies</p>
                 </div>
             </div>
@@ -204,6 +205,11 @@ export function CampaignsPage() {
         mutationFn: ({ id, status }: { id: string; status: string }) => updateCampaignStatus(currentOrganization!.id, id, status),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+            queryClient.invalidateQueries({ queryKey: ['recent-campaigns'] })
+            queryClient.invalidateQueries({ queryKey: ['outreach-stats'] })
+        },
+        onError: (err) => {
+            toast({ title: 'Failed to update campaign', description: (err as Error).message, variant: 'destructive' })
         },
     })
 
@@ -211,6 +217,12 @@ export function CampaignsPage() {
         mutationFn: (id: string) => deleteCampaign(currentOrganization!.id, id),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+            queryClient.invalidateQueries({ queryKey: ['recent-campaigns'] })
+            queryClient.invalidateQueries({ queryKey: ['outreach-stats'] })
+            toast({ title: 'Campaign deleted', variant: 'success' })
+        },
+        onError: (err) => {
+            toast({ title: 'Failed to delete campaign', description: (err as Error).message, variant: 'destructive' })
         },
     })
 

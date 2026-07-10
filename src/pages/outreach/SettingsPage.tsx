@@ -195,7 +195,7 @@ export function SettingsPage() {
                                 <input
                                     type="checkbox"
                                     className="rounded border-gray-300"
-                                    checked={formData.general?.trackOpens || true}
+                                    checked={formData.general?.trackOpens ?? true}
                                     onChange={(e) => updateGeneral('trackOpens', e.target.checked)}
                                 />
                                 <span className="text-sm text-gray-700 dark:text-gray-300">Track opens</span>
@@ -204,7 +204,7 @@ export function SettingsPage() {
                                 <input
                                     type="checkbox"
                                     className="rounded border-gray-300"
-                                    checked={formData.general?.trackClicks || true}
+                                    checked={formData.general?.trackClicks ?? true}
                                     onChange={(e) => updateGeneral('trackClicks', e.target.checked)}
                                 />
                                 <span className="text-sm text-gray-700 dark:text-gray-300">Track clicks</span>
@@ -257,7 +257,7 @@ export function SettingsPage() {
                                     <input
                                         type="checkbox"
                                         className="rounded border-gray-300"
-                                        checked={formData.sending?.warmupEnabled || true}
+                                        checked={formData.sending?.warmupEnabled ?? true}
                                         onChange={(e) => updateSending('warmupEnabled', e.target.checked)}
                                     />
                                     <span className="text-sm text-gray-700 dark:text-gray-300">Enable automatic warmup</span>
@@ -292,7 +292,7 @@ export function SettingsPage() {
                             <input
                                 type="checkbox"
                                 className="rounded border-gray-300"
-                                checked={formData.notifications?.emailOnReply || true}
+                                checked={formData.notifications?.emailOnReply ?? true}
                                 onChange={(e) => updateNotifications('emailOnReply', e.target.checked)}
                             />
                             <span className="text-sm text-gray-700 dark:text-gray-300">Email me when someone replies</span>
@@ -301,7 +301,7 @@ export function SettingsPage() {
                             <input
                                 type="checkbox"
                                 className="rounded border-gray-300"
-                                checked={formData.notifications?.emailOnBounce || true}
+                                checked={formData.notifications?.emailOnBounce ?? true}
                                 onChange={(e) => updateNotifications('emailOnBounce', e.target.checked)}
                             />
                             <span className="text-sm text-gray-700 dark:text-gray-300">Email me on bounces</span>
@@ -319,7 +319,7 @@ export function SettingsPage() {
                             <input
                                 type="checkbox"
                                 className="rounded border-gray-300"
-                                checked={formData.notifications?.weeklyReport || true}
+                                checked={formData.notifications?.weeklyReport ?? true}
                                 onChange={(e) => updateNotifications('weeklyReport', e.target.checked)}
                             />
                             <span className="text-sm text-gray-700 dark:text-gray-300">Send weekly performance report</span>

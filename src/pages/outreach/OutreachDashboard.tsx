@@ -32,7 +32,7 @@ interface RecentCampaign {
     id: string
     name: string
     status: string
-    leads: number
+    totalLeads: number
     emailsSent: number
     openRate: number
     replyRate: number
@@ -134,10 +134,10 @@ function CampaignRow({ campaign }: { campaign: RecentCampaign }) {
                     {campaign.status}
                 </span>
             </td>
-            <td className="py-3 text-sm text-muted-foreground">{campaign.leads}</td>
-            <td className="py-3 text-sm text-muted-foreground">{campaign.emailsSent}</td>
-            <td className="py-3 text-sm text-muted-foreground">{campaign.openRate.toFixed(1)}%</td>
-            <td className="py-3 text-sm text-muted-foreground">{campaign.replyRate.toFixed(1)}%</td>
+            <td className="py-3 text-sm text-muted-foreground">{campaign.totalLeads ?? 0}</td>
+            <td className="py-3 text-sm text-muted-foreground">{campaign.emailsSent ?? 0}</td>
+            <td className="py-3 text-sm text-muted-foreground">{(campaign.openRate ?? 0).toFixed(1)}%</td>
+            <td className="py-3 text-sm text-muted-foreground">{(campaign.replyRate ?? 0).toFixed(1)}%</td>
         </tr>
     )
 }

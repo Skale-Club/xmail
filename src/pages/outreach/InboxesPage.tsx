@@ -18,6 +18,7 @@ import {
 import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { PaginationControls } from '../../components/ui/PaginationControls'
 import { apiFetch, apiRequest } from '../../lib/api-client'
+import { toast } from '../../components/ui/toaster'
 import { useOrganization } from '../../hooks/useOrganization'
 
 interface EmailAccount {
@@ -126,12 +127,12 @@ function InboxCard({ account, onVerify, onDelete }: {
                                 >
                                     <Settings className="w-4 h-4" /> Settings
                                 </Link>
-                                {account.status === 'pending' && (
+                                {(account.status === 'pending' || account.status === 'failed') && (
                                     <button
                                         onClick={() => { onVerify(account.id); setShowMenu(false) }}
                                         className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2"
                                     >
-                                        <RefreshCw className="w-4 h-4" /> Verify
+                                        <RefreshCw className="w-4 h-4" /> {account.status === 'failed' ? 'Retry verification' : 'Verify'}
                                     </button>
                                 )}
                                 <button
@@ -218,6 +219,13 @@ export function InboxesPage() {
         mutationFn: (id: string) => verifyEmailAccount(currentOrganization!.id, id),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
+            toast({ title: 'Inbox verified', variant: 'success' })
+        },
+        onError: (err) => {
+            // A failed verification sets the account to 'failed' server-side, so refetch to
+            // reflect the new status (and expose the retry affordance for failed accounts).
+            queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
+            toast({ title: 'Verification failed', description: (err as Error).message, variant: 'destructive' })
         },
     })
 
@@ -225,6 +233,10 @@ export function InboxesPage() {
         mutationFn: (id: string) => deleteEmailAccount(currentOrganization!.id, id),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
+            toast({ title: 'Inbox deleted', variant: 'success' })
+        },
+        onError: (err) => {
+            toast({ title: 'Failed to delete inbox', description: (err as Error).message, variant: 'destructive' })
         },
     })
 
