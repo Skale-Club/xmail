@@ -138,6 +138,20 @@ npm run db:studio        # Open Drizzle Studio
 - Click tracking: URL rewriting with base64url-encoded redirect (`/t/click/:token?u=...`)
 - Both respond immediately, process tracking asynchronously
 
+### Outreach Email Accounts
+- `email_accounts.provider` is `'smtp'` (default, stored+encrypted SMTP/IMAP creds),
+  `'outlook'` (OAuth via `src/server/routes/outlook.ts`), or `'native'`.
+- `provider: 'native'` accounts send outreach campaigns through the platform's own
+  user-as-mailbox model (`src/server/lib/native-send.ts`, shared with the webmail
+  compose route) instead of stored credentials — **no SMTP/IMAP password is ever
+  collected or persisted** for these accounts (`smtp_*`/`imap_*` columns stay NULL).
+  A native account can only be created for an email that belongs to an existing
+  platform user with a native mailbox who is a member of the same organization.
+- Sending relays through the same DKIM-signing path as `smtp-server.ts`; replies and
+  bounces are detected by reading the account owner's native INBOX folder directly
+  (`mail_messages`/`mail_folders`) instead of connecting over IMAP — see
+  `processReplies.ts` / `processBounces.ts` for the native-provider branches.
+
 ### Frontend Patterns
 - All admin pages under `/admin/*` route
 - React Query for server state (auto-refetch, cache invalidation)
