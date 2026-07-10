@@ -18,6 +18,7 @@ import { eq, and, isNotNull, sql, gte } from 'drizzle-orm'
 import { decryptSecret } from '../lib/crypto'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
+import { runWithLock } from '../lib/cron-lock'
 
 const log = createLogger('outreach.replies')
 
@@ -45,29 +46,16 @@ interface OutreachEmailWithRelations {
     leadId: string
 }
 
-// P0-06 — advisory lock prevents concurrent runs across multiple Node instances
-// (blue-green overlap, future horizontal scale). Same pattern as runOutreachProcessorWithLock.
+// P0-06 / audit-2026-07 — advisory lock prevents concurrent runs across Node instances.
+// Uses runWithLock (cron-lock.ts) so acquire+release share one reserved connection; the
+// previous db.execute-on-pool implementation leaked the lock across sessions (see audit H1).
 // Inspect held locks: SELECT * FROM pg_locks WHERE locktype='advisory';
-const LOCK_ID_REPLY_PROCESSOR = 4016
+const REPLY_PROCESSOR_LOCK_NAME = 'outreach-replies-processor'
 
-export async function runRepliesProcessorWithLock(): Promise<{ acquired: boolean; result?: ProcessRepliesResult }> {
-    const lockResult = await db.execute(sql`SELECT pg_try_advisory_lock(${LOCK_ID_REPLY_PROCESSOR}) AS acquired`)
-    const acquired = Array.isArray(lockResult)
-        ? (lockResult as unknown as Array<{ acquired: boolean }>)[0]?.acquired === true
-        : (lockResult as unknown as { rows: Array<{ acquired: boolean }> }).rows?.[0]?.acquired === true
-    if (!acquired) {
-        log.debug({
-            action: 'outreach.replies.lock_contended',
-            lockId: LOCK_ID_REPLY_PROCESSOR,
-        }, 'advisory lock held by another instance — skipping tick')
-        return { acquired: false }
-    }
-    try {
-        const result = await processReplies()
-        return { acquired: true, result }
-    } finally {
-        await db.execute(sql`SELECT pg_advisory_unlock(${LOCK_ID_REPLY_PROCESSOR})`)
-    }
+export async function runRepliesProcessorWithLock(): Promise<void> {
+    await runWithLock(REPLY_PROCESSOR_LOCK_NAME, async () => {
+        await processReplies()
+    })
 }
 
 export async function processReplies(): Promise<ProcessRepliesResult> {

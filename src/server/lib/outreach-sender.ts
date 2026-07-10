@@ -219,7 +219,9 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
         // P0-03: {{unsubscribeUrl}} resolves via the template context (Plan 14-05 added support in template-variables.ts).
         const tplContext = { unsubscribeUrl }
         const subject = interpolateTemplate(subjectTemplate || '', leadForTemplate, tplContext)
-        let html = htmlTemplate ? interpolateTemplate(htmlTemplate, leadForTemplate, tplContext) : undefined
+        // audit-2026-07: HTML-escape lead-derived values in the HTML body only — subject and
+        // plain-text renders must stay unescaped or they'd show literal entities.
+        let html = htmlTemplate ? interpolateTemplate(htmlTemplate, leadForTemplate, tplContext, { escapeHtml: true }) : undefined
         const text = plainTemplate ? interpolateTemplate(plainTemplate, leadForTemplate, tplContext) : undefined
 
         if (html && (trackOpens || trackClicks)) {

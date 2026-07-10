@@ -10,7 +10,10 @@ const router = Router()
 
 // Validation schemas
 const createLeadSchema = z.object({
-    email: z.string().email('Invalid email address'),
+    // audit-2026-07 (H4/#2): normalize email to lowercase at the boundary so suppression
+    // (unsubscribe/bounce lists are lowercased) reliably matches, and so the same address
+    // can't be stored twice as case variants. Applies to bulk-import too (uses this schema).
+    email: z.string().email('Invalid email address').transform(v => v.trim().toLowerCase()),
     firstName: z.string().optional(),
     lastName: z.string().optional(),
     companyName: z.string().optional(),
