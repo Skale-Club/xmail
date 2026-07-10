@@ -2,11 +2,12 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
 import { emailAccounts, organizationUsers } from '../../../db/schema'
-import { eq, and, desc } from 'drizzle-orm'
+import { eq, and, desc, inArray } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { encryptSecret, decryptSecret } from '../../lib/crypto'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import { getEffectiveDailySendLimit } from '../../lib/outreach-sender'
+import { listInboxProviders } from '../../lib/inbox-providers'
 import nodemailer from 'nodemailer'
 import { ImapFlow } from 'imapflow'
 
@@ -31,6 +32,34 @@ const createEmailAccountSchema = z.object({
     maxMinutesBetweenEmails: z.number().int().min(1).default(30),
     warmupEnabled: z.boolean().default(true),
     warmupDays: z.number().int().min(1).max(60).default(14),
+})
+
+// P006 — bulk import of provider-exported SMTP/IMAP credentials (IceMail, Primeforge, or manual).
+const importMailboxSchema = z.object({
+    email: z.string().email('Invalid email address').transform((v) => v.trim().toLowerCase()),
+    displayName: z.string().optional(),
+    smtpHost: z.string().min(1, 'SMTP host is required'),
+    smtpPort: z.number().int().min(1).max(65535).default(587),
+    smtpUsername: z.string().min(1, 'SMTP username is required'),
+    smtpPassword: z.string().min(1, 'SMTP password is required'),
+    smtpSecure: z.boolean().default(true),
+    imapHost: z.string().optional(),
+    imapPort: z.number().int().min(1).max(65535).default(993),
+    imapUsername: z.string().optional(),
+    imapPassword: z.string().optional(),
+    imapSecure: z.boolean().default(true),
+    dailySendLimit: z.number().int().min(1).max(10000).default(50),
+    minMinutesBetweenEmails: z.number().int().min(1).default(5),
+    maxMinutesBetweenEmails: z.number().int().min(1).default(30),
+    warmupEnabled: z.boolean().default(true),
+    warmupDays: z.number().int().min(1).max(60).default(14),
+    // Vendor-side mailbox reference (for later warmup sync / re-provisioning).
+    providerRef: z.string().optional(),
+})
+
+const bulkImportEmailAccountsSchema = z.object({
+    provider: z.enum(['manual', 'icemail', 'primeforge']).default('manual'),
+    mailboxes: z.array(importMailboxSchema).min(1).max(200),
 })
 
 const updateEmailAccountSchema = z.object({
@@ -119,6 +148,117 @@ router.get('/', async (req: Request, res: Response) => {
         res.json({ emailAccounts: safeAccounts, pagination: result.pagination })
     } catch (error) {
         console.error('Error fetching email accounts:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// List available inbox providers (P006). Registered before /:id so "providers" is not matched
+// as an account id. Static registry — no tenant data — so only auth (x-user-id) is required.
+router.get('/providers', async (req: Request, res: Response) => {
+    const userId = req.headers['x-user-id'] as string
+    if (!userId) {
+        return res.status(401).json({ error: 'Unauthorized' })
+    }
+    res.json({ providers: listInboxProviders() })
+})
+
+// Bulk-import mailbox credentials from an inbox provider (P006).
+// Vendors like IceMail and Primeforge export standard SMTP/IMAP credentials in bulk; this endpoint
+// ingests them into email_accounts (encrypted, status 'pending'), tagging each row with its
+// mailbox_provider. Imported accounts are verified through the existing POST /:id/verify flow —
+// inline bulk verification is deliberately NOT done here (N sequential SMTP/IMAP connects would be
+// slow and widen the SSRF surface flagged in the audit).
+router.post('/bulk-import', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        const organizationId = req.query.organizationId as string
+
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!organizationId) {
+            return res.status(400).json({ error: 'organizationId is required' })
+        }
+
+        const membership = await checkOrgMembership(userId, organizationId)
+        if (!membership) {
+            return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
+
+        const { provider, mailboxes } = bulkImportEmailAccountsSchema.parse(req.body)
+
+        // De-dupe against existing inboxes in this org (unique on org+email).
+        const submittedEmails = mailboxes.map((m) => m.email)
+        const existing = await db.query.emailAccounts.findMany({
+            where: and(
+                eq(emailAccounts.organizationId, organizationId),
+                inArray(emailAccounts.email, submittedEmails)
+            ),
+            columns: { email: true },
+        })
+        const existingEmails = new Set(existing.map((e) => e.email))
+
+        // Also drop in-payload duplicates (keep first occurrence).
+        const seen = new Set<string>()
+        const toInsert = mailboxes.filter((m) => {
+            if (existingEmails.has(m.email) || seen.has(m.email)) return false
+            seen.add(m.email)
+            return true
+        })
+
+        if (toInsert.length === 0) {
+            return res.status(200).json({
+                imported: 0,
+                duplicates: mailboxes.length,
+                provider,
+                emailAccounts: [],
+            })
+        }
+
+        const inserted = await db.insert(emailAccounts).values(
+            toInsert.map((m) => ({
+                organizationId,
+                email: m.email,
+                displayName: m.displayName,
+                mailboxProvider: provider,
+                providerRef: m.providerRef ?? null,
+                smtpHost: m.smtpHost,
+                smtpPort: m.smtpPort,
+                smtpUsername: m.smtpUsername,
+                smtpPassword: encryptSecret(m.smtpPassword),
+                smtpSecure: m.smtpSecure,
+                imapHost: m.imapHost,
+                imapPort: m.imapPort,
+                imapUsername: m.imapUsername,
+                imapPassword: m.imapPassword ? encryptSecret(m.imapPassword) : null,
+                imapSecure: m.imapSecure,
+                dailySendLimit: m.dailySendLimit,
+                minMinutesBetweenEmails: m.minMinutesBetweenEmails,
+                maxMinutesBetweenEmails: m.maxMinutesBetweenEmails,
+                warmupEnabled: m.warmupEnabled,
+                warmupDays: m.warmupDays,
+                status: 'pending' as const,
+            }))
+        ).returning()
+
+        res.status(201).json({
+            imported: inserted.length,
+            duplicates: mailboxes.length - inserted.length,
+            provider,
+            emailAccounts: inserted.map((a) => ({
+                ...a,
+                smtpPassword: undefined,
+                imapPassword: undefined,
+            })),
+        })
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: 'Validation error', details: error.errors })
+        }
+        console.error('Error bulk-importing email accounts:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
 })

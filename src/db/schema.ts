@@ -655,6 +655,11 @@ export const emailAccounts = pgTable('email_accounts', {
     email: text('email').notNull(),
     displayName: text('display_name'),
     provider: emailProviderEnum('provider').default('smtp').notNull(),
+    // Sourcing vendor for this mailbox: manual paste, IceMail, Primeforge, ... (migration 033).
+    // Distinct from `provider` above, which is the SENDING mechanism (SMTP vs Outlook OAuth).
+    mailboxProvider: text('mailbox_provider').default('manual').notNull(),
+    // External reference on the vendor side (mailbox id) for warmup sync / re-provisioning.
+    providerRef: text('provider_ref'),
     outlookMailboxId: uuid('outlook_mailbox_id').references(() => outlookMailboxes.id),
     // SMTP settings (optional for OAuth providers)
     smtpHost: text('smtp_host'),
