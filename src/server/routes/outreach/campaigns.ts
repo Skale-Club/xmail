@@ -107,10 +107,16 @@ async function validateCampaignReadyForActivation(campaignId: string, organizati
         errors.push('Campaign needs at least one lead')
     }
 
-    const assignedAccountIds = [...new Set(assignedLeads.map(lead => lead.assignedEmailAccountId).filter((id): id is string => Boolean(id)))]
-    if (assignedAccountIds.length !== assignedLeads.length) {
+    // audit-2026-07 (API High #1): the old check compared the DEDUPED set of account ids to
+    // the lead count, so it wrongly failed whenever two or more leads shared the same inbox
+    // (the normal case — the add-leads path assigns one inbox to a whole batch). The invariant
+    // is "no lead has a NULL inbox", so test that directly.
+    const leadMissingInbox = assignedLeads.some(lead => !lead.assignedEmailAccountId)
+    if (leadMissingInbox) {
         errors.push('Every campaign lead needs an assigned sending inbox')
     }
+
+    const assignedAccountIds = [...new Set(assignedLeads.map(lead => lead.assignedEmailAccountId).filter((id): id is string => Boolean(id)))]
 
     if (assignedAccountIds.length > 0) {
         const verifiedAccounts = await db.query.emailAccounts.findMany({
@@ -709,6 +715,9 @@ router.get('/:campaignId/sequences', async (req: Request, res: Response) => {
 
         const sequencesList = await db.query.sequences.findMany({
             where: eq(sequences.campaignId, campaignId),
+            // audit-2026-07 (C3): deterministic order so sequences[0] is the campaign's default
+            // "Main Sequence" — the same one lead enrollment targets (oldest by createdAt).
+            orderBy: (seq, { asc }) => [asc(seq.createdAt)],
             with: {
                 steps: {
                     orderBy: (steps, { asc }) => [asc(steps.stepOrder)],
