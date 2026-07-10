@@ -150,6 +150,48 @@ export function canSendFromAccount(
         }
     }
 
+    // P004 — human-rhythm macro-pacing (opt-in). During a "break" segment no sends leave this
+    // inbox, so bursts of activity are separated by realistic gaps instead of a metronome.
+    if (!isWithinSendRhythm(account, now)) {
+        return false
+    }
+
+    return true
+}
+
+/** Deterministic [0,1) hash (xfnv1a) — same seed → same value, no shared state. */
+function rhythmRand(seed: string): number {
+    let h = 2166136261 >>> 0
+    for (let i = 0; i < seed.length; i++) {
+        h ^= seed.charCodeAt(i)
+        h = Math.imul(h, 16777619)
+    }
+    return ((h >>> 0) % 100000) / 100000
+}
+
+/**
+ * P004 — human-rhythm macro-pacing. Opt-in via OUTREACH_HUMAN_RHYTHM=true (default off → always
+ * true, no behaviour change). When on, each inbox's day is a deterministic sequence of burst
+ * (45–65 min, sends allowed) and break (10–20 min, no sends) segments, seeded by the inbox id so
+ * inboxes desync. Stateless: derivable from (accountId, UTC day, now) on any tick.
+ */
+export function isWithinSendRhythm(
+    account: typeof emailAccounts.$inferSelect,
+    now: Date = new Date()
+): boolean {
+    if (process.env.OUTREACH_HUMAN_RHYTHM !== 'true') return true
+
+    const day = now.toISOString().slice(0, 10)
+    const minutesIntoDay = now.getUTCHours() * 60 + now.getUTCMinutes()
+
+    let cursor = 0
+    for (let i = 0; i < 48; i++) {
+        const burst = 45 + rhythmRand(`${account.id}:${day}:${i}:b`) * 20
+        const brk = 10 + rhythmRand(`${account.id}:${day}:${i}:k`) * 10
+        if (minutesIntoDay < cursor + burst) return true       // inside a burst
+        if (minutesIntoDay < cursor + burst + brk) return false // inside a break
+        cursor += burst + brk
+    }
     return true
 }
 

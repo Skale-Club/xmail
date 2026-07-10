@@ -78,6 +78,17 @@ function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembersh
     return membership?.role === 'admin' || membership?.role === 'member'
 }
 
+// P009 — the domains cold outreach must NOT send from (primary transactional domain).
+// Sourced from MAIL_DOMAIN plus an optional OUTREACH_PROTECTED_DOMAINS (comma-separated) override.
+function getProtectedSendingDomains(): Set<string> {
+    const raw = [process.env.MAIL_DOMAIN, process.env.OUTREACH_PROTECTED_DOMAINS]
+        .filter((v): v is string => Boolean(v))
+        .join(',')
+    return new Set(
+        raw.split(',').map(d => d.trim().toLowerCase()).filter(Boolean)
+    )
+}
+
 async function validateCampaignReadyForActivation(campaignId: string, organizationId: string): Promise<string[]> {
     const errors: string[] = []
 
@@ -125,10 +136,27 @@ async function validateCampaignReadyForActivation(campaignId: string, organizati
                 eq(emailAccounts.status, 'verified'),
                 inArray(emailAccounts.id, assignedAccountIds)
             ),
-            columns: { id: true },
+            columns: { id: true, email: true },
         })
         if (verifiedAccounts.length !== assignedAccountIds.length) {
             errors.push('Every assigned sending inbox must belong to this organization and be verified')
+        }
+
+        // P009 — reputation isolation: cold outreach must never send from the primary
+        // transactional domain (mx.skale.club / MAIL_DOMAIN), which would burn its reputation.
+        // Use disposable provider (IceMail/Primeforge) inboxes instead.
+        const protectedDomains = getProtectedSendingDomains()
+        if (protectedDomains.size > 0) {
+            const offending = verifiedAccounts.filter(a => {
+                const domain = a.email.split('@')[1]?.toLowerCase()
+                return domain != null && protectedDomains.has(domain)
+            })
+            if (offending.length > 0) {
+                errors.push(
+                    `Cold outreach cannot send from the primary domain (${offending.map(a => a.email).join(', ')}). ` +
+                    'Assign a disposable/provider inbox instead.'
+                )
+            }
         }
     }
 
