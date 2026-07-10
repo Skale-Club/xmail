@@ -151,6 +151,9 @@ npm run db:studio        # Open Drizzle Studio
   bounces are detected by reading the account owner's native INBOX folder directly
   (`mail_messages`/`mail_folders`) instead of connecting over IMAP — see
   `processReplies.ts` / `processBounces.ts` for the native-provider branches.
+- `POST /api/outreach/send-message` (`x-service-key` auth, `?organizationId=` required) sends a
+  one-to-one transactional email from a verified native outreach inbox — not campaign traffic, no
+  warmup/sending-limit bookkeeping and no open/click tracking injection.
 
 ### Frontend Patterns
 - All admin pages under `/admin/*` route

@@ -3,6 +3,7 @@ import emailAccountsRouter from './email-accounts'
 import leadsRouter from './leads'
 import campaignsRouter from './campaigns'
 import settingsRouter from './settings'
+import sendMessageRouter from './send-message'
 
 const router = Router()
 
@@ -25,5 +26,8 @@ router.use('/campaigns', campaignsRouter)
 
 // Settings routes
 router.use('/settings', settingsRouter)
+
+// One-to-one transactional send routes
+router.use('/send-message', sendMessageRouter)
 
 export default router
