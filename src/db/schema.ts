@@ -645,7 +645,7 @@ export const emailAccountStatusEnum = pgEnum('email_account_status', ['pending',
 export const sequenceStepTypeEnum = pgEnum('sequence_step_type', ['email', 'delay', 'condition'])
 
 // Email account provider enum
-export const emailProviderEnum = pgEnum('email_provider', ['smtp', 'outlook'])
+export const emailProviderEnum = pgEnum('email_provider', ['smtp', 'outlook', 'native'])
 
 // Email Accounts (Inboxes for sending outreach emails)
 export const emailAccounts = pgTable('email_accounts', {

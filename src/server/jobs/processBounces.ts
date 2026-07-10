@@ -15,11 +15,12 @@
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { db } from '../../db'
-import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, suppressions } from '../../db/schema'
-import { eq, and, isNotNull, sql, desc } from 'drizzle-orm'
+import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, suppressions, mailFolders, mailMessages } from '../../db/schema'
+import { eq, and, or, isNotNull, sql, desc } from 'drizzle-orm'
 import { decryptSecret } from '../lib/crypto'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
+import { getNativeMailboxByEmail } from '../lib/native-send'
 
 const log = createLogger('outreach.bounce')
 
@@ -342,16 +343,31 @@ export async function runBouncesProcessorWithLock(): Promise<{ acquired: boolean
 export async function processBounces(): Promise<{ processed: number; bounces: number; errors: number }> {
     const result = { processed: 0, bounces: 0, errors: 0 }
 
+    // provider='native' accounts have no IMAP credentials — pulled in via an OR
+    // alongside the existing IMAP-credentialed condition, same pattern as processReplies.ts.
     const accounts = await db.query.emailAccounts.findMany({
         where: and(
             eq(emailAccounts.status, 'verified'),
-            isNotNull(emailAccounts.imapHost),
-            isNotNull(emailAccounts.imapUsername),
-            isNotNull(emailAccounts.imapPassword)
+            or(
+                eq(emailAccounts.provider, 'native'),
+                and(
+                    isNotNull(emailAccounts.imapHost),
+                    isNotNull(emailAccounts.imapUsername),
+                    isNotNull(emailAccounts.imapPassword)
+                )
+            )
         )
     })
 
     for (const account of accounts) {
+        if (account.provider === 'native') {
+            const native = await processAccountBouncesNative(account)
+            result.processed += native.processed
+            result.bounces += native.bounces
+            result.errors += native.errors
+            continue
+        }
+
         let client: ImapFlow | null = null
 
         try {
@@ -498,6 +514,145 @@ export async function processBounces(): Promise<{ processed: number; bounces: nu
     await db.update(emailAccounts)
         .set({ lastSyncAt: new Date() })
         .where(isNotNull(emailAccounts.imapHost))
+
+    return result
+}
+
+/**
+ * Native-provider counterpart of the IMAP bounce scan above. The IMAP path re-scans
+ * ALL messages matching a bounce-sender heuristic on every tick (no unseen/date
+ * filter — idempotency comes from `campaignLead.status === 'bounced'`), which isn't
+ * practical to mirror exactly against a full table scan. As a minimal-but-functional
+ * approximation, this scans only unread INBOX messages (isRead=false) in the account's
+ * native mailbox — the same "last checked" signal processAccountRepliesNative uses —
+ * and applies the SAME isBounceEmail() sender/subject heuristic and parseBounceMessage()
+ * DSN parser, fed from the stored plainBody/htmlBody/messageId columns instead of a raw
+ * IMAP source blob (native mail has no raw-source column; see PR notes on this
+ * simplification and its one known edge case: a bounce message that the reply
+ * processor mis-marks as read first would be skipped here).
+ */
+async function processAccountBouncesNative(
+    account: { id: string; email: string }
+): Promise<{ processed: number; bounces: number; errors: number }> {
+    const result = { processed: 0, bounces: 0, errors: 0 }
+
+    const nativeMailbox = await getNativeMailboxByEmail(account.email)
+    if (!nativeMailbox) return result
+
+    const inboxFolder = await db.query.mailFolders.findFirst({
+        where: and(
+            eq(mailFolders.mailboxId, nativeMailbox.id),
+            eq(mailFolders.type, 'inbox')
+        ),
+    })
+    if (!inboxFolder) return result
+
+    const candidates = await db.query.mailMessages.findMany({
+        where: and(
+            eq(mailMessages.folderId, inboxFolder.id),
+            eq(mailMessages.isRead, false)
+        ),
+        orderBy: (m, { asc }) => [asc(m.receivedAt)],
+        limit: 500,
+    })
+
+    for (const msg of candidates) {
+        try {
+            if (!isBounceEmail(msg.fromAddress || '', msg.subject || '')) {
+                continue
+            }
+
+            result.processed++
+
+            // parseBounceMessage() only reads .text/.html/.messageId off the parsed-mail
+            // object — synthesize one from the columns already stored for this message
+            // (native mail has no raw-source blob to re-parse with mailparser).
+            const pseudoParsed = {
+                text: msg.plainBody || '',
+                html: msg.htmlBody || false,
+                messageId: msg.messageId || undefined,
+            } as unknown as Awaited<ReturnType<typeof simpleParser>>
+
+            const bounceInfo = parseBounceMessage(pseudoParsed)
+
+            if (!bounceInfo.recipientEmail) {
+                log.warn({ action: 'outreach.bounce.parse_failed_no_recipient', provider: 'native' }, 'could not extract recipient from bounce')
+                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
+                continue
+            }
+
+            let outreachEmail = bounceInfo.originalMessageId
+                ? await findOutreachEmailByMessageId(bounceInfo.originalMessageId)
+                : null
+
+            if (!outreachEmail) {
+                outreachEmail = await findOutreachEmailByRecipient(bounceInfo.recipientEmail, account.id)
+            }
+
+            if (!outreachEmail) {
+                log.warn({
+                    action: 'outreach.bounce.unmatched',
+                    recipientEmail: bounceInfo.recipientEmail,
+                    emailAccountId: account.id,
+                    provider: 'native',
+                }, 'no outreach email matched bounce recipient')
+                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
+                continue
+            }
+
+            const campaignLead = await db.query.campaignLeads.findFirst({
+                where: eq(campaignLeads.id, outreachEmail.campaignLeadId),
+                with: { lead: true }
+            })
+
+            if (!campaignLead?.lead) {
+                log.warn({
+                    action: 'outreach.bounce.campaign_lead_missing',
+                    outreachEmailId: outreachEmail.id,
+                    provider: 'native',
+                }, 'campaign lead row missing for bounce target')
+                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
+                continue
+            }
+
+            if (campaignLead.status === 'bounced') {
+                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
+                continue
+            }
+
+            const fullReason = bounceInfo.diagnosticCode
+                ? `${bounceInfo.reason} (${bounceInfo.diagnosticCode})`
+                : bounceInfo.reason
+
+            await markAsBounced(
+                outreachEmail.id,
+                campaignLead.id,
+                campaignLead.lead.id,
+                outreachEmail.campaignId,
+                account.id,
+                outreachEmail.organizationId,
+                fullReason
+            )
+
+            result.bounces++
+            await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
+        } catch (error) {
+            const err = error instanceof Error ? error : new Error(String(error))
+            log.error({
+                action: 'outreach.bounce.native_message_error',
+                messageId: msg.id,
+                emailAccountId: account.id,
+                error: { message: err.message, stack: err.stack },
+            }, 'failed to process native bounce message')
+            result.errors++
+        }
+    }
+
+    if (result.processed > 0 || candidates.length > 0) {
+        await db.update(emailAccounts)
+            .set({ lastSyncAt: new Date() })
+            .where(eq(emailAccounts.id, account.id))
+    }
 
     return result
 }
