@@ -293,6 +293,62 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
     }
 }
 
+interface ThreadedReplyParams {
+    account: typeof emailAccounts.$inferSelect
+    to: string
+    subject: string
+    text: string
+    html?: string
+    fromName?: string | null
+    replyTo?: string | null
+    /** Message-ID this reply threads under (In-Reply-To + References). */
+    inReplyTo?: string | null
+}
+
+/**
+ * Agentic follow-up (P002) — send a threaded reply in an existing conversation.
+ * Unlike sendOutreachEmail this carries no sequence-step template: the body comes from the
+ * follow-up decider. Threading headers keep it in the same mail thread. SMTP only for now
+ * (Outlook path parity is deferred, matching sendOutreachEmail's known limitation).
+ */
+export async function sendThreadedReply(params: ThreadedReplyParams): Promise<SendResult> {
+    const { account, to, subject, text, html, fromName, replyTo, inReplyTo } = params
+    try {
+        const headers: Record<string, string> = {}
+        if (inReplyTo) {
+            const bracketed = inReplyTo.startsWith('<') ? inReplyTo : `<${inReplyTo}>`
+            headers['In-Reply-To'] = bracketed
+            headers['References'] = bracketed
+        }
+
+        const transporter = createSmtpTransporter(account)
+        const displayName = fromName || account.displayName || ''
+        const fromAddress = displayName ? `"${displayName}" <${account.email}>` : account.email
+
+        const info = await transporter.sendMail({
+            from: fromAddress,
+            to,
+            subject,
+            text,
+            html,
+            replyTo: replyTo || undefined,
+            headers,
+        })
+
+        return {
+            success: true,
+            messageId: info.messageId ? info.messageId.replace(/[<>]/g, '').trim() : undefined,
+            finalHtml: html,
+            finalText: text,
+        }
+    } catch (error) {
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error sending reply',
+        }
+    }
+}
+
 export async function updateCampaignLeadProgress(
     campaignLeadId: string,
     nextStep: typeof sequenceSteps.$inferSelect,

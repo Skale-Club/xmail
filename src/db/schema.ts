@@ -778,6 +778,9 @@ export const campaigns = pgTable('campaigns', {
     // Tracking settings
     trackOpens: boolean('track_opens').default(true).notNull(),
     trackClicks: boolean('track_clicks').default(true).notNull(),
+    // Agentic follow-up (P001/P002, migration 034) — OFF by default.
+    agenticFollowupEnabled: boolean('agentic_followup_enabled').default(false).notNull(),
+    maxFollowUps: integer('max_follow_ups').default(2).notNull(),
     // Statistics (cached)
     totalLeads: integer('total_leads').default(0).notNull(),
     leadsContacted: integer('leads_contacted').default(0).notNull(),
@@ -857,6 +860,12 @@ export const campaignLeads = pgTable('campaign_leads', {
     status: leadStatusEnum('status').default('new').notNull(),
     // Next scheduled action
     nextScheduledAt: timestamp('next_scheduled_at'),
+    // Agentic follow-up (P001/P002, migration 034)
+    nextFollowUpAt: timestamp('next_follow_up_at'),
+    followUpCount: integer('follow_up_count').default(0).notNull(),
+    lastReplyMessageId: text('last_reply_message_id'),
+    lastReplyText: text('last_reply_text'),
+    lastReplyAt: timestamp('last_reply_at'),
     // Tracking for this specific campaign/lead combination
     totalOpens: integer('total_opens').default(0).notNull(),
     totalClicks: integer('total_clicks').default(0).notNull(),
@@ -876,6 +885,7 @@ export const campaignLeads = pgTable('campaign_leads', {
     idxCampaignLeadsCurrentStepId: index('idx_campaign_leads_current_step_id').on(table.currentStepId),
     idxCampaignLeadsCampaignStatus: index('idx_campaign_leads_campaign_status').on(table.campaignId, table.status),
     idxCampaignLeadsNextScheduled: index('idx_campaign_leads_next_scheduled').on(table.nextScheduledAt),
+    idxCampaignLeadsNextFollowUp: index('idx_campaign_leads_next_follow_up').on(table.nextFollowUpAt),
 }))
 
 // Outreach Emails (sent emails from campaigns)

@@ -218,6 +218,12 @@ async function processAccountReplies(account: EmailAccountWithImap): Promise<num
                             matched.outreachEmail.campaignId,
                             matched.outreachEmail.emailAccountId,
                         )
+                        // P001/P002 — if the campaign opted into agentic follow-up, schedule a
+                        // decision instead of only stopping. OFF by default → no behaviour change.
+                        await scheduleAgenticFollowUpIfEnabled(
+                            matched.outreachEmail.campaignId,
+                            matched.outreachEmail.campaignLeadId,
+                        )
                         replyCount++
                         log.info({
                             action: 'outreach.replies.match',
@@ -379,6 +385,27 @@ async function markAsAutoReply(outreachEmailId: string): Promise<void> {
             updatedAt: new Date(),
         })
         .where(eq(outreachEmails.id, outreachEmailId))
+}
+
+// P001/P002 — schedule an agentic follow-up decision for a matched reply, but only if the
+// campaign opted in. Sets next_follow_up_at = now so processFollowUps picks it up next tick.
+async function scheduleAgenticFollowUpIfEnabled(campaignId: string, campaignLeadId: string): Promise<void> {
+    const campaign = await db.query.campaigns.findFirst({
+        where: eq(campaigns.id, campaignId),
+        columns: { agenticFollowupEnabled: true },
+    })
+    if (!campaign?.agenticFollowupEnabled) return
+
+    const now = new Date()
+    await db.update(campaignLeads)
+        .set({ nextFollowUpAt: now, lastReplyAt: now })
+        .where(eq(campaignLeads.id, campaignLeadId))
+
+    log.info({
+        action: 'outreach.followup.scheduled',
+        campaignId,
+        campaignLeadId,
+    }, 'agentic follow-up scheduled for reply')
 }
 
 export async function findOutreachEmailByMessageId(messageId: string): Promise<OutreachEmailWithRelations | null> {

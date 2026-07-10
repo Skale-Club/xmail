@@ -5,6 +5,7 @@ import { cleanupOldMessages } from './cleanupMessages'
 import { runOutreachProcessorWithLock, resetDailyLimits } from './processOutreachSequences'
 import { runRepliesProcessorWithLock } from './processReplies'
 import { runBouncesProcessorWithLock } from './processBounces'
+import { runFollowUpsProcessorWithLock } from './processFollowUps'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
 import { createLogger } from '../lib/logger'
@@ -117,8 +118,20 @@ export function startJobs(): void {
         })
     })
 
+    // Process agentic follow-ups every 10 minutes (advisory-locked). Inert unless a campaign
+    // has agentic_followup_enabled = true (P001/P002).
+    cron.schedule('*/10 * * * *', () => {
+        runFollowUpsProcessorWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.processFollowUps_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'processFollowUps failed')
+        })
+    })
+
     log.info({
         action: 'outreach.jobs.scheduler_ready',
-        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min',
+        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, followups=10min',
     }, 'scheduler ready')
 }
