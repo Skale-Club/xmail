@@ -45,7 +45,9 @@ const router = Router()
 // 'outlook' accounts are created via src/server/routes/outlook.ts (OAuth flow),
 // not through this route, so it is intentionally excluded from this enum.
 const createEmailAccountSchema = z.object({
-    email: z.string().email('Invalid email address'),
+    // Lowercased to match importMailboxSchema below. The two write paths disagreeing on case is
+    // what let one mailbox become two rows, each with its own daily cap — see migration 036.
+    email: z.string().email('Invalid email address').transform((v) => v.trim().toLowerCase()),
     displayName: z.string().optional(),
     provider: z.enum(['smtp', 'native']).default('smtp'),
     smtpHost: z.string().min(1).optional(),
@@ -380,8 +382,12 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Write access denied' })
         }
 
+        // createEmailAccountSchema lowercases email, so validatedData.email is already the canonical
+        // form used for the duplicate check, the lookups and storage alike — and it matches the
+        // case-insensitive unique index from migration 036. Previously this handler computed a
+        // normalizedEmail and then checked for duplicates against the raw value anyway, so a case
+        // variant slipped past the check and past the (then case-sensitive) index.
         const validatedData = createEmailAccountSchema.parse(req.body)
-        const normalizedEmail = validatedData.email.toLowerCase()
 
         // Check for duplicate email
         const existing = await db.query.emailAccounts.findFirst({
@@ -405,13 +411,13 @@ router.post('/', async (req: Request, res: Response) => {
             // inserting: (1) a platform user exists with this email, (2) that user
             // has a native mailbox, (3) that user is a member of this organization.
             const targetUser = await db.query.users.findFirst({
-                where: eq(users.email, normalizedEmail),
+                where: eq(users.email, validatedData.email),
             })
             if (!targetUser) {
                 return res.status(400).json({ error: 'No platform user found with that email address' })
             }
 
-            const nativeMailbox = await getNativeMailboxByEmail(normalizedEmail)
+            const nativeMailbox = await getNativeMailboxByEmail(validatedData.email)
             if (!nativeMailbox) {
                 return res.status(400).json({ error: 'That user does not have a native mailbox' })
             }
