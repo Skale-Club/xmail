@@ -1,4 +1,4 @@
--- 032_outreach_reproducibility_and_reply_index.sql
+-- 035_outreach_reproducibility_and_reply_index.sql
 -- Outreach audit fixes (2026-07):
 --   1. Track the claim-lock unique index in SQL. It was previously created out-of-band
 --      (via the now-removed db:push) and existed only in src/db/schema.ts, so any DB

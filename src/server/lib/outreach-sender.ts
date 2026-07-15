@@ -12,6 +12,7 @@ import { interpolateTemplate, type LeadForTemplate } from './template-variables'
 import { injectTracking } from './tracking'
 import { sendMessageWithOutlook } from './outlook'
 import { generateUnsubscribeLink } from '../routes/outreach/unsubscribe'
+import { relayMessage, storeMessage, getNativeMailboxByEmail } from './native-send'
 
 interface SendOutreachEmailParams {
     account: typeof emailAccounts.$inferSelect
@@ -302,8 +303,6 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
             }
         }
 
-        const transporter = createSmtpTransporter(account)
-
         const fromName = campaign.fromName || account.displayName || ''
         const fromAddress = fromName ? `"${fromName}" <${account.email}>` : account.email
 
@@ -317,6 +316,60 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
             headers,
         }
 
+        if (account.provider === 'native') {
+            // No stored SMTP credentials — compose the same MIME content via nodemailer's
+            // stream composer (buffered, never touches the network) to get a raw buffer +
+            // an auto-generated Message-ID identical in shape to the one the SMTP path
+            // relies on, then relay it through the platform's internal DKIM-signed relay
+            // and file a copy in the account owner's native Sent folder. Reply/bounce
+            // matching (processReplies.ts / processBounces.ts) key off this same
+            // Message-ID, exactly as they do for the SMTP path's info.messageId.
+            const nativeMailbox = await getNativeMailboxByEmail(account.email)
+            if (!nativeMailbox) {
+                return {
+                    success: false,
+                    error: 'Native mailbox not found for outreach account — was it deleted?',
+                }
+            }
+
+            const composer = nodemailer.createTransport({ streamTransport: true, buffer: true })
+            const composed = await composer.sendMail(mailOptions)
+            const rawBuffer = composed.message as Buffer
+            const generatedMessageId = composed.messageId as string
+
+            await relayMessage(account.email, [lead.email], rawBuffer)
+
+            try {
+                await storeMessage(nativeMailbox.id, 'sent', {
+                    messageId: generatedMessageId,
+                    subject,
+                    fromAddress: account.email,
+                    fromName: account.displayName || null,
+                    toAddresses: [{ address: lead.email, name: null }],
+                    ccAddresses: [],
+                    bccAddresses: [],
+                    plainBody: text,
+                    htmlBody: html,
+                    hasAttachments: false,
+                    attachments: [],
+                }, true)
+            } catch (storeErr) {
+                // Filing the Sent-folder copy is best-effort — the message was already
+                // relayed successfully, so a filing failure should not fail the send
+                // (matches how the SMTP path never fails a send over IMAP-append issues).
+                console.warn('[Outreach:Native] Failed to file Sent copy:', storeErr instanceof Error ? storeErr.message : storeErr)
+            }
+
+            return {
+                success: true,
+                messageId: generatedMessageId,
+                finalHtml: html,
+                finalText: text,
+                trackingToken,
+            }
+        }
+
+        const transporter = createSmtpTransporter(account)
         const info = await transporter.sendMail(mailOptions)
 
         return {
@@ -363,11 +416,10 @@ export async function sendThreadedReply(params: ThreadedReplyParams): Promise<Se
             headers['References'] = bracketed
         }
 
-        const transporter = createSmtpTransporter(account)
         const displayName = fromName || account.displayName || ''
         const fromAddress = displayName ? `"${displayName}" <${account.email}>` : account.email
 
-        const info = await transporter.sendMail({
+        const mailOptions: nodemailer.SendMailOptions = {
             from: fromAddress,
             to,
             subject,
@@ -375,7 +427,57 @@ export async function sendThreadedReply(params: ThreadedReplyParams): Promise<Se
             html,
             replyTo: replyTo || undefined,
             headers,
-        })
+        }
+
+        if (account.provider === 'native') {
+            // Mirrors the native branch of sendOutreachEmail: native accounts hold no SMTP
+            // credentials, so compose the MIME buffer offline and hand it to the internal
+            // DKIM-signing relay, then file the Sent copy. Reply/bounce matching keys off
+            // this generated Message-ID exactly as it does for the SMTP path.
+            const nativeMailbox = await getNativeMailboxByEmail(account.email)
+            if (!nativeMailbox) {
+                return {
+                    success: false,
+                    error: 'Native mailbox not found for outreach account — was it deleted?',
+                }
+            }
+
+            const composer = nodemailer.createTransport({ streamTransport: true, buffer: true })
+            const composed = await composer.sendMail(mailOptions)
+            const rawBuffer = composed.message as Buffer
+            const generatedMessageId = composed.messageId as string
+
+            await relayMessage(account.email, [to], rawBuffer)
+
+            try {
+                await storeMessage(nativeMailbox.id, 'sent', {
+                    messageId: generatedMessageId,
+                    subject,
+                    fromAddress: account.email,
+                    fromName: account.displayName || null,
+                    toAddresses: [{ address: to, name: null }],
+                    ccAddresses: [],
+                    bccAddresses: [],
+                    plainBody: text,
+                    htmlBody: html,
+                    hasAttachments: false,
+                    attachments: [],
+                }, true)
+            } catch (storeErr) {
+                // Best-effort, as in sendOutreachEmail — the reply was already relayed.
+                console.warn('[Outreach:Native] Failed to file Sent copy for threaded reply:', storeErr instanceof Error ? storeErr.message : storeErr)
+            }
+
+            return {
+                success: true,
+                messageId: generatedMessageId,
+                finalHtml: html,
+                finalText: text,
+            }
+        }
+
+        const transporter = createSmtpTransporter(account)
+        const info = await transporter.sendMail(mailOptions)
 
         return {
             success: true,

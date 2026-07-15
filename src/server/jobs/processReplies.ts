@@ -13,12 +13,13 @@
 
 import { ImapFlow } from 'imapflow'
 import { db } from '../../db'
-import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns } from '../../db/schema'
-import { eq, and, isNotNull, sql, gte } from 'drizzle-orm'
+import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, mailFolders, mailMessages } from '../../db/schema'
+import { eq, and, or, isNotNull, sql, gte } from 'drizzle-orm'
 import { decryptSecret } from '../lib/crypto'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { runWithLock } from '../lib/cron-lock'
+import { getNativeMailboxByEmail } from '../lib/native-send'
 
 const log = createLogger('outreach.replies')
 
@@ -31,6 +32,7 @@ interface ProcessRepliesResult {
 interface EmailAccountWithImap {
     id: string
     email: string
+    provider: string
     imapHost: string | null
     imapPort: number | null
     imapUsername: string | null
@@ -65,10 +67,14 @@ export async function processReplies(): Promise<ProcessRepliesResult> {
         errors: 0,
     }
 
+    // provider='native' accounts have no IMAP credentials (nor need them — they read
+    // their native INBOX folder directly, see processAccountRepliesNative below), so
+    // they're pulled in via an OR alongside the existing IMAP-credentialed condition.
     const accounts = await db
         .select({
             id: emailAccounts.id,
             email: emailAccounts.email,
+            provider: emailAccounts.provider,
             imapHost: emailAccounts.imapHost,
             imapPort: emailAccounts.imapPort,
             imapUsername: emailAccounts.imapUsername,
@@ -79,15 +85,22 @@ export async function processReplies(): Promise<ProcessRepliesResult> {
         .where(
             and(
                 eq(emailAccounts.status, 'verified'),
-                isNotNull(emailAccounts.imapHost),
-                isNotNull(emailAccounts.imapUsername),
-                isNotNull(emailAccounts.imapPassword)
+                or(
+                    eq(emailAccounts.provider, 'native'),
+                    and(
+                        isNotNull(emailAccounts.imapHost),
+                        isNotNull(emailAccounts.imapUsername),
+                        isNotNull(emailAccounts.imapPassword)
+                    )
+                )
             )
         )
 
     for (const account of accounts) {
         try {
-            const replyCount = await processAccountReplies(account)
+            const replyCount = account.provider === 'native'
+                ? await processAccountRepliesNative(account)
+                : await processAccountReplies(account)
             result.processed++
             result.replies += replyCount
         } catch (error) {
@@ -97,12 +110,155 @@ export async function processReplies(): Promise<ProcessRepliesResult> {
                 action: 'outreach.replies.account_error',
                 emailAccountId: account.id,
                 email: account.email,
+                provider: account.provider,
                 error: { message: err.message, stack: err.stack },
             }, 'account processing failed')
         }
     }
 
     return result
+}
+
+/**
+ * Native-provider counterpart of processAccountReplies. Instead of connecting to an
+ * IMAP server, resolves the account owner's native mailbox and reads mail_messages
+ * rows filed in its INBOX folder directly (mail delivered there by smtp-server.ts's
+ * inbound path already has in_reply_to/references/from_address parsed into columns —
+ * no raw-header regex parsing needed).
+ *
+ * "Last checked" tracking mirrors the IMAP path's unseen-search + mark-\Seen pattern:
+ * candidates are messages with isRead=false received in the last 7 days (same window
+ * as the IMAP path's `since: sevenDaysAgo` search), capped at the same 500-per-tick
+ * budget. Matched/auto-reply messages are marked isRead=true afterwards (mirrors
+ * `client.messageFlagsAdd(uid, ['\\Seen'])`); genuinely unmatched messages are left
+ * unread so a human can still find them, exactly like the IMAP path.
+ */
+async function processAccountRepliesNative(account: { id: string; email: string }): Promise<number> {
+    let replyCount = 0
+
+    const nativeMailbox = await getNativeMailboxByEmail(account.email)
+    if (!nativeMailbox) return replyCount
+
+    const inboxFolder = await db.query.mailFolders.findFirst({
+        where: and(
+            eq(mailFolders.mailboxId, nativeMailbox.id),
+            eq(mailFolders.type, 'inbox')
+        ),
+    })
+    if (!inboxFolder) return replyCount
+
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    const MAX_PER_TICK = 500
+
+    const candidates = await db.query.mailMessages.findMany({
+        where: and(
+            eq(mailMessages.folderId, inboxFolder.id),
+            eq(mailMessages.isRead, false),
+            gte(mailMessages.receivedAt, sevenDaysAgo)
+        ),
+        orderBy: (m, { asc }) => [asc(m.receivedAt)],
+        limit: MAX_PER_TICK,
+    })
+
+    for (const msg of candidates) {
+        try {
+            const storedHeaders = (msg.headers as Record<string, string> | null) || {}
+            // isAutoReply() only inspects a handful of headers + the subject line — build a
+            // minimal synthetic "raw" blob from the stored headers jsonb so the exact same
+            // regex-based detector can be reused unmodified.
+            const pseudoRaw = [
+                `Auto-Submitted: ${storedHeaders['auto-submitted'] || ''}`,
+                `Precedence: ${storedHeaders['precedence'] || ''}`,
+                `X-Auto-Response-Suppress: ${storedHeaders['x-auto-response-suppress'] || ''}`,
+                `Subject: ${msg.subject || ''}`,
+            ].join('\n')
+
+            const auto = isAutoReply({ raw: pseudoRaw })
+
+            const matched = await matchReplyToOutreach(
+                { inReplyTo: msg.inReplyTo, references: msg.references, fromAddress: msg.fromAddress },
+                account.id,
+            )
+
+            if (auto.auto) {
+                if (matched) {
+                    await markAsAutoReply(matched.outreachEmail.id)
+                    log.info({
+                        action: 'outreach.replies.match',
+                        decision: 'auto_reply',
+                        signal: auto.signal,
+                        matchStrategy: matched.strategy,
+                        emailAccountId: account.id,
+                        provider: 'native',
+                        campaignId: matched.outreachEmail.campaignId,
+                        leadId: matched.outreachEmail.leadId,
+                        campaignLeadId: matched.outreachEmail.campaignLeadId,
+                    }, 'auto-reply matched to outreach email')
+                } else {
+                    log.info({
+                        action: 'outreach.replies.match',
+                        decision: 'auto_reply',
+                        signal: auto.signal,
+                        matchStrategy: 'unmatched',
+                        emailAccountId: account.id,
+                        provider: 'native',
+                    }, 'auto-reply not matched')
+                }
+                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
+                continue
+            }
+
+            if (matched) {
+                await markAsReplied(
+                    matched.outreachEmail.id,
+                    matched.outreachEmail.campaignLeadId,
+                    matched.outreachEmail.leadId,
+                    matched.outreachEmail.campaignId,
+                    matched.outreachEmail.emailAccountId,
+                )
+                // P001/P002 — if the campaign opted into agentic follow-up, schedule a
+                // decision instead of only stopping. OFF by default → no behaviour change.
+                await scheduleAgenticFollowUpIfEnabled(
+                    matched.outreachEmail.campaignId,
+                    matched.outreachEmail.campaignLeadId,
+                )
+                replyCount++
+                log.info({
+                    action: 'outreach.replies.match',
+                    decision: 'replied',
+                    matchStrategy: matched.strategy,
+                    emailAccountId: account.id,
+                    provider: 'native',
+                    campaignId: matched.outreachEmail.campaignId,
+                    leadId: matched.outreachEmail.leadId,
+                    campaignLeadId: matched.outreachEmail.campaignLeadId,
+                }, 'reply matched and marked')
+                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
+            } else {
+                log.info({
+                    action: 'outreach.replies.match',
+                    decision: 'unmatched',
+                    emailAccountId: account.id,
+                    provider: 'native',
+                    hasInReplyTo: msg.inReplyTo !== null,
+                    hasReferences: msg.references !== null,
+                    hasFrom: msg.fromAddress !== null,
+                }, 'message did not match any outreach email')
+                // Do NOT mark as read — mirrors the IMAP path leaving unmatched messages
+                // unseen so a human can still find them.
+            }
+        } catch (error) {
+            const err = error instanceof Error ? error : new Error(String(error))
+            log.error({
+                action: 'outreach.replies.native_message_error',
+                messageId: msg.id,
+                emailAccountId: account.id,
+                error: { message: err.message, stack: err.stack },
+            }, 'failed to process native message')
+        }
+    }
+
+    return replyCount
 }
 
 async function processAccountReplies(account: EmailAccountWithImap): Promise<number> {

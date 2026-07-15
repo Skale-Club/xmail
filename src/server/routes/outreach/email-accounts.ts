@@ -1,26 +1,35 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
-import { emailAccounts, organizationUsers } from '../../../db/schema'
+import { emailAccounts, organizationUsers, users } from '../../../db/schema'
 import { eq, and, desc, inArray } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { encryptSecret, decryptSecret } from '../../lib/crypto'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import { getEffectiveDailySendLimit } from '../../lib/outreach-sender'
 import { listInboxProviders } from '../../lib/inbox-providers'
+import { getNativeMailboxByEmail } from '../../lib/native-send'
 import nodemailer from 'nodemailer'
 import { ImapFlow } from 'imapflow'
 
 const router = Router()
 
 // Validation schemas
+//
+// provider='native' accounts send through the platform's native mailbox model
+// (src/server/lib/native-send.ts) instead of stored SMTP/IMAP credentials — no
+// password is ever collected or persisted for these accounts. SMTP fields are
+// only required when provider is (or defaults to) 'smtp'; see superRefine below.
+// 'outlook' accounts are created via src/server/routes/outlook.ts (OAuth flow),
+// not through this route, so it is intentionally excluded from this enum.
 const createEmailAccountSchema = z.object({
     email: z.string().email('Invalid email address'),
     displayName: z.string().optional(),
-    smtpHost: z.string().min(1, 'SMTP host is required'),
+    provider: z.enum(['smtp', 'native']).default('smtp'),
+    smtpHost: z.string().min(1).optional(),
     smtpPort: z.number().int().min(1).max(65535).default(587),
-    smtpUsername: z.string().min(1, 'SMTP username is required'),
-    smtpPassword: z.string().min(1, 'SMTP password is required'),
+    smtpUsername: z.string().min(1).optional(),
+    smtpPassword: z.string().min(1).optional(),
     smtpSecure: z.boolean().default(true),
     imapHost: z.string().optional(),
     imapPort: z.number().int().min(1).max(65535).default(993),
@@ -32,6 +41,18 @@ const createEmailAccountSchema = z.object({
     maxMinutesBetweenEmails: z.number().int().min(1).default(30),
     warmupEnabled: z.boolean().default(true),
     warmupDays: z.number().int().min(1).max(60).default(14),
+}).superRefine((data, ctx) => {
+    if (data.provider === 'smtp') {
+        if (!data.smtpHost) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['smtpHost'], message: 'SMTP host is required' })
+        }
+        if (!data.smtpUsername) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['smtpUsername'], message: 'SMTP username is required' })
+        }
+        if (!data.smtpPassword) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['smtpPassword'], message: 'SMTP password is required' })
+        }
+    }
 })
 
 // P006 — bulk import of provider-exported SMTP/IMAP credentials (IceMail, Primeforge, or manual).
@@ -329,6 +350,7 @@ router.post('/', async (req: Request, res: Response) => {
         }
 
         const validatedData = createEmailAccountSchema.parse(req.body)
+        const normalizedEmail = validatedData.email.toLowerCase()
 
         // Check for duplicate email
         const existing = await db.query.emailAccounts.findFirst({
@@ -342,27 +364,87 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Email account already exists' })
         }
 
-        const [newAccount] = await db.insert(emailAccounts).values({
-            organizationId,
-            email: validatedData.email,
-            displayName: validatedData.displayName,
-            smtpHost: validatedData.smtpHost,
-            smtpPort: validatedData.smtpPort,
-            smtpUsername: validatedData.smtpUsername,
-            smtpPassword: encryptSecret(validatedData.smtpPassword),
-            smtpSecure: validatedData.smtpSecure,
-            imapHost: validatedData.imapHost,
-            imapPort: validatedData.imapPort,
-            imapUsername: validatedData.imapUsername,
-            imapPassword: validatedData.imapPassword ? encryptSecret(validatedData.imapPassword) : null,
-            imapSecure: validatedData.imapSecure,
-            dailySendLimit: validatedData.dailySendLimit,
-            minMinutesBetweenEmails: validatedData.minMinutesBetweenEmails,
-            maxMinutesBetweenEmails: validatedData.maxMinutesBetweenEmails,
-            warmupEnabled: validatedData.warmupEnabled,
-            warmupDays: validatedData.warmupDays,
-            status: 'pending',
-        }).returning()
+        let newAccount: typeof emailAccounts.$inferSelect
+
+        if (validatedData.provider === 'native') {
+            // No SMTP/IMAP credentials are collected or stored for native accounts —
+            // sending goes through src/server/lib/native-send.ts's internal relay,
+            // authenticated implicitly by the fact that the mailbox belongs to a
+            // member of this organization. Validate all three preconditions BEFORE
+            // inserting: (1) a platform user exists with this email, (2) that user
+            // has a native mailbox, (3) that user is a member of this organization.
+            const targetUser = await db.query.users.findFirst({
+                where: eq(users.email, normalizedEmail),
+            })
+            if (!targetUser) {
+                return res.status(400).json({ error: 'No platform user found with that email address' })
+            }
+
+            const nativeMailbox = await getNativeMailboxByEmail(normalizedEmail)
+            if (!nativeMailbox) {
+                return res.status(400).json({ error: 'That user does not have a native mailbox' })
+            }
+
+            const targetMembership = await db.query.organizationUsers.findFirst({
+                where: and(
+                    eq(organizationUsers.organizationId, organizationId),
+                    eq(organizationUsers.userId, targetUser.id)
+                ),
+            })
+            if (!targetMembership) {
+                return res.status(400).json({ error: 'That user is not a member of this organization' })
+            }
+
+            const [inserted] = await db.insert(emailAccounts).values({
+                organizationId,
+                email: validatedData.email,
+                displayName: validatedData.displayName,
+                provider: 'native',
+                smtpHost: null,
+                smtpPort: null,
+                smtpUsername: null,
+                smtpPassword: null,
+                smtpSecure: null,
+                imapHost: null,
+                imapPort: null,
+                imapUsername: null,
+                imapPassword: null,
+                imapSecure: null,
+                dailySendLimit: validatedData.dailySendLimit,
+                minMinutesBetweenEmails: validatedData.minMinutesBetweenEmails,
+                maxMinutesBetweenEmails: validatedData.maxMinutesBetweenEmails,
+                warmupEnabled: validatedData.warmupEnabled,
+                warmupDays: validatedData.warmupDays,
+                status: 'pending',
+            }).returning()
+            newAccount = inserted
+        } else {
+            // validatedData.smtpHost/smtpUsername/smtpPassword are guaranteed present by
+            // superRefine when provider === 'smtp' (the default).
+            const [inserted] = await db.insert(emailAccounts).values({
+                organizationId,
+                email: validatedData.email,
+                displayName: validatedData.displayName,
+                provider: 'smtp',
+                smtpHost: validatedData.smtpHost as string,
+                smtpPort: validatedData.smtpPort,
+                smtpUsername: validatedData.smtpUsername as string,
+                smtpPassword: encryptSecret(validatedData.smtpPassword as string),
+                smtpSecure: validatedData.smtpSecure,
+                imapHost: validatedData.imapHost,
+                imapPort: validatedData.imapPort,
+                imapUsername: validatedData.imapUsername,
+                imapPassword: validatedData.imapPassword ? encryptSecret(validatedData.imapPassword) : null,
+                imapSecure: validatedData.imapSecure,
+                dailySendLimit: validatedData.dailySendLimit,
+                minMinutesBetweenEmails: validatedData.minMinutesBetweenEmails,
+                maxMinutesBetweenEmails: validatedData.maxMinutesBetweenEmails,
+                warmupEnabled: validatedData.warmupEnabled,
+                warmupDays: validatedData.warmupDays,
+                status: 'pending',
+            }).returning()
+            newAccount = inserted
+        }
 
         res.status(201).json({
             emailAccount: {
@@ -518,6 +600,55 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
         const errors: string[] = []
 
         if (account.provider === 'outlook') {
+            const [updatedAccount] = await db.update(emailAccounts)
+                .set({
+                    status: 'verified',
+                    verifiedAt: new Date(),
+                    lastError: null,
+                    updatedAt: new Date(),
+                })
+                .where(eq(emailAccounts.id, accountId))
+                .returning()
+
+            return res.json({
+                emailAccount: {
+                    ...updatedAccount,
+                    smtpPassword: undefined,
+                    imapPassword: undefined,
+                },
+                verified: true,
+            })
+        }
+
+        if (account.provider === 'native') {
+            // No network test — re-validate that the backing platform user and native
+            // mailbox still exist (they may have been deleted since account creation).
+            const targetUser = await db.query.users.findFirst({
+                where: eq(users.email, account.email.toLowerCase()),
+            })
+            const nativeMailbox = targetUser ? await getNativeMailboxByEmail(account.email) : null
+
+            if (!targetUser || !nativeMailbox) {
+                const [updatedAccount] = await db.update(emailAccounts)
+                    .set({
+                        status: 'failed',
+                        lastError: 'Native mailbox no longer exists for this user',
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(emailAccounts.id, accountId))
+                    .returning()
+
+                return res.status(400).json({
+                    emailAccount: {
+                        ...updatedAccount,
+                        smtpPassword: undefined,
+                        imapPassword: undefined,
+                    },
+                    verified: false,
+                    errors: ['Native mailbox no longer exists for this user'],
+                })
+            }
+
             const [updatedAccount] = await db.update(emailAccounts)
                 .set({
                     status: 'verified',
