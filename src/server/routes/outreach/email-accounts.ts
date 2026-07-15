@@ -9,6 +9,28 @@ import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import { getEffectiveDailySendLimit } from '../../lib/outreach-sender'
 import { listInboxProviders } from '../../lib/inbox-providers'
 import { getNativeMailboxByEmail } from '../../lib/native-send'
+import { isPrivateHostWithDns } from '../../lib/network-guard'
+
+// SEC — mail hosts are attacker-controllable free text, and both the verify endpoint and the
+// sender open outbound connections to them. Unguarded, that is an SSRF oracle and an internal
+// port scanner (cloud metadata, 127.0.0.1, RFC1918) for anyone who can write an inbox.
+// Guarded on write as well as at connect time, so a host that passes verification cannot be
+// swapped for an internal one afterwards. Hosts are deduped because a bulk import is usually
+// many mailboxes behind one or two vendor hosts, and each check costs a DNS round trip.
+// Returns an error message, or null when every host is acceptable.
+async function rejectPrivateMailHosts(hosts: (string | null | undefined)[]): Promise<string | null> {
+    const unique = [...new Set(hosts.filter((h): h is string => !!h && h.trim().length > 0))]
+    for (const host of unique) {
+        if (await isPrivateHostWithDns(host)) {
+            // isPrivateHostWithDns fails closed: it also returns true when DNS is unreachable or
+            // times out. Saying "this is a private address" in that case would send whoever hits
+            // it hunting for a network misconfiguration that isn't there, so the message covers
+            // both causes rather than asserting the one we cannot distinguish.
+            return `Mail host "${host}" could not be accepted — it resolves to a private/internal address, or its DNS lookup failed. Check the hostname and retry.`
+        }
+    }
+    return null
+}
 import nodemailer from 'nodemailer'
 import { ImapFlow } from 'imapflow'
 
@@ -239,6 +261,15 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
             })
         }
 
+        // Checked across the whole batch before inserting any of it, so a rejected import
+        // leaves nothing behind to clean up.
+        const hostError = await rejectPrivateMailHosts(
+            toInsert.flatMap((m) => [m.smtpHost, m.imapHost]),
+        )
+        if (hostError) {
+            return res.status(400).json({ error: hostError })
+        }
+
         const inserted = await db.insert(emailAccounts).values(
             toInsert.map((m) => ({
                 organizationId,
@@ -419,6 +450,11 @@ router.post('/', async (req: Request, res: Response) => {
             }).returning()
             newAccount = inserted
         } else {
+            const hostError = await rejectPrivateMailHosts([validatedData.smtpHost, validatedData.imapHost])
+            if (hostError) {
+                return res.status(400).json({ error: hostError })
+            }
+
             // validatedData.smtpHost/smtpUsername/smtpPassword are guaranteed present by
             // superRefine when provider === 'smtp' (the default).
             const [inserted] = await db.insert(emailAccounts).values({
@@ -489,6 +525,13 @@ router.put('/:id', async (req: Request, res: Response) => {
         }
 
         const validatedData = updateEmailAccountSchema.parse(req.body)
+
+        // Without this, an inbox could be verified against a public host and then repointed at
+        // an internal one — the sender would dial it on the next tick, having never re-verified.
+        const hostError = await rejectPrivateMailHosts([validatedData.smtpHost, validatedData.imapHost])
+        if (hostError) {
+            return res.status(400).json({ error: hostError })
+        }
 
         const updateValues: Record<string, unknown> = {
             updatedAt: new Date(),
@@ -674,6 +717,13 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
                 error: 'SMTP credentials not configured',
                 verified: false,
             })
+        }
+
+        // Re-checked at connect time, not just on write: rows predating this guard, or written
+        // through any other path, must not be able to make us dial an internal address.
+        const hostError = await rejectPrivateMailHosts([account.smtpHost, account.imapHost])
+        if (hostError) {
+            return res.status(400).json({ error: hostError, verified: false })
         }
 
         // Test SMTP connection

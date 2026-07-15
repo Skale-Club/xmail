@@ -4,6 +4,7 @@ import { db } from '../../../db'
 import { campaigns, sequences, sequenceSteps, campaignLeads, leads, organizationUsers, outreachEmails, emailAccounts } from '../../../db/schema'
 import { eq, and, sql, inArray, desc, asc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
+import { computeCampaignMetrics } from '../../lib/outreach-campaign-metrics'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 
 const router = Router()
@@ -309,48 +310,20 @@ router.get('/stats', async (req: Request, res: Response) => {
 
         const campaignIds = campaignsList.map(c => c.id)
 
-        // Get aggregated stats from all campaign_leads for this org
-        const statsResult = await db
-            .select({
-                totalLeads: sql<number>`count(*)`,
-                contacted: sql<number>`count(*) filter (where ${campaignLeads.status} != 'new')`,
-                replied: sql<number>`count(*) filter (where ${campaignLeads.status} = 'replied' or ${campaignLeads.status} = 'interested')`,
-                bounced: sql<number>`count(*) filter (where ${campaignLeads.status} = 'bounced')`,
-                totalOpens: sql<number>`coalesce(sum(${campaignLeads.totalOpens}), 0)`,
-                totalClicks: sql<number>`coalesce(sum(${campaignLeads.totalClicks}), 0)`,
-                totalReplies: sql<number>`coalesce(sum(${campaignLeads.totalReplies}), 0)`,
-            })
-            .from(campaignLeads)
-            .where(inArray(campaignLeads.campaignId, campaignIds))
-
-        const stats = statsResult[0] || {
-            totalLeads: 0,
-            contacted: 0,
-            replied: 0,
-            bounced: 0,
-            totalOpens: 0,
-            totalClicks: 0,
-            totalReplies: 0,
-        }
-
+        // Shared with /analytics and /:id/stats — see outreach-campaign-metrics.ts for why the
+        // rates are per unique lead rather than per event.
+        const metrics = await computeCampaignMetrics(campaignIds)
         const activeCampaigns = campaignsList.filter(c => c.status === 'active').length
-
-        // Calculate rates
-        const totalEmails = Number(stats.contacted) || 0
-        const openRate = totalEmails > 0 ? (Number(stats.totalOpens) / totalEmails) * 100 : 0
-        const clickRate = totalEmails > 0 ? (Number(stats.totalClicks) / totalEmails) * 100 : 0
-        const replyRate = totalEmails > 0 ? (Number(stats.replied) / totalEmails) * 100 : 0
-        const bounceRate = totalEmails > 0 ? (Number(stats.bounced) / totalEmails) * 100 : 0
 
         res.json({
             totalCampaigns: campaignsList.length,
             activeCampaigns,
-            totalLeads: Number(stats.totalLeads) || 0,
-            totalEmails,
-            openRate,
-            clickRate,
-            replyRate,
-            bounceRate,
+            totalLeads: metrics.totalLeads,
+            totalEmails: metrics.contacted,
+            openRate: metrics.openRate,
+            clickRate: metrics.clickRate,
+            replyRate: metrics.replyRate,
+            bounceRate: metrics.bounceRate,
         })
     } catch (error) {
         console.error('Error fetching campaign stats:', error)
@@ -435,35 +408,29 @@ router.get('/analytics', async (req: Request, res: Response) => {
 
         const campaignsList = await db.query.campaigns.findMany({
             where: eq(campaigns.organizationId, organizationId),
+            columns: { id: true, status: true },
         })
 
+        // Previously summed the denormalized campaigns.* counters while /stats aggregated
+        // campaign_leads, so the dashboard and the analytics page disagreed about the same org.
+        // Both now read the same function over the same rows.
+        const metrics = await computeCampaignMetrics(campaignsList.map(c => c.id))
         const activeCampaigns = campaignsList.filter(c => c.status === 'active').length
-        const totalLeads = campaignsList.reduce((sum, c) => sum + (c.totalLeads || 0), 0)
-        const totalEmailsSent = campaignsList.reduce((sum, c) => sum + (c.leadsContacted || 0), 0)
-        const totalOpens = campaignsList.reduce((sum, c) => sum + (c.totalOpens || 0), 0)
-        const totalClicks = campaignsList.reduce((sum, c) => sum + (c.totalClicks || 0), 0)
-        const totalReplies = campaignsList.reduce((sum, c) => sum + (c.totalReplies || 0), 0)
-        const totalBounces = campaignsList.reduce((sum, c) => sum + (c.totalBounces || 0), 0)
-
-        const avgOpenRate = totalEmailsSent > 0 ? (totalOpens / totalEmailsSent) * 100 : 0
-        const avgClickRate = totalEmailsSent > 0 ? (totalClicks / totalEmailsSent) * 100 : 0
-        const avgReplyRate = totalEmailsSent > 0 ? (totalReplies / totalEmailsSent) * 100 : 0
-        const avgBounceRate = totalEmailsSent > 0 ? (totalBounces / totalEmailsSent) * 100 : 0
 
         res.json({
             overview: {
                 totalCampaigns: campaignsList.length,
                 activeCampaigns,
-                totalLeads,
-                totalEmailsSent,
-                totalOpens,
-                totalClicks,
-                totalReplies,
-                totalBounces,
-                avgOpenRate,
-                avgClickRate,
-                avgReplyRate,
-                avgBounceRate,
+                totalLeads: metrics.totalLeads,
+                totalEmailsSent: metrics.contacted,
+                totalOpens: metrics.totalOpens,
+                totalClicks: metrics.totalClicks,
+                totalReplies: metrics.totalReplies,
+                totalBounces: metrics.bouncedLeads,
+                avgOpenRate: metrics.openRate,
+                avgClickRate: metrics.clickRate,
+                avgReplyRate: metrics.replyRate,
+                avgBounceRate: metrics.bounceRate,
             },
         })
     } catch (error) {
@@ -1286,31 +1253,19 @@ router.get('/:id/stats', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Access denied' })
         }
 
-        // Get aggregated stats from campaign_leads
-        const statsResult = await db
-            .select({
-                totalLeads: sql<number>`count(*)`,
-                contacted: sql<number>`count(*) filter (where ${campaignLeads.status} != 'new')`,
-                replied: sql<number>`count(*) filter (where ${campaignLeads.status} = 'replied' or ${campaignLeads.status} = 'interested')`,
-                bounced: sql<number>`count(*) filter (where ${campaignLeads.status} = 'bounced')`,
-                totalOpens: sql<number>`coalesce(sum(${campaignLeads.totalOpens}), 0)`,
-                totalClicks: sql<number>`coalesce(sum(${campaignLeads.totalClicks}), 0)`,
-                totalReplies: sql<number>`coalesce(sum(${campaignLeads.totalReplies}), 0)`,
-            })
-            .from(campaignLeads)
-            .where(eq(campaignLeads.campaignId, campaignId))
+        const metrics = await computeCampaignMetrics([campaignId])
 
-        const stats = statsResult[0] || {
-            totalLeads: 0,
-            contacted: 0,
-            replied: 0,
-            bounced: 0,
-            totalOpens: 0,
-            totalClicks: 0,
-            totalReplies: 0,
-        }
-
-        res.json({ stats })
+        // `replied`/`bounced` are kept as aliases: this endpoint's original shape, which the
+        // campaign Stats and Overview tabs already read. The rates are now served alongside them
+        // so the client stops doing its own division (it was dividing event totals by contacted,
+        // producing a different "open rate" than the dashboard showed for the same campaign).
+        res.json({
+            stats: {
+                ...metrics,
+                replied: metrics.repliedLeads,
+                bounced: metrics.bouncedLeads,
+            },
+        })
     } catch (error) {
         console.error('Error fetching campaign stats:', error)
         res.status(500).json({ error: 'Internal server error' })

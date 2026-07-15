@@ -1,4 +1,5 @@
 import { createHmac } from 'crypto'
+import { signTrackedUrl } from './outreach-tokens'
 import { db } from '../../db'
 import { webhooks, webhookRequests, organizationUsers, userNotifications } from '../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
@@ -25,7 +26,11 @@ function shouldSkipUrl(url: string): boolean {
 
 function encodeTrackingUrl(url: string, baseUrl: string, token: string): string {
     const encoded = Buffer.from(url).toString('base64url')
-    return `${baseUrl}/t/click/${token}?u=${encoded}`
+    // SEC — `u` alone is only an encoding, so the redirect would honour any destination an
+    // attacker cared to encode. `s` binds this destination to this token; /t/click rejects
+    // anything unsigned or resigned. See signTrackedUrl in outreach-tokens.ts.
+    const sig = signTrackedUrl(token, encoded)
+    return `${baseUrl}/t/click/${token}?u=${encoded}&s=${sig}`
 }
 
 export function rewriteLinks(html: string, baseUrl: string, token: string): string {

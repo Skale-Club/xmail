@@ -3,6 +3,7 @@ import { db } from '../../db'
 import { messages, organizations, outreachEmails, campaignLeads, campaigns, emailAccounts } from '../../db/schema'
 import { eq, sql } from 'drizzle-orm'
 import { fireWebhooks, incrementStat } from '../lib/tracking'
+import { verifyTrackedUrl } from '../lib/outreach-tokens'
 import { isPrivateHost } from '../lib/network-guard'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
@@ -136,9 +137,18 @@ router.get('/open/:token', async (req: Request, res: Response) => {
 router.get('/click/:token', async (req: Request, res: Response) => {
     const { token } = req.params
     const encodedUrl = req.query.u as string
+    const sig = req.query.s as string
 
     if (!encodedUrl) {
         return res.status(400).send('Missing parameter')
+    }
+
+    // SEC — reject any destination we did not sign. Without this the endpoint is an open
+    // redirect: `?u=` is base64, not proof of origin, so anyone could point a link bearing
+    // our domain at an arbitrary site. Checked before decoding so a forged URL is never
+    // parsed, let alone followed. Constant-time compare lives in verifyTrackedUrl.
+    if (!verifyTrackedUrl(token, encodedUrl, sig)) {
+        return res.status(400).send('Invalid URL')
     }
 
     let targetUrl: string
@@ -149,6 +159,7 @@ router.get('/click/:token', async (req: Request, res: Response) => {
             return res.status(400).send('Invalid URL')
         }
         // SEC-01 — sync check only; click latency is critical. SSRF for stored URLs is gated at write time (webhooks.ts).
+        // Retained as defence-in-depth behind the signature check above.
         if (isPrivateHost(parsed.hostname)) {
             return res.status(400).send('Invalid URL')
         }
