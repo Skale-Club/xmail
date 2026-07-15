@@ -57,12 +57,26 @@ export function NewSequencePage() {
     const createMutation = useMutation({
         mutationFn: async (payload: { name: string; steps: Step[] }) => {
             if (!campaignId) throw new Error('No campaign ID — check route configuration')
-            const { sequence } = await apiFetch<{ sequence: { id: string } }>(
-                `/api/outreach/campaigns/${campaignId}/sequences`,
-                { method: 'POST', body: JSON.stringify({ name: payload.name }) }
+            // audit-2026-07 (C3): a campaign is auto-created with an empty "Main Sequence", and
+            // lead enrollment always targets that first sequence. Previously this editor created
+            // a SECOND sequence, so the steps landed somewhere enrollment never looked and the
+            // campaign reported "sequence has no steps". Reuse the campaign's existing default
+            // sequence instead; only create one if none exists.
+            const existing = await apiFetch<{ sequences: { id: string }[] }>(
+                `/api/outreach/campaigns/${campaignId}/sequences`
             )
+            let sequenceId: string
+            if (existing.sequences && existing.sequences.length > 0) {
+                sequenceId = existing.sequences[0].id
+            } else {
+                const { sequence } = await apiFetch<{ sequence: { id: string } }>(
+                    `/api/outreach/campaigns/${campaignId}/sequences`,
+                    { method: 'POST', body: JSON.stringify({ name: payload.name || 'Main Sequence' }) }
+                )
+                sequenceId = sequence.id
+            }
             for (const step of payload.steps) {
-                await apiRequest(`/api/outreach/campaigns/sequences/${sequence.id}/steps`, {
+                await apiRequest(`/api/outreach/campaigns/sequences/${sequenceId}/steps`, {
                     method: 'POST',
                     body: JSON.stringify({
                         stepOrder: step.order,
@@ -73,12 +87,13 @@ export function NewSequencePage() {
                     }),
                 })
             }
-            return sequence
+            return { id: sequenceId }
         },
         onSuccess: () => {
-            toast({ title: 'Sequence created successfully', variant: 'success' })
+            toast({ title: 'Sequence saved', variant: 'success' })
+            queryClient.invalidateQueries({ queryKey: ['campaign-sequences'] })
             queryClient.invalidateQueries({ queryKey: ['sequences'] })
-            setLocation('/outreach/sequences')
+            setLocation(campaignId ? `/outreach/campaigns/${campaignId}` : '/outreach/sequences')
         },
         onError: (error: Error) => {
             toast({ title: 'Failed to save sequence', description: error.message, variant: 'destructive' })

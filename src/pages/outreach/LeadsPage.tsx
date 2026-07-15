@@ -18,6 +18,7 @@ import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { PaginationControls } from '../../components/ui/PaginationControls'
 import { apiFetch, apiRequest } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
+import { toast } from '../../components/ui/toaster'
 
 interface Lead {
     id: string
@@ -184,6 +185,9 @@ export function LeadsPage() {
         mutationFn: (id: string) => deleteLead(currentOrganization!.id, id),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['leads'] })
+        },
+        onError: (err) => {
+            toast({ title: 'Failed to delete lead', description: (err as Error).message, variant: 'destructive' })
         },
     })
 

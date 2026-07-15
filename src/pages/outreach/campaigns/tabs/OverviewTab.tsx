@@ -24,6 +24,9 @@ interface CampaignStats {
     totalOpens: number
     totalClicks: number
     totalReplies: number
+    // Server-computed, per unique lead. See src/server/lib/outreach-campaign-metrics.ts.
+    openRate: number
+    replyRate: number
 }
 
 interface CampaignStatsResponse {
@@ -33,11 +36,6 @@ interface CampaignStatsResponse {
 interface OverviewTabProps {
     campaign: Campaign
     organizationId: string
-}
-
-function pct(numerator: number, denominator: number): string {
-    if (!denominator || denominator <= 0) return '0.0%'
-    return ((numerator / denominator) * 100).toFixed(1) + '%'
 }
 
 export default function OverviewTab({ campaign, organizationId }: OverviewTabProps) {
@@ -50,16 +48,17 @@ export default function OverviewTab({ campaign, organizationId }: OverviewTabPro
     })
 
     const stats = data?.stats
+    // Counts still fall back to the campaign row while stats loads, but rates do not: the
+    // campaign.* counters are a cache that drifts, and deriving a rate from them here was one of
+    // the ways this tab disagreed with the dashboard. Rates come from the server or not at all.
     const totalLeads = Number(stats?.totalLeads ?? campaign.totalLeads ?? 0)
     const contacted = Number(stats?.contacted ?? campaign.leadsContacted ?? 0)
-    const totalOpens = Number(stats?.totalOpens ?? campaign.totalOpens ?? 0)
-    const replied = Number(stats?.replied ?? campaign.totalReplies ?? 0)
 
     const cards = [
         { label: 'Total Leads', value: isLoading ? '--' : String(totalLeads) },
         { label: 'Emails Sent', value: isLoading ? '--' : String(contacted) },
-        { label: 'Open Rate', value: isLoading ? '--' : pct(totalOpens, contacted) },
-        { label: 'Reply Rate', value: isLoading ? '--' : pct(replied, contacted) },
+        { label: 'Open Rate', value: isLoading || !stats ? '--' : `${stats.openRate.toFixed(1)}%` },
+        { label: 'Reply Rate', value: isLoading || !stats ? '--' : `${stats.replyRate.toFixed(1)}%` },
     ]
 
     return (

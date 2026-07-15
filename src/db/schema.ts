@@ -655,6 +655,11 @@ export const emailAccounts = pgTable('email_accounts', {
     email: text('email').notNull(),
     displayName: text('display_name'),
     provider: emailProviderEnum('provider').default('smtp').notNull(),
+    // Sourcing vendor for this mailbox: manual paste, IceMail, Primeforge, ... (migration 033).
+    // Distinct from `provider` above, which is the SENDING mechanism (SMTP vs Outlook OAuth).
+    mailboxProvider: text('mailbox_provider').default('manual').notNull(),
+    // External reference on the vendor side (mailbox id) for warmup sync / re-provisioning.
+    providerRef: text('provider_ref'),
     outlookMailboxId: uuid('outlook_mailbox_id').references(() => outlookMailboxes.id),
     // SMTP settings (optional for OAuth providers)
     smtpHost: text('smtp_host'),
@@ -773,6 +778,9 @@ export const campaigns = pgTable('campaigns', {
     // Tracking settings
     trackOpens: boolean('track_opens').default(true).notNull(),
     trackClicks: boolean('track_clicks').default(true).notNull(),
+    // Agentic follow-up (P001/P002, migration 034) — OFF by default.
+    agenticFollowupEnabled: boolean('agentic_followup_enabled').default(false).notNull(),
+    maxFollowUps: integer('max_follow_ups').default(2).notNull(),
     // Statistics (cached)
     totalLeads: integer('total_leads').default(0).notNull(),
     leadsContacted: integer('leads_contacted').default(0).notNull(),
@@ -852,6 +860,12 @@ export const campaignLeads = pgTable('campaign_leads', {
     status: leadStatusEnum('status').default('new').notNull(),
     // Next scheduled action
     nextScheduledAt: timestamp('next_scheduled_at'),
+    // Agentic follow-up (P001/P002, migration 034)
+    nextFollowUpAt: timestamp('next_follow_up_at'),
+    followUpCount: integer('follow_up_count').default(0).notNull(),
+    lastReplyMessageId: text('last_reply_message_id'),
+    lastReplyText: text('last_reply_text'),
+    lastReplyAt: timestamp('last_reply_at'),
     // Tracking for this specific campaign/lead combination
     totalOpens: integer('total_opens').default(0).notNull(),
     totalClicks: integer('total_clicks').default(0).notNull(),
@@ -871,6 +885,7 @@ export const campaignLeads = pgTable('campaign_leads', {
     idxCampaignLeadsCurrentStepId: index('idx_campaign_leads_current_step_id').on(table.currentStepId),
     idxCampaignLeadsCampaignStatus: index('idx_campaign_leads_campaign_status').on(table.campaignId, table.status),
     idxCampaignLeadsNextScheduled: index('idx_campaign_leads_next_scheduled').on(table.nextScheduledAt),
+    idxCampaignLeadsNextFollowUp: index('idx_campaign_leads_next_follow_up').on(table.nextFollowUpAt),
 }))
 
 // Outreach Emails (sent emails from campaigns)
@@ -914,6 +929,8 @@ export const outreachEmails = pgTable('outreach_emails', {
     idxOutreachEmailsCampaignLeadId: index('idx_outreach_emails_campaign_lead_id').on(table.campaignLeadId),
     idxOutreachEmailsSequenceStepId: index('idx_outreach_emails_sequence_step_id').on(table.sequenceStepId),
     idxOutreachEmailsEmailAccountId: index('idx_outreach_emails_email_account_id').on(table.emailAccountId),
+    // Reply/bounce processors look up sent mail by message_id (migration 032).
+    idxOutreachEmailsMessageId: index('idx_outreach_emails_message_id').on(table.messageId),
     // Phase 17 — every aggregate query in the health endpoint filters on
     // (sent_at >= window AND status = ?). Composite index makes those scans
     // index-only for the common 1h/24h/7d rolling windows.

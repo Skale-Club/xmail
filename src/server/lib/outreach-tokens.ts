@@ -46,6 +46,37 @@ export function generateOutreachToken(payload: Omit<OutreachTokenPayload, 'ts'>)
     return `${payloadB64}.${sig}`
 }
 
+// ---------------------------------------------------------------------------
+// Click-tracking URL signing
+// ---------------------------------------------------------------------------
+// The click redirect takes its destination from `?u=<base64url(url)>`. Base64 is an
+// encoding, not a signature, so without this the endpoint is an open redirect: anyone
+// can craft `/t/click/<token>?u=<base64(https://evil.example)>` and get a 302 issued by
+// our own domain — the classic phishing primitive, since the visible link is ours.
+//
+// Binding the signature to BOTH the token and the encoded URL means a signature lifted
+// from one tracked link cannot be replayed onto a different destination.
+function signUrlBinding(token: string, encodedUrl: string): string {
+    return createHmac('sha256', HMAC_SECRET as string).update(`${token}.${encodedUrl}`).digest('base64url')
+}
+
+export function signTrackedUrl(token: string, encodedUrl: string): string {
+    return signUrlBinding(token, encodedUrl)
+}
+
+export function verifyTrackedUrl(token: string, encodedUrl: string, providedSig: string): boolean {
+    if (!token || !encodedUrl || !providedSig) return false
+    const expectedSig = signUrlBinding(token, encodedUrl)
+    try {
+        const a = Buffer.from(providedSig, 'base64url')
+        const b = Buffer.from(expectedSig, 'base64url')
+        if (a.length !== b.length) return false
+        return timingSafeEqual(a, b)
+    } catch {
+        return false
+    }
+}
+
 export function verifyOutreachToken(token: string, expectedKind: TokenKind): OutreachTokenPayload | null {
     if (!token || typeof token !== 'string') return null
     const dot = token.lastIndexOf('.')

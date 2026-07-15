@@ -151,6 +151,24 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_emails_sequence_step_id
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_emails_email_account_id
     ON outreach_emails (email_account_id);
 
+-- Claim-lock unique index (migration 027/035). Backs the ON CONFLICT
+-- (campaign_lead_id, sequence_step_id) claim in processOutreachSequences.ts.
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS outreach_emails_campaign_lead_step_unique
+    ON outreach_emails (campaign_lead_id, sequence_step_id);
+
+-- Reply/bounce lookup key (migration 035). WHERE message_id = $1 / LIKE.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_emails_message_id
+    ON outreach_emails (message_id);
+
+-- Health-endpoint rolling-window aggregates (migration 022): (sent_at, status).
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_emails_sent_at_status
+    ON outreach_emails (sent_at, status);
+
+-- Per-inbox throttle lookup (migration 021): partial index on last_sent_at.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS email_accounts_last_sent_at_idx
+    ON email_accounts (last_sent_at)
+    WHERE last_sent_at IS NOT NULL;
+
 -- =============================================================================
 -- Outreach analytics — FK indexes (some nullable)
 -- =============================================================================

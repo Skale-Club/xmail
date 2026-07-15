@@ -26,6 +26,7 @@ import {
 import { generateOutreachToken } from '../lib/outreach-tokens'
 import { createLogger, OUTREACH_PROCESSOR_SLOW_MS } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
+import { runWithLock } from '../lib/cron-lock'
 
 const log = createLogger('outreach.processor')
 
@@ -184,7 +185,11 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
         where: inArray(suppressions.organizationId, orgIds),
         columns: { organizationId: true, emailAddress: true },
     })
-    const suppressedSet = new Set(allSuppressions.map(s => `${s.organizationId}:${s.emailAddress}`))
+    // audit-2026-07 (H4/#2): suppressions are written lowercased (unsubscribe.ts, processBounces.ts)
+    // but lead emails are stored as-entered (mixed case), so a case-insensitive comparison is
+    // required or an unsubscribed/bounced address re-imported with different casing gets mailed
+    // again (CAN-SPAM/GDPR). Normalize both sides of the key to lowercase.
+    const suppressedSet = new Set(allSuppressions.map(s => `${s.organizationId}:${s.emailAddress.toLowerCase()}`))
 
     // Batch-load existing outreach emails for idempotency checks
     const allExistingEmails = await db.query.outreachEmails.findMany({
@@ -198,10 +203,29 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
         allExistingEmails.map(e => `${e.campaignLeadId}:${e.sequenceStepId}`)
     )
 
+    // audit-2026-07 (SEND-BURST / C1): the batch query loads a SEPARATE assignedEmailAccount
+    // snapshot per lead, so incrementing an account's currentDailySent / lastSentAt in the DB
+    // after a send was invisible to the other 199 leads' stale copies — the whole daily-limit,
+    // warmup and min-spacing gate was only enforced at tick boundaries, letting a single tick
+    // fire an entire inbox's backlog back-to-back. Collapse to one canonical object per inbox so
+    // in-tick increments (below) are seen by every subsequent lead sharing that inbox.
+    const accountByIdInTick = new Map<string, typeof emailAccounts.$inferSelect>()
+    for (const cl of pendingLeads) {
+        const acct = cl.assignedEmailAccount
+        if (acct && !accountByIdInTick.has(acct.id)) {
+            accountByIdInTick.set(acct.id, acct)
+        }
+    }
+
     for (const campaignLead of pendingLeads) {
         result.processed++
 
         try {
+            // Skip leads whose next send was pushed into the future earlier in THIS tick
+            // (the per-inbox jitter reschedule below). They are picked up on a later tick.
+            if (campaignLead.nextScheduledAt && campaignLead.nextScheduledAt.getTime() > now.getTime()) {
+                continue
+            }
             const campaign = campaignsMap.get(campaignLead.campaignId)
             if (!campaign) {
                 logSkip('campaign_not_found', { campaignId: campaignLead.campaignId, campaignLeadId: campaignLead.id })
@@ -229,7 +253,7 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 continue
             }
 
-            const isSuppressed = suppressedSet.has(`${campaign.organizationId}:${lead.email}`)
+            const isSuppressed = suppressedSet.has(`${campaign.organizationId}:${lead.email.toLowerCase()}`)
             if (isSuppressed) {
                 logSkip('suppression', { campaignId: campaign.id, leadId: lead.id, campaignLeadId: campaignLead.id })
                 await db.update(campaignLeads)
@@ -243,7 +267,9 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 continue
             }
 
-            const emailAccount = campaignLead.assignedEmailAccount
+            const emailAccount = campaignLead.assignedEmailAccountId
+                ? accountByIdInTick.get(campaignLead.assignedEmailAccountId) ?? campaignLead.assignedEmailAccount
+                : campaignLead.assignedEmailAccount
             if (!emailAccount) {
                 logSkip('no_account', { campaignId: campaign.id, leadId: lead.id, campaignLeadId: campaignLead.id })
                 result.errors++
@@ -375,11 +401,19 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 continue
             }
 
+            // audit-2026-07 (H2/#10): nodemailer returns messageId bracketed (`<id@host>`), but
+            // the reply processor strips brackets from incoming In-Reply-To/References and does an
+            // exact-match lookup — so a bracketed stored value never matched and stop-on-reply
+            // silently degraded to the address heuristic. Persist the normalized (unbracketed) id.
+            const normalizedMessageId = sendResult.messageId
+                ? sendResult.messageId.replace(/[<>]/g, '').trim()
+                : null
+
             // Update the claimed row to reflect successful send.
             await db.update(outreachEmails)
                 .set({
                     status: 'sent',
-                    messageId: sendResult.messageId,
+                    messageId: normalizedMessageId,
                     htmlBody: sendResult.finalHtml ?? null,
                     sentAt: new Date(),
                     updatedAt: new Date(),
@@ -414,6 +448,12 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
             // NOTE: incrementAccountStats('totalSent') increments BOTH totalSent AND currentDailySent in a single UPDATE
             // and also sets emailAccounts.lastSentAt = NOW() so the next canSendFromAccount call
             // for this inbox returns false until minMinutesBetweenEmails has elapsed.
+            //
+            // audit-2026-07 (SEND-BURST / C1): mirror that DB increment into the shared in-tick
+            // snapshot so the daily-limit and min-spacing checks (canSendFromAccount) for the NEXT
+            // lead on this inbox see the updated counter and lastSentAt WITHIN this same tick.
+            emailAccount.currentDailySent += 1
+            emailAccount.lastSentAt = new Date()
 
             // Phase 16 — INBOX-THROTTLE: spread out the NEXT pending lead on the same inbox
             // so it doesn't become eligible at the same tick. Find the next eligible lead
@@ -512,31 +552,21 @@ export async function resetDailyLimits(): Promise<void> {
     }, 'reset daily limits')
 }
 
-// P0-06: Postgres advisory lock — prevents two container instances (or a blue-green deploy
-// overlap) from running the processor concurrently. Replaces the in-memory mutex previously
-// in jobs/index.ts which only protected within a single Node process.
+// P0-06 / audit-2026-07: Postgres advisory lock — prevents two container instances (or a
+// blue-green deploy overlap) from running the processor concurrently.
+//
+// Uses runWithLock (src/server/lib/cron-lock.ts), which acquires and releases the advisory
+// lock on the SAME reserved postgres-js connection. The previous inline implementation issued
+// pg_try_advisory_lock / pg_advisory_unlock via the shared pool (db.execute), so acquire and
+// release routinely landed on different sessions: the unlock no-op'd, the lock stranded on the
+// acquiring connection, and later ticks were skipped as "contended" while nothing ran (and it
+// provided no exclusion at all behind a transaction pooler). See audit findings H1/#8.
 //
 // Inspect held locks in production: `SELECT * FROM pg_locks WHERE locktype='advisory';`
-// Decoded lockid for this job: 4014 (phase 14, P0-06 mnemonic).
-const LOCK_ID_OUTREACH_PROCESSOR = 4014
+const OUTREACH_PROCESSOR_LOCK_NAME = 'outreach-sequences-processor'
 
-export async function runOutreachProcessorWithLock(): Promise<{ acquired: boolean; result?: { processed: number; sent: number; errors: number } }> {
-    // Try to acquire the advisory lock — returns true if we got it, false if another
-    // connection holds it. postgres-js (see src/db/index.ts) returns rows as a plain array;
-    // we defensively handle the alternative node-pg `{ rows: [...] }` envelope so a driver
-    // swap won't silently break.
-    const lockResult = await db.execute(sql`SELECT pg_try_advisory_lock(${LOCK_ID_OUTREACH_PROCESSOR}) AS acquired`)
-    const acquired = Array.isArray(lockResult)
-        ? (lockResult as unknown as Array<{ acquired: boolean }>)[0]?.acquired === true
-        : (lockResult as unknown as { rows: Array<{ acquired: boolean }> }).rows?.[0]?.acquired === true
-    if (!acquired) {
-        log.debug({
-            action: 'outreach.processor.lock_contended',
-            lockId: LOCK_ID_OUTREACH_PROCESSOR,
-        }, 'advisory lock held by another instance — skipping tick')
-        return { acquired: false }
-    }
-    try {
+export async function runOutreachProcessorWithLock(): Promise<void> {
+    await runWithLock(OUTREACH_PROCESSOR_LOCK_NAME, async () => {
         log.info({ action: 'outreach.processor.tick.start' }, 'tick start')
         const tickStart = performance.now()
         const result = await processOutreachSequences()
@@ -554,10 +584,7 @@ export async function runOutreachProcessorWithLock(): Promise<{ acquired: boolea
         } else {
             log.info(tickLogPayload, 'tick complete')
         }
-        return { acquired: true, result }
-    } finally {
-        await db.execute(sql`SELECT pg_advisory_unlock(${LOCK_ID_OUTREACH_PROCESSOR})`)
-    }
+    })
 }
 
 export async function markCompletedCampaigns(): Promise<void> {

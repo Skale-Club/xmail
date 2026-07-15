@@ -151,6 +151,48 @@ export function canSendFromAccount(
         }
     }
 
+    // P004 — human-rhythm macro-pacing (opt-in). During a "break" segment no sends leave this
+    // inbox, so bursts of activity are separated by realistic gaps instead of a metronome.
+    if (!isWithinSendRhythm(account, now)) {
+        return false
+    }
+
+    return true
+}
+
+/** Deterministic [0,1) hash (xfnv1a) — same seed → same value, no shared state. */
+function rhythmRand(seed: string): number {
+    let h = 2166136261 >>> 0
+    for (let i = 0; i < seed.length; i++) {
+        h ^= seed.charCodeAt(i)
+        h = Math.imul(h, 16777619)
+    }
+    return ((h >>> 0) % 100000) / 100000
+}
+
+/**
+ * P004 — human-rhythm macro-pacing. Opt-in via OUTREACH_HUMAN_RHYTHM=true (default off → always
+ * true, no behaviour change). When on, each inbox's day is a deterministic sequence of burst
+ * (45–65 min, sends allowed) and break (10–20 min, no sends) segments, seeded by the inbox id so
+ * inboxes desync. Stateless: derivable from (accountId, UTC day, now) on any tick.
+ */
+export function isWithinSendRhythm(
+    account: typeof emailAccounts.$inferSelect,
+    now: Date = new Date()
+): boolean {
+    if (process.env.OUTREACH_HUMAN_RHYTHM !== 'true') return true
+
+    const day = now.toISOString().slice(0, 10)
+    const minutesIntoDay = now.getUTCHours() * 60 + now.getUTCMinutes()
+
+    let cursor = 0
+    for (let i = 0; i < 48; i++) {
+        const burst = 45 + rhythmRand(`${account.id}:${day}:${i}:b`) * 20
+        const brk = 10 + rhythmRand(`${account.id}:${day}:${i}:k`) * 10
+        if (minutesIntoDay < cursor + burst) return true       // inside a burst
+        if (minutesIntoDay < cursor + burst + brk) return false // inside a break
+        cursor += burst + brk
+    }
     return true
 }
 
@@ -220,7 +262,9 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
         // P0-03: {{unsubscribeUrl}} resolves via the template context (Plan 14-05 added support in template-variables.ts).
         const tplContext = { unsubscribeUrl }
         const subject = interpolateTemplate(subjectTemplate || '', leadForTemplate, tplContext)
-        let html = htmlTemplate ? interpolateTemplate(htmlTemplate, leadForTemplate, tplContext) : undefined
+        // audit-2026-07: HTML-escape lead-derived values in the HTML body only — subject and
+        // plain-text renders must stay unescaped or they'd show literal entities.
+        let html = htmlTemplate ? interpolateTemplate(htmlTemplate, leadForTemplate, tplContext, { escapeHtml: true }) : undefined
         const text = plainTemplate ? interpolateTemplate(plainTemplate, leadForTemplate, tplContext) : undefined
 
         if (html && (trackOpens || trackClicks)) {
@@ -340,6 +384,111 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
         return {
             success: false,
             error: errorMessage,
+        }
+    }
+}
+
+interface ThreadedReplyParams {
+    account: typeof emailAccounts.$inferSelect
+    to: string
+    subject: string
+    text: string
+    html?: string
+    fromName?: string | null
+    replyTo?: string | null
+    /** Message-ID this reply threads under (In-Reply-To + References). */
+    inReplyTo?: string | null
+}
+
+/**
+ * Agentic follow-up (P002) — send a threaded reply in an existing conversation.
+ * Unlike sendOutreachEmail this carries no sequence-step template: the body comes from the
+ * follow-up decider. Threading headers keep it in the same mail thread. SMTP only for now
+ * (Outlook path parity is deferred, matching sendOutreachEmail's known limitation).
+ */
+export async function sendThreadedReply(params: ThreadedReplyParams): Promise<SendResult> {
+    const { account, to, subject, text, html, fromName, replyTo, inReplyTo } = params
+    try {
+        const headers: Record<string, string> = {}
+        if (inReplyTo) {
+            const bracketed = inReplyTo.startsWith('<') ? inReplyTo : `<${inReplyTo}>`
+            headers['In-Reply-To'] = bracketed
+            headers['References'] = bracketed
+        }
+
+        const displayName = fromName || account.displayName || ''
+        const fromAddress = displayName ? `"${displayName}" <${account.email}>` : account.email
+
+        const mailOptions: nodemailer.SendMailOptions = {
+            from: fromAddress,
+            to,
+            subject,
+            text,
+            html,
+            replyTo: replyTo || undefined,
+            headers,
+        }
+
+        if (account.provider === 'native') {
+            // Mirrors the native branch of sendOutreachEmail: native accounts hold no SMTP
+            // credentials, so compose the MIME buffer offline and hand it to the internal
+            // DKIM-signing relay, then file the Sent copy. Reply/bounce matching keys off
+            // this generated Message-ID exactly as it does for the SMTP path.
+            const nativeMailbox = await getNativeMailboxByEmail(account.email)
+            if (!nativeMailbox) {
+                return {
+                    success: false,
+                    error: 'Native mailbox not found for outreach account — was it deleted?',
+                }
+            }
+
+            const composer = nodemailer.createTransport({ streamTransport: true, buffer: true })
+            const composed = await composer.sendMail(mailOptions)
+            const rawBuffer = composed.message as Buffer
+            const generatedMessageId = composed.messageId as string
+
+            await relayMessage(account.email, [to], rawBuffer)
+
+            try {
+                await storeMessage(nativeMailbox.id, 'sent', {
+                    messageId: generatedMessageId,
+                    subject,
+                    fromAddress: account.email,
+                    fromName: account.displayName || null,
+                    toAddresses: [{ address: to, name: null }],
+                    ccAddresses: [],
+                    bccAddresses: [],
+                    plainBody: text,
+                    htmlBody: html,
+                    hasAttachments: false,
+                    attachments: [],
+                }, true)
+            } catch (storeErr) {
+                // Best-effort, as in sendOutreachEmail — the reply was already relayed.
+                console.warn('[Outreach:Native] Failed to file Sent copy for threaded reply:', storeErr instanceof Error ? storeErr.message : storeErr)
+            }
+
+            return {
+                success: true,
+                messageId: generatedMessageId,
+                finalHtml: html,
+                finalText: text,
+            }
+        }
+
+        const transporter = createSmtpTransporter(account)
+        const info = await transporter.sendMail(mailOptions)
+
+        return {
+            success: true,
+            messageId: info.messageId ? info.messageId.replace(/[<>]/g, '').trim() : undefined,
+            finalHtml: html,
+            finalText: text,
+        }
+    } catch (error) {
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error sending reply',
         }
     }
 }

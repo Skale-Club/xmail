@@ -50,6 +50,17 @@ interface LeadListsResponse {
     leadLists: LeadList[]
 }
 
+interface Inbox {
+    id: string
+    email: string
+    displayName?: string | null
+    status: 'pending' | 'verified' | 'failed' | 'paused'
+}
+
+interface InboxesResponse {
+    emailAccounts: Inbox[]
+}
+
 interface LeadsTabProps {
     campaignId: string
     organizationId: string
@@ -85,8 +96,26 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
     const [mode, setMode] = React.useState<'paste' | 'list'>('paste')
     const [pastedEmails, setPastedEmails] = React.useState('')
     const [selectedListId, setSelectedListId] = React.useState<string>('')
+    const [selectedInboxId, setSelectedInboxId] = React.useState<string>('')
     const [isSubmitting, setIsSubmitting] = React.useState(false)
     const queryClient = useQueryClient()
+
+    // Verified sending inboxes — required to enroll leads, since every campaign lead must
+    // carry an assigned inbox for the campaign to be activatable (see campaigns.ts
+    // validateCampaignReadyForActivation). Without this the UI enrolled leads with a NULL
+    // inbox and the campaign could never be started (audit C2).
+    const { data: inboxesData } = useQuery({
+        queryKey: ['email-accounts', organizationId],
+        queryFn: () =>
+            apiFetch<InboxesResponse>(
+                `/api/outreach/email-accounts?organizationId=${organizationId}&limit=100`
+            ),
+        enabled: showAddModal && !!organizationId,
+    })
+    const verifiedInboxes = React.useMemo(
+        () => (inboxesData?.emailAccounts ?? []).filter((a) => a.status === 'verified'),
+        [inboxesData]
+    )
 
     // Main paginated table data
     const { data, isLoading } = useQuery({
@@ -179,6 +208,14 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
     }
 
     const handleSubmit = async () => {
+        if (!selectedInboxId) {
+            toast({
+                title: 'Select a sending inbox',
+                description: 'Every lead needs an assigned inbox so the campaign can be activated.',
+                variant: 'destructive',
+            })
+            return
+        }
         setIsSubmitting(true)
         try {
             let leadIds: string[] = []
@@ -232,7 +269,7 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ leadIds }),
+                    body: JSON.stringify({ leadIds, emailAccountId: selectedInboxId }),
                 }
             )
             const result = (await res.json()) as { added: number; existing: number }
@@ -257,6 +294,7 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
             setShowAddModal(false)
             setPastedEmails('')
             setSelectedListId('')
+            setSelectedInboxId('')
             setMode('paste')
             setPage(1)
         } catch (err) {
@@ -275,6 +313,7 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
         setShowAddModal(false)
         setPastedEmails('')
         setSelectedListId('')
+        setSelectedInboxId('')
         setMode('paste')
     }
 
@@ -397,6 +436,32 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
                             >
                                 <X className="w-5 h-5 text-muted-foreground" />
                             </button>
+                        </div>
+
+                        {/* Sending inbox — required so enrolled leads can be activated */}
+                        <div className="space-y-2 mb-4">
+                            <label className="block text-sm font-medium text-foreground">
+                                Sending inbox
+                            </label>
+                            <select
+                                value={selectedInboxId}
+                                onChange={(e) => setSelectedInboxId(e.target.value)}
+                                disabled={isSubmitting}
+                                className="w-full border border-input rounded-lg p-2 bg-background text-foreground text-sm focus:ring-2 focus:ring-primary focus:border-transparent disabled:opacity-50"
+                            >
+                                <option value="">Select an inbox…</option>
+                                {verifiedInboxes.map((a) => (
+                                    <option key={a.id} value={a.id}>
+                                        {a.displayName ? `${a.displayName} <${a.email}>` : a.email}
+                                    </option>
+                                ))}
+                            </select>
+                            {inboxesData && verifiedInboxes.length === 0 && (
+                                <p className="text-xs text-muted-foreground flex items-start gap-1">
+                                    <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                                    No verified inboxes yet. Add and verify one on the Inboxes page first.
+                                </p>
+                            )}
                         </div>
 
                         {/* Mode toggle */}

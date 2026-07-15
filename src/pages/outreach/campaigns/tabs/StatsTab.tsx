@@ -18,6 +18,11 @@ interface Stats {
     totalOpens: number
     totalClicks: number
     totalReplies: number
+    // Server-computed, per unique lead. See src/server/lib/outreach-campaign-metrics.ts.
+    openRate: number
+    clickRate: number
+    replyRate: number
+    bounceRate: number
 }
 
 interface StatsResponse {
@@ -67,11 +72,13 @@ export default function StatsTab({ campaignId, organizationId }: StatsTabProps) 
 
     const s = statsData?.stats
     const contacted = Number(s?.contacted ?? 0)
-    const denom = Math.max(contacted, 1)
-    const openRate = ((Number(s?.totalOpens ?? 0) / denom) * 100).toFixed(1)
-    const clickRate = ((Number(s?.totalClicks ?? 0) / denom) * 100).toFixed(1)
-    const replyRate = ((Number(s?.replied ?? 0) / denom) * 100).toFixed(1)
-    const bounceRate = ((Number(s?.bounced ?? 0) / denom) * 100).toFixed(1)
+    // Rates come from the server (outreach-campaign-metrics.ts). This used to divide here, over
+    // event totals rather than unique leads, so the same campaign showed one open rate on this tab
+    // and a different one on the dashboard. One definition, one place.
+    const openRate = (s?.openRate ?? 0).toFixed(1)
+    const clickRate = (s?.clickRate ?? 0).toFixed(1)
+    const replyRate = (s?.replyRate ?? 0).toFixed(1)
+    const bounceRate = (s?.bounceRate ?? 0).toFixed(1)
 
     const sequence = seqData?.sequences?.[0]
     const steps = sequence?.steps ?? []

@@ -13,11 +13,14 @@ import {
     Settings,
     Send,
     Inbox,
-    AlertCircle
+    AlertCircle,
+    Upload
 } from 'lucide-react'
 import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { PaginationControls } from '../../components/ui/PaginationControls'
+import { ImportInboxesDialog } from './inboxes/ImportInboxesDialog'
 import { apiFetch, apiRequest } from '../../lib/api-client'
+import { toast } from '../../components/ui/toaster'
 import { useOrganization } from '../../hooks/useOrganization'
 
 interface EmailAccount {
@@ -126,12 +129,12 @@ function InboxCard({ account, onVerify, onDelete }: {
                                 >
                                     <Settings className="w-4 h-4" /> Settings
                                 </Link>
-                                {account.status === 'pending' && (
+                                {(account.status === 'pending' || account.status === 'failed') && (
                                     <button
                                         onClick={() => { onVerify(account.id); setShowMenu(false) }}
                                         className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2"
                                     >
-                                        <RefreshCw className="w-4 h-4" /> Verify
+                                        <RefreshCw className="w-4 h-4" /> {account.status === 'failed' ? 'Retry verification' : 'Verify'}
                                     </button>
                                 )}
                                 <button
@@ -206,6 +209,7 @@ function InboxCard({ account, onVerify, onDelete }: {
 export function InboxesPage() {
     const { currentOrganization } = useOrganization()
     const [page, setPage] = React.useState(1)
+    const [showImport, setShowImport] = React.useState(false)
     const queryClient = useQueryClient()
 
     const { data: accountsData, isLoading } = useQuery({
@@ -218,6 +222,13 @@ export function InboxesPage() {
         mutationFn: (id: string) => verifyEmailAccount(currentOrganization!.id, id),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
+            toast({ title: 'Inbox verified', variant: 'success' })
+        },
+        onError: (err) => {
+            // A failed verification sets the account to 'failed' server-side, so refetch to
+            // reflect the new status (and expose the retry affordance for failed accounts).
+            queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
+            toast({ title: 'Verification failed', description: (err as Error).message, variant: 'destructive' })
         },
     })
 
@@ -225,6 +236,10 @@ export function InboxesPage() {
         mutationFn: (id: string) => deleteEmailAccount(currentOrganization!.id, id),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
+            toast({ title: 'Inbox deleted', variant: 'success' })
+        },
+        onError: (err) => {
+            toast({ title: 'Failed to delete inbox', description: (err as Error).message, variant: 'destructive' })
         },
     })
 
@@ -259,14 +274,32 @@ export function InboxesPage() {
                             Manage your email accounts for cold outreach
                         </p>
                     </div>
-                    <Link
-                        href="/outreach/inboxes/new"
-                        className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
-                    >
-                        <Plus className="w-5 h-5" />
-                        Add Inbox
-                    </Link>
+                    <div className="flex items-center gap-2">
+                        {/* Bulk import is the path that matters when mailboxes are bought a batch at
+                            a time from a vendor; adding them one by one does not scale past a few. */}
+                        <button
+                            onClick={() => setShowImport(true)}
+                            className="flex items-center gap-2 px-4 py-2 border border-border text-foreground rounded-lg hover:bg-muted transition-colors"
+                        >
+                            <Upload className="w-5 h-5" />
+                            Import Inboxes
+                        </button>
+                        <Link
+                            href="/outreach/inboxes/new"
+                            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
+                        >
+                            <Plus className="w-5 h-5" />
+                            Add Inbox
+                        </Link>
+                    </div>
                 </div>
+
+                {showImport && currentOrganization && (
+                    <ImportInboxesDialog
+                        organizationId={currentOrganization.id}
+                        onClose={() => setShowImport(false)}
+                    />
+                )}
 
                 {/* Stats */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

@@ -28,6 +28,25 @@ export interface TemplateContext {
     unsubscribeUrl?: string
 }
 
+// Options controlling how substituted values are rendered.
+export interface InterpolateOptions {
+    // When true, HTML-escape every lead-derived value (built-ins + custom fields) so that
+    // lead-controlled data cannot inject markup into the outgoing HTML body. Leave false
+    // for subject/plain-text renders where escaping would corrupt the output. See audit
+    // finding "unescaped lead-controlled fields injected into email body".
+    escapeHtml?: boolean
+}
+
+/** Escape the five HTML-significant characters. */
+function escapeHtml(value: string): string {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+}
+
 // Default values for when fields are null
 const DEFAULT_VALUES: Record<string, string> = {
     firstName: 'there',
@@ -79,42 +98,42 @@ const VARIABLE_REGEX = /\{\{([a-zA-Z0-9_]+)\}\}/g
  * const result = interpolateTemplate(template, lead)
  * // Result: "Hi John, thanks for your interest in Acme Corp!"
  */
-export function interpolateTemplate(template: string, lead: LeadForTemplate, context: TemplateContext = {}): string {
+export function interpolateTemplate(
+    template: string,
+    lead: LeadForTemplate,
+    context: TemplateContext = {},
+    options: InterpolateOptions = {}
+): string {
     if (!template) return template
 
-    let result = template
+    const escape = options.escapeHtml ? escapeHtml : (v: string) => v
 
-    // First, handle built-in variables (case-insensitive matching)
-    for (const [token, handler] of Object.entries(BUILTIN_VARIABLES)) {
-        // Match both {{firstName}} and {{firstname}} etc.
-        const lowerToken = token.toLowerCase()
-        const regex = new RegExp(escapeRegex(token) + '|' + escapeRegex(lowerToken), 'gi')
-        result = result.replace(regex, handler(lead))
-    }
-
-    // Then handle any remaining {{variable}} patterns (custom fields)
-    result = result.replace(VARIABLE_REGEX, (match, variableName) => {
+    // audit-2026-07: single pass over {{...}} placeholders. The previous two-pass version
+    // (a) used string replacements, so `$&`/`` $` `` in lead data were interpreted as regex
+    // substitution patterns and corrupted output, and (b) re-scanned already-substituted
+    // values, so a lead field containing `{{var}}` was itself expanded (template injection).
+    // One functional-replacer pass fixes both, and escapes lead-derived values when asked.
+    return template.replace(VARIABLE_REGEX, (_match, variableName: string) => {
+        // Context-provided values (internally generated, e.g. the unsubscribe URL) — not escaped.
         if (variableName === 'unsubscribeUrl') return context.unsubscribeUrl ?? ''
-        // Check if it's a custom field
-        if (lead.customFields && variableName in lead.customFields) {
-            const value = lead.customFields[variableName]
-            return value != null ? String(value) : ''
-        }
 
-        // Check if it's a built-in variable we might have missed (different case)
+        // Built-in lead fields (case-insensitive).
         const lowerName = variableName.toLowerCase()
         for (const [token, handler] of Object.entries(BUILTIN_VARIABLES)) {
             if (token.toLowerCase() === `{{${lowerName}}}`) {
-                return handler(lead)
+                return escape(handler(lead))
             }
         }
 
-        // Unknown variable - return empty string or keep the placeholder
-        // Returning empty string is safer for production
+        // Custom fields from the lead's JSONB column.
+        if (lead.customFields && variableName in lead.customFields) {
+            const value = lead.customFields[variableName]
+            return value != null ? escape(String(value)) : ''
+        }
+
+        // Unknown variable — empty string is safer than leaking the raw placeholder.
         return ''
     })
-
-    return result
 }
 
 /**
@@ -206,13 +225,6 @@ export function getAvailableVariables(lead?: LeadForTemplate): {
     const custom = lead?.customFields ? Object.keys(lead.customFields) : []
 
     return { builtIn, custom }
-}
-
-/**
- * Escape special regex characters in a string
- */
-function escapeRegex(string: string): string {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /**

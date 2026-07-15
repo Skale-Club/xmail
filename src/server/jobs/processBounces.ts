@@ -20,6 +20,7 @@ import { eq, and, or, isNotNull, sql, desc } from 'drizzle-orm'
 import { decryptSecret } from '../lib/crypto'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
+import { runWithLock } from '../lib/cron-lock'
 import { getNativeMailboxByEmail } from '../lib/native-send'
 
 const log = createLogger('outreach.bounce')
@@ -315,29 +316,16 @@ export async function markAsBounced(
     }, 'marked as bounced')
 }
 
-// P0-06 — advisory lock prevents concurrent runs across multiple Node instances.
-// Same pattern as runOutreachProcessorWithLock in processOutreachSequences.ts.
+// P0-06 / audit-2026-07 — advisory lock prevents concurrent runs across Node instances.
+// Uses runWithLock (cron-lock.ts) so acquire+release share one reserved connection; the
+// previous db.execute-on-pool implementation leaked the lock across sessions (see audit H1).
 // Inspect held locks: SELECT * FROM pg_locks WHERE locktype='advisory';
-const LOCK_ID_BOUNCE_PROCESSOR = 4015
+const BOUNCE_PROCESSOR_LOCK_NAME = 'outreach-bounces-processor'
 
-export async function runBouncesProcessorWithLock(): Promise<{ acquired: boolean; result?: { processed: number; bounces: number; errors: number } }> {
-    const lockResult = await db.execute(sql`SELECT pg_try_advisory_lock(${LOCK_ID_BOUNCE_PROCESSOR}) AS acquired`)
-    const acquired = Array.isArray(lockResult)
-        ? (lockResult as unknown as Array<{ acquired: boolean }>)[0]?.acquired === true
-        : (lockResult as unknown as { rows: Array<{ acquired: boolean }> }).rows?.[0]?.acquired === true
-    if (!acquired) {
-        log.debug({
-            action: 'outreach.bounce.lock_contended',
-            lockId: LOCK_ID_BOUNCE_PROCESSOR,
-        }, 'advisory lock held by another instance — skipping tick')
-        return { acquired: false }
-    }
-    try {
-        const result = await processBounces()
-        return { acquired: true, result }
-    } finally {
-        await db.execute(sql`SELECT pg_advisory_unlock(${LOCK_ID_BOUNCE_PROCESSOR})`)
-    }
+export async function runBouncesProcessorWithLock(): Promise<void> {
+    await runWithLock(BOUNCE_PROCESSOR_LOCK_NAME, async () => {
+        await processBounces()
+    })
 }
 
 export async function processBounces(): Promise<{ processed: number; bounces: number; errors: number }> {
@@ -398,7 +386,10 @@ export async function processBounces(): Promise<{ processed: number; bounces: nu
                     ]
                 }, { uid: true })
 
-                if (!messages) return { processed: 0, bounces: 0, errors: 0 };
+                // audit-2026-07 (M4): skip THIS account only when the search yields nothing —
+                // the old `return` aborted processBounces() entirely, silently skipping every
+                // remaining account that tick and discarding accumulated counts.
+                if (!messages) continue;
                 for (const uid of messages) {
                     try {
                         const message = await client.fetchOne(uid, { source: true })
