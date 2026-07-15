@@ -1,7 +1,7 @@
 import React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, Upload, AlertCircle, CheckCircle2 } from 'lucide-react'
-import { apiFetch, apiRequest } from '../../../lib/api-client'
+import { apiFetch } from '../../../lib/api-client'
 import { parseMailboxCsv, type ParsedMailbox } from './parse-mailbox-csv'
 import { toast } from '../../../components/ui/toaster'
 
@@ -37,8 +37,10 @@ export function ImportInboxesDialog({ organizationId, onClose }: ImportInboxesDi
     const parsed = React.useMemo(() => (raw.trim() ? parseMailboxCsv(raw) : null), [raw])
 
     const importMutation = useMutation({
+        // apiFetch, not apiRequest: apiRequest resolves to the raw Response, so reading
+        // result.imported off it yields undefined rather than the count.
         mutationFn: (mailboxes: ParsedMailbox[]) =>
-            apiRequest<ImportResult>(`/api/outreach/email-accounts/bulk-import?organizationId=${organizationId}`, {
+            apiFetch<ImportResult>(`/api/outreach/email-accounts/bulk-import?organizationId=${organizationId}`, {
                 method: 'POST',
                 body: JSON.stringify({ provider, mailboxes }),
             }),
