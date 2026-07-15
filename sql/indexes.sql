@@ -151,12 +151,12 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_emails_sequence_step_id
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_emails_email_account_id
     ON outreach_emails (email_account_id);
 
--- Claim-lock unique index (migration 027/032). Backs the ON CONFLICT
+-- Claim-lock unique index (migration 027/035). Backs the ON CONFLICT
 -- (campaign_lead_id, sequence_step_id) claim in processOutreachSequences.ts.
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS outreach_emails_campaign_lead_step_unique
     ON outreach_emails (campaign_lead_id, sequence_step_id);
 
--- Reply/bounce lookup key (migration 032). WHERE message_id = $1 / LIKE.
+-- Reply/bounce lookup key (migration 035). WHERE message_id = $1 / LIKE.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_emails_message_id
     ON outreach_emails (message_id);
 
