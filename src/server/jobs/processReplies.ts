@@ -156,6 +156,10 @@ async function processAccountRepliesNative(account: { id: string; email: string 
             eq(mailMessages.isRead, false),
             gte(mailMessages.receivedAt, sevenDaysAgo)
         ),
+        // Only `headers` is read below. The bodies and attachments average ~14 kB
+        // per row and would otherwise be shipped for every unread INBOX message on
+        // every tick — see the projection note in imap-server.ts.
+        columns: { plainBody: false, htmlBody: false, attachments: false },
         orderBy: (m, { asc }) => [asc(m.receivedAt)],
         limit: MAX_PER_TICK,
     })

@@ -14,7 +14,7 @@ import tls from 'tls'
 import { randomUUID } from 'crypto'
 import { db } from '../db'
 import { mailboxes, mailFolders, mailMessages } from '../db/schema'
-import { eq, and, asc, sql } from 'drizzle-orm'
+import { eq, and, asc, inArray, sql } from 'drizzle-orm'
 import { getCachedBranding } from './lib/serverBranding'
 import { authenticateNativeUser } from './lib/native-mail'
 import { getMailTLSOptions } from './lib/mail-tls'
@@ -148,7 +148,80 @@ function folderMatchesListPattern(remoteId: string, reference: string, mailbox: 
     return listPatternToRegex(pattern).test(remoteId)
 }
 
-function buildRawMessage(msg: typeof mailMessages.$inferSelect): string {
+// ─── Message projections ──────────────────────────────────────────────────────
+//
+// Every command below has to read the whole folder to compute IMAP sequence
+// numbers, but almost none of them need the message payload: plain_body,
+// html_body, headers and attachments average ~14 kB per row and were being
+// shipped out of Postgres on every FLAGS poll. That single pattern accounted
+// for the bulk of the project's Supabase egress. Handlers now read the light
+// projection to build the sequence/UID map, then hydrate payloads only for the
+// messages a command actually returns or copies.
+
+type MailMessageRow = typeof mailMessages.$inferSelect
+type MailMessagePayload = Pick<MailMessageRow, 'plainBody' | 'htmlBody' | 'headers' | 'attachments'>
+type LightMailMessage = Omit<MailMessageRow, keyof MailMessagePayload>
+type FetchMailMessage = LightMailMessage & Pick<MailMessageRow, 'plainBody' | 'htmlBody'>
+
+const IMAP_LIGHT_COLUMNS = {
+    plainBody: false,
+    htmlBody: false,
+    headers: false,
+    attachments: false,
+} as const
+
+/** Ordered, payload-free view of a folder — the basis for IMAP sequence numbers. */
+async function loadFolderMessages(
+    folderId: string,
+    opts: { includeDeleted?: boolean } = {}
+): Promise<LightMailMessage[]> {
+    const where = opts.includeDeleted
+        ? eq(mailMessages.folderId, folderId)
+        : and(eq(mailMessages.folderId, folderId), eq(mailMessages.isDeleted, false))
+
+    return db.query.mailMessages.findMany({
+        where,
+        columns: IMAP_LIGHT_COLUMNS,
+        orderBy: [asc(mailMessages.receivedAt)],
+    })
+}
+
+/** Loads the heavy columns for just `ids`, keyed by message id. */
+async function loadMessagePayloads(ids: string[]): Promise<Map<string, MailMessagePayload>> {
+    if (ids.length === 0) return new Map()
+    const rows = await db.query.mailMessages.findMany({
+        where: inArray(mailMessages.id, ids),
+        columns: { id: true, plainBody: true, htmlBody: true, headers: true, attachments: true },
+    })
+    return new Map(rows.map(r => [r.id, r]))
+}
+
+/**
+ * True when any requested item makes buildFetchResponse read a message body
+ * (directly, or via buildRawMessage / BODYSTRUCTURE sizing).
+ *
+ * MUST stay in sync with buildFetchResponse: an item that reads plainBody or
+ * htmlBody but is missing here gets a message whose bodies were never loaded,
+ * and would silently serve an empty body.
+ */
+function needsBodies(items: string[]): boolean {
+    return items.some(item => {
+        const upper = item.toUpperCase()
+        return upper === 'RFC822'
+            || upper === 'RFC822.SIZE' || upper === 'BODY.SIZE'
+            || upper === 'RFC822.TEXT'
+            || upper === 'BODYSTRUCTURE'
+            || upper === 'BODY[]' || upper === 'BODY.PEEK[]'
+            || upper === 'BODY[TEXT]' || upper === 'BODY.PEEK[TEXT]'
+    })
+}
+
+function withBodies(msg: LightMailMessage, payloads: Map<string, MailMessagePayload>): FetchMailMessage {
+    const payload = payloads.get(msg.id)
+    return { ...msg, plainBody: payload?.plainBody ?? null, htmlBody: payload?.htmlBody ?? null }
+}
+
+function buildRawMessage(msg: FetchMailMessage): string {
     const to = (msg.toAddresses as Array<{ name?: string; address?: string }> | null) || []
     const cc = (msg.ccAddresses as Array<{ name?: string; address?: string }> | null) || []
 
@@ -193,7 +266,7 @@ function buildRawMessage(msg: typeof mailMessages.$inferSelect): string {
     return raw
 }
 
-function buildHeader(msg: typeof mailMessages.$inferSelect): string {
+function buildHeader(msg: LightMailMessage): string {
     const to = (msg.toAddresses as Array<{ name?: string; address?: string }> | null) || []
     const cc = (msg.ccAddresses as Array<{ name?: string; address?: string }> | null) || []
     const toStr = to.map(a => a.name ? `"${a.name}" <${a.address}>` : a.address).join(', ')
@@ -210,7 +283,7 @@ function buildHeader(msg: typeof mailMessages.$inferSelect): string {
     return h
 }
 
-function buildEnvelopeString(msg: typeof mailMessages.$inferSelect): string {
+function buildEnvelopeString(msg: LightMailMessage): string {
     const to = (msg.toAddresses as Array<{ name?: string; address?: string }> | null) || []
     const date = (msg.remoteDate || msg.receivedAt || new Date()).toUTCString()
     const fromAddr = [[
@@ -228,7 +301,7 @@ function buildEnvelopeString(msg: typeof mailMessages.$inferSelect): string {
 
 async function buildFetchResponse(
     seqNum: number,
-    msg: typeof mailMessages.$inferSelect,
+    msg: FetchMailMessage,
     items: string[]
 ): Promise<string> {
     const parts: string[] = []
@@ -650,21 +723,19 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         if (!match) { sendLine(socket, `${tag} BAD FETCH syntax error`); return }
         const [, seqSet, itemStr] = match
 
-        const msgs = await db.query.mailMessages.findMany({
-            where: and(
-                eq(mailMessages.folderId, session.selectedFolderId!),
-                eq(mailMessages.isDeleted, false)
-            ),
-            orderBy: [asc(mailMessages.receivedAt)],
-        })
+        const msgs = await loadFolderMessages(session.selectedFolderId!)
 
         const seqNums = parseSequenceSet(seqSet, msgs.length)
         const items = parseFetchItems(itemStr)
 
+        const payloads = needsBodies(items)
+            ? await loadMessagePayloads(seqNums.map(n => msgs[n - 1]?.id).filter((id): id is string => !!id))
+            : new Map()
+
         for (const seqNum of seqNums) {
             const msg = msgs[seqNum - 1]
             if (!msg) continue
-            const response = await buildFetchResponse(seqNum, msg, items)
+            const response = await buildFetchResponse(seqNum, withBodies(msg, payloads), items)
             sendLine(socket, response)
         }
 
@@ -695,13 +766,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         if (!match) { sendLine(socket, `${tag} BAD STORE syntax error`); return }
         const [, seqSet, flagOp, flagList] = match
 
-        const msgs = await db.query.mailMessages.findMany({
-            where: and(
-                eq(mailMessages.folderId, session.selectedFolderId!),
-                eq(mailMessages.isDeleted, false)
-            ),
-            orderBy: [asc(mailMessages.receivedAt)],
-        })
+        const msgs = await loadFolderMessages(session.selectedFolderId!)
 
         const seqNums = parseSequenceSet(seqSet, msgs.length)
         const flagStr = flagList.replace(/[()]/g, '').toUpperCase()
@@ -759,10 +824,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         if (session.selectedReadOnly) { sendLine(socket, `${tag} NO Folder is read-only`); return }
         // Ordered list of ALL messages (so we can compute sequence numbers);
         // then walk from high to low, deleting and emitting EXPUNGE for each flagged.
-        const allMsgs = await db.query.mailMessages.findMany({
-            where: eq(mailMessages.folderId, session.selectedFolderId!),
-            orderBy: [asc(mailMessages.receivedAt)],
-        })
+        const allMsgs = await loadFolderMessages(session.selectedFolderId!, { includeDeleted: true })
 
         // IMAP sequence numbers are 1-based, counting only messages visible in
         // the current SELECT session (non-deleted). Since the current SELECT
@@ -805,13 +867,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
 
     // ── SEARCH ──
     if (cmd === 'SEARCH') {
-        const msgs = await db.query.mailMessages.findMany({
-            where: and(
-                eq(mailMessages.folderId, session.selectedFolderId!),
-                eq(mailMessages.isDeleted, false)
-            ),
-            orderBy: [asc(mailMessages.receivedAt)],
-        })
+        const msgs = await loadFolderMessages(session.selectedFolderId!)
 
         const upperArgs = args.toUpperCase()
         const results: number[] = []
@@ -856,18 +912,16 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         })
         if (!destFolder) { sendLine(socket, `${tag} NO [TRYCREATE] No such mailbox`); return }
 
-        const msgs = await db.query.mailMessages.findMany({
-            where: and(
-                eq(mailMessages.folderId, session.selectedFolderId!),
-                eq(mailMessages.isDeleted, false)
-            ),
-            orderBy: [asc(mailMessages.receivedAt)],
-        })
+        const msgs = await loadFolderMessages(session.selectedFolderId!)
 
         const seqNums = parseSequenceSet(seqSet, msgs.length)
+        const payloads = await loadMessagePayloads(
+            seqNums.map(n => msgs[n - 1]?.id).filter((id): id is string => !!id)
+        )
         for (const seqNum of seqNums) {
             const msg = msgs[seqNum - 1]
             if (!msg) continue
+            const payload = payloads.get(msg.id)
             const newUid = await allocateNextUid(destFolder.id)
             await db.insert(mailMessages).values({
                 mailboxId: msg.mailboxId,
@@ -881,11 +935,11 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
                 toAddresses: msg.toAddresses as object[],
                 ccAddresses: msg.ccAddresses as object[],
                 bccAddresses: msg.bccAddresses as object[],
-                plainBody: msg.plainBody,
-                htmlBody: msg.htmlBody,
-                headers: msg.headers as object,
+                plainBody: payload?.plainBody ?? null,
+                htmlBody: payload?.htmlBody ?? null,
+                headers: payload?.headers as object,
                 hasAttachments: msg.hasAttachments,
-                attachments: msg.attachments as object[],
+                attachments: payload?.attachments as object[],
                 isRead: msg.isRead,
                 isDraft: msg.isDraft,
                 remoteUid: newUid,
@@ -1018,17 +1072,11 @@ async function handleUidCommand(session: IMAPSession, tag: string, subCmd: strin
         return
     }
 
-    const msgs = await db.query.mailMessages.findMany({
-        where: and(
-            eq(mailMessages.folderId, session.selectedFolderId!),
-            eq(mailMessages.isDeleted, false),
-        ),
-        orderBy: [asc(mailMessages.receivedAt)],
-    })
+    const msgs = await loadFolderMessages(session.selectedFolderId!)
 
     // Build UID ↔ sequence number map. For legacy rows with remote_uid=null,
     // fall back to sequence number as UID.
-    const byUid = new Map<number, { msg: typeof mailMessages.$inferSelect; seqNum: number }>()
+    const byUid = new Map<number, { msg: LightMailMessage; seqNum: number }>()
     let maxUid = 0
     msgs.forEach((m, i) => {
         const uid = m.remoteUid ?? (i + 1)
@@ -1050,8 +1098,11 @@ async function handleUidCommand(session: IMAPSession, tag: string, subCmd: strin
         const items = parseFetchItems(itemStr)
         if (!items.map(i => i.toUpperCase()).includes('UID')) items.push('UID')
         const entries = uidSetToEntries(uidSet)
+        const payloads = needsBodies(items)
+            ? await loadMessagePayloads(entries.map(e => e.msg.id))
+            : new Map()
         for (const { msg, seqNum } of entries) {
-            sendLine(socket, await buildFetchResponse(seqNum, msg, items))
+            sendLine(socket, await buildFetchResponse(seqNum, withBodies(msg, payloads), items))
         }
         // Mark as seen for non-PEEK BODY fetches
         const fetchesBody = items.some(i => /BODY\[(?!.*PEEK)/.test(i.toUpperCase()) || i.toUpperCase() === 'RFC822')
@@ -1125,7 +1176,10 @@ async function handleUidCommand(session: IMAPSession, tag: string, subCmd: strin
 
         const copiedUids: number[] = []
         const srcUids: number[] = []
-        for (const { msg } of uidSetToEntries(uidSet)) {
+        const copyEntries = uidSetToEntries(uidSet)
+        const copyPayloads = await loadMessagePayloads(copyEntries.map(e => e.msg.id))
+        for (const { msg } of copyEntries) {
+            const payload = copyPayloads.get(msg.id)
             const newUid = await allocateNextUid(destFolder.id)
             await db.insert(mailMessages).values({
                 mailboxId: msg.mailboxId,
@@ -1139,11 +1193,11 @@ async function handleUidCommand(session: IMAPSession, tag: string, subCmd: strin
                 toAddresses: msg.toAddresses as object[],
                 ccAddresses: msg.ccAddresses as object[],
                 bccAddresses: msg.bccAddresses as object[],
-                plainBody: msg.plainBody,
-                htmlBody: msg.htmlBody,
-                headers: msg.headers as object,
+                plainBody: payload?.plainBody ?? null,
+                htmlBody: payload?.htmlBody ?? null,
+                headers: payload?.headers as object,
                 hasAttachments: msg.hasAttachments,
-                attachments: msg.attachments as object[],
+                attachments: payload?.attachments as object[],
                 isRead: msg.isRead,
                 isDraft: msg.isDraft,
                 remoteUid: newUid,

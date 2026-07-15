@@ -18,9 +18,14 @@ const isDev = process.env.NODE_ENV === 'development'
 // "prepared statement does not exist" / "already exists" 500 errors.
 // Session pooler (port 5432) supports prepared statements, but false is safe
 // for both modes and avoids connection-specific state issues.
+// idle_timeout is deliberately well above the 1-minute processQueue cron tick.
+// At the previous 10s, pooled connections died between every tick and postgres-js
+// re-ran its type-introspection query (~400 catalog rows) on each reconnect —
+// ~265k reconnects shipped ~3 GB out of Supabase and dominated egress after the
+// IMAP fix below. Lower it via DB_IDLE_TIMEOUT_SECONDS if pooler slots get tight.
 export const queryClient = postgres(connectionString, {
     max: Number(process.env.DB_POOL_MAX || 20),
-    idle_timeout: Number(process.env.DB_IDLE_TIMEOUT_SECONDS || 10),
+    idle_timeout: Number(process.env.DB_IDLE_TIMEOUT_SECONDS || 300),
     connect_timeout: Number(process.env.DB_CONNECT_TIMEOUT_SECONDS || 30),
     max_lifetime: Number(process.env.DB_MAX_LIFETIME_SECONDS || 60 * 30),
     // Must be false for Supabase transaction pooler (port 6543)

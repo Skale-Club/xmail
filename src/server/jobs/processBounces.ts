@@ -16,7 +16,7 @@ import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { db } from '../../db'
 import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, suppressions, mailFolders, mailMessages } from '../../db/schema'
-import { eq, and, or, isNotNull, sql, desc } from 'drizzle-orm'
+import { eq, and, or, isNotNull, inArray, sql, desc } from 'drizzle-orm'
 import { decryptSecret } from '../lib/crypto'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
@@ -543,15 +543,33 @@ async function processAccountBouncesNative(
             eq(mailMessages.folderId, inboxFolder.id),
             eq(mailMessages.isRead, false)
         ),
+        // isBounceEmail() below rejects all but a small fraction of these on
+        // from-address/subject alone, so the ~14 kB payload is fetched afterwards
+        // for the survivors only — see the projection note in imap-server.ts.
+        columns: { plainBody: false, htmlBody: false, headers: false, attachments: false },
         orderBy: (m, { asc }) => [asc(m.receivedAt)],
         limit: 500,
     })
+
+    const bounceIds = candidates
+        .filter(m => isBounceEmail(m.fromAddress || '', m.subject || ''))
+        .map(m => m.id)
+    const bounceBodies = new Map(
+        (bounceIds.length
+            ? await db.query.mailMessages.findMany({
+                where: inArray(mailMessages.id, bounceIds),
+                columns: { id: true, plainBody: true, htmlBody: true },
+            })
+            : []
+        ).map(r => [r.id, r])
+    )
 
     for (const msg of candidates) {
         try {
             if (!isBounceEmail(msg.fromAddress || '', msg.subject || '')) {
                 continue
             }
+            const body = bounceBodies.get(msg.id)
 
             result.processed++
 
@@ -559,8 +577,8 @@ async function processAccountBouncesNative(
             // object — synthesize one from the columns already stored for this message
             // (native mail has no raw-source blob to re-parse with mailparser).
             const pseudoParsed = {
-                text: msg.plainBody || '',
-                html: msg.htmlBody || false,
+                text: body?.plainBody || '',
+                html: body?.htmlBody || false,
                 messageId: msg.messageId || undefined,
             } as unknown as Awaited<ReturnType<typeof simpleParser>>
 
