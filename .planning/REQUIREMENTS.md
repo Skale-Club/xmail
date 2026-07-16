@@ -45,7 +45,7 @@
 - [x] **UIX-03** — Operators can reply, reply-all, and forward with quoted context, correct provider/thread headers, attachments, and shared send-policy enforcement.
 - [x] **UIX-04** — Operators can mark read/unread, label, archive, bulk-act, and add a sender/domain to suppression/blocklist with confirmation.
 - [x] **UIX-05** — Scheduled replies, reminders, reusable snippets/macros, and attachment handling are durable and recover across restarts.
-- [ ] **UIX-06** — New-reply notifications and unread counts are visible without polling every thread and degrade safely when provider sync fails.
+- [x] **UIX-06** — New-reply notifications and unread counts are visible without polling every thread and degrade safely when provider sync fails.
 
 ## AI assistance and automation
 
