@@ -136,9 +136,11 @@ beforeAll(async () => {
     await seedConversation(CONV_A2, ORG_A, ACCOUNT_A)
     await seedConversation(CONV_A3, ORG_A, ACCOUNT_A)
     await seedConversation(CONV_B1, ORG_B, ACCOUNT_B)
+    // The persisted inbound message carries the sender the reply resolver derives the recipient
+    // + threading headers from (the route never trusts client-supplied recipients/headers).
     await sql`INSERT INTO outreach_conversation_messages
-        (id, organization_id, conversation_id, email_account_id, direction, provider, source_key, internet_message_id) VALUES
-        (${MSG_A1}::uuid, ${ORG_A}::uuid, ${CONV_A1}::uuid, ${ACCOUNT_A}::uuid, 'inbound', 'native', 'native:op-a1', '<op-a1@lead.test>')
+        (id, organization_id, conversation_id, email_account_id, direction, provider, source_key, internet_message_id, from_address, from_name, subject) VALUES
+        (${MSG_A1}::uuid, ${ORG_A}::uuid, ${CONV_A1}::uuid, ${ACCOUNT_A}::uuid, 'inbound', 'native', 'native:op-a1', '<op-a1@lead.test>', 'lead@prospect.test', 'Lead', 'hello')
         ON CONFLICT (id) DO NOTHING`
 
     const operatorModule = await import('../../../lib/inbox-operator')
@@ -594,19 +596,26 @@ describe('inbox commands — reminders notify once, org-scoped', () => {
 
 describe('operator — durable send-command creation', () => {
     it('creates a durable scheduled command idempotently and blocks cross-tenant conversation', async () => {
+        // The client supplies only the mode + body; the server RESOLVES To/subject/In-Reply-To
+        // from the persisted MSG_A1 (a client cannot inject recipients or threading headers).
         const body = {
             emailAccountId: ACCOUNT_A,
             mode: 'reply',
             sourceMessageId: MSG_A1,
-            to: [{ address: 'lead@prospect.test' }],
-            subject: 'Re: hello',
             bodyText: 'thanks!',
-            inReplyTo: '<op-a1@lead.test>',
             idempotencyKey: 'op-cmd-key-1',
         }
         const created = await call(`/conversations/${CONV_A1}/send-commands?organizationId=${ORG_A}`, { method: 'POST', body })
         expect(created.status).toBe(201)
         expect(created.body.command.status).toBe('scheduled')
+
+        // The persisted command's recipients + threading headers were server-resolved from the thread.
+        const resolved = await sql<{ to_recipients: unknown; in_reply_to: string | null; subject: string | null }[]>`
+            SELECT to_recipients, in_reply_to, subject FROM inbox_send_commands WHERE id = ${created.body.command.id}::uuid`
+        const to = typeof resolved[0].to_recipients === 'string' ? JSON.parse(resolved[0].to_recipients) : resolved[0].to_recipients
+        expect(to).toEqual([{ address: 'lead@prospect.test', name: 'Lead' }])
+        expect(resolved[0].in_reply_to).toBe('<op-a1@lead.test>')
+        expect(resolved[0].subject).toBe('Re: hello')
 
         // Idempotent replay with the same key returns the same command (200, not a second row).
         const replay = await call(`/conversations/${CONV_A1}/send-commands?organizationId=${ORG_A}`, { method: 'POST', body })
