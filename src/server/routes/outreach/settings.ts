@@ -2,7 +2,6 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
 import { outreachSettings } from '../../../db/schema'
-import { eq, and } from 'drizzle-orm'
 import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-access'
 import {
     OUTREACH_SETTINGS_DEFAULTS,
