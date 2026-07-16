@@ -5,6 +5,7 @@ import {
     createStableOutreachMessageId,
     decideExistingDispatch,
     dispatchOutreachMessage,
+    normalizeProviderFailure,
     type DispatchClaimResult,
     type DispatchClaimed,
     type DispatchOutreachInput,
@@ -129,6 +130,26 @@ describe('durable outreach dispatch eligibility', () => {
             leaseExpiresAt: null,
             dispatchStartedAt: null,
         }, NOW)).toBe('exhausted')
+    })
+})
+
+describe('provider failure normalization', () => {
+    it('retries explicit HTTP and pre-connection negative outcomes', () => {
+        expect(normalizeProviderFailure(Object.assign(new Error('unavailable'), { statusCode: 503 })))
+            .toMatchObject({ classification: 'transient', acceptance: 'rejected', retryable: true })
+        expect(normalizeProviderFailure(Object.assign(new Error('dns failed'), { code: 'EDNS', command: 'CONN' })))
+            .toMatchObject({ classification: 'transient', acceptance: 'rejected', retryable: true })
+        expect(normalizeProviderFailure(Object.assign(new Error('rate limited'), { responseCode: 421 })))
+            .toMatchObject({ classification: 'transient', acceptance: 'rejected', retryable: true })
+    })
+
+    it('treats SMTP 5xx as terminal and a post-DATA timeout as ambiguous', () => {
+        expect(normalizeProviderFailure(Object.assign(new Error('mailbox unavailable'), { responseCode: 550 })))
+            .toMatchObject({ classification: 'terminal', acceptance: 'rejected', retryable: false })
+        expect(normalizeProviderFailure(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT', command: 'DATA' })))
+            .toMatchObject({ classification: 'ambiguous', acceptance: 'unknown', retryable: false })
+        expect(normalizeProviderFailure(Object.assign(new Error('invalid content'), { statusCode: 422 })))
+            .toMatchObject({ classification: 'terminal', acceptance: 'rejected', retryable: false })
     })
 })
 

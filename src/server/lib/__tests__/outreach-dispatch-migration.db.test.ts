@@ -8,6 +8,11 @@ import {
     TEST_DATABASE_GUARD_ENV,
     TEST_DATABASE_URL_ENV,
 } from '../../../test/postgres-harness'
+import {
+    createSqlDispatchRepository,
+    type DispatchOutreachInput,
+    type DispatchSqlClient,
+} from '../outreach-dispatch'
 
 const runGuard = process.env[TEST_DATABASE_GUARD_ENV]
 const testDatabaseUrl = process.env[TEST_DATABASE_URL_ENV]
@@ -142,6 +147,88 @@ describe('outreach dispatch migration 038', () => {
             'outreach_emails_origin_shape_check',
         ]) {
             expect(schema).toContain(mapping)
+        }
+    })
+
+    it('atomically reclaims pre-dispatch leases and holds post-dispatch ambiguity', async () => {
+        assertSafeTestDatabaseUrl(testDatabaseUrl, { runGuard })
+        const sql = postgres(testDatabaseUrl, { max: 1, prepare: false })
+        const userId = '10000000-0000-4000-8000-000000000001'
+        const organizationId = '10000000-0000-4000-8000-000000000002'
+        const accountId = '10000000-0000-4000-8000-000000000003'
+        try {
+            await sql`
+                INSERT INTO users (id, email)
+                VALUES (${userId}::uuid, 'dispatch-owner@example.test')
+                ON CONFLICT (id) DO NOTHING
+            `
+            await sql`
+                INSERT INTO organizations (id, name, slug, owner_id)
+                VALUES (${organizationId}::uuid, 'Dispatch Test', 'dispatch-test', ${userId}::uuid)
+                ON CONFLICT (id) DO NOTHING
+            `
+            await sql`
+                INSERT INTO email_accounts (
+                    id, organization_id, email, smtp_host, smtp_username, smtp_password
+                ) VALUES (
+                    ${accountId}::uuid, ${organizationId}::uuid, 'sender@example.test',
+                    'localhost', 'sender', 'not-a-real-secret'
+                )
+                ON CONFLICT (id) DO NOTHING
+            `
+
+            const repository = createSqlDispatchRepository(async () => sql as unknown as DispatchSqlClient)
+            const baseInput: DispatchOutreachInput = {
+                origin: 'manual',
+                organizationId,
+                emailAccountId: accountId,
+                idempotencyKey: 'manual:lease-recovery',
+                to: 'recipient@example.test',
+                subject: 'Lease recovery',
+                text: 'No provider is called by this repository test.',
+            }
+            const now = new Date('2026-07-16T12:00:00.000Z')
+            const first = await repository.claim(baseInput, {
+                now,
+                leaseToken: '10000000-0000-4000-8000-000000000010',
+                leaseExpiresAt: new Date(now.getTime() + 60_000),
+            })
+            expect(first.kind).toBe('claimed')
+
+            const contended = await repository.claim(baseInput, {
+                now: new Date(now.getTime() + 1_000),
+                leaseToken: '10000000-0000-4000-8000-000000000011',
+                leaseExpiresAt: new Date(now.getTime() + 61_000),
+            })
+            expect(contended.kind).toBe('in_progress')
+
+            const reclaimed = await repository.claim(baseInput, {
+                now: new Date(now.getTime() + 61_000),
+                leaseToken: '10000000-0000-4000-8000-000000000012',
+                leaseExpiresAt: new Date(now.getTime() + 121_000),
+            })
+            expect(reclaimed.kind).toBe('claimed')
+            if (reclaimed.kind !== 'claimed') throw new Error('expected reclaimed lease')
+
+            await expect(repository.startDispatch(reclaimed, new Date(now.getTime() + 62_000)))
+                .resolves.toEqual({ attemptCount: 1, maxAttempts: 3 })
+
+            const held = await repository.claim(baseInput, {
+                now: new Date(now.getTime() + 122_000),
+                leaseToken: '10000000-0000-4000-8000-000000000013',
+                leaseExpiresAt: new Date(now.getTime() + 182_000),
+            })
+            expect(held.kind).toBe('held')
+
+            const [row] = await sql<{ status: string; last_error_code: string | null }[]>`
+                SELECT status::text AS status, last_error_code
+                FROM outreach_emails
+                WHERE organization_id = ${organizationId}::uuid
+                  AND idempotency_key = ${baseInput.idempotencyKey}
+            `
+            expect(row).toEqual({ status: 'held', last_error_code: 'ambiguous_stale_lease' })
+        } finally {
+            await sql.end({ timeout: 1 })
         }
     })
 })

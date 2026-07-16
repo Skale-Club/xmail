@@ -13,6 +13,11 @@ import { injectTracking } from './tracking'
 import { sendMessageWithOutlook } from './outlook'
 import { generateUnsubscribeLink } from '../routes/outreach/unsubscribe'
 import { relayMessage, storeMessage, getNativeMailboxByEmail } from './native-send'
+import {
+    normalizeProviderFailure,
+    type ProviderAcceptance,
+    type ProviderFailure,
+} from './outreach-dispatch'
 
 interface SendOutreachEmailParams {
     account: typeof emailAccounts.$inferSelect
@@ -25,16 +30,28 @@ interface SendOutreachEmailParams {
     trackClicks?: boolean
     trackingBaseUrl?: string
     abVariant?: 'a' | 'b'
+    stableMessageId?: string
 }
 
-interface SendResult {
-    success: boolean
-    messageId?: string
-    error?: string
-    finalHtml?: string
-    finalText?: string
-    trackingToken?: string
-}
+type SendResult =
+    | {
+        success: true
+        acceptance: 'accepted'
+        messageId?: string
+        finalHtml?: string
+        finalText?: string
+        trackingToken?: string
+    }
+    | {
+        success: false
+        acceptance: Exclude<ProviderAcceptance, 'accepted'>
+        failure: ProviderFailure
+        error: string
+        messageId?: undefined
+        finalHtml?: undefined
+        finalText?: undefined
+        trackingToken?: undefined
+    }
 
 export function createSmtpTransporter(account: typeof emailAccounts.$inferSelect): nodemailer.Transporter {
     if (!account.smtpHost || !account.smtpPassword || !account.smtpUsername) {
@@ -230,7 +247,7 @@ export function calculateNextScheduledAt(step: typeof sequenceSteps.$inferSelect
 }
 
 export async function sendOutreachEmail(params: SendOutreachEmailParams): Promise<SendResult> {
-    const { account, lead, campaign, step, campaignLeadId, trackingToken, trackOpens, trackClicks, trackingBaseUrl, abVariant } = params
+    const { account, lead, campaign, step, campaignLeadId, trackingToken, trackOpens, trackClicks, trackingBaseUrl, abVariant, stableMessageId } = params
 
     try {
         const subjectTemplate = abVariant === 'b' && step.subjectB ? step.subjectB : step.subject
@@ -297,6 +314,7 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
 
             return {
                 success: true,
+                acceptance: 'accepted',
                 finalHtml: html,
                 finalText: text,
                 trackingToken,
@@ -314,6 +332,7 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
             text,
             replyTo: campaign.replyToEmail || undefined,
             headers,
+            messageId: stableMessageId,
         }
 
         if (account.provider === 'native') {
@@ -328,7 +347,15 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
             if (!nativeMailbox) {
                 return {
                     success: false,
+                    acceptance: 'rejected',
                     error: 'Native mailbox not found for outreach account — was it deleted?',
+                    failure: {
+                        code: 'native_mailbox_missing',
+                        classification: 'terminal',
+                        acceptance: 'rejected',
+                        retryable: false,
+                        message: 'Native mailbox not found for outreach account',
+                    },
                 }
             }
 
@@ -362,6 +389,7 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
 
             return {
                 success: true,
+                acceptance: 'accepted',
                 messageId: generatedMessageId,
                 finalHtml: html,
                 finalText: text,
@@ -374,6 +402,7 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
 
         return {
             success: true,
+            acceptance: 'accepted',
             messageId: info.messageId,
             finalHtml: html,
             finalText: text,
@@ -381,9 +410,12 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
         }
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error sending email'
+        const normalized = normalizeProviderFailure(error)
         return {
             success: false,
+            acceptance: normalized.acceptance,
             error: errorMessage,
+            failure: normalized,
         }
     }
 }
@@ -438,7 +470,15 @@ export async function sendThreadedReply(params: ThreadedReplyParams): Promise<Se
             if (!nativeMailbox) {
                 return {
                     success: false,
+                    acceptance: 'rejected',
                     error: 'Native mailbox not found for outreach account — was it deleted?',
+                    failure: {
+                        code: 'native_mailbox_missing',
+                        classification: 'terminal',
+                        acceptance: 'rejected',
+                        retryable: false,
+                        message: 'Native mailbox not found for outreach account',
+                    },
                 }
             }
 
@@ -470,6 +510,7 @@ export async function sendThreadedReply(params: ThreadedReplyParams): Promise<Se
 
             return {
                 success: true,
+                acceptance: 'accepted',
                 messageId: generatedMessageId,
                 finalHtml: html,
                 finalText: text,
@@ -481,14 +522,18 @@ export async function sendThreadedReply(params: ThreadedReplyParams): Promise<Se
 
         return {
             success: true,
+            acceptance: 'accepted',
             messageId: info.messageId ? info.messageId.replace(/[<>]/g, '').trim() : undefined,
             finalHtml: html,
             finalText: text,
         }
     } catch (error) {
+        const normalized = normalizeProviderFailure(error)
         return {
             success: false,
+            acceptance: normalized.acceptance,
             error: error instanceof Error ? error.message : 'Unknown error sending reply',
+            failure: normalized,
         }
     }
 }
