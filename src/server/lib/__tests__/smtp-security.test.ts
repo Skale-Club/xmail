@@ -65,20 +65,28 @@ describe('resolveSmtpSecurity', () => {
         })
     })
 
-    describe('port 25 — opportunistic STARTTLS', () => {
-        it('treats a bare 25 as opportunistic STARTTLS', () => {
+    describe('port 25 — STARTTLS, required whenever credentials are sent', () => {
+        it('treats a bare 25 as required STARTTLS, since submission authenticates', () => {
             const r = resolveSmtpSecurity({ port: 25 })
-            expect(r.mode).toBe('starttls_opportunistic')
+            expect(r.mode).toBe('starttls_required')
             expect(r.secure).toBe(false)
-            expect(r.requireTLS).toBe(false)
+            expect(r.requireTLS).toBe(true)
             expect(r.normalized).toBe(false)
         })
 
-        it('normalizes secure=true on 25 to opportunistic STARTTLS and warns', () => {
-            const r = resolveSmtpSecurity({ port: 25, secure: true })
+        it('drops to opportunistic only for an unauthenticated MX relay', () => {
+            const r = resolveSmtpSecurity({ port: 25, authenticated: false })
             expect(r.mode).toBe('starttls_opportunistic')
-            expect(r.secure).toBe(false)
             expect(r.requireTLS).toBe(false)
+        })
+
+        it('normalizes secure=true on 25 to STARTTLS and warns', () => {
+            const r = resolveSmtpSecurity({ port: 25, secure: true })
+            expect(r.mode).toBe('starttls_required')
+            expect(r.secure).toBe(false)
+            expect(r.requireTLS).toBe(true)
+            // The 422-vs-normalize split is unchanged: canonical `secure` for 25 is still
+            // false, so a stored secure=true is still the only thing that can contradict.
             expect(r.normalized).toBe(true)
             expect(r.warning).toContain('25')
         })

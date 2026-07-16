@@ -12,9 +12,19 @@
  * The rule, once:
  *   - 465            → implicit TLS (`secure:true`)
  *   - 587            → STARTTLS, required (`secure:false`, `requireTLS:true`)
- *   - 25             → STARTTLS, opportunistic (`secure:false`, `requireTLS:false`)
+ *   - 25             → STARTTLS: required when the connection authenticates, opportunistic
+ *                      only for an unauthenticated MX relay. See `authenticated` below.
  *   - anything else  → the stored flag is the only signal; `secure:true` is honoured as
  *                      deliberate nonstandard implicit TLS, otherwise required STARTTLS.
+ *
+ * Why port 25 is conditional (C-1): opportunistic STARTTLS means "encrypt if the peer
+ * offers it". An on-path attacker simply strips `250-STARTTLS` from the EHLO response;
+ * with no `requireTLS`, nodemailer has nothing to object to and continues in cleartext.
+ * That is tolerable for MX relay — the alternative is refusing to deliver mail to peers
+ * that genuinely have no TLS, and there are no credentials on the wire. It is NOT
+ * tolerable for submission, where the very next command is `AUTH LOGIN` carrying the
+ * decrypted mailbox password. Since `buildSmtpTransportOptions` attaches `auth`
+ * unconditionally, every transport it builds is authenticated and therefore requires TLS.
  *
  * Legacy rows whose flag contradicts their port are normalized (not rejected) and reported
  * via `warning`, so an inbox written before this module still sends. New writes are
@@ -46,6 +56,14 @@ export interface SmtpSecurityInput {
     port?: number | null
     /** Stored `email_accounts.smtp_secure`. Null/unset means "no explicit preference". */
     secure?: boolean | null
+    /**
+     * Will this connection present SMTP AUTH credentials?
+     *
+     * Defaults to true: every caller in this codebase resolves a stored outreach inbox,
+     * which authenticates by definition. Only an unauthenticated MX relay may pass false,
+     * and only port 25 reads it — on every other port the TLS mode is already unconditional.
+     */
+    authenticated?: boolean
 }
 
 export interface SmtpSecurityResolution {
@@ -98,6 +116,7 @@ export function isStandardSmtpPort(port: number | null | undefined): boolean {
 export function resolveSmtpSecurity(input: SmtpSecurityInput): SmtpSecurityResolution {
     const port = resolvePort(input.port)
     const requested = typeof input.secure === 'boolean' ? input.secure : null
+    const authenticated = input.authenticated !== false
 
     let mode: SmtpSubmissionMode
     if (port === SMTP_IMPLICIT_TLS_PORT) {
@@ -105,7 +124,9 @@ export function resolveSmtpSecurity(input: SmtpSecurityInput): SmtpSecurityResol
     } else if (port === SMTP_SUBMISSION_PORT) {
         mode = 'starttls_required'
     } else if (port === SMTP_RELAY_PORT) {
-        mode = 'starttls_opportunistic'
+        // Credentials on the wire are what make opportunistic indefensible, so the
+        // presence of AUTH — not the port number — decides.
+        mode = authenticated ? 'starttls_required' : 'starttls_opportunistic'
     } else {
         // Nonstandard port: we have no convention to lean on, so an explicit secure=true is
         // taken at face value (some vendors do run implicit TLS on e.g. 2465). Absent that,
@@ -132,6 +153,14 @@ export function resolveSmtpSecurity(input: SmtpSecurityInput): SmtpSecurityResol
         normalized,
         warning,
     }
+}
+
+/**
+ * True when the resolved transport cannot end up in cleartext: TLS either precedes the
+ * greeting, or STARTTLS is mandatory and the connection fails rather than downgrade.
+ */
+export function guaranteesTls(resolution: SmtpSecurityResolution): boolean {
+    return resolution.secure || resolution.requireTLS
 }
 
 export interface SmtpTransportInput extends SmtpSecurityInput {
@@ -164,7 +193,24 @@ export function buildSmtpTransportOptions(input: SmtpTransportInput): {
     options: SmtpTransportOptions
     resolution: SmtpSecurityResolution
 } {
-    const resolution = resolveSmtpSecurity({ port: input.port, secure: input.secure })
+    // authenticated:true is not a default being relied on — this function attaches `auth`
+    // below, so the fact is stated at the one place that makes it true.
+    const resolution = resolveSmtpSecurity({
+        port: input.port,
+        secure: input.secure,
+        authenticated: true,
+    })
+
+    // Unreachable by construction, asserted anyway: this is the only place credentials and
+    // transport options meet, so the invariant lives here rather than in a comment that a
+    // future resolver change could silently outgrow. Failing closed loses a send; the
+    // alternative loses the password.
+    if (!guaranteesTls(resolution)) {
+        throw new Error(
+            `SMTP submission on port ${resolution.port} resolved to ${describeSmtpSecurityMode(resolution.mode)}, `
+            + 'which permits cleartext. Refusing to attach credentials.',
+        )
+    }
 
     const options: SmtpTransportOptions = {
         host: input.host,
