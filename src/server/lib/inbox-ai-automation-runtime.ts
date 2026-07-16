@@ -10,7 +10,7 @@
 // `executeInboxSendCommand` executor — which alone evaluates the Phase 18 delivery policy.
 
 import { randomUUID } from 'node:crypto'
-import { and, asc, desc, eq } from 'drizzle-orm'
+import { and, asc, count, desc, eq, isNotNull } from 'drizzle-orm'
 import { db, queryClient } from '../../db'
 import {
     campaignLeads,
@@ -220,7 +220,6 @@ async function resolveAutonomousRun(run: OutreachAiRun): Promise<AutonomousRunRe
             id: campaignLeads.id,
             leadId: campaignLeads.leadId,
             assignedEmailAccountId: campaignLeads.assignedEmailAccountId,
-            followUpCount: campaignLeads.followUpCount,
         })
         .from(campaignLeads)
         .where(eq(campaignLeads.id, run.campaignLeadId))
@@ -308,6 +307,12 @@ async function resolveAutonomousRun(run: OutreachAiRun): Promise<AutonomousRunRe
     const orgMax = settings?.maxAutonomousFollowUps ?? 0
     const maxAutonomousFollowUps = Math.min(orgMax, campaign.maxFollowUps)
 
+    // The per-thread ceiling counts AUTONOMOUS replies this platform has actually SENT on this
+    // campaign-lead — derived from the append-only audit trail, never the dead campaign_leads
+    // .follow_up_count column (which nothing in the durable-command path increments, so it stays 0
+    // forever and would silently make any positive ceiling unlimited). See countAutonomousSends.
+    const autonomousFollowUpsSent = await countAutonomousSends(organizationId, run.campaignLeadId)
+
     return {
         autonomy,
         contextInput: {
@@ -322,10 +327,38 @@ async function resolveAutonomousRun(run: OutreachAiRun): Promise<AutonomousRunRe
         conversationId: conversation.id,
         emailAccountId: campaignLead.assignedEmailAccountId,
         resolvedSend,
-        autonomousFollowUpsSent: campaignLead.followUpCount,
+        autonomousFollowUpsSent,
         maxAutonomousFollowUps,
         toneGoal: null,
     }
+}
+
+/**
+ * Count the autonomous AI follow-ups already SENT on a campaign-lead — the advancing, tenant-scoped
+ * source the per-thread ceiling is enforced against (C-1). It counts ONLY autonomous runs that
+ * genuinely dispatched a reply: a `completed` run whose recorded `action` is `draft` (the sole send
+ * decision) AND that is linked to a durable send command. Drafts/held/failed/no-action/`none`
+ * (paused-before-dispatch) runs are NOT counts — they never reached the wire. It is scoped to
+ * (organization_id, campaign_lead_id), so it can never see another tenant's or another lead's runs.
+ *
+ * Crash-safe / replay-safe by construction: a run is terminal once `completed`, so it is counted at
+ * most once, and the command/run idempotency collapses any dispatch replay onto that single run —
+ * the count advances exactly once per successful autonomous send. The run currently being processed
+ * is still `running` here, so it is naturally excluded (this counts PRIOR sends only).
+ */
+export async function countAutonomousSends(organizationId: string, campaignLeadId: string): Promise<number> {
+    const [row] = await db
+        .select({ value: count() })
+        .from(outreachAiRuns)
+        .where(and(
+            eq(outreachAiRuns.organizationId, organizationId),
+            eq(outreachAiRuns.campaignLeadId, campaignLeadId),
+            eq(outreachAiRuns.runKind, 'autonomous'),
+            eq(outreachAiRuns.status, 'completed'),
+            eq(outreachAiRuns.action, 'draft'),
+            isNotNull(outreachAiRuns.sendCommandId),
+        ))
+    return Number(row?.value ?? 0)
 }
 
 async function resolveConversation(
