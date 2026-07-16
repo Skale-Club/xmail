@@ -16,10 +16,13 @@ const testDatabaseUrl = process.env[TEST_DATABASE_URL_ENV]
 
 const migrationsDir = path.join(process.cwd(), 'supabase', 'migrations')
 // The read API reads outreach_emails (038), the Phase 19 staging table's sibling schema (039),
-// and the Phase 21 conversation tables (041). Apply every migration this seed touches, in order.
+// the Phase 21 conversation tables (041), and — since Phase 22 — the operator label/archive
+// columns/tables (042) that listConversations now projects/filters. Apply every migration this
+// seed and query touch, in ascending order.
 const dispatchMigration = path.join(migrationsDir, '038_outreach_dispatch_state_machine.sql')
 const providerEventsMigration = path.join(migrationsDir, '039_outreach_provider_events.sql')
 const unifiedInboxMigration = path.join(migrationsDir, '041_unified_inbox_foundation.sql')
+const operatorMigration = path.join(migrationsDir, '042_unified_inbox_operator_workflows.sql')
 
 // Distinct id space so this suite never collides with sibling .db suites on the shared database.
 // U() builds a valid v4-shaped UUID with a 12-hex final group so every id is a legal ::uuid.
@@ -143,6 +146,7 @@ beforeAll(async () => {
     await applyMigrationFile(target, dispatchMigration)
     await applyMigrationFile(target, providerEventsMigration)
     await applyMigrationFile(target, unifiedInboxMigration)
+    await applyMigrationFile(target, operatorMigration)
 
     process.env.DATABASE_URL = testDatabaseUrl
     process.env.JWT_SECRET ||= 'test'

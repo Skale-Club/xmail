@@ -72,6 +72,11 @@ export interface ConversationCursorFilters {
     campaignId: string | null
     emailAccountId: string | null
     search: string | null
+    // Phase 22 operator filters. Optional so existing callers/tests remain valid; they still
+    // participate in the fingerprint (null-normalized) so a cursor cannot cross filter sets.
+    labelId?: string | null
+    reminderState?: 'active' | 'due' | null
+    archived?: boolean | null
 }
 
 /**
@@ -118,6 +123,9 @@ export function fingerprintConversationFilters(filters: ConversationCursorFilter
         filters.campaignId ?? null,
         filters.emailAccountId ?? null,
         filters.search ?? null,
+        filters.labelId ?? null,
+        filters.reminderState ?? null,
+        filters.archived == null ? null : (filters.archived ? 1 : 0),
     ])
     return createHash('sha256').update(canonical).digest('base64url').slice(0, 22)
 }

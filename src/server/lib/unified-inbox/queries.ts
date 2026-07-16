@@ -18,6 +18,8 @@
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm'
 import { db } from '../../../db'
 import {
+    inboxConversationLabels,
+    inboxLabels,
     outreachConversationMessages,
     outreachConversationParticipants,
     outreachConversationReads,
@@ -50,6 +52,10 @@ export interface ConversationListFilters {
     campaignId: string | null
     emailAccountId: string | null
     search: string | null
+    // Phase 22 operator filters (migration 042).
+    labelId: string | null
+    reminderState: 'active' | 'due' | null
+    archived: boolean | null
 }
 
 export interface ListConversationsParams {
@@ -70,6 +76,12 @@ export interface ConversationParticipantDto {
     role: OutreachConversationParticipantRole
 }
 
+export interface ConversationLabelDto {
+    id: string
+    name: string
+    color: string | null
+}
+
 export interface ConversationListItemDto {
     id: string
     emailAccountId: string
@@ -82,8 +94,10 @@ export interface ConversationListItemDto {
     lastMessageAt: Date | null
     lastInboundAt: Date | null
     lastOutboundAt: Date | null
+    archived: boolean
     unread: boolean
     participants: ConversationParticipantDto[]
+    labels: ConversationLabelDto[]
 }
 
 export interface ConversationListResult {
@@ -127,7 +141,9 @@ export interface ConversationSummaryDto {
     lastMessageAt: Date | null
     lastInboundAt: Date | null
     lastOutboundAt: Date | null
+    archived: boolean
     unread: boolean
+    labels: ConversationLabelDto[]
 }
 
 export interface ConversationDetailDto {
@@ -184,6 +200,29 @@ function searchPredicate(term: string): SQL {
     )`
 }
 
+/** A conversation carries the label if a join row exists for it (tenant-scoped correlated). */
+function labelPredicate(labelId: string): SQL {
+    return sql`EXISTS (
+        SELECT 1 FROM inbox_conversation_labels cl
+        WHERE cl.organization_id = outreach_conversations.organization_id
+          AND cl.conversation_id = outreach_conversations.id
+          AND cl.label_id = ${labelId}::uuid
+    )`
+}
+
+/** The calling user has a scheduled ('active') or due reminder on the conversation. */
+function reminderPredicate(userId: string, state: 'active' | 'due'): SQL {
+    const dueClause = state === 'due' ? sql`AND r.remind_at <= now()` : sql``
+    return sql`EXISTS (
+        SELECT 1 FROM inbox_reminders r
+        WHERE r.organization_id = outreach_conversations.organization_id
+          AND r.conversation_id = outreach_conversations.id
+          AND r.user_id = ${userId}::uuid
+          AND r.status = 'scheduled'
+          ${dueClause}
+    )`
+}
+
 function cursorFiltersOf(organizationId: string, filters: ConversationListFilters): ConversationCursorFilters {
     return {
         organizationId,
@@ -192,7 +231,41 @@ function cursorFiltersOf(organizationId: string, filters: ConversationListFilter
         campaignId: filters.campaignId,
         emailAccountId: filters.emailAccountId,
         search: filters.search,
+        labelId: filters.labelId,
+        reminderState: filters.reminderState,
+        archived: filters.archived,
     }
+}
+
+async function labelsFor(
+    organizationId: string,
+    conversationIds: string[],
+): Promise<Map<string, ConversationLabelDto[]>> {
+    const byConversation = new Map<string, ConversationLabelDto[]>()
+    if (conversationIds.length === 0) return byConversation
+    const rows = await db
+        .select({
+            conversationId: inboxConversationLabels.conversationId,
+            id: inboxLabels.id,
+            name: inboxLabels.name,
+            color: inboxLabels.color,
+        })
+        .from(inboxConversationLabels)
+        .innerJoin(inboxLabels, and(
+            eq(inboxLabels.id, inboxConversationLabels.labelId),
+            eq(inboxLabels.organizationId, inboxConversationLabels.organizationId),
+        ))
+        .where(and(
+            eq(inboxConversationLabels.organizationId, organizationId),
+            inArray(inboxConversationLabels.conversationId, conversationIds),
+        ))
+        .orderBy(asc(inboxLabels.name))
+    for (const row of rows) {
+        const list = byConversation.get(row.conversationId) ?? []
+        list.push({ id: row.id, name: row.name, color: row.color })
+        byConversation.set(row.conversationId, list)
+    }
+    return byConversation
 }
 
 async function participantsFor(
@@ -235,6 +308,10 @@ export async function listConversations(params: ListConversationsParams): Promis
     if (filters.campaignId) conditions.push(eq(outreachConversations.campaignId, filters.campaignId))
     if (filters.emailAccountId) conditions.push(eq(outreachConversations.emailAccountId, filters.emailAccountId))
     if (filters.unread) conditions.push(sql`(${unreadPredicate(userId)})`)
+    if (filters.archived === true) conditions.push(sql`outreach_conversations.archived_at IS NOT NULL`)
+    if (filters.archived === false) conditions.push(sql`outreach_conversations.archived_at IS NULL`)
+    if (filters.labelId) conditions.push(labelPredicate(filters.labelId))
+    if (filters.reminderState) conditions.push(reminderPredicate(userId, filters.reminderState))
 
     const trimmedSearch = filters.search?.trim()
     if (trimmedSearch) {
@@ -265,6 +342,7 @@ export async function listConversations(params: ListConversationsParams): Promis
             lastMessageAt: outreachConversations.lastMessageAt,
             lastInboundAt: outreachConversations.lastInboundAt,
             lastOutboundAt: outreachConversations.lastOutboundAt,
+            archivedAt: outreachConversations.archivedAt,
             cursorTs: sql<string | null>`outreach_conversations.last_message_at::text`,
             unread: sql<boolean>`(${unreadPredicate(userId)})`,
         })
@@ -276,7 +354,11 @@ export async function listConversations(params: ListConversationsParams): Promis
     const hasMore = rows.length > limit
     const pageRows = hasMore ? rows.slice(0, limit) : rows
 
-    const participantMap = await participantsFor(organizationId, pageRows.map((row) => row.id))
+    const pageIds = pageRows.map((row) => row.id)
+    const [participantMap, labelMap] = await Promise.all([
+        participantsFor(organizationId, pageIds),
+        labelsFor(organizationId, pageIds),
+    ])
 
     const conversations: ConversationListItemDto[] = pageRows.map((row) => ({
         id: row.id,
@@ -290,8 +372,10 @@ export async function listConversations(params: ListConversationsParams): Promis
         lastMessageAt: row.lastMessageAt,
         lastInboundAt: row.lastInboundAt,
         lastOutboundAt: row.lastOutboundAt,
+        archived: row.archivedAt != null,
         unread: Boolean(row.unread),
         participants: participantMap.get(row.id) ?? [],
+        labels: labelMap.get(row.id) ?? [],
     }))
 
     let nextCursor: string | null = null
@@ -329,6 +413,7 @@ export async function getConversationDetail(params: {
             lastMessageAt: outreachConversations.lastMessageAt,
             lastInboundAt: outreachConversations.lastInboundAt,
             lastOutboundAt: outreachConversations.lastOutboundAt,
+            archivedAt: outreachConversations.archivedAt,
             unread: sql<boolean>`(${unreadPredicate(userId)})`,
         })
         .from(outreachConversations)
@@ -376,7 +461,10 @@ export async function getConversationDetail(params: {
             asc(outreachConversationMessages.id),
         )
 
-    const participantMap = await participantsFor(organizationId, [conversationId])
+    const [participantMap, labelMap] = await Promise.all([
+        participantsFor(organizationId, [conversationId]),
+        labelsFor(organizationId, [conversationId]),
+    ])
 
     return {
         conversation: {
@@ -390,7 +478,9 @@ export async function getConversationDetail(params: {
             lastMessageAt: summary.lastMessageAt,
             lastInboundAt: summary.lastInboundAt,
             lastOutboundAt: summary.lastOutboundAt,
+            archived: summary.archivedAt != null,
             unread: Boolean(summary.unread),
+            labels: labelMap.get(conversationId) ?? [],
         },
         participants: participantMap.get(conversationId) ?? [],
         messages: messages.map((message) => ({
