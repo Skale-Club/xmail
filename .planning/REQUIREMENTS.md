@@ -6,7 +6,7 @@
 ## Safety and execution reliability
 
 - [x] **SAFE-01** — The organization outreach kill switch blocks campaign sends, manual outreach sends, and automated follow-ups before provider dispatch.
-- [ ] **SAFE-02** — Email, delay, and condition sequence steps have explicit execution semantics; only email steps can call a provider.
+- [x] **SAFE-02** — Email, delay, and condition sequence steps have explicit execution semantics; only email steps can call a provider.
 - [ ] **SAFE-03** — Queue claims use leases, bounded attempts, retry classification, backoff, and stale-claim recovery without duplicate sends.
 - [ ] **SAFE-04** — Due work is deterministically ordered and fairly selected so blocked rows cannot starve sendable leads beyond a 200-row scan.
 - [ ] **SAFE-05** — Campaigns automatically complete only when every enrolled lead is terminal; pre-send exclusions do not corrupt completion or rates.

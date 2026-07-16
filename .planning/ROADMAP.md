@@ -219,11 +219,11 @@ Plans:
 **Goal:** Make the outreach state machine safe under pauses, mixed step types, provider failures, retries, and container restarts; add regression tests before expanding the product surface.
 **Requirements:** SAFE-01, SAFE-02, SAFE-03, SAFE-04, SAFE-05, SAFE-06
 **Depends on:** Phase 17
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 Plans:
 
 - [x] 18-01-PLAN.md — Vitest/Testcontainers harness + fail-closed delivery policy
-- [ ] 18-02-PLAN.md — Type-safe email/delay/condition step execution
+- [x] 18-02-PLAN.md — Type-safe email/delay/condition step execution
 - [ ] 18-03-PLAN.md — Migration 038 + durable leases/retries/held outcomes
 - [ ] 18-04-PLAN.md — Fair scheduler, unified entrypoints, and campaign completion
 

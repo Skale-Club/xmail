@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-last_updated: "2026-07-16T02:29:05.287Z"
+last_updated: "2026-07-16T02:43:30.658Z"
 progress:
   total_phases: 14
   completed_phases: 4
   total_plans: 45
-  completed_plans: 18
-  percent: 29
+  completed_plans: 19
+  percent: 42
 ---
 
 # Project State
@@ -27,14 +27,14 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 18 (Outreach Safety and Execution Reliability) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
 Status: Ready to execute
 
-**Resume point:** Execute `18-02-PLAN.md`. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
+**Resume point:** Execute `18-03-PLAN.md`. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
 
-Progress: [████░░░░░░] 40%
+Progress: [████░░░░░░] 42%
 
 ### v1.2 Phase Status
 
@@ -114,13 +114,19 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T02:29:05.278Z
-Stopped at: Completed 18-01-PLAN.md
+Last session: 2026-07-16T02:43:30.649Z
+Stopped at: Completed 18-02-PLAN.md
 Resume file: None
-Next action: execute `.planning/phases/18-outreach-safety-and-execution-reliability/18-02-PLAN.md`
+Next action: execute `.planning/phases/18-outreach-safety-and-execution-reliability/18-03-PLAN.md`
 
 ## Performance Metrics
 
 | Phase | Plan | Duration | Notes |
 |-------|------|----------|-------|
 | Phase 18 P01 | 13 min | 3 tasks | 11 files |
+| Phase 18 P02 | 8 min | 2 tasks | 4 files |
+
+## Decisions
+
+- [Phase 18]: Explicit delay rows own their wait; email-to-delay transitions are immediate. — Applies delayHours exactly once while preserving email-only timing.
+- [Phase 18]: Activation validates the oldest-created canonical sequence and returns stable 422 issue codes. — Matches current enrollment selection until Phase 20 adds an explicit canonical sequence.
