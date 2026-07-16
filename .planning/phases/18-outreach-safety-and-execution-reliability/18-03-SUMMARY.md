@@ -132,7 +132,7 @@ psql $env:DATABASE_URL -v ON_ERROR_STOP=1 -f supabase/migrations/038_outreach_di
 
 ## TDD Gate Compliance
 
-- **RED:** `ec350c9` — 12 behavioral tests failed on the deliberate unimplemented state machine.
+- **RED:** `ec350c9` — 12 behavioral assertions produced the expected red state against the deliberate placeholder.
 - **GREEN:** `a3b723c` — 14 unit tests and 4 disposable-PostgreSQL tests pass.
 - **REFACTOR:** No separate refactor commit was needed; classification corrections were completed before the GREEN commit.
 
