@@ -22,24 +22,26 @@ const providerEventsMigration = path.join(migrationsDir, '039_outreach_provider_
 const unifiedInboxMigration = path.join(migrationsDir, '041_unified_inbox_foundation.sql')
 
 // Distinct id space so this suite never collides with sibling .db suites on the shared database.
-const P = '21040000-0000-4000-8000-0000'
-const OWNER_A = `${P}000001`
-const MEMBER_A = `${P}000002`
-const VIEWER_A = `${P}000003`
-const USER2_A = `${P}000004`
-const ADMIN_B = `${P}000005`
-const OUTSIDER = `${P}000006` // authenticated but member of no org
+// U() builds a valid v4-shaped UUID with a 12-hex final group so every id is a legal ::uuid.
+const U = (n: string) => `21040000-0000-4000-8000-${n.padStart(12, '0')}`
+const MISSING_ID = U('ff') // matches nothing seeded
+const OWNER_A = U('1')
+const MEMBER_A = U('2')
+const VIEWER_A = U('3')
+const USER2_A = U('4')
+const ADMIN_B = U('5')
+const OUTSIDER = U('6') // authenticated but member of no org
 
-const ORG_A = `${P}000010`
-const ORG_B = `${P}000011`
+const ORG_A = U('10')
+const ORG_B = U('11')
 
-const ACCOUNT_A = `${P}000020`
-const ACCOUNT_A2 = `${P}000021`
-const ACCOUNT_B = `${P}000022`
+const ACCOUNT_A = U('20')
+const ACCOUNT_A2 = U('21')
+const ACCOUNT_B = U('22')
 
-const LEAD_A1 = `${P}000030`
-const CAMP_A = `${P}000040`
-const CL_A1 = `${P}000050`
+const LEAD_A1 = U('30')
+const CAMP_A = U('40')
+const CL_A1 = U('50')
 
 // Secrets that must NEVER appear in any response body.
 const SMTP_PW_SENTINEL = 'SUPER_SECRET_SMTP_PW_21040000'
@@ -47,23 +49,23 @@ const DELTA_CURSOR_SENTINEL = 'DELTA-CURSOR-TOKEN-DO-NOT-LEAK-21040000'
 
 // Org A conversations (account A unless noted). All carry last_inbound_at so they all have an
 // incoming message; unread then depends purely on per-user read rows.
-const CONV_TOP = `${P}000110`
-const CONV_T1 = `${P}000101`
-const CONV_T2 = `${P}000102`
-const CONV_T3 = `${P}000103`
-const CONV_T4 = `${P}000104`
-const CONV_T5 = `${P}000105`
-const CONV_T6 = `${P}000106`
-const CONV_CLOSED = `${P}000111`
-const CONV_ACC2 = `${P}000112`
-const CONV_SEARCH = `${P}000113`
-const CONV_READ = `${P}000114`
-const CONV_CAMP = `${P}000116`
-const CONV_STALE = `${P}000117`
-const CONV_WILD1 = `${P}000118`
-const CONV_WILD2 = `${P}000119`
+const CONV_TOP = U('110')
+const CONV_T1 = U('101')
+const CONV_T2 = U('102')
+const CONV_T3 = U('103')
+const CONV_T4 = U('104')
+const CONV_T5 = U('105')
+const CONV_T6 = U('106')
+const CONV_CLOSED = U('111')
+const CONV_ACC2 = U('112')
+const CONV_SEARCH = U('113')
+const CONV_READ = U('114')
+const CONV_CAMP = U('116')
+const CONV_STALE = U('117')
+const CONV_WILD1 = U('118')
+const CONV_WILD2 = U('119')
 
-const CONV_B = `${P}000210`
+const CONV_B = U('210')
 
 // The full org A ordering under (last_message_at DESC, id DESC). The six 12:00 ties break by id DESC.
 const EXPECTED_ORDER = [
@@ -220,13 +222,13 @@ beforeAll(async () => {
         id, organization_id, conversation_id, email_account_id, direction, provider, source_key,
         internet_message_id, subject, from_address, plain_body, html_body, headers, sent_at, received_at
     ) VALUES
-        (${P}000301::uuid, ${ORG_A}::uuid, ${CONV_TOP}::uuid, ${ACCOUNT_A}::uuid, 'outbound', 'native', 'outreach-email:top-1',
+        (${U('301')}::uuid, ${ORG_A}::uuid, ${CONV_TOP}::uuid, ${ACCOUNT_A}::uuid, 'outbound', 'native', 'outreach-email:top-1',
          '<top-root@mail.test>', 'Offer', 'inbox-a@example.test', 'Our proposal is attached.', '<p>Our proposal is attached.</p>',
          ${JSON.stringify({ Subject: 'Offer', 'Message-ID': '<top-root@mail.test>' })}::jsonb, ${TS(12, 30)}::timestamp, NULL),
-        (${P}000302::uuid, ${ORG_A}::uuid, ${CONV_TOP}::uuid, ${ACCOUNT_A}::uuid, 'inbound', 'native', 'native:top-2',
+        (${U('302')}::uuid, ${ORG_A}::uuid, ${CONV_TOP}::uuid, ${ACCOUNT_A}::uuid, 'inbound', 'native', 'native:top-2',
          '<top-2@lead.test>', 'Re: Offer', 'alice@lead.test', 'Thanks, reviewing now.', '<p>Thanks, reviewing now.</p>',
          ${JSON.stringify({ Subject: 'Re: Offer' })}::jsonb, NULL, ${TS(12, 45)}::timestamp),
-        (${P}000303::uuid, ${ORG_A}::uuid, ${CONV_TOP}::uuid, ${ACCOUNT_A}::uuid, 'inbound', 'native', 'native:top-3',
+        (${U('303')}::uuid, ${ORG_A}::uuid, ${CONV_TOP}::uuid, ${ACCOUNT_A}::uuid, 'inbound', 'native', 'native:top-3',
          '<top-3@lead.test>', 'Re: Offer', 'alice@lead.test', 'final numbers look good.', '<p>final numbers look good.</p>',
          ${JSON.stringify({ Subject: 'Re: Offer' })}::jsonb, NULL, ${TS(13, 0)}::timestamp)
         ON CONFLICT (id) DO NOTHING`
@@ -402,7 +404,7 @@ describe('unified inbox — conversation detail', () => {
     })
 
     it('404s an unknown id and never distinguishes it from another tenant’s conversation', async () => {
-        const missing = await call(`/conversations/${P}0000ff?organizationId=${ORG_A}`)
+        const missing = await call(`/conversations/${MISSING_ID}?organizationId=${ORG_A}`)
         // Org A member asking for an org B conversation id under org A scope: same 404 as missing.
         const crossTenant = await call(`/conversations/${CONV_B}?organizationId=${ORG_A}`)
         expect(missing.status).toBe(404)
@@ -446,7 +448,7 @@ describe('unified inbox — per-user, idempotent read state and unread counts', 
 
     it('validates the read-state body and 404s unknown/cross-tenant ids', async () => {
         expect((await call(`/conversations/${CONV_TOP}/read-state?organizationId=${ORG_A}`, { userId: OWNER_A, method: 'PATCH', body: { read: 'yes' } })).status).toBe(400)
-        expect((await call(`/conversations/${P}0000ff/read-state?organizationId=${ORG_A}`, { userId: OWNER_A, method: 'PATCH', body: { read: true } })).status).toBe(404)
+        expect((await call(`/conversations/${MISSING_ID}/read-state?organizationId=${ORG_A}`, { userId: OWNER_A, method: 'PATCH', body: { read: true } })).status).toBe(404)
         // Org A scope, org B id → 404, indistinguishable from missing.
         expect((await call(`/conversations/${CONV_B}/read-state?organizationId=${ORG_A}`, { userId: OWNER_A, method: 'PATCH', body: { read: true } })).status).toBe(404)
     })

@@ -4,6 +4,7 @@ import leadsRouter from './leads'
 import campaignsRouter from './campaigns'
 import settingsRouter from './settings'
 import sendMessageRouter from './send-message'
+import unifiedInboxRouter from './unified-inbox'
 
 const router = Router()
 
@@ -29,5 +30,8 @@ router.use('/settings', settingsRouter)
 
 // One-to-one transactional send routes
 router.use('/send-message', sendMessageRouter)
+
+// Unified Inbox read API (Phase 21 UIF-04/05): list/detail/unread/read-state
+router.use('/unified-inbox', unifiedInboxRouter)
 
 export default router
