@@ -292,11 +292,11 @@ Plans:
 **Goal:** Turn existing Xphere follow-up code into opt-in, auditable inbox assistance and automation that can never bypass outreach policy gates.
 **Requirements:** AI-01, AI-02, AI-03, AI-04, AI-05, AI-06
 **Depends on:** Phase 22
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 Plans:
 
 - [x] 23-01-PLAN.md — Migration 043 + default-off controls and redacted AI audit
-- [ ] 23-02-PLAN.md — Human-controlled AI draft suggestions
+- [x] 23-02-PLAN.md — Human-controlled AI draft suggestions
 - [ ] 23-03-PLAN.md — Lease-based autonomous decisions through the single executor
 - [ ] 23-04-PLAN.md — Automation controls/history, evaluations, and acceptance
 

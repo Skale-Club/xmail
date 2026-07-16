@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
-status: verifying
-stopped_at: Completed 23-01-PLAN.md
-last_updated: "2026-07-16T21:11:00.916Z"
+status: executing
+stopped_at: Completed 23-02-PLAN.md
+last_updated: "2026-07-16T21:48:38.905Z"
 progress:
   total_phases: 15
   completed_phases: 9
   total_plans: 41
-  completed_plans: 38
+  completed_plans: 39
   percent: 60
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 23 (AI Inbox Automation and Guardrails) — IN PROGRESS (FINAL phase of milestone v1.4)
-Plan: 1 of 4
+Plan: 2 of 4
 Phase 23 Plan 01 (AI foundation: settings/audit migration 043 + context builder + audit lib) — COMPLETE (AI-01/03/05; 44 new tests, 744/744 total; migration 043 written+tested, NOT applied to prod)
 Phase 22 (Unified Inbox Operator Experience) — COMPLETE + VERIFIED (UIX-01..06, 19/19 must-haves; 3-lens review 1 critical + 6 warnings all fixed and re-reviewed; 700/700 tests deterministic)
 Phase 21 (Unified Inbox Foundation) — COMPLETE + VERIFIED (UIF-01..05, 43/43 must-haves; 3-lens review 0 critical + 3 warnings all fixed and re-reviewed; 527/527 tests deterministic)
@@ -37,7 +37,7 @@ Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
-Status: Phases 18-22 all COMPLETE + VERIFIED. Only Phase 23 (guarded AI automation) remains — the final phase of milestone v1.4. Full suite: 700 tests, deterministic.
+Status: Ready to execute
 
 **Also this session:** made the Vitest postgres project a deterministic gate (commit a87ee0b) — root-level fileParallelism:false + container max_connections=300 + a suite that self-applies its migration. This fixed the flaky deadlocks/timeouts that dogged phases 19-20 reviews.
 
@@ -138,8 +138,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T21:11:00.770Z
-Stopped at: Completed 23-01-PLAN.md
+Last session: 2026-07-16T21:48:19.199Z
+Stopped at: Completed 23-02-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -168,6 +168,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 22 P04 | 34min | 3 tasks | 16 files |
 | Phase 22 P05 | 16 | 3 tasks | 12 files |
 | Phase 23 P01 | 20min | 3 tasks | 6 files |
+| Phase 23 P02 | 27min | 3 tasks | 11 files |
 
 ## Decisions
 
@@ -211,3 +212,4 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 22]: (22-04) Attachments are bounded, org-owned, private-bucket, non-base64 bytes (server measures actual size; authenticated raw-body upload; server-chosen path); reply-all Cc/Bcc are suppression-filtered before the MIME; policy denial reschedules and preserves the draft with a recoverable reason.
 - [Phase 22]: Near-real-time via ONE org-scoped authenticated-fetch SSE stream (never EventSource) carrying ids/counts only; disconnect falls back to bounded unread/list polling with visible stale state
 - [Phase 23]: Effective AI autonomy = intersection of org autonomous_enabled AND campaign ai_autonomous_enabled AND clear kill switch AND Phase 18 policy; both flags default OFF (migration 043)
+- [Phase 23]: 23-02: AI draft suggestion path is no-send-by-construction (imports no dispatcher); draft flows into the existing Phase 22 composer; disabled setting = clean not_enabled gate
