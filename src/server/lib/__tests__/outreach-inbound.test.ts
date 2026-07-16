@@ -416,8 +416,8 @@ describe('consumeClassifiedEvents', () => {
         ]], EMPTY_CURSOR)
         await ingestInboundPage({ store, source, account: { id: ACCOUNT, organizationId: ORG } })
 
-        const replyHandler = vi.fn(async () => {})
-        const bounceHandler = vi.fn(async () => {})
+        const replyHandler = vi.fn(async (_event: StoredProviderEvent) => {})
+        const bounceHandler = vi.fn(async (_event: StoredProviderEvent) => {})
         await consumeClassifiedEvents({ store, classification: 'reply', handle: replyHandler })
         await consumeClassifiedEvents({ store, classification: 'bounce', handle: bounceHandler })
 

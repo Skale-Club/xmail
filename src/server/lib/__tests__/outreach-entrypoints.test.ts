@@ -121,3 +121,42 @@ describe('shared dispatch providers', () => {
         expect(provider).not.toMatch(/\bsendMessageWithOutlook\b/)
     })
 })
+
+describe('inbound entrypoint wiring', () => {
+    it.each([
+        'src/server/jobs/processReplies.ts',
+        'src/server/jobs/processBounces.ts',
+    ])('%s consumes durable events instead of scanning inboxes', (relativePath) => {
+        const contents = source(relativePath)
+        expect(contents).toContain('consumeClassifiedEvents')
+        // The reply/bounce race came from both jobs owning their own scan. Neither may
+        // reopen an IMAP connection or re-derive a classification from raw headers.
+        expect(contents).not.toContain('ImapFlow')
+        expect(contents).not.toMatch(/messageFlagsAdd/)
+    })
+
+    it.each([
+        'src/server/jobs/processReplies.ts',
+        'src/server/jobs/processBounces.ts',
+        'src/server/lib/outreach-inbound.ts',
+        'src/server/lib/outreach-inbound-sources.ts',
+    ])('%s never uses user read state as an ingestion cursor', (relativePath) => {
+        // Code only — comments in these files legitimately describe the old behaviour.
+        const contents = source(relativePath)
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .replace(/(^|[^:])\/\/.*$/gm, '$1')
+
+        expect(contents).not.toMatch(/isRead/)
+        expect(contents).not.toMatch(/seen:\s*false/)
+        expect(contents).not.toMatch(/\\Seen/)
+    })
+
+    it('keeps one classifier rather than a second copy in the bounce job', () => {
+        // processBounces used to carry its own BOUNCE_SENDERS/BOUNCE_SUBJECTS lists.
+        // Two copies of "what is a bounce" is how the jobs disagreed in the first place.
+        const contents = source('src/server/jobs/processBounces.ts')
+        expect(contents).not.toContain('BOUNCE_SENDERS')
+        expect(contents).not.toContain('isBounceEmail')
+        expect(source('src/server/lib/outreach-inbound.ts')).toContain('BOUNCE_SENDERS')
+    })
+})

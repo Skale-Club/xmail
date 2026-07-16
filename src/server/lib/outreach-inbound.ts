@@ -436,3 +436,174 @@ export async function consumeClassifiedEvents(deps: {
 
     return { claimed: events.length, processed, failed }
 }
+
+// ============================================================
+// SQL store
+// ============================================================
+
+export interface InboundSqlClient {
+    (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown>
+}
+
+function rows<T>(result: unknown): T[] {
+    return Array.isArray(result) ? result as T[] : []
+}
+
+interface CursorRow {
+    delta_cursor: string | null
+    uid_validity: string | number | null
+    last_uid: string | number | null
+    last_received_at: Date | null
+    last_provider_message_id: string | null
+}
+
+function toNumber(value: string | number | null): number | null {
+    if (value === null) return null
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+}
+
+export function createSqlInboundEventStore(
+    getClient: () => Promise<InboundSqlClient>,
+): InboundEventStore {
+    return {
+        async recordEvent(input) {
+            const sql = await getClient()
+            // ON CONFLICT against the migration-039 unique key is what makes ingestion
+            // idempotent: a re-fetched page, a retried tick, and a UIDVALIDITY resync
+            // all converge on one row and therefore one side effect.
+            const inserted = await sql`
+                INSERT INTO outreach_provider_events (
+                    organization_id, email_account_id, provider, provider_message_id,
+                    message_id, in_reply_to, message_references, classification,
+                    from_address, to_addresses, cc_addresses, subject,
+                    text_body, html_body, headers, attachments, received_at
+                ) VALUES (
+                    ${input.organizationId}, ${input.emailAccountId}, ${input.provider},
+                    ${input.providerMessageId}, ${input.messageId}, ${input.inReplyTo},
+                    ${input.messageReferences}, ${input.classification}, ${input.fromAddress},
+                    ${JSON.stringify(input.toAddresses)}::jsonb,
+                    ${JSON.stringify(input.ccAddresses)}::jsonb,
+                    ${input.subject}, ${input.textBody}, ${input.htmlBody},
+                    ${JSON.stringify(input.headers)}::jsonb,
+                    ${JSON.stringify(input.attachments)}::jsonb,
+                    ${input.receivedAt}
+                )
+                ON CONFLICT (organization_id, email_account_id, provider, provider_message_id)
+                DO NOTHING
+                RETURNING id
+            `
+            return { inserted: rows(inserted).length > 0 }
+        },
+
+        async loadCursor(emailAccountId, provider) {
+            const sql = await getClient()
+            const result = await sql`
+                SELECT delta_cursor, uid_validity, last_uid, last_received_at, last_provider_message_id
+                FROM outreach_provider_cursors
+                WHERE email_account_id = ${emailAccountId} AND provider = ${provider}
+                LIMIT 1
+            `
+            const row = rows<CursorRow>(result)[0]
+            if (!row) return null
+            return {
+                deltaCursor: row.delta_cursor,
+                uidValidity: toNumber(row.uid_validity),
+                lastUid: toNumber(row.last_uid),
+                lastReceivedAt: row.last_received_at,
+                lastProviderMessageId: row.last_provider_message_id,
+            }
+        },
+
+        async saveCursor(emailAccountId, provider, next) {
+            const sql = await getClient()
+            await sql`
+                INSERT INTO outreach_provider_cursors (
+                    organization_id, email_account_id, provider, delta_cursor,
+                    uid_validity, last_uid, last_received_at, last_provider_message_id,
+                    last_success_at, last_error, last_error_at, retry_at, updated_at
+                )
+                SELECT organization_id, id, ${provider}, ${next.deltaCursor},
+                       ${next.uidValidity}, ${next.lastUid}, ${next.lastReceivedAt},
+                       ${next.lastProviderMessageId}, now(), NULL, NULL, NULL, now()
+                FROM email_accounts
+                WHERE id = ${emailAccountId}
+                ON CONFLICT (organization_id, email_account_id, provider)
+                DO UPDATE SET
+                    delta_cursor = EXCLUDED.delta_cursor,
+                    uid_validity = EXCLUDED.uid_validity,
+                    last_uid = EXCLUDED.last_uid,
+                    last_received_at = EXCLUDED.last_received_at,
+                    last_provider_message_id = EXCLUDED.last_provider_message_id,
+                    last_success_at = now(),
+                    last_error = NULL,
+                    last_error_at = NULL,
+                    retry_at = NULL,
+                    updated_at = now()
+            `
+        },
+
+        async claimPending(classification, limit) {
+            const sql = await getClient()
+            // FOR UPDATE SKIP LOCKED + setting processed_at in the same statement is the
+            // claim. Two workers cannot hand the same event to their side effects, and a
+            // reply consumer can never claim a row classified as a bounce.
+            const result = await sql`
+                UPDATE outreach_provider_events AS event
+                SET processed_at = now(), updated_at = now()
+                WHERE event.id IN (
+                    SELECT candidate.id
+                    FROM outreach_provider_events AS candidate
+                    WHERE candidate.classification = ${classification}
+                      AND candidate.processed_at IS NULL
+                    ORDER BY candidate.received_at ASC
+                    LIMIT ${limit}
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING event.id, event.organization_id, event.email_account_id, event.provider,
+                          event.provider_message_id, event.message_id, event.in_reply_to,
+                          event.message_references, event.classification, event.from_address,
+                          event.subject, event.text_body, event.html_body, event.received_at,
+                          event.processed_at, event.processing_error
+            `
+            return rows<Record<string, never>>(result).map((row) => {
+                const record = row as unknown as Record<string, unknown>
+                return {
+                    id: String(record.id),
+                    organizationId: String(record.organization_id),
+                    emailAccountId: String(record.email_account_id),
+                    provider: record.provider as OutreachProviderName,
+                    providerMessageId: String(record.provider_message_id),
+                    messageId: (record.message_id as string | null) ?? null,
+                    inReplyTo: (record.in_reply_to as string | null) ?? null,
+                    messageReferences: (record.message_references as string | null) ?? null,
+                    classification: record.classification as InboundClassification,
+                    fromAddress: (record.from_address as string | null) ?? null,
+                    subject: (record.subject as string | null) ?? null,
+                    textBody: (record.text_body as string | null) ?? null,
+                    htmlBody: (record.html_body as string | null) ?? null,
+                    receivedAt: record.received_at as Date,
+                    processedAt: (record.processed_at as Date | null) ?? null,
+                    processingError: (record.processing_error as string | null) ?? null,
+                }
+            })
+        },
+
+        async recordProcessingError(eventId, error) {
+            const sql = await getClient()
+            await sql`
+                UPDATE outreach_provider_events
+                SET processing_error = ${error}, updated_at = now()
+                WHERE id = ${eventId}
+            `
+        },
+    }
+}
+
+/** Lazy db import keeps this module unit-testable without a live connection. */
+export function createDrizzleInboundEventStore(): InboundEventStore {
+    return createSqlInboundEventStore(async () => {
+        const { queryClient } = await import('../../db')
+        return queryClient as unknown as InboundSqlClient
+    })
+}

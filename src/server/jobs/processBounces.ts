@@ -1,27 +1,36 @@
 /**
  * Process Bounced Outreach Emails
- * 
- * This job processes bounced emails:
- * - Checks IMAP inboxes for bounce notification emails
+ *
+ * Phase 19 (PROV-04): this job no longer scans inboxes. It consumes durable
+ * outreach_provider_events rows already classified 'bounce' at ingestion, then:
  * - Parses bounce messages (DSN - Delivery Status Notification)
  * - Updates outreach_emails with bounce info
  * - Updates campaign_leads.status to 'bounced'
  * - Updates leads.status to 'bounced'
  * - Increments bounce stats on campaigns and accounts
- * 
+ * - Suppresses hard-bounced addresses org-wide
+ *
+ * Why the change: the old IMAP scan re-read every message from a bounce-sender on
+ * every tick with no date/cursor bound, and the native scan only saw unread mail —
+ * so a DSN that processReplies had already marked read was invisible here. Both jobs
+ * now read the same one-time classification and cannot race.
+ *
  * Also provides webhook endpoint support for services like SendGrid, Mailgun, etc.
  */
 
-import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { db } from '../../db'
-import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, suppressions, mailFolders, mailMessages } from '../../db/schema'
-import { eq, and, or, isNotNull, inArray, sql, desc } from 'drizzle-orm'
-import { decryptSecret } from '../lib/crypto'
+import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, suppressions } from '../../db/schema'
+import { eq, and, sql, desc } from 'drizzle-orm'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { runWithLock } from '../lib/cron-lock'
-import { getNativeMailboxByEmail } from '../lib/native-send'
+import {
+    consumeClassifiedEvents,
+    createDrizzleInboundEventStore,
+    type StoredProviderEvent,
+} from '../lib/outreach-inbound'
+import { ingestOutreachInbound } from '../lib/outreach-inbound-sources'
 
 const log = createLogger('outreach.bounce')
 
@@ -31,39 +40,6 @@ interface BounceInfo {
     bounceType: 'hard' | 'soft'
     reason: string
     diagnosticCode?: string
-}
-
-const BOUNCE_SENDERS = [
-    'mailer-daemon',
-    'postmaster',
-    'bounce@',
-    'bounces@',
-    'noreply@',
-    'no-reply@'
-]
-
-const BOUNCE_SUBJECTS = [
-    'undeliverable',
-    'returned mail',
-    'returned message',
-    'bounce',
-    'failure',
-    'delivery failure',
-    'delivery status',
-    'delivery report',
-    'mail delivery failed',
-    'message bounced',
-    'unable to deliver'
-]
-
-function isBounceEmail(from: string, subject: string): boolean {
-    const fromLower = from.toLowerCase()
-    const subjectLower = subject.toLowerCase()
-
-    const isBounceSender = BOUNCE_SENDERS.some(sender => fromLower.includes(sender))
-    const isBounceSubject = BOUNCE_SUBJECTS.some(s => subjectLower.includes(s))
-
-    return isBounceSender || isBounceSubject
 }
 
 export function parseBounceMessage(message: Awaited<ReturnType<typeof simpleParser>>): BounceInfo {
@@ -342,366 +318,119 @@ export async function runBouncesProcessorWithLock(): Promise<void> {
 export async function processBounces(): Promise<{ processed: number; bounces: number; errors: number }> {
     const result = { processed: 0, bounces: 0, errors: 0 }
 
-    // provider='native' accounts have no IMAP credentials — pulled in via an OR
-    // alongside the existing IMAP-credentialed condition, same pattern as processReplies.ts.
-    const accounts = await db.query.emailAccounts.findMany({
-        where: and(
-            eq(emailAccounts.status, 'verified'),
-            or(
-                eq(emailAccounts.provider, 'native'),
-                and(
-                    isNotNull(emailAccounts.imapHost),
-                    isNotNull(emailAccounts.imapUsername),
-                    isNotNull(emailAccounts.imapPassword)
-                )
-            )
-        )
+    const store = createDrizzleInboundEventStore()
+
+    // Stage first — see the note in processReplies.ts. Ingestion is idempotent, so
+    // whichever job wins the tick, both classifications end up staged exactly once.
+    const ingested = await ingestOutreachInbound({ store })
+    result.errors += ingested.errors
+
+    const consumed = await consumeClassifiedEvents({
+        store,
+        classification: 'bounce',
+        handle: async (event) => {
+            const bounced = await handleBounceEvent(event)
+            if (bounced) result.bounces++
+        },
     })
 
-    for (const account of accounts) {
-        if (account.provider === 'native') {
-            const native = await processAccountBouncesNative(account)
-            result.processed += native.processed
-            result.bounces += native.bounces
-            result.errors += native.errors
-            continue
-        }
-
-        let client: ImapFlow | null = null
-
-        try {
-            const password = decryptSecret(account.imapPassword!)
-
-            client = new ImapFlow({
-                host: account.imapHost!,
-                port: account.imapPort || 993,
-                secure: account.imapSecure !== false,
-                auth: {
-                    user: account.imapUsername!,
-                    pass: password
-                },
-                logger: false
-            })
-
-            await client.connect()
-
-            const lock = await client.getMailboxLock('INBOX')
-            
-            try {
-                const messages = await client.search({
-                    or: [
-                        { from: 'mailer-daemon' },
-                        { from: 'postmaster' },
-                        { from: 'bounce@' },
-                        { from: 'bounces@' }
-                    ]
-                }, { uid: true })
-
-                // audit-2026-07 (M4): skip THIS account only when the search yields nothing —
-                // the old `return` aborted processBounces() entirely, silently skipping every
-                // remaining account that tick and discarding accumulated counts.
-                if (!messages) continue;
-                for (const uid of messages) {
-                    try {
-                        const message = await client.fetchOne(uid, { source: true })
-                        if (!message || typeof message === "boolean" || !("source" in message)) continue
-
-                        const parsed = await simpleParser((message as any).source)
-
-                        if (!isBounceEmail((parsed as any).from?.text || '', (parsed as any).subject || '')) {
-                            continue
-                        }
-
-                        result.processed++
-
-                        const bounceInfo = parseBounceMessage(parsed as any)
-
-                        if (!bounceInfo.recipientEmail) {
-                            log.warn({ action: 'outreach.bounce.parse_failed_no_recipient' }, 'could not extract recipient from bounce')
-                            continue
-                        }
-
-                        let outreachEmail = bounceInfo.originalMessageId
-                            ? await findBouncedOutreachEmailByMessageId(
-                                bounceInfo.originalMessageId,
-                                account.id,
-                                account.organizationId,
-                            )
-                            : null
-
-                        if (!outreachEmail) {
-                            outreachEmail = await findOutreachEmailByRecipient(
-                                bounceInfo.recipientEmail,
-                                account.id
-                            )
-                        }
-
-                        if (!outreachEmail) {
-                            log.warn({
-                                action: 'outreach.bounce.unmatched',
-                                recipientEmail: bounceInfo.recipientEmail,
-                                emailAccountId: account.id,
-                            }, 'no outreach email matched bounce recipient')
-                            continue
-                        }
-
-                        if (!outreachEmail.campaignLeadId || !outreachEmail.campaignId) {
-                            log.warn({
-                                action: 'outreach.bounce.non_campaign_match',
-                                outreachEmailId: outreachEmail.id,
-                                origin: outreachEmail.origin,
-                            }, 'bounce target has no campaign linkage')
-                            continue
-                        }
-
-                        const campaignLead = await db.query.campaignLeads.findFirst({
-                            where: eq(campaignLeads.id, outreachEmail.campaignLeadId),
-                            with: { lead: true }
-                        })
-
-                        if (!campaignLead?.lead) {
-                            log.warn({
-                                action: 'outreach.bounce.campaign_lead_missing',
-                                outreachEmailId: outreachEmail.id,
-                            }, 'campaign lead row missing for bounce target')
-                            continue
-                        }
-
-                        if (campaignLead.status === 'bounced') {
-                            continue
-                        }
-
-                        const fullReason = bounceInfo.diagnosticCode
-                            ? `${bounceInfo.reason} (${bounceInfo.diagnosticCode})`
-                            : bounceInfo.reason
-
-                        await markAsBounced(
-                            outreachEmail.id,
-                            campaignLead.id,
-                            campaignLead.lead.id,
-                            outreachEmail.campaignId,
-                            account.id,
-                            outreachEmail.organizationId,
-                            fullReason
-                        )
-
-                        result.bounces++
-
-                        try {
-                            await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true })
-                        } catch {
-                            // Ignore flag errors
-                        }
-                    } catch (error) {
-                        const err = error instanceof Error ? error : new Error(String(error))
-                        log.error({
-                            action: 'outreach.bounce.message_error',
-                            uid,
-                            emailAccountId: account.id,
-                            error: { message: err.message, stack: err.stack },
-                        }, 'failed to process bounce message')
-                        result.errors++
-                    }
-                }
-            } finally {
-                lock.release()
-            }
-        } catch (error) {
-            const err = error instanceof Error ? error : new Error(String(error))
-            log.error({
-                action: 'outreach.bounce.account_error',
-                emailAccountId: account.id,
-                email: account.email,
-                error: { message: err.message, stack: err.stack },
-            }, 'account bounce-processing failed')
-            result.errors++
-        } finally {
-            if (client) {
-                try {
-                    await client.logout()
-                } catch {
-                    // Ignore logout errors
-                }
-            }
-        }
-    }
-
-    await db.update(emailAccounts)
-        .set({ lastSyncAt: new Date() })
-        .where(isNotNull(emailAccounts.imapHost))
+    result.processed = consumed.claimed
+    result.errors += consumed.failed
 
     return result
 }
 
 /**
- * Native-provider counterpart of the IMAP bounce scan above. The IMAP path re-scans
- * ALL messages matching a bounce-sender heuristic on every tick (no unseen/date
- * filter — idempotency comes from `campaignLead.status === 'bounced'`), which isn't
- * practical to mirror exactly against a full table scan. As a minimal-but-functional
- * approximation, this scans only unread INBOX messages (isRead=false) in the account's
- * native mailbox — the same "last checked" signal processAccountRepliesNative uses —
- * and applies the SAME isBounceEmail() sender/subject heuristic and parseBounceMessage()
- * DSN parser, fed from the stored plainBody/htmlBody/messageId columns instead of a raw
- * IMAP source blob (native mail has no raw-source column; see PR notes on this
- * simplification and its one known edge case: a bounce message that the reply
- * processor mis-marks as read first would be skipped here).
+ * Applies one already-classified bounce event. Reaching this function means the
+ * ingestion classifier decided DSN before anything else looked at the message, so a
+ * bounce can no longer be consumed as a reply.
  */
-async function processAccountBouncesNative(
-    account: { id: string; email: string; organizationId: string }
-): Promise<{ processed: number; bounces: number; errors: number }> {
-    const result = { processed: 0, bounces: 0, errors: 0 }
+async function handleBounceEvent(event: StoredProviderEvent): Promise<boolean> {
+    // parseBounceMessage only reads .text/.html/.messageId off a parsed-mail object.
+    // The staged bodies carry the same content the old raw-source parse produced.
+    const pseudoParsed = {
+        text: event.textBody || '',
+        html: event.htmlBody || false,
+        messageId: event.messageId || undefined,
+    } as unknown as Awaited<ReturnType<typeof simpleParser>>
 
-    const nativeMailbox = await getNativeMailboxByEmail(account.email)
-    if (!nativeMailbox) return result
+    const bounceInfo = parseBounceMessage(pseudoParsed)
 
-    const inboxFolder = await db.query.mailFolders.findFirst({
-        where: and(
-            eq(mailFolders.mailboxId, nativeMailbox.id),
-            eq(mailFolders.type, 'inbox')
-        ),
+    if (!bounceInfo.recipientEmail) {
+        log.warn({
+            action: 'outreach.bounce.parse_failed_no_recipient',
+            provider: event.provider,
+            emailAccountId: event.emailAccountId,
+        }, 'could not extract recipient from bounce')
+        return false
+    }
+
+    let outreachEmail = bounceInfo.originalMessageId
+        ? await findBouncedOutreachEmailByMessageId(
+            bounceInfo.originalMessageId,
+            event.emailAccountId,
+            event.organizationId,
+        )
+        : null
+
+    if (!outreachEmail) {
+        outreachEmail = await findOutreachEmailByRecipient(bounceInfo.recipientEmail, event.emailAccountId)
+    }
+
+    if (!outreachEmail) {
+        log.warn({
+            action: 'outreach.bounce.unmatched',
+            recipientEmail: bounceInfo.recipientEmail,
+            emailAccountId: event.emailAccountId,
+            provider: event.provider,
+        }, 'no outreach email matched bounce recipient')
+        return false
+    }
+
+    if (!outreachEmail.campaignLeadId || !outreachEmail.campaignId) {
+        log.warn({
+            action: 'outreach.bounce.non_campaign_match',
+            outreachEmailId: outreachEmail.id,
+            origin: outreachEmail.origin,
+        }, 'bounce target has no campaign linkage')
+        return false
+    }
+
+    const campaignLead = await db.query.campaignLeads.findFirst({
+        where: eq(campaignLeads.id, outreachEmail.campaignLeadId),
+        with: { lead: true },
     })
-    if (!inboxFolder) return result
 
-    const candidates = await db.query.mailMessages.findMany({
-        where: and(
-            eq(mailMessages.folderId, inboxFolder.id),
-            eq(mailMessages.isRead, false)
-        ),
-        // isBounceEmail() below rejects all but a small fraction of these on
-        // from-address/subject alone, so the ~14 kB payload is fetched afterwards
-        // for the survivors only — see the projection note in imap-server.ts.
-        columns: { plainBody: false, htmlBody: false, headers: false, attachments: false },
-        orderBy: (m, { asc }) => [asc(m.receivedAt)],
-        limit: 500,
-    })
+    if (!campaignLead?.lead) {
+        log.warn({
+            action: 'outreach.bounce.campaign_lead_missing',
+            outreachEmailId: outreachEmail.id,
+            provider: event.provider,
+        }, 'campaign lead row missing for bounce target')
+        return false
+    }
 
-    const bounceIds = candidates
-        .filter(m => isBounceEmail(m.fromAddress || '', m.subject || ''))
-        .map(m => m.id)
-    const bounceBodies = new Map(
-        (bounceIds.length
-            ? await db.query.mailMessages.findMany({
-                where: inArray(mailMessages.id, bounceIds),
-                columns: { id: true, plainBody: true, htmlBody: true },
-            })
-            : []
-        ).map(r => [r.id, r])
+    // Still idempotent at the side-effect layer, on top of the event claim: a lead
+    // already bounced by an earlier DSN must not double-count stats.
+    if (campaignLead.status === 'bounced') {
+        return false
+    }
+
+    const fullReason = bounceInfo.diagnosticCode
+        ? `${bounceInfo.reason} (${bounceInfo.diagnosticCode})`
+        : bounceInfo.reason
+
+    await markAsBounced(
+        outreachEmail.id,
+        campaignLead.id,
+        campaignLead.lead.id,
+        outreachEmail.campaignId,
+        event.emailAccountId,
+        outreachEmail.organizationId,
+        fullReason,
     )
 
-    for (const msg of candidates) {
-        try {
-            if (!isBounceEmail(msg.fromAddress || '', msg.subject || '')) {
-                continue
-            }
-            const body = bounceBodies.get(msg.id)
-
-            result.processed++
-
-            // parseBounceMessage() only reads .text/.html/.messageId off the parsed-mail
-            // object — synthesize one from the columns already stored for this message
-            // (native mail has no raw-source blob to re-parse with mailparser).
-            const pseudoParsed = {
-                text: body?.plainBody || '',
-                html: body?.htmlBody || false,
-                messageId: msg.messageId || undefined,
-            } as unknown as Awaited<ReturnType<typeof simpleParser>>
-
-            const bounceInfo = parseBounceMessage(pseudoParsed)
-
-            if (!bounceInfo.recipientEmail) {
-                log.warn({ action: 'outreach.bounce.parse_failed_no_recipient', provider: 'native' }, 'could not extract recipient from bounce')
-                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
-                continue
-            }
-
-            let outreachEmail = bounceInfo.originalMessageId
-                ? await findBouncedOutreachEmailByMessageId(
-                    bounceInfo.originalMessageId,
-                    account.id,
-                    account.organizationId,
-                )
-                : null
-
-            if (!outreachEmail) {
-                outreachEmail = await findOutreachEmailByRecipient(bounceInfo.recipientEmail, account.id)
-            }
-
-            if (!outreachEmail) {
-                log.warn({
-                    action: 'outreach.bounce.unmatched',
-                    recipientEmail: bounceInfo.recipientEmail,
-                    emailAccountId: account.id,
-                    provider: 'native',
-                }, 'no outreach email matched bounce recipient')
-                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
-                continue
-            }
-
-            if (!outreachEmail.campaignLeadId || !outreachEmail.campaignId) {
-                log.warn({
-                    action: 'outreach.bounce.native_non_campaign_match',
-                    outreachEmailId: outreachEmail.id,
-                    origin: outreachEmail.origin,
-                }, 'native bounce target has no campaign linkage')
-                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
-                continue
-            }
-
-            const campaignLead = await db.query.campaignLeads.findFirst({
-                where: eq(campaignLeads.id, outreachEmail.campaignLeadId),
-                with: { lead: true }
-            })
-
-            if (!campaignLead?.lead) {
-                log.warn({
-                    action: 'outreach.bounce.campaign_lead_missing',
-                    outreachEmailId: outreachEmail.id,
-                    provider: 'native',
-                }, 'campaign lead row missing for bounce target')
-                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
-                continue
-            }
-
-            if (campaignLead.status === 'bounced') {
-                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
-                continue
-            }
-
-            const fullReason = bounceInfo.diagnosticCode
-                ? `${bounceInfo.reason} (${bounceInfo.diagnosticCode})`
-                : bounceInfo.reason
-
-            await markAsBounced(
-                outreachEmail.id,
-                campaignLead.id,
-                campaignLead.lead.id,
-                outreachEmail.campaignId,
-                account.id,
-                outreachEmail.organizationId,
-                fullReason
-            )
-
-            result.bounces++
-            await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
-        } catch (error) {
-            const err = error instanceof Error ? error : new Error(String(error))
-            log.error({
-                action: 'outreach.bounce.native_message_error',
-                messageId: msg.id,
-                emailAccountId: account.id,
-                error: { message: err.message, stack: err.stack },
-            }, 'failed to process native bounce message')
-            result.errors++
-        }
-    }
-
-    if (result.processed > 0 || candidates.length > 0) {
-        await db.update(emailAccounts)
-            .set({ lastSyncAt: new Date() })
-            .where(eq(emailAccounts.id, account.id))
-    }
-
-    return result
+    return true
 }
 
 export async function processBounceFromWebhook(data: {
