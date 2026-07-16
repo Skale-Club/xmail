@@ -7,6 +7,7 @@ import { runRepliesProcessorWithLock } from './processReplies'
 import { runBouncesProcessorWithLock } from './processBounces'
 import { runFollowUpsProcessorWithLock } from './processFollowUps'
 import { runMaterializerWithLock } from './materializeUnifiedInbox'
+import { runInboxCommandsWithLock } from './processInboxCommands'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
 import { createLogger } from '../lib/logger'
@@ -146,8 +147,21 @@ export function startJobs(): void {
         })
     })
 
+    // Phase 22 — claim + dispatch due Unified Inbox send commands and notify due reminders every
+    // minute. The advisory lock inside runInboxCommandsWithLock makes overlapping ticks a no-op;
+    // leased claims + a stable idempotency key make dispatch restart-safe and at-most-once.
+    cron.schedule('* * * * *', () => {
+        runInboxCommandsWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.processInboxCommands_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'processInboxCommands failed')
+        })
+    })
+
     log.info({
         action: 'outreach.jobs.scheduler_ready',
-        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, followups=10min, unifiedInbox=5min',
+        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, followups=10min, unifiedInbox=5min, inboxCommands=1min',
     }, 'scheduler ready')
 }
