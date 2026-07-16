@@ -597,17 +597,24 @@ function createFakeStore() {
         async saveCursor(_account, _provider, next) {
             cursor = { ...next }
         },
-        async claimPending(classification, limit) {
-            const claimedRows: StoredProviderEvent[] = []
-            for (const event of events.values()) {
-                if (claimedRows.length >= limit) break
-                if (event.classification !== classification || event.processedAt !== null) continue
-                event.processedAt = NOW
-                claimedRows.push({ ...event })
+        async withNextPendingEvent(classification, handle) {
+            const pending = [...events.values()].find((event) =>
+                event.classification === classification
+                && event.processedAt === null
+                && event.processingError === null)
+            if (!pending) return { status: 'idle' }
+
+            try {
+                await handle({ ...pending })
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                pending.processingError = message
+                return { status: 'failed', event: { ...pending }, error: message }
             }
-            return claimedRows
+
+            pending.processedAt = NOW
+            return { status: 'processed', event: { ...pending } }
         },
-        async recordProcessingError() {},
         all: () => [...events.values()],
     }
     return store

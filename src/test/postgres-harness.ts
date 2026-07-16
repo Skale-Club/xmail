@@ -83,13 +83,32 @@ export function assertSafeTestDatabaseUrl(
     }
 }
 
+/**
+ * Serializes concurrent migration applies against the shared disposable database.
+ *
+ * Our migrations guard with `CREATE ... IF NOT EXISTS` and `DO $$ IF NOT EXISTS ... $$`,
+ * which is idempotent when applied one after another — but not when two appliers
+ * interleave: both see "not exists", both issue `ADD CONSTRAINT`, and the loser fails with
+ * "already exists". Production applies migrations serially by hand, so this is purely an
+ * artefact of vitest running .db suites in parallel against one container. An arbitrary
+ * fixed key is enough; every applier of every file waits behind the same lock.
+ */
+const MIGRATION_ADVISORY_LOCK_KEY = 4_019_390_211
+
 async function executeSqlFile(target: MigrationTarget, filePath: string): Promise<void> {
     assertSafeTestDatabaseUrl(target.databaseUrl, target)
 
     const sql = postgres(target.databaseUrl, { max: 1, prepare: false, onnotice: () => {} })
     try {
         const contents = await readFile(filePath, 'utf8')
-        await sql.unsafe(contents)
+        // Session-scoped, so it spans the BEGIN/COMMIT inside the migration body and is
+        // dropped when this connection closes even if the apply throws.
+        await sql`SELECT pg_advisory_lock(${MIGRATION_ADVISORY_LOCK_KEY})`
+        try {
+            await sql.unsafe(contents)
+        } finally {
+            await sql`SELECT pg_advisory_unlock(${MIGRATION_ADVISORY_LOCK_KEY})`
+        }
     } catch (error) {
         const message = error instanceof Error ? error.message : 'unknown SQL error'
         throw new Error(`Migration ${path.basename(filePath)} failed against ${redactDatabaseUrl(target.databaseUrl)}: ${message}`)

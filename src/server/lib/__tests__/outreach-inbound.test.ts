@@ -80,20 +80,28 @@ function createFakeStore(seed: StoredProviderEvent[] = []) {
         async saveCursor(_account, _provider, next) {
             cursor = { ...next }
         },
-        async claimPending(classification, limit) {
-            const claimed: StoredProviderEvent[] = []
-            for (const event of events.values()) {
-                if (claimed.length >= limit) break
-                if (event.classification !== classification || event.processedAt !== null) continue
-                // Claim atomically, exactly as the SQL store's UPDATE ... RETURNING does.
-                event.processedAt = new Date('2026-07-16T12:00:00.000Z')
-                claimed.push({ ...event })
+        // Mirrors the SQL store's lease: pick the oldest pending row of this
+        // classification, run the handler, and only then mark it processed. A failure
+        // records the error and leaves the row pending, exactly as the transaction does.
+        // The fake cannot model a crash — see outreach-inbound-claim.db.test.ts for that.
+        async withNextPendingEvent(classification, handle) {
+            const pending = [...events.values()].find((event) =>
+                event.classification === classification
+                && event.processedAt === null
+                && event.processingError === null)
+            if (!pending) return { status: 'idle' }
+
+            try {
+                await handle({ ...pending })
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                pending.processingError = message.slice(0, 1000)
+                return { status: 'failed', event: { ...pending }, error: message }
             }
-            return claimed
-        },
-        async recordProcessingError(id, error) {
-            const event = [...events.values()].find((row) => row.id === id)
-            if (event) event.processingError = error
+
+            pending.processedAt = new Date('2026-07-16T12:00:00.000Z')
+            pending.processingError = null
+            return { status: 'processed', event: { ...pending } }
         },
         all: () => [...events.values()],
         cursorState: () => cursor,
@@ -443,7 +451,7 @@ describe('consumeClassifiedEvents', () => {
         expect(handle).toHaveBeenCalledTimes(1)
     })
 
-    it('records a handler failure on the claimed event without reprocessing it', async () => {
+    it('records a handler failure without consuming the event', async () => {
         const store = createFakeStore()
         const source = createFakeSource([[
             message({ providerMessageId: 'r', inReplyTo: 'xmail-1@outreach.local' }),
@@ -455,7 +463,12 @@ describe('consumeClassifiedEvents', () => {
 
         expect(result).toMatchObject({ claimed: 1, processed: 0, failed: 1 })
         expect(store.all()[0].processingError).toContain('lead row vanished')
+        // C-2: the failure must not consume the event. It stays pending so a later tick
+        // can retry it once the backoff has elapsed.
+        expect(store.all()[0].processedAt).toBeNull()
 
+        // ...but not on this tick — the backoff is what stops a poison event from being
+        // re-claimed in a hot loop.
         const retry = vi.fn(async () => {})
         await consumeClassifiedEvents({ store, classification: 'reply', handle: retry })
         expect(retry).not.toHaveBeenCalled()

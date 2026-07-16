@@ -564,10 +564,9 @@ function createFakeStore() {
         async saveCursor(_account, _provider, next) {
             cursor = { ...next }
         },
-        async claimPending() {
-            return []
+        async withNextPendingEvent() {
+            return { status: 'idle' }
         },
-        async recordProcessingError() {},
         async recordCursorRetry(_account, _provider, input) {
             retries.push({ error: input.error, retryAt: input.retryAt })
         },

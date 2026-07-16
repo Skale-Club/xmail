@@ -17,6 +17,9 @@
  *      cannot disagree or race.
  *   4. Ingestion progress lives in outreach_provider_cursors — never in read flags,
  *      which belong to the human and are mutable from any mail client.
+ *   5. An event is marked processed only once its side effect has actually happened.
+ *      Consumption is at-least-once, never at-most-once: re-applying a bounce is
+ *      idempotent, losing one is not.
  *
  * Storage shape: supabase/migrations/039_outreach_provider_events.sql.
  * Phase 21 materializes conversations from these rows rather than re-polling.
@@ -309,10 +312,21 @@ export interface StoredProviderEvent {
     processingError: string | null
 }
 
+/** Outcome of one lease attempt. `idle` means there was nothing left to claim. */
+export type ClaimOutcome =
+    | { status: 'idle' }
+    | { status: 'processed'; event: StoredProviderEvent }
+    | { status: 'failed'; event: StoredProviderEvent; error: string }
+
 /**
  * Note what is absent: there is no read-flag surface. The cursor is the only progress
  * signal by construction, so no future change can quietly reintroduce isRead/\Seen as
  * an ingestion cursor.
+ *
+ * Note also what is absent since C-2: there is no operation that marks an event processed
+ * on its own. `processed_at` can only be written by withNextPendingEvent, after the side
+ * effect it describes has actually happened — so no future caller can reintroduce the
+ * claim-then-lose ordering.
  */
 export interface InboundEventStore {
     recordEvent(input: RecordEventInput): Promise<{ inserted: boolean }>
@@ -322,9 +336,16 @@ export interface InboundEventStore {
         provider: OutreachProviderName,
         next: ProviderCursorState,
     ): Promise<void>
-    /** Atomically claims unprocessed events of one classification. */
-    claimPending(classification: InboundClassification, limit: number): Promise<StoredProviderEvent[]>
-    recordProcessingError(eventId: string, error: string): Promise<void>
+    /**
+     * Leases the oldest pending event of one classification, runs `handle` while holding
+     * the lease, and only then marks it processed. The lease and the `processed_at` write
+     * are the same transaction, so the event is either fully applied or still pending —
+     * never silently consumed.
+     */
+    withNextPendingEvent(
+        classification: InboundClassification,
+        handle: (event: StoredProviderEvent) => Promise<void>,
+    ): Promise<ClaimOutcome>
     /**
      * Records a provider-stated backoff against the cursor row without touching the cursor
      * value itself. Optional so a store predating throttling still satisfies the port.
@@ -456,6 +477,14 @@ export async function ingestInboundPage(deps: {
 
 export const DEFAULT_CLAIM_LIMIT = 200
 
+/**
+ * Drains up to `limit` events of one classification, one lease at a time.
+ *
+ * One at a time rather than one batch: the lease has to be held across the side effect
+ * for the side effect to be recoverable, and a batch-wide lease held across 200 side
+ * effects would be one long transaction whose failure re-runs all 200. Per event, a crash
+ * costs at most the single event in flight, which is re-applied on a later tick.
+ */
 export async function consumeClassifiedEvents(deps: {
     store: InboundEventStore
     classification: InboundClassification
@@ -463,26 +492,21 @@ export async function consumeClassifiedEvents(deps: {
     handle: (event: StoredProviderEvent) => Promise<void>
 }): Promise<{ claimed: number; processed: number; failed: number }> {
     const limit = resolveInboundPageSize(deps.limit ?? DEFAULT_CLAIM_LIMIT)
-    const events = await deps.store.claimPending(deps.classification, limit)
 
+    let claimed = 0
     let processed = 0
     let failed = 0
 
-    for (const event of events) {
-        try {
-            await deps.handle(event)
-            processed++
-        } catch (error) {
-            failed++
-            const message = error instanceof Error ? error.message : String(error)
-            // The claim already marked the event processed, so a failure is recorded on
-            // the row rather than retried forever. Operators find these with
-            // `processing_error IS NOT NULL`; a poison message cannot stall the queue.
-            await deps.store.recordProcessingError(event.id, message.slice(0, 1000))
-        }
+    for (let attempt = 0; attempt < limit; attempt++) {
+        const outcome = await deps.store.withNextPendingEvent(deps.classification, deps.handle)
+        if (outcome.status === 'idle') break
+
+        claimed++
+        if (outcome.status === 'processed') processed++
+        else failed++
     }
 
-    return { claimed: events.length, processed, failed }
+    return { claimed, processed, failed }
 }
 
 // ============================================================
@@ -491,7 +515,23 @@ export async function consumeClassifiedEvents(deps: {
 
 export interface InboundSqlClient {
     (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown>
+    /** Runs `fn` in a transaction, rolling back if it throws. */
+    begin<T>(fn: (tx: InboundSqlClient) => Promise<T>): Promise<T>
 }
+
+/**
+ * How long a failed event waits before another tick retries it.
+ *
+ * Without it, a permanently poisonous event (one whose handler always throws) would be
+ * re-claimed every tick forever and, being the oldest, would sit at the front of every
+ * batch. With it, such an event costs one attempt per window and never crowds out newer
+ * mail. Failures are still visible via `processing_error IS NOT NULL`.
+ *
+ * Retrying forever is the deliberate choice over dead-lettering: this queue carries
+ * bounces, and 039's rationale is that skipping one is unrecoverable while re-reading is
+ * merely cheap.
+ */
+export const PROCESSING_RETRY_BACKOFF_MINUTES = 15
 
 function rows<T>(result: unknown): T[] {
     return Array.isArray(result) ? result as T[] : []
@@ -591,32 +631,43 @@ export function createSqlInboundEventStore(
             `
         },
 
-        async claimPending(classification, limit) {
+        async withNextPendingEvent(classification, handle) {
             const sql = await getClient()
-            // FOR UPDATE SKIP LOCKED + setting processed_at in the same statement is the
-            // claim. Two workers cannot hand the same event to their side effects, and a
-            // reply consumer can never claim a row classified as a bounce.
-            const result = await sql`
-                UPDATE outreach_provider_events AS event
-                SET processed_at = now(), updated_at = now()
-                WHERE event.id IN (
-                    SELECT candidate.id
-                    FROM outreach_provider_events AS candidate
-                    WHERE candidate.classification = ${classification}
-                      AND candidate.processed_at IS NULL
-                    ORDER BY candidate.received_at ASC
-                    LIMIT ${limit}
+
+            // The transaction IS the lease, and that is the whole point: a lease held in
+            // columns needs a reaper, a clock, and an expiry guess, and still leaves the
+            // window this bug lived in. A row lock is released by Postgres the instant the
+            // connection dies, which is exactly the failure mode here (the rollout SIGKILLs
+            // the container), and it cannot be leaked, skewed, or forgotten.
+            return sql.begin(async (tx) => {
+                const claimed = rows<Record<string, unknown>>(await tx`
+                    SELECT id, organization_id, email_account_id, provider, provider_message_id,
+                           message_id, in_reply_to, message_references, classification,
+                           from_address, subject, text_body, html_body, received_at,
+                           processed_at, processing_error
+                    FROM outreach_provider_events
+                    WHERE classification = ${classification}
+                      AND processed_at IS NULL
+                      -- A previously failed event waits out its backoff. Without this it
+                      -- would be re-claimed every tick and, being oldest, would head every
+                      -- batch forever.
+                      AND (
+                          processing_error IS NULL
+                          OR updated_at <= now() - (${PROCESSING_RETRY_BACKOFF_MINUTES} * interval '1 minute')
+                      )
+                    ORDER BY received_at ASC
+                    -- SKIP LOCKED preserves the original guarantee: a second worker steps
+                    -- over a leased row rather than duplicating its side effect. The
+                    -- classification predicate preserves the other one: a reply consumer
+                    -- can never see a bounce-classified row.
+                    LIMIT 1
                     FOR UPDATE SKIP LOCKED
-                )
-                RETURNING event.id, event.organization_id, event.email_account_id, event.provider,
-                          event.provider_message_id, event.message_id, event.in_reply_to,
-                          event.message_references, event.classification, event.from_address,
-                          event.subject, event.text_body, event.html_body, event.received_at,
-                          event.processed_at, event.processing_error
-            `
-            return rows<Record<string, never>>(result).map((row) => {
-                const record = row as unknown as Record<string, unknown>
-                return {
+                `)
+
+                const record = claimed[0]
+                if (!record) return { status: 'idle' } as ClaimOutcome
+
+                const event: StoredProviderEvent = {
                     id: String(record.id),
                     organizationId: String(record.organization_id),
                     emailAccountId: String(record.email_account_id),
@@ -634,16 +685,33 @@ export function createSqlInboundEventStore(
                     processedAt: (record.processed_at as Date | null) ?? null,
                     processingError: (record.processing_error as string | null) ?? null,
                 }
-            })
-        },
 
-        async recordProcessingError(eventId, error) {
-            const sql = await getClient()
-            await sql`
-                UPDATE outreach_provider_events
-                SET processing_error = ${error}, updated_at = now()
-                WHERE id = ${eventId}
-            `
+                try {
+                    await handle(event)
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    // Committed, not rolled back: the row must stay pending (processed_at
+                    // untouched) AND carry its error. Rolling back would lose the error and
+                    // re-run the handler immediately; the old code's mistake in the other
+                    // direction was keeping the error and losing the retry.
+                    await tx`
+                        UPDATE outreach_provider_events
+                        SET processing_error = ${message.slice(0, 1000)}, updated_at = now()
+                        WHERE id = ${event.id}
+                    `
+                    return { status: 'failed', event, error: message } as ClaimOutcome
+                }
+
+                // Only here. Everything before this point is undone by a crash, which is
+                // what makes the event recoverable rather than silently consumed.
+                await tx`
+                    UPDATE outreach_provider_events
+                    SET processed_at = now(), processing_error = NULL, updated_at = now()
+                    WHERE id = ${event.id}
+                `
+
+                return { status: 'processed', event } as ClaimOutcome
+            })
         },
 
         async recordCursorRetry(emailAccountId, provider, input) {
