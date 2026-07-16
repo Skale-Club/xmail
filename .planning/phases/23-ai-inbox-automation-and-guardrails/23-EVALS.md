@@ -95,6 +95,77 @@ Xphere quality smoke can be gated behind an env flag and is never part of normal
 
 ---
 
-## Part 2 — Milestone (v1.4) UAT
+## Part 2 — Milestone (v1.4) UAT evidence
 
-_See the "Milestone UAT evidence" section below (recorded during 23-04 Task 3)._
+Recorded during 23-04 Task 3 (2026-07-16). The v1.4 milestone ("Reliable Outreach + Unified Inbox")
+closes with this plan. AI inbox automation ships **off by default** (both org flags and every
+campaign flag default OFF; migration 043 is a manual production deploy step), so the acceptance
+evidence is layered: (A) the automated gates + deterministic evaluations that prove the
+safety-critical invariants for two tenants / providers / restarts, and (B) a staged operator runbook
+for the interactive checks that require a live environment.
+
+### A. Automated acceptance gates (executed this plan)
+
+| Gate | Result |
+|------|--------|
+| `npm run test` | **898 passed** / 55 files (0 failed) |
+| `npm run build` | client + server build succeeded |
+| `npm run lint` | 0 warnings |
+| `npx tsc --noEmit -p tsconfig.json` (client) | 0 errors |
+| `npx tsc --noEmit -p tsconfig.server.json` (server) | 0 errors |
+| `inbox-ai-evals.test.ts` | 51 deterministic safety/quality assertions passed |
+| `db-audit` (`inbox-ai-migration.db.test.ts` on disposable Postgres) | 14 passed — schema, tenant FKs, RLS, no secret columns |
+
+### B. Milestone UAT matrix — required check → evidence
+
+| # | Required UAT check | Evidence (automated unless noted) | Result |
+|---|--------------------|-----------------------------------|--------|
+| 1 | Draft suggestion is editable and NEVER implicitly sent | `inbox-ai-suggestions.test.ts` (32) + `UnifiedInboxPage.test.tsx` AiDraftAssistant (insert → editable field, send is separate); source-proof the module imports no dispatcher | PASS |
+| 2 | Org/campaign enable/disable/pause races (default-off, confirm, immediate pause, effective scope) | `UnifiedInboxPage.test.tsx` OrgAiAutomationControl + CampaignAiAutomationControl (17); `evaluateEffectiveAutonomy` intersection | PASS |
+| 3 | **Two-tenant isolation** (no cross-tenant read/send/leak) | evals `cross_tenant` (model never called; `attribution_mismatch`); `inbox-ai-automation.test.ts` two-tenant idempotency-key isolation; `inbox-ai-migration.db.test.ts` composite-org FKs reject cross-tenant binds; every endpoint is org-scoped (`requireOutreachRead/Write` + verified `organizationId`) | PASS |
+| 4 | **One supported provider autonomous send** through the single policy gate | evals `positive_interest` (draft → durable command → `executeInboxSendCommand` → `sent`+linked); `inbox-ai-automation.test.ts` single-executor path; source guard proves no direct dispatcher | PASS |
+| 5 | **Policy denial** blocks a send (suppression, kill-switch, daily/warm-up/spacing, campaign/org paused) | evals: pre-model gates skip; real `evaluateOutreachDeliverySnapshot` returns each denial code; executor-denied runs record no `outreachEmailId` | PASS |
+| 6 | **Xphere timeout / malformed** stays fail-closed | evals real-adapter `no_decider_configured`/`decider_timeout`; every typed failure → inspectable failed run, no send | PASS |
+| 7 | **Process death around decision/dispatch** (restart safety) | `inbox-ai-automation.test.ts` lease claim/expiry recovery, death-before-command, death-after-command idempotent replay, exactly-once run→command→email linkage; evals `duplicate_tick` + held-not-resent | PASS |
+| 8 | History linkage (trigger → decision → approval → command/send) is inspectable & redacted | `AiAutomationHistory` renders the redacted DTO; conversation/campaign/org history endpoints; evals + `inbox-ai-suggestions.test.ts` redaction | PASS |
+| 9 | Viewer / member / admin visibility | reads use `requireOutreachRead` (viewers included), mutations `requireOutreachWrite` (admin/member); UI `canManage` gate disables controls for viewers | PASS |
+| 10 | **Disclosure audit** — no credential / hidden prompt / cross-tenant leak in browser/log/DB | `toPublicAiRun` allowlist (no `modelParameters`/`leaseToken`/`errorDetail`/`idempotencyKey`/`inputMessageIds`); grep of `AiAutomationHistory`/`AiAutonomyControls` for secret fields → none; migration test asserts no secret columns; control-change audit logs carry actor + org only, never content | PASS |
+
+### C. Staged operator runbook (interactive checks requiring a live environment)
+
+These steps reproduce the matrix above against a live two-tenant staging deploy **after** migration
+043 is applied. They are the human-run confirmation; each maps to an automated proof in matrix B.
+Users only visit URLs / click UI / provide secrets — Claude does not run these in this environment.
+
+1. **Provision:** apply `043_ai_inbox_automation_audit.sql`; configure `XPHERE_DRAFT_URL` +
+   `XPHERE_*_API_KEY` for org A only; leave org B unconfigured.
+2. **Two tenants:** as org A admin, enable Draft assistance + Autonomous sending (confirm dialog),
+   enable one campaign's opt-in. As org B, leave everything off.
+3. **Draft (org A):** open a reply thread → "Suggest draft" → edit → send via the composer. Confirm
+   the AI never sent on its own; the history shows a `draft` run `awaiting_approval` → approved.
+4. **Autonomous send (org A):** deliver an inbound reply on an opted-in campaign thread; confirm one
+   audited autonomous run dispatches exactly one reply through the normal outreach path.
+5. **Policy denial:** suppress the recipient (or exhaust the daily limit) and repeat; confirm no send
+   and an inspectable held/failed run with the policy code.
+6. **Immediate pause:** with an autonomous decision in flight, hit Pause in Settings; confirm the send
+   is stopped and the effective scope flips to PAUSED at once.
+7. **Xphere timeout:** point `XPHERE_DRAFT_URL` at an unreachable host; confirm suggestions/autonomous
+   runs fail closed (inspectable run), inbox reading + manual replies keep working.
+8. **Restart:** kill the container mid-dispatch and restart; confirm at most one email exists for the
+   run (idempotent command) and no duplicate.
+9. **Org B (isolation):** confirm org B sees none of org A's runs/history and cannot enable autonomy
+   effectively (no Xphere, controls independent); no cross-tenant content anywhere.
+10. **Disclosure:** inspect the browser network tab, container logs, and `outreach_ai_runs` rows;
+    confirm no API key, `Authorization`/bearer header, system/hidden prompt, or another tenant's body.
+
+### D. Conclusion
+
+- **Zero forbidden sends, zero duplicates, zero cross-tenant leaks** across the full suite and the
+  51-fixture evaluation corpus. The four adversarial classes (immediate-send, exfiltration,
+  recipient-hijack, policy-override) are each proven to produce no send / an inspectable held-or-failed
+  run.
+- **Unresolved limitations (recorded):** (1) migration 043 is a manual production deploy step
+  (unchanged since 23-01); (2) the live provider quality smoke (tone/relevance) is an optional,
+  env-gated offline check, never a CI gate; (3) the staged runbook (Part C) is executed at deploy time
+  against real infra — it is out of reach of the CI executor, and every one of its safety-critical
+  outcomes is already proven deterministically in Part B. No blocker.
