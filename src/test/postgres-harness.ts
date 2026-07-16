@@ -199,6 +199,27 @@ async function installRlsHelperStubs(target: MigrationTarget): Promise<void> {
     }
 }
 
+/**
+ * campaigns.ai_autonomous_enabled (migration 043) is a CANONICAL Drizzle-mapped column, so every
+ * campaign INSERT/SELECT the app issues references it. The full 043 file cannot be replayed in this
+ * baseline (its FKs target the Phase 21/22 tables 041/042 does not seed here, and its RLS references
+ * helpers this harness deliberately does not replay), but the column ALTER is self-contained and
+ * idempotent — mirroring the per-column baseline migrations above. Suites that exercise the full 043
+ * schema still apply it explicitly via applyMigrationFile; this only closes the campaigns-column gap
+ * so any campaign-touching suite matches the current schema.
+ */
+async function installCampaignsAiAutonomousColumn(target: MigrationTarget): Promise<void> {
+    assertSafeTestDatabaseUrl(target.databaseUrl, target)
+    const sql = postgres(target.databaseUrl, { max: 1, prepare: false, onnotice: () => {} })
+    try {
+        await sql.unsafe(
+            `ALTER TABLE public.campaigns ADD COLUMN IF NOT EXISTS ai_autonomous_enabled boolean NOT NULL DEFAULT false;`,
+        )
+    } finally {
+        await sql.end({ timeout: 1 })
+    }
+}
+
 export async function applyHandWrittenMigrations(
     target: MigrationTarget,
     rootDir = process.cwd(),
@@ -218,6 +239,10 @@ export async function applyHandWrittenMigrations(
     for (const migrationFile of OUTREACH_TEST_BASELINE_MIGRATIONS) {
         await executeSqlFile(target, path.join(migrationsDir, migrationFile))
     }
+
+    // Canonical campaigns column from 043 (see note above) — applied inline because the full file
+    // has dependencies the generic baseline does not seed.
+    await installCampaignsAiAutonomousColumn(target)
 }
 
 export async function applyMigrationFile(target: MigrationTarget, filePath: string): Promise<void> {
