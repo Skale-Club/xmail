@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
-status: verifying
-stopped_at: Completed 22-01-PLAN.md
-last_updated: "2026-07-16T17:21:51.792Z"
+status: executing
+stopped_at: Completed 22-02-PLAN.md
+last_updated: "2026-07-16T17:55:51.616Z"
 progress:
   total_phases: 15
   completed_phases: 8
   total_plans: 41
-  completed_plans: 33
+  completed_plans: 34
   percent: 60
 ---
 
@@ -28,14 +28,14 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 22 (Unified Inbox Operator Experience) — IN PROGRESS
-Plan: 1 of 5 complete (22-01 operator workflow BACKEND done: migration 042 + operator services/APIs + durable command/reminder claimer; 567/567 tests)
+Plan: 2 of 5 complete (22-01 operator workflow BACKEND done: migration 042 + operator services/APIs + durable command/reminder claimer; 567/567 tests)
 Phase 21 (Unified Inbox Foundation) — COMPLETE + VERIFIED (UIF-01..05, 43/43 must-haves; 3-lens review 0 critical + 3 warnings all fixed and re-reviewed; 527/527 tests deterministic)
 Phase 20 (Outreach Product and API Consistency) — COMPLETE + VERIFIED (CONS-01..07; security + data-migration reviews clean; verifier found 1 blocking gap + 5 non-blocking, all fixed and re-reviewed clean; 422/422 tests)
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
-Status: Phase 21 code complete (519 tests, deterministic); running 3-lens review (idempotency/tenant-isolation/verification) before closing.
+Status: Ready to execute
 
 **Also this session:** made the Vitest postgres project a deterministic gate (commit a87ee0b) — root-level fileParallelism:false + container max_connections=300 + a suite that self-applies its migration. This fixed the flaky deadlocks/timeouts that dogged phases 19-20 reviews.
 
@@ -134,8 +134,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T17:20:52.432Z
-Stopped at: Completed 22-01-PLAN.md
+Last session: 2026-07-16T17:55:35.847Z
+Stopped at: Completed 22-02-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -159,6 +159,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 21 P03 | 30min | 3 tasks | 14 files |
 | Phase 21 P04 | 17min | 3 tasks | 6 files |
 | Phase 22 P01 | 42min | 3 tasks | 12 files |
+| Phase 22 P02 | 23 min | 3 tasks | 11 files |
 
 ## Decisions
 
@@ -193,3 +194,6 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 21]: Unified Inbox read API: opaque filter-bound keyset cursor (SHA-256 fingerprint of the filter set, lossless microsecond keyset timestamp); detail/read-state authorize org before id lookup so cross-tenant ids return an existence-safe 404; per-user idempotent read state
 - [Phase 22]: (22-01) Archive is orthogonal to Phase 21 open/closed status (additive archived_at columns); operator state (labels/archive/reminders/snippets/send-commands) is durable org-scoped rows, never browser state. Composite (id,organization_id) FKs bind every operator row to its tenant; PG15+ column-list ON DELETE SET NULL keeps organization_id intact.
 - [Phase 22]: (22-01) Bulk ops are transactional + bounded (<=100, dedup, matched/updated/skipped) and key every mutation on the org-matched id set so an empty/partial filter never widens to the org. Durable send commands are lease-claimed; executeInboxSendCommand is the ONE inbox caller of dispatchOutreachMessage and a stable idempotency key yields at-most-once across restarts. Reminders notify once via a transactional scheduled->notified + user_notification insert.
+- [Phase 22]: (22-02) Unified Inbox is server-owned: validated URL filter/search/cursor state maps to the Phase 21 query; the client never downloads an org mailbox to filter in memory. Keyset cursor resets on any filter change.
+- [Phase 22]: (22-02) Every React Query key is org-scoped (['outreach-inbox', organizationId, ...]); an org change yields fresh keys and drops the prior tenant's selected conversation+cursor from the URL — no cross-tenant cache reuse.
+- [Phase 22]: (22-02) Responsive workspace is CSS-driven: desktop three regions, tablet filter overlay, mobile single staged list->thread with Back — no JS width math; list/thread async states are independently recoverable.
