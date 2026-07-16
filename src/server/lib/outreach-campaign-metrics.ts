@@ -173,7 +173,7 @@ async function queryRawCohorts(campaignIds: string[]): Promise<Map<string, RawCo
             count(*) FILTER (WHERE cl.total_opens > 0)::int AS "uniqueOpeners",
             count(*) FILTER (WHERE cl.total_clicks > 0)::int AS "uniqueClickers",
             count(*) FILTER (WHERE cl.status IN ('replied', 'interested') OR cl.total_replies > 0)::int AS "repliedLeads",
-            count(*) FILTER (WHERE cl.status = 'bounced')::int AS "bouncedLeads",
+            count(*) FILTER (WHERE cl.status = 'bounced' AND sent.campaign_lead_id IS NOT NULL)::int AS "bouncedLeads",
             coalesce(sum(cl.total_opens), 0)::int AS "totalOpens",
             coalesce(sum(cl.total_clicks), 0)::int AS "totalClicks",
             coalesce(sum(cl.total_replies), 0)::int AS "totalReplies"
