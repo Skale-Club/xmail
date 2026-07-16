@@ -1,6 +1,36 @@
 import { Router, raw, type Request, type Response } from 'express'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { and, asc, desc, eq, lt, sql } from 'drizzle-orm'
+import { db } from '../../../db'
+import {
+    campaigns,
+    emailAccounts,
+    leads,
+    outreachAiRuns,
+    outreachAiSettings,
+    outreachConversationMessages,
+    outreachConversations,
+} from '../../../db/schema'
 import { requireOutreachRead, requireOutreachWrite, type OutreachMembership } from '../../lib/outreach-access'
+import {
+    type BuildInboxAiContextInput,
+    type InboxAiContextMessage,
+} from '../../lib/inbox-ai-context'
+import {
+    approveAiRun,
+    createDrizzleAiRunStore,
+    AiRunError,
+    type AiRunRecord,
+} from '../../lib/inbox-ai-audit'
+import { requestAiDraftProposal } from '../../lib/outreach-followup'
+import {
+    createInMemoryRateLimiter,
+    generateInboxAiSuggestion,
+    isAiSuggestionToneGoal,
+    toPublicAiRun,
+    type InboxAiSuggestionSettings,
+} from '../../lib/inbox-ai-suggestions'
 import { ConversationCursorError } from '../../lib/unified-inbox/cursor'
 import {
     getAccountSyncStatus,
@@ -817,6 +847,285 @@ router.post('/suppressions', async (req: Request, res: Response) => {
         res.json(result)
     } catch (error) {
         handleOperatorError(error, res, 'applying suppression')
+    }
+})
+
+// ============================================================
+// AI draft suggestions (Phase 23 AI-02 / AI-05 / AI-06)
+// ============================================================
+// The on-demand, HUMAN-IN-THE-LOOP suggestion path. It is gated on the per-org, default-off
+// draft_assistance_enabled setting, reasons ONLY over persisted conversation messages, creates a
+// redacted audit run, and is STRUCTURALLY INCAPABLE OF SENDING (the suggestion service imports no
+// dispatcher — locked #6). The operator later inserts + edits the draft and uses the SEPARATE
+// Phase 22 send-command path. Reads use requireOutreachRead; the suggestion mutation +
+// acceptance use requireOutreachWrite; every query carries the verified organization scope.
+
+// Bounded per-user/org request rate for the (potentially expensive) external suggestion call.
+const aiSuggestionRateLimiter = createInMemoryRateLimiter({ windowMs: 60_000, max: 12 })
+
+const toneGoalSchema = z.string().trim().refine(isAiSuggestionToneGoal, 'invalid tone goal')
+const aiSuggestionBodySchema = z.object({
+    idempotencyKey: z.string().trim().min(1).max(200).optional(),
+    toneGoal: toneGoalSchema.optional(),
+})
+const aiRunsQuerySchema = z.object({
+    limit: z.coerce.number().int().min(1).max(50).default(20),
+    cursor: z.string().datetime().optional(),
+})
+
+/** Load the org's draft-assistance flag only (null when no settings row exists → treated as OFF). */
+async function loadOrgAiDraftSettings(organizationId: string): Promise<InboxAiSuggestionSettings | null> {
+    const rows = await db
+        .select({ draftAssistanceEnabled: outreachAiSettings.draftAssistanceEnabled })
+        .from(outreachAiSettings)
+        .where(eq(outreachAiSettings.organizationId, organizationId))
+        .limit(1)
+    const row = rows[0]
+    return row ? { draftAssistanceEnabled: row.draftAssistanceEnabled } : null
+}
+
+/**
+ * Load the deterministic context INPUTS for the org+conversation from persisted rows. Returns null
+ * when the conversation does not belong to the organization (indistinguishable from missing — no
+ * existence leak). Every query is organization-scoped; no header-only fields are read (locked #2).
+ */
+async function loadInboxAiContextInput(args: {
+    organizationId: string
+    conversationId: string
+}): Promise<BuildInboxAiContextInput | null> {
+    const { organizationId, conversationId } = args
+
+    const convRows = await db
+        .select({
+            id: outreachConversations.id,
+            emailAccountId: outreachConversations.emailAccountId,
+            campaignId: outreachConversations.campaignId,
+            leadId: outreachConversations.leadId,
+        })
+        .from(outreachConversations)
+        .where(and(eq(outreachConversations.organizationId, organizationId), eq(outreachConversations.id, conversationId)))
+        .limit(1)
+    const conv = convRows[0]
+    if (!conv) return null
+
+    const acctRows = conv.emailAccountId
+        ? await db
+              .select({ email: emailAccounts.email, displayName: emailAccounts.displayName })
+              .from(emailAccounts)
+              .where(and(eq(emailAccounts.organizationId, organizationId), eq(emailAccounts.id, conv.emailAccountId)))
+              .limit(1)
+        : []
+    const account = acctRows[0]
+
+    const messageRows = await db
+        .select({
+            id: outreachConversationMessages.id,
+            direction: outreachConversationMessages.direction,
+            subject: outreachConversationMessages.subject,
+            fromAddress: outreachConversationMessages.fromAddress,
+            fromName: outreachConversationMessages.fromName,
+            toAddresses: outreachConversationMessages.toAddresses,
+            ccAddresses: outreachConversationMessages.ccAddresses,
+            plainBody: outreachConversationMessages.plainBody,
+            htmlBody: outreachConversationMessages.htmlBody,
+            sentAt: outreachConversationMessages.sentAt,
+            receivedAt: outreachConversationMessages.receivedAt,
+            createdAt: outreachConversationMessages.createdAt,
+        })
+        .from(outreachConversationMessages)
+        .where(and(
+            eq(outreachConversationMessages.organizationId, organizationId),
+            eq(outreachConversationMessages.conversationId, conversationId),
+        ))
+        .orderBy(
+            sql`COALESCE(outreach_conversation_messages.received_at, outreach_conversation_messages.sent_at, outreach_conversation_messages.created_at) ASC`,
+            asc(outreachConversationMessages.id),
+        )
+
+    const messages: InboxAiContextMessage[] = messageRows.map((m) => ({
+        id: m.id,
+        organizationId,
+        conversationId,
+        direction: m.direction,
+        subject: m.subject,
+        fromAddress: m.fromAddress,
+        fromName: m.fromName,
+        toAddresses: (m.toAddresses ?? []).map((a) => ({ address: a.address, name: a.name ?? null })),
+        ccAddresses: (m.ccAddresses ?? []).map((a) => ({ address: a.address, name: a.name ?? null })),
+        plainBody: m.plainBody,
+        htmlBody: m.htmlBody,
+        sentAt: m.sentAt,
+        receivedAt: m.receivedAt,
+        createdAt: m.createdAt,
+    }))
+
+    let campaign: { id: string; name: string | null } | null = null
+    let campaignFromName: string | null = null
+    if (conv.campaignId) {
+        const campaignRows = await db
+            .select({ id: campaigns.id, name: campaigns.name, fromName: campaigns.fromName })
+            .from(campaigns)
+            .where(and(eq(campaigns.organizationId, organizationId), eq(campaigns.id, conv.campaignId)))
+            .limit(1)
+        if (campaignRows[0]) {
+            campaign = { id: campaignRows[0].id, name: campaignRows[0].name }
+            campaignFromName = campaignRows[0].fromName
+        }
+    }
+
+    let lead: { email: string | null; firstName: string | null; company: string | null } | null = null
+    if (conv.leadId) {
+        const leadRows = await db
+            .select({ email: leads.email, firstName: leads.firstName, companyName: leads.companyName })
+            .from(leads)
+            .where(and(eq(leads.organizationId, organizationId), eq(leads.id, conv.leadId)))
+            .limit(1)
+        if (leadRows[0]) {
+            lead = { email: leadRows[0].email, firstName: leadRows[0].firstName, company: leadRows[0].companyName }
+        }
+    }
+
+    return {
+        organizationId,
+        conversationId,
+        accountAddress: account?.email ?? '',
+        messages,
+        campaign,
+        lead,
+        sellerName: campaignFromName ?? account?.displayName ?? null,
+    }
+}
+
+/** Cursor-bounded, org+conversation-scoped AI-run history (raw rows; caller projects to the DTO). */
+async function listConversationAiRuns(
+    organizationId: string,
+    conversationId: string,
+    limit: number,
+    cursor: string | null,
+): Promise<AiRunRecord[]> {
+    const conditions = [
+        eq(outreachAiRuns.organizationId, organizationId),
+        eq(outreachAiRuns.conversationId, conversationId),
+    ]
+    if (cursor) conditions.push(lt(outreachAiRuns.createdAt, new Date(cursor)))
+    return db
+        .select()
+        .from(outreachAiRuns)
+        .where(and(...conditions))
+        .orderBy(desc(outreachAiRuns.createdAt), desc(outreachAiRuns.id))
+        .limit(limit)
+}
+
+// GET /ai-settings — the single safe flag the composer needs (never the kill switch / model profile).
+router.get('/ai-settings', async (req: Request, res: Response) => {
+    try {
+        const organizationId = await authorizeOrganization(req, res)
+        if (!organizationId) return
+        const settings = await loadOrgAiDraftSettings(organizationId)
+        res.json({ draftAssistanceEnabled: settings?.draftAssistanceEnabled ?? false })
+    } catch (error) {
+        handleOperatorError(error, res, 'loading ai settings')
+    }
+})
+
+// POST /conversations/:id/ai-suggestions — create (or idempotently replay) an editable draft
+// suggestion + audit run. It NEVER dispatches: the response carries a suggestion/run only.
+router.post('/conversations/:id/ai-suggestions', async (req: Request, res: Response) => {
+    try {
+        const ctx = await authorizeWrite(req, res)
+        if (!ctx) return
+        if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'conversation_not_found' })
+        const body = aiSuggestionBodySchema.parse(req.body ?? {})
+
+        // Rate-limit per user/org before the potentially expensive external call.
+        if (!aiSuggestionRateLimiter.take(`${ctx.organizationId}:${ctx.userId}`)) {
+            return res.status(429).json({ error: 'ai_suggestion_rate_limited' })
+        }
+
+        const outcome = await generateInboxAiSuggestion(
+            {
+                store: createDrizzleAiRunStore(),
+                loadSettings: loadOrgAiDraftSettings,
+                loadContext: loadInboxAiContextInput,
+                requestProposal: (input) => requestAiDraftProposal(input),
+            },
+            {
+                organizationId: ctx.organizationId,
+                conversationId: req.params.id,
+                actorUserId: ctx.userId,
+                idempotencyKey: body.idempotencyKey ?? randomUUID(),
+                toneGoal: body.toneGoal ?? null,
+            },
+        )
+
+        switch (outcome.status) {
+            case 'not_enabled':
+                return res.status(200).json({ enabled: false, suggestion: null, run: null })
+            case 'not_found':
+                return res.status(404).json({ error: 'conversation_not_found' })
+            case 'in_progress':
+                return res.status(409).json({ error: 'ai_suggestion_in_progress', enabled: true, suggestion: null, run: toPublicAiRun(outcome.run) })
+            case 'suggested':
+                return res.status(201).json({ enabled: true, suggestion: outcome.suggestion, run: toPublicAiRun(outcome.run) })
+            case 'no_action':
+            case 'failed':
+                // A no-action / recoverable failure is an inspectable run, not a server error.
+                return res.status(200).json({ enabled: true, suggestion: null, run: toPublicAiRun(outcome.run) })
+        }
+    } catch (error) {
+        handleOperatorError(error, res, 'creating ai suggestion')
+    }
+})
+
+// GET /conversations/:id/ai-runs — redacted, cursor-bounded suggestion history for a conversation.
+router.get('/conversations/:id/ai-runs', async (req: Request, res: Response) => {
+    try {
+        const organizationId = await authorizeOrganization(req, res)
+        if (!organizationId) return
+        if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'conversation_not_found' })
+        const { limit, cursor } = aiRunsQuerySchema.parse(req.query)
+        const runs = await listConversationAiRuns(organizationId, req.params.id, limit, cursor ?? null)
+        const nextCursor = runs.length === limit ? runs[runs.length - 1].createdAt.toISOString() : null
+        res.json({ runs: runs.map(toPublicAiRun), nextCursor })
+    } catch (error) {
+        handleOperatorError(error, res, 'listing ai runs')
+    }
+})
+
+// GET /ai-runs/:id — redacted status for a single run (org-scoped; a foreign id is a 404).
+router.get('/ai-runs/:id', async (req: Request, res: Response) => {
+    try {
+        const organizationId = await authorizeOrganization(req, res)
+        if (!organizationId) return
+        if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'ai_run_not_found' })
+        const run = await createDrizzleAiRunStore().findById(organizationId, req.params.id)
+        if (!run) return res.status(404).json({ error: 'ai_run_not_found' })
+        res.json({ run: toPublicAiRun(run) })
+    } catch (error) {
+        handleOperatorError(error, res, 'fetching ai run')
+    }
+})
+
+// POST /ai-runs/:id/accept — record explicit operator acceptance of a suggestion. This is an AUDIT
+// action only: it records (approver, time) against an awaiting-approval run and does NOT send. The
+// actual send remains the separate Phase 22 operator action.
+router.post('/ai-runs/:id/accept', async (req: Request, res: Response) => {
+    try {
+        const ctx = await authorizeWrite(req, res)
+        if (!ctx) return
+        if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'ai_run_not_found' })
+        const run = await approveAiRun(createDrizzleAiRunStore(), {
+            organizationId: ctx.organizationId,
+            runId: req.params.id,
+            approverUserId: ctx.userId,
+        })
+        res.json({ run: toPublicAiRun(run) })
+    } catch (error) {
+        if (error instanceof AiRunError) {
+            if (error.code === 'not_found') return res.status(404).json({ error: 'ai_run_not_found' })
+            return res.status(409).json({ error: error.code })
+        }
+        handleOperatorError(error, res, 'accepting ai suggestion')
     }
 })
 
