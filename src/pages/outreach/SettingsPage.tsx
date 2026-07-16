@@ -4,7 +4,6 @@ import {
     Mail,
     Globe,
     Bell,
-    Key,
     Save,
     RefreshCw
 } from 'lucide-react'
@@ -322,28 +321,12 @@ export function SettingsPage() {
                     </div>
                 </div>
 
-                {/* API Keys Section */}
-                <div className="bg-card rounded-lg border border-border">
-                    <div className="p-4 border-b border-border">
-                        <div className="flex items-center gap-2">
-                            <Key className="w-5 h-5 text-gray-500" />
-                            <h3 className="font-semibold text-foreground">API Access</h3>
-                        </div>
-                    </div>
-                    <div className="p-4">
-                        <p className="text-sm text-muted-foreground mb-4">
-                            Use our API to integrate cold email outreach into your own applications.
-                        </p>
-                        <div className="bg-gray-100 dark:bg-gray-900 rounded-lg p-3 font-mono text-sm">
-                            <p className="text-muted-foreground">API Key:</p>
-                            <p className="text-foreground">sk_test_****************************</p>
-                        </div>
-                        <div className="mt-4 flex gap-2">
-                            <Button variant="outline" size="sm">Regenerate Key</Button>
-                            <Button variant="outline" size="sm">View Docs</Button>
-                        </div>
-                    </div>
-                </div>
+                {/*
+                  * No "API Access" card: this product has no self-serve API-key credential
+                  * (machine access is the single server-bound Xphere service principal, see
+                  * Phase 20 CONS-06). A hardcoded sk_test_**** key with inert buttons read as a
+                  * shipped feature, so it was removed rather than left as a counterfeit.
+                  */}
             </div>
             )}
         </OutreachLayout>
