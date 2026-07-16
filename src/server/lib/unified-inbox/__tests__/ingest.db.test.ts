@@ -1,6 +1,6 @@
 import path from 'node:path'
 import postgres from 'postgres'
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
     applyMigrationFile,
     assertSafeTestDatabaseUrl,
@@ -219,15 +219,21 @@ beforeAll(async () => {
     }
 })
 
-beforeEach(async () => {
+async function cleanup(): Promise<void> {
     const sql = connect()
     try {
+        // Materialized events keep processed_at NULL by design; if left in the shared database
+        // they would be claimable by Phase 19's org-wide classification consumers (e.g. a
+        // leftover 'bounce' event pollutes the reply/bounce claim queue). Clear them.
         await sql`DELETE FROM outreach_provider_events WHERE organization_id IN (${ORG_A}::uuid, ${ORG_B}::uuid)`
         await sql`DELETE FROM outreach_conversations WHERE organization_id IN (${ORG_A}::uuid, ${ORG_B}::uuid)`
     } finally {
         await sql.end({ timeout: 1 })
     }
-})
+}
+
+beforeEach(cleanup)
+afterAll(cleanup)
 
 describe('materializeProviderEvent — header attribution', () => {
     it('threads an In-Reply-To reply onto its outreach email, case-insensitively, storing the full body', async () => {

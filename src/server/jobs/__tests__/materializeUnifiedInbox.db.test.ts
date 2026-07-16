@@ -1,6 +1,6 @@
 import path from 'node:path'
 import postgres from 'postgres'
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
     applyMigrationFile,
     assertSafeTestDatabaseUrl,
@@ -34,7 +34,9 @@ function connect(max = 4): postgres.Sql {
 }
 
 function jobDeps(sql: postgres.Sql, extra: Record<string, unknown> = {}) {
-    return { sql: sql as unknown as UnifiedInboxSql, ...extra }
+    // The materialization queue is org-wide by design; scope the claim to this suite's org so
+    // the shared disposable database's other suites' staged events are never claimed here.
+    return { sql: sql as unknown as UnifiedInboxSql, organizationId: ORG_A, ...extra }
 }
 
 let seq = 0
@@ -121,15 +123,20 @@ beforeAll(async () => {
     }
 })
 
-beforeEach(async () => {
+async function cleanup(): Promise<void> {
     const sql = connect()
     try {
+        // Materialized events keep processed_at NULL by design; left in the shared database
+        // they would be claimable by Phase 19's org-wide classification consumers. Clear them.
         await sql`DELETE FROM outreach_provider_events WHERE organization_id = ${ORG_A}::uuid`
         await sql`DELETE FROM outreach_conversations WHERE organization_id = ${ORG_A}::uuid`
     } finally {
         await sql.end({ timeout: 1 })
     }
-})
+}
+
+beforeEach(cleanup)
+afterAll(cleanup)
 
 describe('materializeUnifiedInbox — bounded leased consumer', () => {
     it('materializes every pending staged event into a durable message', async () => {

@@ -42,6 +42,13 @@ export interface MaterializeInboxDeps {
     limit?: number
     maxAttempts?: number
     leaseMinutes?: number
+    /**
+     * Optional organization scope for the claim. Unset in production (the queue is org-wide
+     * and materializeProviderEvent scopes each event by its own organization, mirroring the
+     * Phase 19 classification queue). Set for targeted operational reprocessing and for test
+     * isolation against the shared disposable database.
+     */
+    organizationId?: string
     /** Injectable materializer (tests force failures); defaults to the real service. */
     materialize?: (eventId: string) => Promise<{ inserted: boolean }>
 }
@@ -71,6 +78,7 @@ export async function materializeUnifiedInbox(deps: MaterializeInboxDeps = {}): 
     const limit = deps.limit ?? DEFAULT_MATERIALIZE_LIMIT
     const maxAttempts = deps.maxAttempts ?? MATERIALIZE_MAX_ATTEMPTS
     const leaseMinutes = deps.leaseMinutes ?? MATERIALIZE_LEASE_MINUTES
+    const organizationId = deps.organizationId ?? null
     const materialize = deps.materialize ?? ((eventId: string) => materializeProviderEvent(eventId, { sql, now }))
 
     const result: MaterializeInboxResult = { claimed: 0, materialized: 0, duplicates: 0, failed: 0 }
@@ -86,6 +94,7 @@ export async function materializeUnifiedInbox(deps: MaterializeInboxDeps = {}): 
                     materialization_status = 'pending'
                     OR (materialization_status = 'processing' AND materialization_lease_expires_at < now())
                 )
+                  AND (${organizationId}::uuid IS NULL OR organization_id = ${organizationId}::uuid)
                 ORDER BY received_at
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
