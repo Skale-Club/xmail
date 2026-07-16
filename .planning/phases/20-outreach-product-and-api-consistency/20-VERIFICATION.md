@@ -1,11 +1,12 @@
 ---
 phase: 20
 phase_name: outreach-product-and-api-consistency
-status: gaps_found
-score: "7/7 requirement contracts implemented and tested; 1 material coherence gap (legacy sequence/step mutation endpoints bypass the canonical history/status guards) + 3 warnings"
+status: passed
+score: "7/7 requirement contracts implemented and tested; blocking gap + non-blocking findings all fixed and re-reviewed clean (422/422 tests)"
 verified_at: "2026-07-16T10:20:50Z"
+resolved_at: "2026-07-16T11:00:00Z"
 verifier: gsd-verifier
-re_verification: false
+re_verification: true
 gaps:
   - truth: "Historical outreach-email / campaign-lead references are preserved OR the edit is rejected with an actionable conflict (CONS-01)"
     status: partial
@@ -165,3 +166,39 @@ surfaced to operators / added to the backlog rather than left silent.
 
 _Verified: 2026-07-16T10:20:50Z_
 _Verifier: Claude (gsd-verifier) — direct source inspection + fresh gate runs, not summary trust_
+
+## Resolution addendum (2026-07-16, post review-fix)
+
+The original verdict was `gaps_found` on one blocking coherence gap. Phase 20 also went through a
+full 3-lens code review (`20-REVIEW.md`): the authorization/tenant-isolation surface and the
+migration-040/transactional-replace surface were both **clean**, and this verification found the one
+blocking gap plus five non-blocking items. All were addressed in a fix pass (`20-REVIEW-FIX.md`) and
+independently re-reviewed.
+
+**Blocking gap — RESOLVED.** The legacy `DELETE /sequences/:sequenceId` and
+`DELETE /sequences/steps/:stepId` endpoints deleted `sequence_steps` directly, cascade-deleting
+`outreach_emails` send history (`sequence_step_id ON DELETE CASCADE`) and able to drop a campaign to
+zero sequences — bypassing the history protection the canonical `PUT` enforces. Fixed: a new
+`deleteSequenceStep()` in `outreach-sequences.ts` reuses the same `findReferencedStepIds` gate inside
+one transaction (referenced step → `409 sequence_step_referenced`, history row survives); the
+sequence delete now returns `409 canonical_sequence_undeletable` so a campaign always retains its one
+canonical sequence; the `SequencesPage.tsx` delete affordance was removed to match. A DB test proves
+a step referenced by a sent `outreach_email` cannot be deleted and the send-history row survives, and
+that a campaign cannot be left with zero sequences. Confirmed real via a RED test that reproduced the
+cascade deletion before the fix. The re-review verified the fix reuses the canonical gate (not a
+duplicate), preserves the `requireOutreachWrite` guards, and that no other route deletes steps
+directly except deliberate whole-campaign/whole-org cascades.
+
+**Non-blocking — all addressed:** `bouncedLeads` now carries the same sent-gate as `contactedLeads`
+so `bounceRate` stays ≤ 100% (defensive, was untriggerable); the org-rollup metric doc/labels were
+corrected to "unique (campaign, lead) pairs"; a regression test now pins the marker-forgery boundary
+(verified to fail if the `api-auth.ts` strip is removed); the counterfeit `sk_test_****` API-key card
+was removed from `SettingsPage.tsx`. `notifyOnUnsubscribe` defaulting to `false` is accepted as an
+intended honesty fix. The `suppressions.organization_id` schema drift is pre-existing and deferred to
+the backlog (reconciling migration, out of Phase 20 scope).
+
+**Fresh gates after fixes (run on this machine):** `npm run test` **422 passed (35 files)**,
+`npm run build` exit 0, `npm run lint` 0 warnings, client and server `tsc --noEmit` both clean.
+
+Phase 20 status is therefore **passed**. All seven requirements CONS-01..07 are implemented in real,
+tested code, and the canonical-sequence contract is now coherent across every mutation entrypoint.

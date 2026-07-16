@@ -27,15 +27,16 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 20 (Outreach Product and API Consistency) — IMPLEMENTED, in phase-gate review
-Plan: 3 of 3 complete (20-01 canonical sequence, 20-02 settings/metrics/search, 20-03 access + service identity)
+Phase: 21 (Unified Inbox Foundation) — NEXT
+Plan: 0 of 4
+Phase 20 (Outreach Product and API Consistency) — COMPLETE + VERIFIED (CONS-01..07; security + data-migration reviews clean; verifier found 1 blocking gap + 5 non-blocking, all fixed and re-reviewed clean; 422/422 tests)
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
-Status: Phase 20 code complete (415 tests); running 3-lens review (security/correctness/verification) before closing.
+Status: Ready to execute Phase 21. Milestone reliability half (18-20) complete; Unified Inbox half (21-23) begins.
 
-**Resume point:** Close Phase 20 after review-fix, then execute Phase 21 (Unified Inbox foundation), 22 (Unified Inbox UX), 23 (guarded AI automation).
+**Resume point:** Execute Phase 21 (Unified Inbox foundation — conversation persistence + aggregated API over the Phase 19 provider events). Then 22 (Unified Inbox UX), 23 (guarded AI automation).
 
 **Operator prerequisites accumulated (do NOT auto-apply):**
 
