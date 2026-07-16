@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
+import { EmailHtmlViewer } from '../../mail/EmailHtmlViewer'
 import { apiFetch, apiRequest, generateSlug } from './shared'
 
 interface Template {
@@ -488,10 +489,12 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
                                         <Label>Rendered HTML</Label>
                                         <div className="rounded-md border bg-background p-4">
                                             {previewResult.htmlBody ? (
-                                                <div
-                                                    className="prose prose-sm max-w-none dark:prose-invert"
-                                                    dangerouslySetInnerHTML={{ __html: previewResult.htmlBody }}
-                                                />
+                                                // SEC — render the server-rendered template HTML inside the
+                                                // sandboxed iframe viewer (no allow-scripts) rather than via
+                                                // dangerouslySetInnerHTML. A template is authored by an org
+                                                // member and previewed by an admin; inlining its HTML into the
+                                                // admin's DOM is stored XSS. The iframe neutralizes scripts.
+                                                <EmailHtmlViewer html={previewResult.htmlBody} expandable={false} />
                                             ) : (
                                                 <p className="text-sm text-muted-foreground">(empty)</p>
                                             )}
