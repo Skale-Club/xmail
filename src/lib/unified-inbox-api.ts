@@ -10,6 +10,7 @@
 // change of organization can never reuse another tenant's cached list/thread/count.
 
 import { apiFetch } from './api-client'
+import { fetchWithAuth } from './api'
 import type { InboxUrlState } from './unified-inbox-url'
 
 // ------------------------------------------------------------
@@ -241,6 +242,10 @@ export const inboxKeys = {
         ['outreach-inbox', organizationId, 'account-index'] as const,
     reminders: (organizationId: string | undefined, conversationId: string) =>
         ['outreach-inbox', organizationId, 'reminders', conversationId] as const,
+    snippets: (organizationId: string | undefined) =>
+        ['outreach-inbox', organizationId, 'snippets'] as const,
+    sendCommand: (organizationId: string | undefined, commandId: string) =>
+        ['outreach-inbox', organizationId, 'send-command', commandId] as const,
 }
 
 /** Predicate matcher for every list query of one organization (used by optimistic patch/rollback). */
@@ -475,4 +480,142 @@ export async function applyInboxSuppression(
     scope: SuppressionScope,
 ): Promise<SuppressionResult> {
     return apiFetch<SuppressionResult>(withOrg('/suppressions', organizationId), jsonBody('POST', { email, scope }))
+}
+
+// ------------------------------------------------------------
+// Reply/forward composer: durable send commands + bounded attachments + snippets (UIX-03/05)
+// ------------------------------------------------------------
+// Replies are NEVER sent from React (locked #5). The composer POSTs a durable command; the
+// server resolves recipients + threading headers from the persisted thread and the claimer
+// dispatches it through the shared policy gate. Attachments upload as raw bytes through the
+// authenticated fetchWithAuth path — never base64 in JSON (locked #7).
+
+export type InboxSendMode = 'reply' | 'reply_all' | 'forward'
+
+export type InboxSendCommandStatus =
+    | 'draft' | 'scheduled' | 'queued' | 'sending' | 'sent' | 'failed' | 'cancelled' | 'held'
+
+export interface InboxSendCommand {
+    id: string
+    conversationId: string
+    status: InboxSendCommandStatus
+    mode: InboxSendMode
+    scheduledAt: string | null
+    dueAt: string
+    attempts: number
+    lastPolicyCode: string | null
+    lastError: string | null
+    idempotencyKey: string
+    createdAt: string
+    updatedAt: string
+}
+
+/** A bounded, organization-owned uploaded attachment (metadata only; bytes live in private Storage). */
+export interface InboxUploadedAttachment {
+    id: string
+    filename: string
+    mimeType: string
+    sizeBytes: number
+    status: string
+    createdAt: string
+}
+
+export interface InboxSnippet {
+    id: string
+    name: string
+    body: string
+    shortcut: string | null
+    createdAt: string
+    updatedAt: string
+}
+
+export interface CreateSendCommandInput {
+    emailAccountId: string
+    mode: InboxSendMode
+    sourceMessageId?: string | null
+    /** Forward-only recipients; ignored server-side for reply/reply_all. */
+    forwardTo?: InboxAddress[]
+    forwardCc?: InboxAddress[]
+    subject?: string | null
+    bodyText?: string | null
+    bodyHtml?: string | null
+    attachmentIds?: string[]
+    scheduledAt?: string | null
+    /** One stable key per user intent so a duplicate submit returns the same command. */
+    idempotencyKey: string
+}
+
+export async function listInboxSnippets(organizationId: string): Promise<InboxSnippet[]> {
+    const data = await apiFetch<{ snippets?: InboxSnippet[] }>(withOrg('/snippets', organizationId))
+    return data.snippets ?? []
+}
+
+/** Create a durable reply/forward command. The server resolves recipients/headers; this never sends. */
+export async function createInboxSendCommand(
+    organizationId: string,
+    conversationId: string,
+    input: CreateSendCommandInput,
+): Promise<InboxSendCommand> {
+    const data = await apiFetch<{ command: InboxSendCommand }>(
+        withOrg(`/conversations/${conversationId}/send-commands`, organizationId),
+        jsonBody('POST', input),
+    )
+    return data.command
+}
+
+export async function getInboxSendCommand(organizationId: string, commandId: string): Promise<InboxSendCommand> {
+    const data = await apiFetch<{ command: InboxSendCommand }>(withOrg(`/send-commands/${commandId}`, organizationId))
+    return data.command
+}
+
+export async function cancelInboxSendCommand(organizationId: string, commandId: string): Promise<InboxSendCommand> {
+    const data = await apiFetch<{ command: InboxSendCommand }>(
+        withOrg(`/send-commands/${commandId}/cancel`, organizationId),
+        jsonBody('POST'),
+    )
+    return data.command
+}
+
+/**
+ * Upload one bounded attachment as RAW bytes through the authenticated fetchWithAuth path (never
+ * base64 in JSON). The server validates filename/MIME/extension/size and stores it in the private
+ * bucket under a server-chosen path. Content-Type is overridden to octet-stream so the app-level
+ * JSON body parser passes the bytes through to the route's raw handler.
+ */
+export async function uploadInboxAttachment(
+    organizationId: string,
+    conversationId: string,
+    file: File,
+): Promise<InboxUploadedAttachment> {
+    const url = withOrg(`/conversations/${conversationId}/attachments`, organizationId)
+    const res = await fetchWithAuth(url, {
+        method: 'POST',
+        body: file,
+        headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-Attachment-Filename': encodeURIComponent(file.name),
+            'X-Attachment-Content-Type': file.type || 'application/octet-stream',
+        },
+    })
+    if (!res.ok) {
+        let code = `Upload failed (${res.status})`
+        try {
+            const payload = await res.json()
+            if (payload && typeof payload.error === 'string') code = payload.error
+        } catch { /* non-JSON error body */ }
+        throw new Error(code)
+    }
+    const data = (await res.json()) as { attachment: InboxUploadedAttachment }
+    return data.attachment
+}
+
+export async function deleteInboxAttachment(organizationId: string, attachmentId: string): Promise<void> {
+    await apiFetch(withOrg(`/attachments/${attachmentId}`, organizationId), jsonBody('DELETE'))
+}
+
+export async function getInboxAttachmentDownloadUrl(
+    organizationId: string,
+    attachmentId: string,
+): Promise<{ url: string; filename: string }> {
+    return apiFetch<{ url: string; filename: string }>(withOrg(`/attachments/${attachmentId}/download`, organizationId))
 }

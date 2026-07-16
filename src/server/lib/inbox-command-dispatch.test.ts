@@ -10,6 +10,16 @@ import {
     type ResolveSendCommandInput,
 } from './inbox-command-dispatch'
 import type { DispatchOutreachInput, DispatchResult } from './outreach-dispatch'
+import {
+    InboxAttachmentError,
+    createInboxAttachment,
+    sanitizeAttachmentFilename,
+    validateAttachmentDeclaration,
+    validateAttachmentSet,
+    MAX_ATTACHMENT_BYTES,
+    MAX_ATTACHMENTS_PER_COMMAND,
+    type AttachmentStorage,
+} from './inbox-attachments'
 
 // ============================================================
 // Fixtures
@@ -340,5 +350,137 @@ describe('executeInboxSendCommand: policy denial preserves the draft', () => {
         expect(input.to).toBe('lead@acme.example')
         expect(input.inReplyTo).toBe('<lead-msg-1@acme.example>')
         expect(input.origin).toBe('unified_inbox')
+    })
+
+    it('strips a suppressed reply-all Cc so a reply respects suppression like campaign mail', async () => {
+        const { sql } = fakeSql()
+        const dispatch = vi.fn(async (_input: DispatchOutreachInput): Promise<DispatchResult> => ({ status: 'sent', rowId: 'e1' }))
+        const loadSuppressedAddresses = vi.fn(async () => new Set(['blocked@acme.example']))
+        await executeInboxSendCommand(
+            command({ ccRecipients: [{ address: 'blocked@acme.example', name: null }, { address: 'ok@acme.example', name: null }] }),
+            { sql, dispatch, loadSuppressedAddresses },
+        )
+        const input = dispatch.mock.calls[0][0]
+        expect(input.cc).toEqual(['ok@acme.example'])
+    })
+
+    it('reschedules (preserves the draft) when a bound attachment cannot be resolved', async () => {
+        const { sql, unsafeCalls } = fakeSql()
+        const dispatch = vi.fn(async (): Promise<DispatchResult> => ({ status: 'sent', rowId: 'e1' }))
+        const resolveAttachments = vi.fn(async () => { throw new Error('storage offline') })
+        const outcome = await executeInboxSendCommand(
+            command({ attachmentIds: ['att-1'] }),
+            { sql, dispatch, resolveAttachments, now: () => new Date('2026-07-16T12:00:00.000Z') },
+        )
+        expect(outcome).toBe('rescheduled')
+        expect(dispatch).not.toHaveBeenCalled() // never send a reply missing its attachment
+        expect(unsafeCalls.at(-1)!.query).toContain("status = 'scheduled'")
+    })
+})
+
+// ============================================================
+// Task 2 — bounded attachments: never base64, always server-validated,
+// organization-owned, private bucket, server-chosen path.
+// ============================================================
+
+/** Capture the InboxAttachmentError code (status too) thrown by a sync validator. */
+function attachmentError(fn: () => unknown): InboxAttachmentError {
+    try {
+        fn()
+    } catch (error) {
+        if (error instanceof InboxAttachmentError) return error
+        throw error
+    }
+    throw new Error('expected an InboxAttachmentError to be thrown')
+}
+
+describe('validateAttachmentDeclaration', () => {
+    it('accepts an allowed type whose extension matches', () => {
+        const r = validateAttachmentDeclaration({ filename: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 1024 })
+        expect(r).toEqual({ filename: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 1024 })
+    })
+
+    it('rejects an unsupported/active-content type (415)', () => {
+        expect(attachmentError(() => validateAttachmentDeclaration({ filename: 'x.html', mimeType: 'text/html', sizeBytes: 10 })))
+            .toMatchObject({ code: 'attachment_type_unsupported', status: 415 })
+        expect(attachmentError(() => validateAttachmentDeclaration({ filename: 'x.svg', mimeType: 'image/svg+xml', sizeBytes: 10 })).code)
+            .toBe('attachment_type_unsupported')
+    })
+
+    it('rejects an extension that does not match the declared MIME (415)', () => {
+        expect(attachmentError(() => validateAttachmentDeclaration({ filename: 'invoice.exe', mimeType: 'application/pdf', sizeBytes: 10 })).code)
+            .toBe('attachment_extension_mismatch')
+    })
+
+    it('rejects a non-positive or oversize file (400 / 413)', () => {
+        expect(attachmentError(() => validateAttachmentDeclaration({ filename: 'a.txt', mimeType: 'text/plain', sizeBytes: 0 })).code).toBe('attachment_size_invalid')
+        expect(attachmentError(() => validateAttachmentDeclaration({ filename: 'a.txt', mimeType: 'text/plain', sizeBytes: MAX_ATTACHMENT_BYTES + 1 })))
+            .toMatchObject({ code: 'attachment_too_large', status: 413 })
+    })
+})
+
+describe('validateAttachmentSet', () => {
+    it('rejects more than the per-command ceiling', () => {
+        const many = Array.from({ length: MAX_ATTACHMENTS_PER_COMMAND + 1 }, () => ({ filename: 'a.txt', mimeType: 'text/plain', sizeBytes: 1 }))
+        expect(attachmentError(() => validateAttachmentSet(many)).code).toBe('attachment_too_many')
+    })
+
+    it('rejects an aggregate over the total limit', () => {
+        const big = [
+            { filename: 'a.pdf', mimeType: 'application/pdf', sizeBytes: MAX_ATTACHMENT_BYTES },
+            { filename: 'b.pdf', mimeType: 'application/pdf', sizeBytes: 1 },
+        ]
+        expect(attachmentError(() => validateAttachmentSet(big)).code).toBe('attachment_aggregate_too_large')
+    })
+})
+
+describe('sanitizeAttachmentFilename', () => {
+    it('reduces a path-traversal filename to a safe basename (no separators)', () => {
+        const safe = sanitizeAttachmentFilename('../../../etc/passwd')
+        expect(safe).not.toContain('/')
+        expect(safe).not.toContain('..')
+        expect(safe).toBe('passwd')
+    })
+
+    it('rejects an empty / dot-only filename', () => {
+        expect(() => sanitizeAttachmentFilename('   ')).toThrow(InboxAttachmentError)
+        expect(() => sanitizeAttachmentFilename('...')).toThrow(InboxAttachmentError)
+    })
+})
+
+describe('createInboxAttachment: actual bytes are the size of record', () => {
+    function fakeStorage(): AttachmentStorage & { uploadCalls: number } {
+        const s = {
+            uploadCalls: 0,
+            async upload() { s.uploadCalls += 1 },
+            async download() { return Buffer.alloc(0) },
+            async createSignedUrl() { return 'https://signed' },
+            async remove() { /* noop */ },
+        }
+        return s
+    }
+
+    it('rejects oversize ACTUAL bytes before any storage/DB write (a client cannot under-declare)', async () => {
+        const storage = fakeStorage()
+        await expect(createInboxAttachment({
+            organizationId: ORG_A,
+            userId: 'u1',
+            filename: 'big.pdf',
+            mimeType: 'application/pdf',
+            bytes: Buffer.alloc(MAX_ATTACHMENT_BYTES + 1),
+        }, { storage })).rejects.toMatchObject({ code: 'attachment_too_large' })
+        expect(storage.uploadCalls).toBe(0)
+    })
+
+    it('rejects an unsupported type before any storage write', async () => {
+        const storage = fakeStorage()
+        await expect(createInboxAttachment({
+            organizationId: ORG_A,
+            userId: 'u1',
+            filename: 'x.html',
+            mimeType: 'text/html',
+            bytes: Buffer.from('<b>hi</b>'),
+        }, { storage })).rejects.toThrow(InboxAttachmentError)
+        expect(storage.uploadCalls).toBe(0)
     })
 })

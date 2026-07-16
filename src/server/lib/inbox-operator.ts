@@ -92,6 +92,10 @@ export interface InboxSendCommandDto {
     scheduledAt: Date | null
     dueAt: Date
     attempts: number
+    /** Last policy code from the delivery gate (e.g. organization_disabled) — the recoverable reason. */
+    lastPolicyCode: string | null
+    /** Last error/diagnostic, present on a failed/held/deferred command so the operator sees why. */
+    lastError: string | null
     idempotencyKey: string
     createdAt: Date
     updatedAt: Date
@@ -733,6 +737,8 @@ function toSendCommandDto(row: typeof inboxSendCommands.$inferSelect): InboxSend
         scheduledAt: row.scheduledAt,
         dueAt: row.dueAt,
         attempts: row.attempts,
+        lastPolicyCode: row.lastPolicyCode ?? null,
+        lastError: row.lastError ?? null,
         idempotencyKey: row.idempotencyKey,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
