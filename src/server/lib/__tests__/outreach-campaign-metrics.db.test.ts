@@ -1,6 +1,8 @@
+import path from 'node:path'
 import postgres from 'postgres'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+    applyMigrationFile,
     assertSafeTestDatabaseUrl,
     TEST_DATABASE_GUARD_ENV,
     TEST_DATABASE_URL_ENV,
@@ -16,6 +18,7 @@ const ACCOUNT = 'c2000000-0000-4000-8000-000000000002'
 const OTHER_ACCOUNT = 'c2000000-0000-4000-8000-00000000000a'
 const CAMPAIGN_1 = 'c2000000-0000-4000-8000-000000000003'
 const CAMPAIGN_2 = 'c2000000-0000-4000-8000-000000000004'
+const CAMPAIGN_3 = 'c2000000-0000-4000-8000-00000000000c'
 const OTHER_CAMPAIGN = 'c2000000-0000-4000-8000-00000000000b'
 const SEQ_1 = 'c2000000-0000-4000-8000-000000000005'
 const STEP_1 = 'c2000000-0000-4000-8000-000000000006'
@@ -80,6 +83,12 @@ async function seedLead(opts: {
 
 beforeAll(async () => {
     assertSafeTestDatabaseUrl(testDatabaseUrl, { runGuard })
+    // 038 provides outreach_emails.origin/idempotency_key/to_address for the send fixtures.
+    // Idempotent + advisory-locked, so it is safe when a sibling suite already applied it.
+    await applyMigrationFile(
+        { databaseUrl: testDatabaseUrl, runGuard },
+        path.join(process.cwd(), 'supabase', 'migrations', '038_outreach_dispatch_state_machine.sql'),
+    )
     process.env.DATABASE_URL = testDatabaseUrl
     process.env.JWT_SECRET ||= 'test'
     sql = postgres(testDatabaseUrl, { max: 4, prepare: false })
@@ -104,6 +113,7 @@ beforeAll(async () => {
         INSERT INTO campaigns (id, organization_id, name, status) VALUES
             (${CAMPAIGN_1}::uuid, ${ORG}::uuid, 'Campaign One', 'active'),
             (${CAMPAIGN_2}::uuid, ${ORG}::uuid, 'Campaign Two', 'active'),
+            (${CAMPAIGN_3}::uuid, ${ORG}::uuid, 'Campaign Three', 'active'),
             (${OTHER_CAMPAIGN}::uuid, ${OTHER_ORG}::uuid, 'Other Campaign', 'active')
         ON CONFLICT (id) DO NOTHING
     `
@@ -124,6 +134,11 @@ beforeAll(async () => {
 
     // Campaign 2: 1 contacted lead, 1 sent email.
     await seedLead({ campaignId: CAMPAIGN_2, status: 'contacted', sends: 1 })
+
+    // Campaign 3 (N-1 sent-gate): a bounced lead that was NEVER sent must not inflate bouncedLeads
+    // (which would push bounceRate over its contactedLeads denominator, breaking the 0-100 invariant).
+    await seedLead({ campaignId: CAMPAIGN_3, status: 'bounced', sends: 0 }) // bounced, never sent
+    await seedLead({ campaignId: CAMPAIGN_3, status: 'bounced', sends: 1, bouncedFirst: true }) // bounced after a send
 
     // Other org (cross-tenant): must never bleed into ORG metrics.
     await seedLead({ campaignId: OTHER_CAMPAIGN, status: 'contacted', opens: 9, sends: 1, org: OTHER_ORG, account: OTHER_ACCOUNT })
@@ -163,6 +178,17 @@ describe('computeCampaignMetrics cohorts', () => {
         expect(empty.totalLeads).toBe(0)
         expect(empty.contactedLeads).toBe(0)
         expect(empty.sentEmails).toBe(0)
+    })
+})
+
+describe('bounceRate sent-gate (N-1)', () => {
+    it('a bounced lead with no sent email does not inflate bouncedLeads or push bounceRate over 100', async () => {
+        const m = await computeCampaignMetrics([CAMPAIGN_3])
+        // Two bounced leads exist, but only one was ever sent to.
+        expect(m.contactedLeads).toBe(1)
+        expect(m.bouncedLeads).toBe(1) // the never-sent bounce is excluded, matching contactedLeads' gate
+        expect(m.bounceRate).toBeLessThanOrEqual(100)
+        expect(Math.round(m.bounceRate)).toBe(100)
     })
 })
 
