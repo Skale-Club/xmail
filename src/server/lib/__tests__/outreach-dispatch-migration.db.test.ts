@@ -329,6 +329,32 @@ describe('outreach dispatch migration 038', () => {
                 SELECT current_daily_sent FROM email_accounts WHERE id = ${accountId}::uuid
             `
             expect(released.current_daily_sent).toBe(0)
+
+            const spacingNow = new Date(now.getTime() + 10 * 60_000)
+            await sql`
+                UPDATE email_accounts
+                SET daily_send_limit = 50,
+                    current_daily_sent = 0,
+                    min_minutes_between_emails = 5,
+                    last_sent_at = ${new Date(spacingNow.getTime() - 10 * 60_000)}
+                WHERE id = ${accountId}::uuid
+            `
+            const spacingClaims = await Promise.all([
+                repository.claim(makeInput('manual:spacing-a'), {
+                    now: spacingNow, leaseToken: '20000000-0000-4000-8000-000000000012',
+                    leaseExpiresAt: new Date(spacingNow.getTime() + 60_000),
+                }),
+                repository.claim(makeInput('manual:spacing-b'), {
+                    now: spacingNow, leaseToken: '20000000-0000-4000-8000-000000000013',
+                    leaseExpiresAt: new Date(spacingNow.getTime() + 60_000),
+                }),
+            ])
+            const spacingClaimed = spacingClaims.filter((claim): claim is Extract<typeof claim, { kind: 'claimed' }> => claim.kind === 'claimed')
+            const spacingStarts = await Promise.all(spacingClaimed.map((claim) => repository.startDispatch(claim, spacingNow, {
+                account: { ...capacity.account, dailySendLimit: 50, minMinutesBetweenEmails: 5 },
+                dailyLimit: 50,
+            })))
+            expect(spacingStarts.filter(Boolean)).toHaveLength(1)
         } finally {
             await sql.end({ timeout: 1 })
         }
