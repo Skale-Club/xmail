@@ -25,7 +25,7 @@ interface Lead {
     email: string
     firstName: string | null
     lastName: string | null
-    company: string | null
+    companyName: string | null
     title: string | null
     phone: string | null
     linkedinUrl: string | null
@@ -104,10 +104,10 @@ function LeadRow({ lead, onDelete }: { lead: Lead; onDelete: (id: string) => voi
                 </div>
             </td>
             <td className="py-3 px-4">
-                {lead.company && (
+                {lead.companyName && (
                     <div className="flex items-center gap-1 text-muted-foreground">
                         <Building className="w-4 h-4" />
-                        <span className="text-sm">{lead.company}</span>
+                        <span className="text-sm">{lead.companyName}</span>
                     </div>
                 )}
                 {lead.title && <p className="text-xs text-muted-foreground">{lead.title}</p>}

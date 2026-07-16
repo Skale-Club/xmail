@@ -18,6 +18,8 @@ const ACCOUNT = 'c4000000-0000-4000-8000-000000000003'
 const CAMPAIGN = 'c4000000-0000-4000-8000-000000000004'
 const SEQ = 'c4000000-0000-4000-8000-000000000005'
 const STEP = 'c4000000-0000-4000-8000-000000000006'
+// Second step so a lead can carry two sent emails (unique index on campaign_lead_id+step).
+const STEP2 = 'c4000000-0000-4000-8000-000000000007'
 
 let sql: ReturnType<typeof postgres>
 let server: http.Server
@@ -42,10 +44,10 @@ async function seedLead(status: string, opts: { opens?: number; clicks?: number;
         VALUES (${campaignLeadId}::uuid, ${CAMPAIGN}::uuid, ${leadId}::uuid, ${status}::lead_status, ${opts.opens ?? 0}, ${opts.clicks ?? 0}, ${opts.replies ?? 0})
     `
     for (let i = 0; i < (opts.sends ?? 0); i++) {
-        const emailId = `c4000000-0000-4000-8000-3${s.slice(0, 9)}${String(i).padStart(2, '0')}`
+        const emailId = `c4000000-0000-4000-8000-3${String(leadSeq).padStart(9, '0')}${String(i).padStart(2, '0')}`
         await sql`
-            INSERT INTO outreach_emails (id, organization_id, campaign_id, campaign_lead_id, sequence_step_id, email_account_id, subject, sent_at, opened_at, replied_at, bounced_at)
-            VALUES (${emailId}::uuid, ${ORG}::uuid, ${CAMPAIGN}::uuid, ${campaignLeadId}::uuid, ${STEP}::uuid, ${ACCOUNT}::uuid, 'Hi', NOW(),
+            INSERT INTO outreach_emails (id, organization_id, campaign_id, campaign_lead_id, sequence_step_id, email_account_id, subject, tracking_token, idempotency_key, to_address, sent_at, opened_at, replied_at, bounced_at)
+            VALUES (${emailId}::uuid, ${ORG}::uuid, ${CAMPAIGN}::uuid, ${campaignLeadId}::uuid, ${i === 0 ? STEP : STEP2}::uuid, ${ACCOUNT}::uuid, 'Hi', ${emailId}, ${emailId}, 'to@example.test', NOW(),
                 ${opts.openedFirst && i === 0 ? sql`NOW()` : null}, ${opts.repliedFirst && i === 0 ? sql`NOW()` : null}, ${opts.bouncedFirst && i === 0 ? sql`NOW()` : null})
         `
     }
@@ -63,7 +65,9 @@ beforeAll(async () => {
     await sql`INSERT INTO email_accounts (id, organization_id, email, smtp_host, smtp_username, smtp_password, status) VALUES (${ACCOUNT}::uuid, ${ORG}::uuid, 'metrics-route-sender@example.test', 'localhost', 'u', 'x', 'verified') ON CONFLICT (id) DO NOTHING`
     await sql`INSERT INTO campaigns (id, organization_id, name, status) VALUES (${CAMPAIGN}::uuid, ${ORG}::uuid, 'Metrics Route Campaign', 'active') ON CONFLICT (id) DO NOTHING`
     await sql`INSERT INTO sequences (id, campaign_id, name) VALUES (${SEQ}::uuid, ${CAMPAIGN}::uuid, 'Seq') ON CONFLICT (id) DO NOTHING`
-    await sql`INSERT INTO sequence_steps (id, sequence_id, step_order, type, subject, delay_hours) VALUES (${STEP}::uuid, ${SEQ}::uuid, 1, 'email', 'Hi', 0) ON CONFLICT (id) DO NOTHING`
+    await sql`INSERT INTO sequence_steps (id, sequence_id, step_order, type, subject, plain_body, delay_hours) VALUES
+        (${STEP}::uuid, ${SEQ}::uuid, 1, 'email', 'Hi', 'Body', 0),
+        (${STEP2}::uuid, ${SEQ}::uuid, 2, 'email', 'Hi again', 'Body 2', 24) ON CONFLICT (id) DO NOTHING`
 
     await seedLead('new')
     await seedLead('unsubscribed') // pre-send suppressed

@@ -4,7 +4,7 @@ import { db } from '../../../db'
 import { campaigns, sequences, sequenceSteps, campaignLeads, leads, organizationUsers, outreachEmails, emailAccounts } from '../../../db/schema'
 import { eq, and, sql, inArray, desc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
-import { computeCampaignMetrics } from '../../lib/outreach-campaign-metrics'
+import { computeCampaignMetrics, computeCampaignMetricsByCampaign } from '../../lib/outreach-campaign-metrics'
 import { resolveOutreachSettings } from '../../lib/outreach-settings'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import {
@@ -83,10 +83,16 @@ const createSequenceStepSchema = z.object({
     abTestPercentage: z.number().int().min(0).max(100).default(50),
 })
 
+// Enroll by an explicit leadIds set OR by a leadListId (the whole list is resolved server-side,
+// replacing the client's old unbounded 1,000-row scan). Exactly one source is required.
 const addLeadsToCampaignSchema = z.object({
-    leadIds: z.array(z.string().uuid()).min(1),
+    leadIds: z.array(z.string().uuid()).optional(),
+    leadListId: z.string().uuid().optional(),
     emailAccountId: z.string().uuid().optional(),
-})
+}).refine(
+    (data) => (data.leadIds !== undefined && data.leadIds.length > 0) || data.leadListId !== undefined,
+    { message: 'Provide a non-empty leadIds array or a leadListId' },
+)
 
 // Helper to check org membership (platform admins bypass membership check)
 async function checkOrgMembership(userId: string, organizationId: string) {
@@ -254,53 +260,28 @@ router.get('/', async (req: Request, res: Response) => {
             },
         })
 
-        // audit-2026-07 (frontend C1 / data M2): the list UI renders emailsSent, openRate,
-        // clickRate, replyRate and bounceRate per campaign — fields the raw campaign row does
-        // NOT contain, so the client crashed on `undefined.toFixed()`. Compute them here from
-        // outreach_emails using the SAME cohort/semantics as the admin health endpoint
-        // (src/server/lib/outreach-metrics.ts): denominator = emails actually sent, numerators
-        // = unique emails with the corresponding timestamp set. Single grouped query.
+        // Every campaign surface reports the SAME named cohorts and rates: the list attaches the
+        // per-campaign metric DTO from outreach-campaign-metrics.ts (lead-grain, denominator =
+        // contactedLeads, which excludes pre-send suppressed leads) — identical to /stats,
+        // /:id/stats and /analytics. `emailsSent` is aliased to sentEmails for the existing UI.
         const campaignRows = result.data as Array<Record<string, unknown> & { id: string }>
         const campaignIdList = campaignRows.map(c => c.id)
-        const metricsByCampaign = new Map<string, {
-            emailsSent: number; openRate: number; clickRate: number; replyRate: number; bounceRate: number
-        }>()
+        const metricsByCampaign = await computeCampaignMetricsByCampaign(campaignIdList)
 
-        if (campaignIdList.length > 0) {
-            const agg = await db
-                .select({
-                    campaignId: outreachEmails.campaignId,
-                    sent: sql<number>`count(*) FILTER (WHERE ${outreachEmails.sentAt} IS NOT NULL)`,
-                    opened: sql<number>`count(*) FILTER (WHERE ${outreachEmails.openedAt} IS NOT NULL)`,
-                    clicked: sql<number>`count(*) FILTER (WHERE ${outreachEmails.clickedAt} IS NOT NULL)`,
-                    replied: sql<number>`count(*) FILTER (WHERE ${outreachEmails.repliedAt} IS NOT NULL)`,
-                    bounced: sql<number>`count(*) FILTER (WHERE ${outreachEmails.bouncedAt} IS NOT NULL)`,
-                })
-                .from(outreachEmails)
-                .where(and(
-                    eq(outreachEmails.organizationId, organizationId),
-                    inArray(outreachEmails.campaignId, campaignIdList),
-                ))
-                .groupBy(outreachEmails.campaignId)
-
-            for (const row of agg) {
-                if (!row.campaignId) continue
-                const sent = Number(row.sent) || 0
-                const rate = (n: number) => (sent > 0 ? Math.round((Number(n) / sent) * 1000) / 10 : 0)
-                metricsByCampaign.set(row.campaignId, {
-                    emailsSent: sent,
-                    openRate: rate(row.opened),
-                    clickRate: rate(row.clicked),
-                    replyRate: rate(row.replied),
-                    bounceRate: rate(row.bounced),
-                })
+        const campaignsWithMetrics = campaignRows.map(c => {
+            const m = metricsByCampaign.get(c.id)
+            return {
+                ...c,
+                eligibleLeads: m?.eligibleLeads ?? 0,
+                contactedLeads: m?.contactedLeads ?? 0,
+                sentEmails: m?.sentEmails ?? 0,
+                emailsSent: m?.sentEmails ?? 0,
+                openRate: m?.openRate ?? 0,
+                clickRate: m?.clickRate ?? 0,
+                replyRate: m?.replyRate ?? 0,
+                bounceRate: m?.bounceRate ?? 0,
             }
-        }
-
-        const campaignsWithMetrics = campaignRows.map(c => ({
-            ...c,
-            ...(metricsByCampaign.get(c.id) ?? { emailsSent: 0, openRate: 0, clickRate: 0, replyRate: 0, bounceRate: 0 }),
-        }))
+        })
 
         res.json({ campaigns: campaignsWithMetrics, pagination: result.pagination })
     } catch (error) {
@@ -340,6 +321,9 @@ router.get('/stats', async (req: Request, res: Response) => {
                 totalCampaigns: 0,
                 activeCampaigns: 0,
                 totalLeads: 0,
+                eligibleLeads: 0,
+                contactedLeads: 0,
+                sentEmails: 0,
                 totalEmails: 0,
                 openRate: 0,
                 clickRate: 0,
@@ -350,8 +334,8 @@ router.get('/stats', async (req: Request, res: Response) => {
 
         const campaignIds = campaignsList.map(c => c.id)
 
-        // Shared with /analytics and /:id/stats — see outreach-campaign-metrics.ts for why the
-        // rates are per unique lead rather than per event.
+        // Shared with /analytics and /:id/stats — see outreach-campaign-metrics.ts for the named
+        // denominators (rates use contactedLeads, which excludes pre-send suppressed leads).
         const metrics = await computeCampaignMetrics(campaignIds)
         const activeCampaigns = campaignsList.filter(c => c.status === 'active').length
 
@@ -359,7 +343,11 @@ router.get('/stats', async (req: Request, res: Response) => {
             totalCampaigns: campaignsList.length,
             activeCampaigns,
             totalLeads: metrics.totalLeads,
-            totalEmails: metrics.contacted,
+            eligibleLeads: metrics.eligibleLeads,
+            contactedLeads: metrics.contactedLeads,
+            sentEmails: metrics.sentEmails,
+            // Back-compat alias for the dashboard "Emails Sent" card.
+            totalEmails: metrics.sentEmails,
             openRate: metrics.openRate,
             clickRate: metrics.clickRate,
             replyRate: metrics.replyRate,
@@ -462,7 +450,9 @@ router.get('/analytics', async (req: Request, res: Response) => {
                 totalCampaigns: campaignsList.length,
                 activeCampaigns,
                 totalLeads: metrics.totalLeads,
-                totalEmailsSent: metrics.contacted,
+                eligibleLeads: metrics.eligibleLeads,
+                contactedLeads: metrics.contactedLeads,
+                totalEmailsSent: metrics.sentEmails,
                 totalOpens: metrics.totalOpens,
                 totalClicks: metrics.totalClicks,
                 totalReplies: metrics.totalReplies,
@@ -1240,6 +1230,24 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
 
         const validatedData = addLeadsToCampaignSchema.parse(req.body)
 
+        // Resolve the enrollment set. An explicit leadIds array wins; otherwise every lead in the
+        // named list is resolved server-side (tenant-scoped), so the client never has to scan and
+        // page the full lead table to enroll a list.
+        let requestedLeadIds = validatedData.leadIds ?? []
+        if (requestedLeadIds.length === 0 && validatedData.leadListId) {
+            const listMembers = await db.query.leads.findMany({
+                where: and(
+                    eq(leads.organizationId, campaign.organizationId),
+                    eq(leads.leadListId, validatedData.leadListId),
+                ),
+                columns: { id: true },
+            })
+            requestedLeadIds = listMembers.map((lead) => lead.id)
+            if (requestedLeadIds.length === 0) {
+                return res.status(400).json({ error: 'Lead list has no leads to enroll' })
+            }
+        }
+
         if (validatedData.emailAccountId) {
             const account = await db.query.emailAccounts.findFirst({
                 where: and(
@@ -1257,11 +1265,11 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
         const leadsList = await db.query.leads.findMany({
             where: and(
                 eq(leads.organizationId, campaign.organizationId),
-                inArray(leads.id, validatedData.leadIds)
+                inArray(leads.id, requestedLeadIds)
             ),
         })
 
-        if (leadsList.length !== validatedData.leadIds.length) {
+        if (leadsList.length !== requestedLeadIds.length) {
             return res.status(400).json({ error: 'Some leads not found or access denied' })
         }
 
@@ -1269,7 +1277,7 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
         const existingCampaignLeads = await db.query.campaignLeads.findMany({
             where: and(
                 eq(campaignLeads.campaignId, campaignId),
-                inArray(campaignLeads.leadId, validatedData.leadIds)
+                inArray(campaignLeads.leadId, requestedLeadIds)
             ),
             columns: { leadId: true },
         })
@@ -1277,7 +1285,7 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
         const existingLeadIds = new Set(existingCampaignLeads.map(cl => cl.leadId))
 
         // Filter out existing leads
-        const newLeadIds = validatedData.leadIds.filter(id => !existingLeadIds.has(id))
+        const newLeadIds = requestedLeadIds.filter(id => !existingLeadIds.has(id))
 
         if (newLeadIds.length === 0) {
             // Not an error for orchestration callers (e.g. Xphere enrolling prospects):
@@ -1350,7 +1358,7 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
 
         res.status(201).json({
             added: insertedCampaignLeads.length,
-            existing: validatedData.leadIds.length - insertedCampaignLeads.length,
+            existing: requestedLeadIds.length - insertedCampaignLeads.length,
             campaignLeads: insertedCampaignLeads,
         })
     } catch (error) {
@@ -1439,15 +1447,15 @@ router.get('/:id/stats', async (req: Request, res: Response) => {
 
         const metrics = await computeCampaignMetrics([campaignId])
 
-        // `replied`/`bounced` are kept as aliases: this endpoint's original shape, which the
-        // campaign Stats and Overview tabs already read. The rates are now served alongside them
-        // so the client stops doing its own division (it was dividing event totals by contacted,
-        // producing a different "open rate" than the dashboard showed for the same campaign).
+        // `replied`/`bounced`/`contacted` are kept as aliases for the existing Stats/Overview
+        // tab shape; the named cohorts (contactedLeads, sentEmails, eligibleLeads) and rates come
+        // straight from the shared DTO so every campaign surface reports identical numbers.
         res.json({
             stats: {
                 ...metrics,
                 replied: metrics.repliedLeads,
                 bounced: metrics.bouncedLeads,
+                contacted: metrics.contactedLeads,
             },
         })
     } catch (error) {

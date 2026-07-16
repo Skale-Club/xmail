@@ -49,8 +49,8 @@ async function seedScenario(org: string, campaign: string, account: string, step
         VALUES (${campaignLeadId}::uuid, ${campaign}::uuid, ${leadId}::uuid, ${status}::lead_status)
     `
     await sql`
-        INSERT INTO outreach_emails (id, organization_id, campaign_id, campaign_lead_id, sequence_step_id, email_account_id, subject, tracking_token, sent_at)
-        VALUES (${emailId}::uuid, ${org}::uuid, ${campaign}::uuid, ${campaignLeadId}::uuid, ${step}::uuid, ${account}::uuid, 'Hi', ${emailId}, NOW())
+        INSERT INTO outreach_emails (id, organization_id, campaign_id, campaign_lead_id, sequence_step_id, email_account_id, subject, tracking_token, idempotency_key, to_address, sent_at)
+        VALUES (${emailId}::uuid, ${org}::uuid, ${campaign}::uuid, ${campaignLeadId}::uuid, ${step}::uuid, ${account}::uuid, 'Hi', ${emailId}, ${emailId}, 'to@example.test', NOW())
     `
     return { leadId, campaignLeadId, emailId }
 }

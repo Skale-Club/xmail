@@ -12,13 +12,17 @@ import { apiFetch } from '../../../../lib/api-client'
 
 interface Stats {
     totalLeads: number
+    // Named denominators from the shared metric DTO (src/server/lib/outreach-campaign-metrics.ts).
+    contactedLeads: number
+    sentEmails: number
+    eligibleLeads: number
     contacted: number
     replied: number
     bounced: number
     totalOpens: number
     totalClicks: number
     totalReplies: number
-    // Server-computed, per unique lead. See src/server/lib/outreach-campaign-metrics.ts.
+    // Server-computed, per unique contacted lead.
     openRate: number
     clickRate: number
     replyRate: number
@@ -71,7 +75,8 @@ export default function StatsTab({ campaignId, organizationId }: StatsTabProps) 
     })
 
     const s = statsData?.stats
-    const contacted = Number(s?.contacted ?? 0)
+    // "Emails Sent" is email-grain sentEmails; "Contacted" would be the lead-grain denominator.
+    const sentEmails = Number(s?.sentEmails ?? 0)
     // Rates come from the server (outreach-campaign-metrics.ts). This used to divide here, over
     // event totals rather than unique leads, so the same campaign showed one open rate on this tab
     // and a different one on the dashboard. One definition, one place.
@@ -98,7 +103,7 @@ export default function StatsTab({ campaignId, organizationId }: StatsTabProps) 
         {
             label: 'Emails Sent',
             icon: Send,
-            value: statsLoading ? '—' : String(contacted),
+            value: statsLoading ? '—' : String(sentEmails),
             valueClass: '',
         },
         {

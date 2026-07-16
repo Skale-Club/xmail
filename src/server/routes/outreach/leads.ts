@@ -2,11 +2,41 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
 import { leads, leadLists, organizationUsers } from '../../../db/schema'
-import { eq, and, sql, inArray, desc } from 'drizzle-orm'
+import { eq, and, or, sql, ilike, inArray, asc, desc, type SQL } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 
 const router = Router()
+
+// Bounded, tenant-scoped lead list contract (Phase 20 CONS-05). Every parameter is validated:
+// out-of-range or malformed input is a 400, never a silent fallback. `limit` is hard-capped at
+// 100. Search is trimmed and length-bounded; sort/status/order are enumerated.
+const LEAD_STATUSES = ['new', 'contacted', 'replied', 'interested', 'not_interested', 'bounced', 'unsubscribed'] as const
+const LEAD_SORT_FIELDS = ['createdAt', 'updatedAt', 'email', 'status'] as const
+
+const leadListQuerySchema = z.object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(25),
+    search: z.string().trim().max(200).optional(),
+    status: z.enum(LEAD_STATUSES).optional(),
+    leadListId: z.string().uuid().optional(),
+    sort: z.enum(LEAD_SORT_FIELDS).default('createdAt'),
+    order: z.enum(['asc', 'desc']).default('desc'),
+})
+
+const LEAD_SORT_COLUMNS = {
+    createdAt: leads.createdAt,
+    updatedAt: leads.updatedAt,
+    email: leads.email,
+    status: leads.status,
+} as const
+
+// Escape LIKE/ILIKE wildcards so a user typing '%', '_', or '\' searches for those literal
+// characters instead of injecting a pattern. Postgres ILIKE uses backslash as the default escape
+// character, so an escaped '\%' matches a literal '%'.
+function escapeLikePattern(input: string): string {
+    return input.replace(/[\\%_]/g, (char) => `\\${char}`)
+}
 
 // Validation schemas
 const createLeadSchema = z.object({
@@ -203,18 +233,11 @@ router.delete('/lists/:id', async (req: Request, res: Response) => {
 
 // ============ LEADS ============
 
-// List leads with pagination and filters
+// List leads: server-side search / filter / sort / pagination, tenant-scoped and bounded.
 router.get('/', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
         const organizationId = req.query.organizationId as string
-        const page = parseInt(req.query.page as string) || 1
-        const limit = parseInt(req.query.limit as string) || 50
-        // Phase 12 COR-07: `_search` retained as a TODO marker; lead search not yet wired through.
-        // Phase 13 QUA-01 will either implement the filter or remove the field entirely.
-        const _search = req.query.search as string
-        const status = req.query.status as string
-        const leadListId = req.query.leadListId as string
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
@@ -229,33 +252,47 @@ router.get('/', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Access denied' })
         }
 
+        const { page, limit, search, status, leadListId, sort, order } = leadListQuerySchema.parse(req.query)
         const offset = (page - 1) * limit
 
-        // Build where conditions
-        const conditions = [eq(leads.organizationId, organizationId)]
+        // Tenant scope first, always. No query parameter can widen it.
+        const conditions: SQL[] = [eq(leads.organizationId, organizationId)]
 
-        if (status) {
-            conditions.push(eq(leads.status, status as any))
+        if (status) conditions.push(eq(leads.status, status))
+        if (leadListId) conditions.push(eq(leads.leadListId, leadListId))
+
+        const trimmedSearch = search?.trim()
+        if (trimmedSearch) {
+            const term = `%${escapeLikePattern(trimmedSearch)}%`
+            const searchCondition = or(
+                ilike(leads.email, term),
+                ilike(leads.firstName, term),
+                ilike(leads.lastName, term),
+                ilike(leads.companyName, term),
+                ilike(leads.title, term),
+            )
+            if (searchCondition) conditions.push(searchCondition)
         }
 
-        if (leadListId) {
-            conditions.push(eq(leads.leadListId, leadListId))
-        }
+        const where = and(...conditions)
 
-        // Get total count
         const countResult = await db
             .select({ count: sql<number>`count(*)` })
             .from(leads)
-            .where(and(...conditions))
+            .where(where)
 
         const total = Number(countResult[0]?.count || 0)
 
-        // Get leads
+        // Stable ordering: the requested field, then a unique id tie-breaker so equal sort keys
+        // never reorder between pages (created_at DESC, id DESC by default).
+        const sortColumn = LEAD_SORT_COLUMNS[sort]
+        const primaryOrder = order === 'asc' ? asc(sortColumn) : desc(sortColumn)
+
         const leadsList = await db.query.leads.findMany({
-            where: and(...conditions),
+            where,
             limit,
             offset,
-            orderBy: (leads, { desc }) => [desc(leads.createdAt)],
+            orderBy: [primaryOrder, desc(leads.id)],
             with: {
                 leadList: true,
             },
@@ -271,6 +308,9 @@ router.get('/', async (req: Request, res: Response) => {
             },
         })
     } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: 'Validation error', details: error.errors })
+        }
         console.error('Error fetching leads:', error)
         res.status(500).json({ error: 'Internal server error' })
     }

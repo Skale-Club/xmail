@@ -18,13 +18,17 @@ interface Campaign {
 
 interface CampaignStats {
     totalLeads: number
+    // Named denominators from the shared metric DTO (src/server/lib/outreach-campaign-metrics.ts).
+    contactedLeads: number
+    sentEmails: number
+    eligibleLeads: number
     contacted: number
     replied: number
     bounced: number
     totalOpens: number
     totalClicks: number
     totalReplies: number
-    // Server-computed, per unique lead. See src/server/lib/outreach-campaign-metrics.ts.
+    // Server-computed, per unique contacted lead.
     openRate: number
     replyRate: number
 }
@@ -52,11 +56,13 @@ export default function OverviewTab({ campaign, organizationId }: OverviewTabPro
     // campaign.* counters are a cache that drifts, and deriving a rate from them here was one of
     // the ways this tab disagreed with the dashboard. Rates come from the server or not at all.
     const totalLeads = Number(stats?.totalLeads ?? campaign.totalLeads ?? 0)
-    const contacted = Number(stats?.contacted ?? campaign.leadsContacted ?? 0)
+    // "Emails Sent" is the email-grain sentEmails from the shared DTO, not the lead-grain
+    // contacted count (they differ when a lead is emailed more than once).
+    const sentEmails = Number(stats?.sentEmails ?? 0)
 
     const cards = [
         { label: 'Total Leads', value: isLoading ? '--' : String(totalLeads) },
-        { label: 'Emails Sent', value: isLoading ? '--' : String(contacted) },
+        { label: 'Emails Sent', value: isLoading || !stats ? '--' : String(sentEmails) },
         { label: 'Open Rate', value: isLoading || !stats ? '--' : `${stats.openRate.toFixed(1)}%` },
         { label: 'Reply Rate', value: isLoading || !stats ? '--' : `${stats.replyRate.toFixed(1)}%` },
     ]

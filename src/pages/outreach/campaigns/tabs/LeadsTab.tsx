@@ -2,7 +2,7 @@ import React from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, X, Mail, AlertCircle } from 'lucide-react'
 import { PaginationControls } from '../../../../components/ui/PaginationControls'
-import { apiFetch, apiRequest, ApiClientError } from '../../../../lib/api-client'
+import { apiFetch, apiRequest } from '../../../../lib/api-client'
 import { toast } from '../../../../components/ui/toaster'
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -30,14 +30,15 @@ interface CampaignLeadsResponse {
     pagination: { page: number; limit: number; total: number; totalPages: number }
 }
 
-interface Lead {
-    id: string
-    email: string
+interface BulkImportResponse {
+    imported: number
+    duplicates: number
+    leadIds: string[]
 }
 
-interface LeadsListResponse {
-    leads: Lead[]
-    pagination: { page: number; limit: number; total: number; totalPages: number }
+interface EnrollResponse {
+    added: number
+    existing: number
 }
 
 interface LeadList {
@@ -138,74 +139,15 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
     })
 
     // ───────────────────────────────────────────────────────────────────────
-    // Email resolution
-    //
-    // The server's GET /api/outreach/leads does NOT support a `search` query
-    // param (see leads.ts:182–250 — it only filters by organizationId, status,
-    // and leadListId). To map raw pasted emails to lead IDs we therefore:
-    //
-    //   1. Try POST /api/outreach/leads — succeeds for new emails, returns id.
-    //   2. On 400 "Lead with this email already exists", fall back to a
-    //      one-shot GET of up to 1000 leads in the org and resolve by email
-    //      locally. This is acceptable for v1 (CONTEXT.md "no bulk efficiency
-    //      requirement"); a future plan can replace with a server-side
-    //      search-by-email endpoint.
+    // Enrollment goes entirely through server contracts — no client-side lead
+    // scanning:
+    //   * Paste mode → POST /leads/bulk-import resolves every email to a lead id
+    //     (creating new leads, reusing existing) and returns the full leadIds set.
+    //   * List mode  → POST /campaigns/:id/leads with { leadListId } enrolls the
+    //     whole list server-side (the leads are resolved on the server).
+    // The old GET ?limit=1000 scans and per-email create/duplicate probing are gone
+    // (and would now be rejected: the lead list contract caps limit at 100).
     // ───────────────────────────────────────────────────────────────────────
-    const resolveEmailsToLeadIds = async (
-        emails: string[]
-    ): Promise<{ ids: string[]; failed: string[] }> => {
-        const ids: string[] = []
-        const failed: string[] = []
-        let cachedExisting: Map<string, string> | null = null
-
-        const loadExistingMap = async (): Promise<Map<string, string>> => {
-            if (cachedExisting) return cachedExisting
-            const all = await apiFetch<LeadsListResponse>(
-                `/api/outreach/leads?organizationId=${organizationId}&page=1&limit=1000`
-            )
-            cachedExisting = new Map(all.leads.map((l) => [l.email.toLowerCase(), l.id]))
-            return cachedExisting
-        }
-
-        for (const email of emails) {
-            try {
-                const res = await apiRequest(
-                    `/api/outreach/leads?organizationId=${organizationId}`,
-                    {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email }),
-                    }
-                )
-                const payload = (await res.json()) as { lead: { id: string } }
-                ids.push(payload.lead.id)
-            } catch (err) {
-                // Duplicate-email path: the server returns 400 with the message
-                // "Lead with this email already exists". Fall back to GET-all.
-                const isDuplicate =
-                    err instanceof ApiClientError &&
-                    err.status === 400 &&
-                    /already exists/i.test(err.message)
-                if (isDuplicate) {
-                    try {
-                        const map = await loadExistingMap()
-                        const found = map.get(email)
-                        if (found) {
-                            ids.push(found)
-                        } else {
-                            failed.push(email)
-                        }
-                    } catch {
-                        failed.push(email)
-                    }
-                } else {
-                    failed.push(email)
-                }
-            }
-        }
-
-        return { ids, failed }
-    }
 
     const handleSubmit = async () => {
         if (!selectedInboxId) {
@@ -218,8 +160,7 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
         }
         setIsSubmitting(true)
         try {
-            let leadIds: string[] = []
-            let failedEmails: string[] = []
+            let enrollBody: Record<string, unknown>
 
             if (mode === 'paste') {
                 const emails = Array.from(
@@ -238,30 +179,27 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
                     })
                     return
                 }
-                const resolved = await resolveEmailsToLeadIds(emails)
-                leadIds = resolved.ids
-                failedEmails = resolved.failed
+                const importRes = await apiRequest(
+                    `/api/outreach/leads/bulk-import?organizationId=${organizationId}`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ leads: emails.map((email) => ({ email })) }),
+                    }
+                )
+                const imported = (await importRes.json()) as BulkImportResponse
+                const leadIds = imported.leadIds ?? []
+                if (leadIds.length === 0) {
+                    toast({ title: 'No leads resolved', description: 'Nothing to add.', variant: 'destructive' })
+                    return
+                }
+                enrollBody = { leadIds, emailAccountId: selectedInboxId }
             } else {
                 if (!selectedListId) {
                     toast({ title: 'Select a lead list', variant: 'destructive' })
                     return
                 }
-                const listLeads = await apiFetch<LeadsListResponse>(
-                    `/api/outreach/leads?organizationId=${organizationId}&leadListId=${selectedListId}&limit=1000`
-                )
-                leadIds = listLeads.leads.map((l) => l.id)
-            }
-
-            if (leadIds.length === 0) {
-                toast({
-                    title: 'No leads resolved',
-                    description:
-                        failedEmails.length > 0
-                            ? `Failed to resolve ${failedEmails.length} email${failedEmails.length === 1 ? '' : 's'}.`
-                            : 'Nothing to add.',
-                    variant: 'destructive',
-                })
-                return
+                enrollBody = { leadListId: selectedListId, emailAccountId: selectedInboxId }
             }
 
             const res = await apiRequest(
@@ -269,22 +207,14 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ leadIds, emailAccountId: selectedInboxId }),
+                    body: JSON.stringify(enrollBody),
                 }
             )
-            const result = (await res.json()) as { added: number; existing: number }
-
-            const descParts: string[] = []
-            if (result.existing > 0) {
-                descParts.push(`${result.existing} already in campaign (skipped)`)
-            }
-            if (failedEmails.length > 0) {
-                descParts.push(`${failedEmails.length} email${failedEmails.length === 1 ? '' : 's'} failed to resolve`)
-            }
+            const result = (await res.json()) as EnrollResponse
 
             toast({
                 title: `Added ${result.added} lead${result.added === 1 ? '' : 's'}`,
-                description: descParts.length > 0 ? descParts.join(' · ') : undefined,
+                description: result.existing > 0 ? `${result.existing} already in campaign (skipped)` : undefined,
                 variant: 'success',
             })
 

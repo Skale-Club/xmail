@@ -9,6 +9,7 @@ import {
 const runGuard = process.env[TEST_DATABASE_GUARD_ENV]
 const testDatabaseUrl = process.env[TEST_DATABASE_URL_ENV]
 
+const OWNER = 'c2000000-0000-4000-8000-0000000000f0'
 const ORG = 'c2000000-0000-4000-8000-000000000001'
 const OTHER_ORG = 'c2000000-0000-4000-8000-000000000009'
 const ACCOUNT = 'c2000000-0000-4000-8000-000000000002'
@@ -18,6 +19,9 @@ const CAMPAIGN_2 = 'c2000000-0000-4000-8000-000000000004'
 const OTHER_CAMPAIGN = 'c2000000-0000-4000-8000-00000000000b'
 const SEQ_1 = 'c2000000-0000-4000-8000-000000000005'
 const STEP_1 = 'c2000000-0000-4000-8000-000000000006'
+// A lead can hold at most one outreach email per step (unique index), so a second send for the
+// same lead uses a second step.
+const STEP_2 = 'c2000000-0000-4000-8000-000000000007'
 
 let sql: ReturnType<typeof postgres>
 let closeApplicationDatabase: (() => Promise<void>) | undefined
@@ -57,17 +61,17 @@ async function seedLead(opts: {
     `
     const sends = opts.sends ?? 0
     for (let i = 0; i < sends; i++) {
-        const emailId = `c2000000-0000-4000-8000-3${suffix.slice(1, 10)}${String(i).padStart(2, '0')}`
+        const emailId = `c2000000-0000-4000-8000-3${String(leadSeq).padStart(9, '0')}${String(i).padStart(2, '0')}`
         const opened = opts.openedFirst && i === 0
         const replied = opts.repliedFirst && i === 0
         const bounced = opts.bouncedFirst && i === 0
         await sql`
             INSERT INTO outreach_emails (
                 id, organization_id, campaign_id, campaign_lead_id, sequence_step_id, email_account_id,
-                subject, sent_at, opened_at, replied_at, bounced_at
+                subject, tracking_token, idempotency_key, to_address, sent_at, opened_at, replied_at, bounced_at
             ) VALUES (
                 ${emailId}::uuid, ${org}::uuid, ${opts.campaignId}::uuid, ${campaignLeadId}::uuid,
-                ${STEP_1}::uuid, ${account}::uuid, 'Hi', NOW(),
+                ${i === 0 ? STEP_1 : STEP_2}::uuid, ${account}::uuid, 'Hi', ${emailId}, ${emailId}, 'to@example.test', NOW(),
                 ${opened ? sql`NOW()` : null}, ${replied ? sql`NOW()` : null}, ${bounced ? sql`NOW()` : null}
             )
         `
@@ -85,9 +89,10 @@ beforeAll(async () => {
     computeCampaignMetricsByCampaign = metrics.computeCampaignMetricsByCampaign
     closeApplicationDatabase = (await import('../../../db')).closeDatabaseConnection
 
-    await sql`INSERT INTO organizations (id, name, slug) VALUES
-        (${ORG}::uuid, 'Metrics Org', 'metrics-org'),
-        (${OTHER_ORG}::uuid, 'Other Org', 'metrics-other-org')
+    await sql`INSERT INTO users (id, email) VALUES (${OWNER}::uuid, 'metrics-owner@example.test') ON CONFLICT (id) DO NOTHING`
+    await sql`INSERT INTO organizations (id, name, slug, owner_id) VALUES
+        (${ORG}::uuid, 'Metrics Org', 'metrics-org', ${OWNER}::uuid),
+        (${OTHER_ORG}::uuid, 'Other Org', 'metrics-other-org', ${OWNER}::uuid)
         ON CONFLICT (id) DO NOTHING`
     await sql`
         INSERT INTO email_accounts (id, organization_id, email, smtp_host, smtp_username, smtp_password, status) VALUES
@@ -104,8 +109,9 @@ beforeAll(async () => {
     `
     await sql`INSERT INTO sequences (id, campaign_id, name) VALUES (${SEQ_1}::uuid, ${CAMPAIGN_1}::uuid, 'Seq') ON CONFLICT (id) DO NOTHING`
     await sql`
-        INSERT INTO sequence_steps (id, sequence_id, step_order, type, subject, delay_hours)
-        VALUES (${STEP_1}::uuid, ${SEQ_1}::uuid, 1, 'email', 'Hi', 0)
+        INSERT INTO sequence_steps (id, sequence_id, step_order, type, subject, plain_body, delay_hours) VALUES
+            (${STEP_1}::uuid, ${SEQ_1}::uuid, 1, 'email', 'Hi', 'Body', 0),
+            (${STEP_2}::uuid, ${SEQ_1}::uuid, 2, 'email', 'Hi again', 'Body 2', 24)
         ON CONFLICT (id) DO NOTHING
     `
 
@@ -120,7 +126,7 @@ beforeAll(async () => {
     await seedLead({ campaignId: CAMPAIGN_2, status: 'contacted', sends: 1 })
 
     // Other org (cross-tenant): must never bleed into ORG metrics.
-    await seedLead({ campaignId: OTHER_CAMPAIGN, status: 'contacted', opens: 9, sends: 5, org: OTHER_ORG, account: OTHER_ACCOUNT })
+    await seedLead({ campaignId: OTHER_CAMPAIGN, status: 'contacted', opens: 9, sends: 1, org: OTHER_ORG, account: OTHER_ACCOUNT })
 })
 
 afterAll(async () => {
