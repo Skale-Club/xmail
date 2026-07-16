@@ -1,6 +1,12 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-03-31
+**Analysis Date:** 2026-07-16
+
+> Phase 18-01 update: Vitest is now configured with mutually exclusive `server`
+> (Node `.test.ts`), `client` (jsdom `.test.tsx`), and `postgres`
+> (Testcontainers `.db.test.ts`) projects. Use `npm run test -- <file>` for every
+> targeted test; database targets are guarded loopback URLs and never fall back to
+> application `DATABASE_URL`.
 
 ## Test Infrastructure
 

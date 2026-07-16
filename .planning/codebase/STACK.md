@@ -51,7 +51,10 @@
 - cmdk 1.0.0 - Command palette component
 
 **Testing:**
-- None configured
+- Vitest 3.2.4 with Node, jsdom, and PostgreSQL projects (`vitest.config.ts`)
+- Testing Library + jest-dom for React component behavior
+- Testcontainers PostgreSQL for guarded disposable-database integration tests
+- Commands: `npm run test`, `npm run test -- <file>`, and `npm run test:watch`
 
 **Build/Dev:**
 - esbuild - Used via `build:api` script for Vercel serverless bundle
