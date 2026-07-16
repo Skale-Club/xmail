@@ -57,9 +57,21 @@ async function seedScenario(org: string, campaign: string, account: string, step
 
 beforeAll(async () => {
     assertSafeTestDatabaseUrl(testDatabaseUrl, { runGuard })
+    // This suite is self-contained: it applies every migration its seed depends on, in
+    // order, rather than relying on another .db suite having applied them to the shared
+    // database first (that hidden cross-suite dependency only held while files ran
+    // concurrently in nondeterministic order). 024 adds outreach_settings; 038 adds
+    // outreach_emails.idempotency_key, which seedScenario writes. applyMigrationFile is
+    // idempotent under the shared advisory lock, so re-applying an already-applied
+    // migration is a no-op.
+    const migrationTarget = { databaseUrl: testDatabaseUrl, runGuard }
     await applyMigrationFile(
-        { databaseUrl: testDatabaseUrl, runGuard },
+        migrationTarget,
         path.join(process.cwd(), 'supabase', 'migrations', '024_outreach_settings.sql'),
+    )
+    await applyMigrationFile(
+        migrationTarget,
+        path.join(process.cwd(), 'supabase', 'migrations', '038_outreach_dispatch_state_machine.sql'),
     )
     process.env.DATABASE_URL = testDatabaseUrl
     process.env.JWT_SECRET ||= 'test'

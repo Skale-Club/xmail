@@ -22,6 +22,13 @@ export default async function setup(): Promise<() => Promise<void>> {
             .withDatabase(databaseName)
             .withUsername('xmail_test_runner')
             .withPassword(randomUUID())
+            // Every .db suite opens its own short-lived postgres.js pools in
+            // beforeAll/beforeEach/observer connections against this one shared database.
+            // The 22+ suites churn through backends faster than a 1s .end() reaps them, so
+            // the alpine default of max_connections=100 is exhausted under the full postgres
+            // project and a later suite's beforeEach DELETE blocks waiting for a slot until
+            // its hook times out. The headroom absorbs the churn; scoping stays per-handler.
+            .withCommand(['postgres', '-c', 'max_connections=300'])
             .start()
         databaseUrl = container.getConnectionUri()
     }
