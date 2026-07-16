@@ -35,7 +35,7 @@
 - [x] **UIF-01** — Durable conversation, message, participant, provider-cursor, and per-user read-state tables exist with tenant-safe indexes and SQL migration(s).
 - [x] **UIF-02** — Native, IMAP, and Outlook ingestion persists full normalized messages idempotently, including text/html bodies, headers, attachments metadata, and direction.
 - [x] **UIF-03** — Incoming messages are attributed to organization, account, lead, campaign, and outreach email using Message-ID/References plus bounded address heuristics.
-- [ ] **UIF-04** — Organization-scoped APIs provide conversation list/detail, filters, keyword search, unread counts, and read/unread mutation with cursor pagination.
+- [x] **UIF-04** — Organization-scoped APIs provide conversation list/detail, filters, keyword search, unread counts, and read/unread mutation with cursor pagination.
 - [x] **UIF-05** — Ingestion jobs, APIs, and database access explicitly enforce tenant boundaries and expose operational cursors/errors without leaking content.
 
 ## Unified Inbox operator experience
