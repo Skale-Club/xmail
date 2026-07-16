@@ -23,6 +23,13 @@ const OUTREACH_TEST_BASELINE_MIGRATIONS = [
     '033_email_accounts_provider_source.sql',
     '021_email_accounts_last_sent_at.sql',
     '022_outreach_emails_sent_at_status_idx.sql',
+    // outreach_settings (per-org sending/notification config). The campaign routes read/write it, so
+    // any suite that drives them (e.g. campaign-sequences) needs it to EXIST — it must not depend on
+    // a SIBLING suite (notification-policy) having applied 024 first to the one shared database. That
+    // hidden cross-suite ordering dependency only held while files ran concurrently and made the full
+    // run non-deterministic (G-1). Small idempotent CREATE TABLE IF NOT EXISTS + ENABLE RLS, so a
+    // suite that also applies 024 explicitly becomes a harmless no-op.
+    '024_outreach_settings.sql',
     '027_outreach_p0_fixes.sql',
     '034_outreach_agentic_followup.sql',
     '035_outreach_reproducibility_and_reply_index.sql',
