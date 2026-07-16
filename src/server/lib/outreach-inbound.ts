@@ -249,6 +249,23 @@ export function imapProviderMessageId(input: {
     return messageId ? `mid:${messageId}` : `uid:${input.uidValidity}:${input.uid}`
 }
 
+/**
+ * Same reasoning as the IMAP key, different instability: a Graph message id is scoped to the
+ * mailbox AND to the folder, so moving a message (a rule firing, an operator filing it) mints
+ * a new id for the same physical mail. Keying on the id would re-ingest it as a new event and
+ * duplicate the side effect. The internet Message-ID survives the move.
+ *
+ * Fallback: mail with no Message-ID keys on the Graph id and can therefore re-ingest once
+ * after a move. Accepted — the alternative is dropping it.
+ */
+export function graphProviderMessageId(input: {
+    messageId: string | null
+    graphId: string
+}): string {
+    const messageId = normalizeMessageId(input.messageId)
+    return messageId ? `mid:${messageId}` : `graph:${input.graphId}`
+}
+
 // ============================================================
 // Ports
 // ============================================================
@@ -308,6 +325,25 @@ export interface InboundEventStore {
     /** Atomically claims unprocessed events of one classification. */
     claimPending(classification: InboundClassification, limit: number): Promise<StoredProviderEvent[]>
     recordProcessingError(eventId: string, error: string): Promise<void>
+    /**
+     * Records a provider-stated backoff against the cursor row without touching the cursor
+     * value itself. Optional so a store predating throttling still satisfies the port.
+     */
+    recordCursorRetry?(
+        emailAccountId: string,
+        provider: OutreachProviderName,
+        input: { error: string; retryAt: Date | null },
+    ): Promise<void>
+}
+
+export interface InboundSourcePage {
+    messages: NormalizedInboundMessage[]
+    nextCursor: ProviderCursorState
+    /**
+     * Set when the provider asked us to back off (Graph 429 Retry-After). Reported rather
+     * than thrown, so the work already done this page is still staged.
+     */
+    retryAfter?: Date | null
 }
 
 export interface InboundSource {
@@ -315,7 +351,7 @@ export interface InboundSource {
     fetchPage(
         cursor: ProviderCursorState | null,
         pageSize: number,
-    ): Promise<{ messages: NormalizedInboundMessage[]; nextCursor: ProviderCursorState }>
+    ): Promise<InboundSourcePage>
 }
 
 export interface IngestResult {
@@ -323,6 +359,8 @@ export interface IngestResult {
     recorded: number
     duplicates: number
     classifications: Record<InboundClassification, number>
+    /** Provider-stated backoff, echoed for the caller's logs/metrics. */
+    retryAfter?: Date | null
 }
 
 // ============================================================
@@ -398,6 +436,16 @@ export async function ingestInboundPage(deps: {
     // never get here, so the page is re-fetched next tick and deduplicated — losing a
     // page is recoverable, advancing past one is not.
     await deps.store.saveCursor(deps.account.id, deps.source.provider, page.nextCursor)
+
+    // After the cursor, never before: saveCursor clears the row's error/retry bookkeeping on
+    // success, so recording the backoff first would immediately erase it.
+    if (page.retryAfter) {
+        result.retryAfter = page.retryAfter
+        await deps.store.recordCursorRetry?.(deps.account.id, deps.source.provider, {
+            error: 'provider_throttled',
+            retryAt: page.retryAfter,
+        })
+    }
 
     return result
 }
@@ -595,6 +643,20 @@ export function createSqlInboundEventStore(
                 UPDATE outreach_provider_events
                 SET processing_error = ${error}, updated_at = now()
                 WHERE id = ${eventId}
+            `
+        },
+
+        async recordCursorRetry(emailAccountId, provider, input) {
+            const sql = await getClient()
+            // Deliberately does not touch delta_cursor/uid/received-at columns: a backoff is
+            // bookkeeping about the last attempt, not a change of position.
+            await sql`
+                UPDATE outreach_provider_cursors
+                SET last_error = ${input.error},
+                    last_error_at = now(),
+                    retry_at = ${input.retryAt},
+                    updated_at = now()
+                WHERE email_account_id = ${emailAccountId} AND provider = ${provider}
             `
         },
     }

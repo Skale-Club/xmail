@@ -57,7 +57,6 @@ const ANCIENT = '2019-01-04T09:00:00Z'
 
 const DELTA_LINK = 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=D1'
 const NEXT_LINK = 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$skiptoken=S1'
-const NEXT_LINK_2 = 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$skiptoken=S2'
 
 function graphResponse(status: number, body = '', headers: Record<string, string> = {}) {
     return {
@@ -249,7 +248,7 @@ describe('fetchOutlookInboxDelta — paging and budgets', () => {
 
         // Behavioural round trip: whatever the cursor encodes, replaying it must ask Graph
         // for the page we stopped before — never re-read the page we already staged.
-        const resume = vi.fn(async () => deltaPage({ value: [], '@odata.deltaLink': DELTA_LINK }))
+        const resume = vi.fn(async (_url: string) => deltaPage({ value: [], '@odata.deltaLink': DELTA_LINK }))
         vi.stubGlobal('fetch', resume)
         await readDelta({ cursor: first.cursor, maxEvents: 1 })
         expect(resume.mock.calls[0][0]).toBe(NEXT_LINK)
@@ -289,22 +288,24 @@ describe('fetchOutlookInboxDelta — paging and budgets', () => {
     })
 
     it('stops following pages once the time budget is spent', async () => {
-        const clock = vi.fn()
-            .mockReturnValueOnce(NOW.getTime())
-            .mockReturnValue(NOW.getTime() + 60_000)
-        vi.stubGlobal('fetch', vi.fn(async () => deltaPage({
-            value: [graphMessage()],
-            '@odata.nextLink': NEXT_LINK,
-        })))
+        // The clock advances because I/O happened, not after a fixed number of calls — a
+        // call-counting fake would silently pass if the reader stopped checking the budget.
+        let clockMs = NOW.getTime()
+        const fetchMock = vi.fn(async () => {
+            clockMs += 60_000
+            return deltaPage({ value: [graphMessage()], '@odata.nextLink': NEXT_LINK })
+        })
+        vi.stubGlobal('fetch', fetchMock)
 
         const result = await fetchOutlookInboxDelta({
             mailbox: outlookMailbox() as never,
             cursor: DELTA_LINK,
             maxEvents: 200,
             timeBudgetMs: 20_000,
-            now: clock,
+            now: () => clockMs,
         })
 
+        expect(fetchMock).toHaveBeenCalledTimes(1)
         expect(result.cursorKind).toBe('next')
         expect(result.cursor).toBe(NEXT_LINK)
     })
@@ -379,7 +380,7 @@ describe('fetchOutlookInboxDelta — recovery', () => {
         expect(result.messages.map((m) => m.id)).toEqual(['p1'])
         expect(result.retryAfter?.getTime()).toBe(NOW.getTime() + 30_000)
 
-        const resume = vi.fn(async () => deltaPage({ value: [], '@odata.deltaLink': DELTA_LINK }))
+        const resume = vi.fn(async (_url: string) => deltaPage({ value: [], '@odata.deltaLink': DELTA_LINK }))
         vi.stubGlobal('fetch', resume)
         await readDelta({ cursor: result.cursor })
         expect(resume.mock.calls[0][0]).toBe(NEXT_LINK)
@@ -434,7 +435,7 @@ describe('fetchOutlookInboxDelta — recovery', () => {
         expect(result.messages.map((m) => m.id)).toEqual(['p1'])
         expect(result.cursorKind).toBe('next')
 
-        const resume = vi.fn(async () => deltaPage({ value: [], '@odata.deltaLink': DELTA_LINK }))
+        const resume = vi.fn(async (_url: string) => deltaPage({ value: [], '@odata.deltaLink': DELTA_LINK }))
         vi.stubGlobal('fetch', resume)
         await readDelta({ cursor: result.cursor })
         expect(resume.mock.calls[0][0]).toBe(NEXT_LINK)

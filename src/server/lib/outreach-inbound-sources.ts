@@ -18,12 +18,19 @@ import {
     emailAccounts,
     mailFolders,
     mailMessages,
+    outlookMailboxes,
+    type OutlookMailbox,
     type OutreachProviderAttachment,
 } from '../../db/schema'
 import { decryptSecret } from './crypto'
 import { createLogger } from './logger'
 import { getNativeMailboxByEmail } from './native-send'
 import {
+    fetchOutlookInboxDelta,
+    type OutlookGraphMessage,
+} from './outlook'
+import {
+    graphProviderMessageId,
     imapProviderMessageId,
     ingestInboundPage,
     nativeProviderMessageId,
@@ -342,6 +349,145 @@ export function createImapInboundSource(account: ImapInboundAccount): InboundSou
 }
 
 // ============================================================
+// Outlook / Microsoft Graph
+// ============================================================
+
+/**
+ * Cap on retained headers. Graph hands back every internet header the message arrived with,
+ * and these land in a jsonb column — a mail with a long Received chain would otherwise write
+ * kilobytes per event.
+ */
+const MAX_RETAINED_HEADERS = 100
+const MAX_HEADER_VALUE_LENGTH = 1_000
+
+/**
+ * Keep ALL headers (bounded), not the IMAP source's fixed subset.
+ *
+ * The IMAP path can afford a subset because mailparser re-reads the raw source on demand.
+ * Here the delta response is the only view of the message we will ever have, and the
+ * classifier needs Content-Type (DSN detection), Auto-Submitted/Precedence (auto-replies)
+ * and In-Reply-To/References (threading) — dropping anything else is a decision we cannot
+ * revisit later.
+ */
+function graphHeaderRecord(message: OutlookGraphMessage): Record<string, string> {
+    const headers: Record<string, string> = {}
+    for (const header of (message.internetMessageHeaders ?? []).slice(0, MAX_RETAINED_HEADERS)) {
+        if (!header?.name) continue
+        headers[header.name.toLowerCase()] = String(header.value ?? '').slice(0, MAX_HEADER_VALUE_LENGTH)
+    }
+    return headers
+}
+
+function graphAddresses(
+    recipients: Array<{ emailAddress?: { address?: string | null } | null }> | null | undefined,
+): string[] {
+    return (recipients ?? [])
+        .map((entry) => entry?.emailAddress?.address ?? '')
+        .filter((address): address is string => Boolean(address))
+}
+
+/**
+ * Map a Graph message onto the shared normalized shape.
+ *
+ * Returns null for anything with no usable identity — the reader already drops tombstones and
+ * drafts, so this is the last guard rather than the first.
+ */
+export function normalizeGraphMessage(message: OutlookGraphMessage): NormalizedInboundMessage | null {
+    if (!message?.id) return null
+
+    const headers = graphHeaderRecord(message)
+    const isHtml = (message.body?.contentType ?? '').toLowerCase() === 'html'
+    const content = message.body?.content ?? null
+
+    // Graph exposes exactly one body. Whichever it is, the reply/bounce consumers already
+    // fall back across text/html, so nothing is lost by leaving the other side null rather
+    // than inventing a conversion here.
+    const textBody = isHtml ? null : truncate(content)
+    const htmlBody = isHtml ? truncate(content) : null
+
+    const receivedMs = message.receivedDateTime ? Date.parse(message.receivedDateTime) : NaN
+
+    return {
+        provider: 'outlook',
+        providerMessageId: graphProviderMessageId({
+            messageId: message.internetMessageId ?? null,
+            graphId: message.id,
+        }),
+        messageId: normalizeMessageId(message.internetMessageId),
+        inReplyTo: headers['in-reply-to'] ?? null,
+        references: headers['references'] ?? null,
+        fromAddress: message.from?.emailAddress?.address ?? null,
+        toAddresses: graphAddresses(message.toRecipients),
+        ccAddresses: graphAddresses(message.ccRecipients),
+        subject: message.subject ?? null,
+        textBody,
+        htmlBody,
+        headers,
+        attachments: (message.attachments ?? []).map((attachment) => {
+            const normalized: OutreachProviderAttachment = {
+                providerId: attachment.id ? String(attachment.id) : null,
+                name: attachment.name ? String(attachment.name) : null,
+                mimeType: attachment.contentType ? String(attachment.contentType) : null,
+                size: Number.isFinite(Number(attachment.size)) ? Number(attachment.size) : null,
+                inline: Boolean(attachment.isInline),
+                contentId: attachment.contentId ? String(attachment.contentId) : null,
+            }
+            return normalized
+        }),
+        receivedAt: Number.isFinite(receivedMs) ? new Date(receivedMs) : new Date(),
+    }
+}
+
+/**
+ * Delta-driven Graph source.
+ *
+ * Outlook had no inbound path at all before this: replies and DSNs landed in the mailbox and
+ * were never read, so an Outlook-assigned lead could hard-bounce and keep receiving the
+ * sequence. The reader itself (outlook.ts) owns the budgets, the 410 resync and the
+ * all-or-nothing page rule; this adapter only translates shapes.
+ */
+export function createGraphInboundSource(input: {
+    account: { id: string; email: string }
+    mailbox: OutlookMailbox
+    now?: () => number
+}): InboundSource {
+    return {
+        provider: 'outlook',
+        async fetchPage(cursor, pageSize) {
+            const result = await fetchOutlookInboxDelta({
+                mailbox: input.mailbox,
+                cursor: cursor?.deltaCursor ?? null,
+                maxEvents: pageSize,
+                now: input.now,
+            })
+
+            if (result.reset) {
+                log.warn({
+                    action: 'outreach.inbound.delta_reset',
+                    emailAccountId: input.account.id,
+                }, 'Graph expired the stored delta token; resynced with a bounded lookback')
+            }
+
+            const messages = result.messages
+                .map((message) => normalizeGraphMessage(message))
+                .filter((message): message is NormalizedInboundMessage => message !== null)
+
+            return {
+                messages,
+                nextCursor: {
+                    deltaCursor: result.cursor,
+                    uidValidity: null,
+                    lastUid: null,
+                    lastReceivedAt: null,
+                    lastProviderMessageId: null,
+                },
+                retryAfter: result.retryAfter,
+            }
+        },
+    }
+}
+
+// ============================================================
 // Ingestion orchestrator
 // ============================================================
 
@@ -362,6 +508,13 @@ export async function ingestOutreachInbound(deps: {
             eq(emailAccounts.status, 'verified'),
             or(
                 eq(emailAccounts.provider, 'native'),
+                // PROV-02: Outlook accounts were excluded here entirely, which is what made
+                // the provider send-only. A verified Outlook account now has a linked
+                // mailbox by construction (the verify gate refuses otherwise).
+                and(
+                    eq(emailAccounts.provider, 'outlook'),
+                    isNotNull(emailAccounts.outlookMailboxId),
+                ),
                 and(
                     isNotNull(emailAccounts.imapHost),
                     isNotNull(emailAccounts.imapUsername),
@@ -375,15 +528,17 @@ export async function ingestOutreachInbound(deps: {
         try {
             const source = account.provider === 'native'
                 ? await createNativeInboundSource({ id: account.id, email: account.email })
-                : createImapInboundSource({
-                    id: account.id,
-                    email: account.email,
-                    imapHost: account.imapHost!,
-                    imapPort: account.imapPort,
-                    imapUsername: account.imapUsername!,
-                    imapPassword: account.imapPassword!,
-                    imapSecure: account.imapSecure,
-                })
+                : account.provider === 'outlook'
+                    ? await createOutlookInboundSourceForAccount(account)
+                    : createImapInboundSource({
+                        id: account.id,
+                        email: account.email,
+                        imapHost: account.imapHost!,
+                        imapPort: account.imapPort,
+                        imapUsername: account.imapUsername!,
+                        imapPassword: account.imapPassword!,
+                        imapSecure: account.imapSecure,
+                    })
 
             if (!source) continue
 
@@ -415,6 +570,43 @@ export async function ingestOutreachInbound(deps: {
     }
 
     return result
+}
+
+/**
+ * Resolve the Graph mailbox backing an Outlook outreach account.
+ *
+ * The organization is re-checked in the composite lookup rather than trusted from the FK:
+ * tenant isolation is JS-side here (the app's Postgres role bypasses RLS), so an account
+ * whose outlook_mailbox_id pointed at another tenant's mailbox would otherwise read that
+ * tenant's inbox.
+ */
+async function createOutlookInboundSourceForAccount(account: {
+    id: string
+    email: string
+    organizationId: string
+    outlookMailboxId: string | null
+}): Promise<InboundSource | null> {
+    if (!account.outlookMailboxId) return null
+
+    const mailbox = await db.query.outlookMailboxes.findFirst({
+        where: and(
+            eq(outlookMailboxes.id, account.outlookMailboxId),
+            eq(outlookMailboxes.organizationId, account.organizationId),
+        ),
+    })
+
+    if (!mailbox) {
+        log.warn({
+            action: 'outreach.inbound.outlook_mailbox_missing',
+            emailAccountId: account.id,
+        }, 'verified Outlook account has no reachable mailbox in its own organization')
+        return null
+    }
+
+    return createGraphInboundSource({
+        account: { id: account.id, email: account.email },
+        mailbox,
+    })
 }
 
 /**

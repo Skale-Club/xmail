@@ -23,13 +23,367 @@ const GRAPH_MIME_MAX_BYTES = 4 * 1024 * 1024
 export class OutlookGraphError extends Error {
     readonly statusCode: number
     readonly requestId?: string
+    /** Provider-stated backoff (Retry-After), when it sent one. */
+    readonly retryAfter?: Date | null
 
-    constructor(message: string, statusCode: number, requestId?: string) {
+    constructor(message: string, statusCode: number, requestId?: string, retryAfter?: Date | null) {
         super(message)
         this.name = 'OutlookGraphError'
         this.statusCode = statusCode
         this.requestId = requestId
+        this.retryAfter = retryAfter ?? null
     }
+}
+
+// ---------------------------------------------------------------------------
+// Inbox delta reading (PROV-02 / PROV-04)
+// ---------------------------------------------------------------------------
+
+export const GRAPH_DELTA_INBOX_PATH = '/me/mailFolders/inbox/messages/delta'
+
+/**
+ * In-Reply-To and References have no first-class field on a Graph message — they exist
+ * only inside internetMessageHeaders. Without them every Graph reply looks unthreaded and
+ * the shared classifier stages it as 'other', which is how an Outlook mailbox would keep
+ * "receiving" replies that never reach a campaign.
+ */
+export const GRAPH_DELTA_SELECT = [
+    'id',
+    'internetMessageId',
+    'internetMessageHeaders',
+    'from',
+    'toRecipients',
+    'ccRecipients',
+    'subject',
+    'body',
+    'bodyPreview',
+    'receivedDateTime',
+    'hasAttachments',
+    'isDraft',
+].join(',')
+
+/** Per-run budgets. Every one of them is checked at a page boundary, never mid-page. */
+export const GRAPH_DELTA_MAX_PAGES = 10
+export const GRAPH_DELTA_PAGE_TOP = 50
+export const GRAPH_DELTA_TIME_BUDGET_MS = 20_000
+export const GRAPH_DELTA_MAX_ATTACHMENT_LOOKUPS = 50
+/** How far back a *fresh* chain is willing to look. Resumed chains are unbounded by design. */
+export const GRAPH_DELTA_LOOKBACK_DAYS = 7
+
+/**
+ * Marks a cursor that belongs to a chain still doing its first pass over the mailbox.
+ *
+ * Why this exists: "is this a fresh chain?" cannot be inferred from `cursor === null`. A
+ * fresh chain paused at a nextLink resumes with a non-null cursor, and if the lookback were
+ * dropped at that point, page 2 of a first-ever sync would ingest the mailbox's entire
+ * history. It also cannot be inferred from the link shape — a paused *resumed* chain carries
+ * a $skiptoken too. So the reader records the fact itself. The value stays opaque to every
+ * other reader of the column.
+ */
+const FRESH_CHAIN_PREFIX = 'fresh|'
+
+export interface OutlookGraphAttachment {
+    id?: string | null
+    name?: string | null
+    contentType?: string | null
+    size?: number | null
+    isInline?: boolean | null
+    contentId?: string | null
+}
+
+export interface OutlookGraphMessage {
+    id: string
+    internetMessageId?: string | null
+    internetMessageHeaders?: Array<{ name: string; value: string }> | null
+    from?: { emailAddress?: { address?: string | null; name?: string | null } | null } | null
+    toRecipients?: Array<{ emailAddress?: { address?: string | null } | null }> | null
+    ccRecipients?: Array<{ emailAddress?: { address?: string | null } | null }> | null
+    subject?: string | null
+    body?: { contentType?: string | null; content?: string | null } | null
+    bodyPreview?: string | null
+    receivedDateTime?: string | null
+    hasAttachments?: boolean | null
+    isDraft?: boolean | null
+    /** Filled in by the reader from a separate metadata call; Graph delta cannot $expand. */
+    attachments?: OutlookGraphAttachment[]
+    '@removed'?: { reason?: string } | null
+}
+
+export type OutlookDeltaCursorKind = 'delta' | 'next' | 'unchanged'
+
+export interface OutlookDeltaResult {
+    messages: OutlookGraphMessage[]
+    /** Opaque; persist verbatim and hand back unmodified. Null only before a first success. */
+    cursor: string | null
+    cursorKind: OutlookDeltaCursorKind
+    /** True when Graph expired the stored delta token and the chain restarted. */
+    reset: boolean
+    retryAfter: Date | null
+    pagesFetched: number
+}
+
+export interface OutlookDeltaInput {
+    mailbox: OutlookMailbox
+    cursor: string | null
+    /** Hard ceiling on messages returned. The reader never exceeds it (see the defer rule). */
+    maxEvents: number
+    maxPages?: number
+    timeBudgetMs?: number
+    maxAttachmentLookups?: number
+    lookbackDays?: number
+    now?: () => number
+}
+
+interface DeltaPageBody {
+    value?: OutlookGraphMessage[]
+    '@odata.nextLink'?: string
+    '@odata.deltaLink'?: string
+}
+
+function parseRetryAfter(header: string | null, nowMs: number): Date | null {
+    if (!header) return null
+
+    const seconds = Number(header)
+    if (Number.isFinite(seconds) && seconds >= 0) return new Date(nowMs + seconds * 1000)
+
+    // RFC 7231 also permits an HTTP-date.
+    const asDate = Date.parse(header)
+    return Number.isFinite(asDate) ? new Date(asDate) : null
+}
+
+/**
+ * Built by hand rather than with URLSearchParams, which percent-encodes the `$` of every
+ * OData parameter into `%24select`/`%24top`. Graph accepts that, but the resulting links are
+ * unreadable in logs and diverge from every Graph doc and support thread.
+ */
+function initialDeltaUrl(top: number): string {
+    return `${GRAPH_BASE_URL}${GRAPH_DELTA_INBOX_PATH}?$select=${GRAPH_DELTA_SELECT}&$top=${top}`
+}
+
+/** 429 is Graph's throttle; 503 carries the same Retry-After contract under load. */
+function isThrottled(status: number): boolean {
+    return status === 429 || status === 503
+}
+
+function markFresh(link: string, fresh: boolean): string {
+    return fresh ? `${FRESH_CHAIN_PREFIX}${link}` : link
+}
+
+function readCursor(cursor: string | null): { link: string | null; fresh: boolean } {
+    if (!cursor) return { link: null, fresh: true }
+    if (cursor.startsWith(FRESH_CHAIN_PREFIX)) {
+        return { link: cursor.slice(FRESH_CHAIN_PREFIX.length), fresh: true }
+    }
+    return { link: cursor, fresh: false }
+}
+
+/**
+ * Graph signals an unusable delta token with 410 plus one of these codes. Anything else with
+ * a 410 is treated the same way: a resync is the only recovery either way.
+ */
+function isDeltaExpired(status: number): boolean {
+    return status === 410
+}
+
+/**
+ * Read one bounded slice of the Outlook inbox's delta stream.
+ *
+ * The invariants, in the order they matter:
+ *
+ *  1. **A page is all-or-nothing.** Every message on a page is fully read (including its
+ *     attachment metadata) before that page's link is eligible to be persisted. If anything
+ *     on a page fails, the returned cursor still points *at* that page, so the next run
+ *     re-reads it. Re-reading is free (the event store deduplicates); skipping is not.
+ *  2. **Budgets are checked between pages.** Events, pages, wall clock, and attachment
+ *     lookups each stop the chain at a page boundary and return the link to the page we did
+ *     not read.
+ *  3. **The reader never returns more than `maxEvents`.** ingestInboundPage truncates an
+ *     oversized page but still advances the cursor, so overshooting here would silently drop
+ *     mail. A page that would overshoot is deferred to the next run instead.
+ *  4. **A failure never downgrades the cursor.** If no page was read, the caller's own cursor
+ *     comes back unchanged.
+ */
+export async function fetchOutlookInboxDelta(input: OutlookDeltaInput): Promise<OutlookDeltaResult> {
+    const now = input.now ?? (() => Date.now())
+    const startedAt = now()
+    const maxEvents = Math.max(1, input.maxEvents)
+    const maxPages = input.maxPages ?? GRAPH_DELTA_MAX_PAGES
+    const timeBudgetMs = input.timeBudgetMs ?? GRAPH_DELTA_TIME_BUDGET_MS
+    const maxAttachmentLookups = input.maxAttachmentLookups ?? GRAPH_DELTA_MAX_ATTACHMENT_LOOKUPS
+    const lookbackDays = input.lookbackDays ?? GRAPH_DELTA_LOOKBACK_DAYS
+    const top = Math.min(GRAPH_DELTA_PAGE_TOP, maxEvents)
+
+    let { accessToken, mailbox } = await getValidOutlookAccessToken(input.mailbox)
+    let refreshed = false
+
+    async function graphGet(url: string) {
+        const request = (token: string) => fetch(url, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(20_000),
+        })
+
+        let response = await request(accessToken)
+
+        // Exactly one refresh per run: Graph can reject a token we still believe is valid
+        // (revoked, rotated, clock skew). A second 401 is a real authorization failure and
+        // must surface rather than loop.
+        if (response.status === 401 && !refreshed) {
+            refreshed = true
+            const next = await refreshOrMarkExpired(mailbox)
+            accessToken = next.accessToken
+            mailbox = next.mailbox
+            response = await request(accessToken)
+        }
+
+        return response
+    }
+
+    const parsed = readCursor(input.cursor)
+    let fresh = parsed.fresh
+    let link = parsed.link ?? initialDeltaUrl(top)
+    let reset = false
+
+    const messages: OutlookGraphMessage[] = []
+    let pagesFetched = 0
+    let attachmentLookups = 0
+
+    /** Nothing was read: hand the caller's own cursor straight back. */
+    const unchanged = (retryAfter: Date | null): OutlookDeltaResult => ({
+        messages,
+        cursor: input.cursor,
+        cursorKind: 'unchanged',
+        reset,
+        retryAfter,
+        pagesFetched,
+    })
+
+    const paused = (nextLink: string, retryAfter: Date | null = null): OutlookDeltaResult => (
+        pagesFetched === 0
+            ? unchanged(retryAfter)
+            : { messages, cursor: markFresh(nextLink, fresh), cursorKind: 'next', reset, retryAfter, pagesFetched }
+    )
+
+    for (;;) {
+        if (
+            pagesFetched >= maxPages
+            || messages.length >= maxEvents
+            || attachmentLookups >= maxAttachmentLookups
+            || now() - startedAt >= timeBudgetMs
+        ) {
+            return paused(link)
+        }
+
+        const response = await graphGet(link)
+
+        if (isDeltaExpired(response.status) && !reset) {
+            // The stored token aged out. A resync is the only recovery, and a resync is a
+            // fresh chain — so the lookback bound applies to it again.
+            reset = true
+            fresh = true
+            link = initialDeltaUrl(top)
+            continue
+        }
+
+        if (!response.ok) {
+            const retryAfter = parseRetryAfter(response.headers.get('retry-after'), now())
+
+            // A throttle is a control signal, not a fault: report it so the caller can stage
+            // what it has and record the backoff against the cursor row. Throwing here would
+            // discard both.
+            if (isThrottled(response.status)) return paused(link, retryAfter)
+            if (pagesFetched > 0) return paused(link, retryAfter)
+
+            const body = await response.text()
+            throw new OutlookGraphError(
+                describeGraphError(body, response.status),
+                response.status,
+                response.headers.get('request-id') ?? undefined,
+                retryAfter,
+            )
+        }
+
+        const page = await response.json() as DeltaPageBody
+        const cutoffMs = now() - lookbackDays * 24 * 60 * 60 * 1000
+
+        const candidates = (page.value ?? []).filter((message) => {
+            // Tombstones carry no content, and a draft is our own unsent mail.
+            if (message['@removed']) return false
+            if (message.isDraft) return false
+            if (!fresh) return true
+            const receivedMs = message.receivedDateTime ? Date.parse(message.receivedDateTime) : NaN
+            return !Number.isFinite(receivedMs) || receivedMs >= cutoffMs
+        })
+
+        // Invariant 3: defer rather than overshoot. Graph honours $top, so this is a
+        // guard against a provider that does not — the alternative is a silent truncation
+        // inside ingestInboundPage that advances the cursor past the dropped messages.
+        if (messages.length > 0 && messages.length + candidates.length > maxEvents) {
+            return paused(link)
+        }
+
+        try {
+            for (const message of candidates) {
+                if (!message.hasAttachments) {
+                    message.attachments = []
+                    continue
+                }
+                // Graph delta cannot $expand, so metadata needs its own call per message.
+                message.attachments = await fetchGraphAttachmentMetadata(message.id, graphGet)
+                attachmentLookups++
+            }
+        } catch (error) {
+            // Invariant 1: this page was not read in full, so it must not be staged and the
+            // cursor must still point at it. Pages already read stay staged.
+            if (pagesFetched > 0) {
+                return paused(link, error instanceof OutlookGraphError ? error.retryAfter ?? null : null)
+            }
+            throw error
+        }
+
+        messages.push(...candidates)
+        pagesFetched++
+
+        const deltaLink = page['@odata.deltaLink']
+        if (deltaLink) {
+            // The chain is caught up: the first pass is over, so the lookback retires.
+            return { messages, cursor: deltaLink, cursorKind: 'delta', reset, retryAfter: null, pagesFetched }
+        }
+
+        const nextLink = page['@odata.nextLink']
+        if (!nextLink) {
+            // Neither link: nothing more to read and nothing new to resume from.
+            return unchanged(null)
+        }
+
+        link = nextLink
+    }
+}
+
+/**
+ * Attachment metadata only — never contentBytes. Binary blobs are deferred to Phase 22, and
+ * pulling them here would turn one inbound tick into an unbounded download.
+ */
+async function fetchGraphAttachmentMetadata(
+    messageId: string,
+    graphGet: (url: string) => Promise<{ ok: boolean; status: number; headers: { get(name: string): string | null }; text(): Promise<string>; json(): Promise<unknown> }>,
+): Promise<OutlookGraphAttachment[]> {
+    const url = `${GRAPH_BASE_URL}/me/messages/${encodeURIComponent(messageId)}`
+        + '/attachments?$select=id,name,contentType,size,isInline,contentId'
+
+    const response = await graphGet(url)
+
+    if (!response.ok) {
+        const body = await response.text()
+        throw new OutlookGraphError(
+            describeGraphError(body, response.status),
+            response.status,
+            response.headers.get('request-id') ?? undefined,
+            parseRetryAfter(response.headers.get('retry-after'), Date.now()),
+        )
+    }
+
+    const body = await response.json() as { value?: OutlookGraphAttachment[] }
+    return body.value ?? []
 }
 
 export const OUTLOOK_SCOPES = [
