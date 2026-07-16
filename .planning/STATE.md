@@ -27,19 +27,20 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 20 (Outreach Product and API Consistency) — NEXT
-Plan: 3 of 3
+Phase: 20 (Outreach Product and API Consistency) — IMPLEMENTED, in phase-gate review
+Plan: 3 of 3 complete (20-01 canonical sequence, 20-02 settings/metrics/search, 20-03 access + service identity)
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
-Status: Ready to execute
+Status: Phase 20 code complete (415 tests); running 3-lens review (security/correctness/verification) before closing.
 
-**Resume point:** Execute Phase 20 (product/API consistency: settings applied, follow-up limits, search, schema-migration parity). Then 21 (Unified Inbox foundation), 22 (Unified Inbox UX), 23 (guarded AI automation).
+**Resume point:** Close Phase 20 after review-fix, then execute Phase 21 (Unified Inbox foundation), 22 (Unified Inbox UX), 23 (guarded AI automation).
 
 **Operator prerequisites accumulated (do NOT auto-apply):**
 
-- Migrations 038 (dispatch state machine) and 039 (provider events/cursors) are written + tested against disposable Postgres but NOT applied to production. Applying them is a manual deploy step.
+- Migrations 038 (dispatch state machine), 039 (provider events/cursors), and 040 (outreach product consistency: one-sequence-per-campaign + step CHECKs) are written + tested against disposable Postgres but NOT applied to production. Applying them is a manual deploy step, in order. 040 aborts with actionable diagnostics if legacy multi-sequence data conflicts.
+- New env vars `XMAIL_SERVICE_USER_ID` + `XMAIL_SERVICE_ORGANIZATION_ID` bind the outreach service key to a principal+org; all three (with `XMAIL_SERVICE_KEY`) must be set in prod or machine auth stays disabled (fails closed). Wired into build-deploy.yml run_app_container() + legacy deploy-hetzner.yml.
 - Outlook Graph sandbox gate (19-04 <verification>) unrun — needs a real Microsoft 365 tenant. Entire Graph surface is mock-verified only.
 
 > **Progress counters:** the `state` tool derives these from ROADMAP-registered phases
