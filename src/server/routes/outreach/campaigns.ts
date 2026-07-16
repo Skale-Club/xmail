@@ -6,6 +6,10 @@ import { eq, and, sql, inArray, desc, asc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { computeCampaignMetrics } from '../../lib/outreach-campaign-metrics'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
+import {
+    validateSequenceForActivation,
+    type SequenceValidationIssue,
+} from '../../lib/outreach-sequence-state'
 
 const router = Router()
 
@@ -90,24 +94,40 @@ function getProtectedSendingDomains(): Set<string> {
     )
 }
 
-async function validateCampaignReadyForActivation(campaignId: string, organizationId: string): Promise<string[]> {
-    const errors: string[] = []
+type CampaignActivationIssue = SequenceValidationIssue | {
+    code:
+        | 'sequence_missing'
+        | 'sequence_empty'
+        | 'campaign_missing_leads'
+        | 'lead_missing_email_account'
+        | 'email_account_invalid'
+        | 'protected_sending_domain'
+    message: string
+}
 
-    const campaignSequences = await db.query.sequences.findMany({
+async function validateCampaignReadyForActivation(campaignId: string, organizationId: string): Promise<CampaignActivationIssue[]> {
+    const issues: CampaignActivationIssue[] = []
+
+    // Lead enrollment currently selects the oldest campaign sequence. Until Phase 20
+    // introduces an explicit canonical-sequence field, activation must validate that
+    // exact same sequence rather than accepting content from any sibling sequence.
+    const canonicalSequence = await db.query.sequences.findFirst({
         where: eq(sequences.campaignId, campaignId),
         columns: { id: true },
+        orderBy: [asc(sequences.createdAt)],
     })
-    const sequenceIds = campaignSequences.map(sequence => sequence.id)
 
-    if (sequenceIds.length === 0) {
-        errors.push('Campaign needs at least one sequence')
+    if (!canonicalSequence) {
+        issues.push({ code: 'sequence_missing', message: 'Campaign needs at least one sequence.' })
     } else {
-        const firstStep = await db.query.sequenceSteps.findFirst({
-            where: inArray(sequenceSteps.sequenceId, sequenceIds),
-            columns: { id: true },
+        const canonicalSteps = await db.query.sequenceSteps.findMany({
+            where: eq(sequenceSteps.sequenceId, canonicalSequence.id),
+            orderBy: [asc(sequenceSteps.stepOrder)],
         })
-        if (!firstStep) {
-            errors.push('Campaign sequence needs at least one step')
+        if (canonicalSteps.length === 0) {
+            issues.push({ code: 'sequence_empty', message: 'Campaign sequence needs at least one step.' })
+        } else {
+            issues.push(...validateSequenceForActivation(canonicalSteps))
         }
     }
 
@@ -116,7 +136,7 @@ async function validateCampaignReadyForActivation(campaignId: string, organizati
         columns: { assignedEmailAccountId: true },
     })
     if (assignedLeads.length === 0) {
-        errors.push('Campaign needs at least one lead')
+        issues.push({ code: 'campaign_missing_leads', message: 'Campaign needs at least one lead.' })
     }
 
     // audit-2026-07 (API High #1): the old check compared the DEDUPED set of account ids to
@@ -125,7 +145,10 @@ async function validateCampaignReadyForActivation(campaignId: string, organizati
     // is "no lead has a NULL inbox", so test that directly.
     const leadMissingInbox = assignedLeads.some(lead => !lead.assignedEmailAccountId)
     if (leadMissingInbox) {
-        errors.push('Every campaign lead needs an assigned sending inbox')
+        issues.push({
+            code: 'lead_missing_email_account',
+            message: 'Every campaign lead needs an assigned sending inbox.',
+        })
     }
 
     const assignedAccountIds = [...new Set(assignedLeads.map(lead => lead.assignedEmailAccountId).filter((id): id is string => Boolean(id)))]
@@ -140,7 +163,10 @@ async function validateCampaignReadyForActivation(campaignId: string, organizati
             columns: { id: true, email: true },
         })
         if (verifiedAccounts.length !== assignedAccountIds.length) {
-            errors.push('Every assigned sending inbox must belong to this organization and be verified')
+            issues.push({
+                code: 'email_account_invalid',
+                message: 'Every assigned sending inbox must belong to this organization and be verified.',
+            })
         }
 
         // P009 — reputation isolation: cold outreach must never send from the primary
@@ -153,15 +179,16 @@ async function validateCampaignReadyForActivation(campaignId: string, organizati
                 return domain != null && protectedDomains.has(domain)
             })
             if (offending.length > 0) {
-                errors.push(
-                    `Cold outreach cannot send from the primary domain (${offending.map(a => a.email).join(', ')}). ` +
-                    'Assign a disposable/provider inbox instead.'
-                )
+                issues.push({
+                    code: 'protected_sending_domain',
+                    message: `Cold outreach cannot send from the primary domain (${offending.map(a => a.email).join(', ')}). ` +
+                        'Assign a disposable/provider inbox instead.',
+                })
             }
         }
     }
 
-    return errors
+    return issues
 }
 
 // ============ CAMPAIGNS ============
@@ -613,11 +640,14 @@ router.put('/:id', async (req: Request, res: Response) => {
 
         // Handle status changes
         if (validatedData.status === 'active' && campaign.status !== 'active') {
-            const readinessErrors = await validateCampaignReadyForActivation(campaignId, campaign.organizationId)
-            if (readinessErrors.length > 0) {
-                return res.status(400).json({
+            const readinessIssues = await validateCampaignReadyForActivation(campaignId, campaign.organizationId)
+            if (readinessIssues.length > 0) {
+                return res.status(422).json({
                     error: 'Campaign is not ready to activate',
-                    details: readinessErrors,
+                    issues: readinessIssues,
+                    // Retain human-readable details for existing clients while the stable
+                    // `issues[].code` contract becomes the programmatic integration surface.
+                    details: readinessIssues.map((issue) => issue.message),
                 })
             }
             updateData.startedAt = new Date()

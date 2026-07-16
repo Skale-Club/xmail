@@ -27,6 +27,7 @@ import { generateOutreachToken } from '../lib/outreach-tokens'
 import { createLogger, OUTREACH_PROCESSOR_SLOW_MS } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { runWithLock } from '../lib/cron-lock'
+import { resolveSequenceAction } from '../lib/outreach-sequence-state'
 
 const log = createLogger('outreach.processor')
 
@@ -54,37 +55,6 @@ export function getRecentTickLatencies(): readonly number[] {
 }
 
 type SequenceStep = typeof sequenceSteps.$inferSelect
-
-function getNextStep(steps: SequenceStep[], currentStepOrder: number): SequenceStep | null {
-    return steps.find(s => s.stepOrder > currentStepOrder) || null
-}
-
-function calculateNextScheduledAt(
-    delayHours: number,
-    timezone: string,
-    sendStartTime: string,
-    sendEndTime: string,
-    sendOnWeekends: boolean
-): Date {
-    const next = new Date()
-    next.setHours(next.getHours() + delayHours)
-
-    const scheduleProbe = {
-        timezone,
-        sendStartTime,
-        sendEndTime,
-        sendOnWeekends,
-    } as typeof campaigns.$inferSelect
-
-    for (let i = 0; i < 14 * 48; i++) {
-        if (isWithinSendWindow(scheduleProbe, next)) {
-            return next
-        }
-        next.setMinutes(next.getMinutes() + 30)
-    }
-
-    return next
-}
 
 function selectAbVariant(step: SequenceStep, leadId: string): 'a' | 'b' {
     if (!step.abTestEnabled) return 'a'
@@ -262,6 +232,70 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 continue
             }
 
+            const currentStep = campaignLead.currentStep
+            const steps = currentStep
+                ? stepsBySequence.get(currentStep.sequenceId) ?? []
+                : []
+            const sequenceAction = resolveSequenceAction(steps, currentStep, now, {
+                timezone: campaign.timezone,
+                sendStartTime: campaign.sendStartTime,
+                sendEndTime: campaign.sendEndTime,
+                sendOnWeekends: campaign.sendOnWeekends,
+            })
+
+            if (sequenceAction.type === 'advance_without_send') {
+                await db.update(campaignLeads)
+                    .set({
+                        currentStepId: sequenceAction.nextStep.id,
+                        currentStepOrder: sequenceAction.nextStep.stepOrder,
+                        nextScheduledAt: sequenceAction.nextScheduledAt,
+                    })
+                    .where(eq(campaignLeads.id, campaignLead.id))
+                log.debug({
+                    action: 'outreach.processor.sequence_advanced_without_send',
+                    campaignId: campaign.id,
+                    campaignLeadId: campaignLead.id,
+                    fromStepId: sequenceAction.fromStep.id,
+                    nextStepId: sequenceAction.nextStep.id,
+                    nextScheduledAt: sequenceAction.nextScheduledAt.toISOString(),
+                }, 'advanced delay step without provider dispatch')
+                continue
+            }
+
+            if (sequenceAction.type === 'complete') {
+                await db.update(campaignLeads)
+                    .set({
+                        completedAt: sequenceAction.completedAt,
+                        nextScheduledAt: null,
+                    })
+                    .where(eq(campaignLeads.id, campaignLead.id))
+                continue
+            }
+
+            if (sequenceAction.type === 'quarantine') {
+                await db.update(campaignLeads)
+                    .set({ nextScheduledAt: null })
+                    .where(eq(campaignLeads.id, campaignLead.id))
+                log.error({
+                    action: 'outreach.processor.sequence_configuration_error',
+                    reason: sequenceAction.reason,
+                    campaignId: campaign.id,
+                    campaignLeadId: campaignLead.id,
+                    sequenceStepId: sequenceAction.step.id,
+                    sequenceStepType: sequenceAction.step.type,
+                    sequenceStepOrder: sequenceAction.step.stepOrder,
+                }, 'sequence row quarantined before dispatch')
+                result.errors++
+                continue
+            }
+
+            // Discriminated-union invariant: the provider branch is unreachable for
+            // delay/condition rows even if malformed legacy data enters the batch.
+            if (sequenceAction.step.type !== 'email') {
+                throw new Error(`Sequence action invariant violated for step ${sequenceAction.step.id}`)
+            }
+            const emailStep = sequenceAction.step
+
             if (!isWithinSendWindow(campaign, now)) {
                 logSkip('outside_send_window', { campaignId: campaign.id, leadId: lead.id, campaignLeadId: campaignLead.id })
                 continue
@@ -316,23 +350,16 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 continue
             }
 
-            const currentStep = campaignLead.currentStep
-            if (!currentStep) {
-                logSkip('no_active_step', { campaignId: campaign.id, leadId: lead.id, campaignLeadId: campaignLead.id })
-                result.errors++
-                continue
-            }
-
             // P0-05 idempotency-first: the in-memory guard catches duplicates within the
             // current batch; the ON CONFLICT DO NOTHING below is the DB-level guard that
             // survives process crashes and multi-instance races (in addition to the advisory
             // lock from Task 3 of plan 14-06).
-            if (existingEmailsSet.has(`${campaignLead.id}:${currentStep.id}`)) {
-                logSkip('in_batch_duplicate', { campaignId: campaign.id, campaignLeadId: campaignLead.id, extra: { sequenceStepId: currentStep.id } })
+            if (existingEmailsSet.has(`${campaignLead.id}:${emailStep.id}`)) {
+                logSkip('in_batch_duplicate', { campaignId: campaign.id, campaignLeadId: campaignLead.id, extra: { sequenceStepId: emailStep.id } })
                 continue
             }
 
-            const abVariant = selectAbVariant(currentStep, lead.id)
+            const abVariant = selectAbVariant(emailStep, lead.id)
 
             // Generate the HMAC tracking token up-front so the placeholder row has the NOT NULL value
             // AND the same token is passed to sendOutreachEmail so the URL-embedded token matches
@@ -349,10 +376,10 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 organizationId: campaign.organizationId,
                 campaignId: campaign.id,
                 campaignLeadId: campaignLead.id,
-                sequenceStepId: currentStep.id,
+                sequenceStepId: emailStep.id,
                 emailAccountId: emailAccount.id,
-                subject: currentStep.subject || '',
-                plainBody: currentStep.plainBody ?? null,
+                subject: sequenceAction.content.subject,
+                plainBody: sequenceAction.content.plainBody,
                 htmlBody: null,     // populated post-send with sendResult.finalHtml
                 abVariant,
                 trackingToken,
@@ -361,18 +388,21 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
             }).onConflictDoNothing({ target: [outreachEmails.campaignLeadId, outreachEmails.sequenceStepId] }).returning({ id: outreachEmails.id })
 
             if (claim.length === 0) {
-                logSkip('claim_conflict', { campaignId: campaign.id, campaignLeadId: campaignLead.id, extra: { sequenceStepId: currentStep.id } })
+                logSkip('claim_conflict', { campaignId: campaign.id, campaignLeadId: campaignLead.id, extra: { sequenceStepId: emailStep.id } })
                 continue
             }
 
             const claimedEmailId = claim[0].id
 
             const trackingBaseUrl = process.env.FRONTEND_URL || 'http://localhost:9000'
+            if (emailStep.type !== 'email') {
+                throw new Error(`Refusing provider dispatch for non-email step ${emailStep.id}`)
+            }
             const sendResult = await sendOutreachEmail({
                 account: emailAccount,
                 lead,
                 campaign,
-                step: currentStep,
+                step: emailStep,
                 campaignLeadId: campaignLead.id,
                 trackingToken,
                 trackOpens: campaign.trackOpens,
@@ -433,8 +463,8 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                     status: 'contacted',
                     firstContactedAt: campaignLead.firstContactedAt || new Date(),
                     lastContactedAt: new Date(),
-                    currentStepId: currentStep.id,
-                    currentStepOrder: currentStep.stepOrder
+                    currentStepId: emailStep.id,
+                    currentStepOrder: emailStep.stepOrder
                 })
                 .where(eq(campaignLeads.id, campaignLead.id))
 
@@ -489,23 +519,12 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 await incrementCampaignStats(campaign.id, 'leadsContacted')
             }
 
-            const steps = stepsBySequence.get(currentStep.sequenceId) || []
-            const nextStep = getNextStep(steps, currentStep.stepOrder)
-
-            if (nextStep) {
-                const nextScheduledAt = calculateNextScheduledAt(
-                    nextStep.delayHours,
-                    campaign.timezone,
-                    campaign.sendStartTime,
-                    campaign.sendEndTime,
-                    campaign.sendOnWeekends
-                )
-
+            if (sequenceAction.nextStep && sequenceAction.nextScheduledAt) {
                 await db.update(campaignLeads)
                     .set({
-                        currentStepId: nextStep.id,
-                        currentStepOrder: nextStep.stepOrder,
-                        nextScheduledAt
+                        currentStepId: sequenceAction.nextStep.id,
+                        currentStepOrder: sequenceAction.nextStep.stepOrder,
+                        nextScheduledAt: sequenceAction.nextScheduledAt,
                     })
                     .where(eq(campaignLeads.id, campaignLead.id))
             } else {
