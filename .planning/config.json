@@ -26,7 +26,8 @@
     "research_before_questions": false,
     "discuss_mode": "discuss",
     "skip_discuss": true,
-    "_auto_chain_active": false
+    "_auto_chain_active": true,
+    "use_worktrees": false
   },
   "hooks": {
     "context_warnings": true
@@ -34,5 +35,6 @@
   "agent_skills": {},
   "resolve_model_ids": "omit",
   "mode": "yolo",
-  "granularity": "coarse"
+  "granularity": "coarse",
+  "runtime": "codex"
 }
