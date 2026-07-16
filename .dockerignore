@@ -1,7 +1,10 @@
 node_modules
 .git
+# Keep every real env file out of the image (Dockerfile does `COPY . .`, and runtime env is
+# injected via `-e`, so no .env should ever be baked into a layer). The example is safe to ship.
 .env
-.env.local
+.env.*
+!.env.example
 dist
 api
 *.log
