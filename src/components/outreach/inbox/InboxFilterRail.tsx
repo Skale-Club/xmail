@@ -15,6 +15,7 @@ import type {
 } from '../../../lib/unified-inbox-api'
 import { cn } from '../../../lib/utils'
 import { InboxSyncStatus } from './InboxSyncStatus'
+import type { InboxRealtimeStatus } from '../../../hooks/useUnifiedInboxEvents'
 
 interface InboxFilterRailProps {
     state: InboxUrlState
@@ -29,6 +30,10 @@ interface InboxFilterRailProps {
     lastUpdatedAt: Date | null
     syncError?: boolean
     syncFetching?: boolean
+    /** Near-real-time channel status (from the single SSE stream). */
+    realtimeStatus?: InboxRealtimeStatus
+    /** The live stream was lost — updates are delayed and the bounded polling fallback is active. */
+    realtimeStale?: boolean
     /** Create a named label for this organization (labels are named operator controls). */
     onCreateLabel?: (name: string) => void
     creatingLabel?: boolean
@@ -63,6 +68,8 @@ export function InboxFilterRail({
     lastUpdatedAt,
     syncError,
     syncFetching,
+    realtimeStatus,
+    realtimeStale,
     onCreateLabel,
     creatingLabel,
     variant = 'rail',
@@ -238,6 +245,8 @@ export function InboxFilterRail({
                 lastUpdatedAt={lastUpdatedAt}
                 isError={syncError}
                 isFetching={syncFetching}
+                realtimeStatus={realtimeStatus}
+                realtimeStale={realtimeStale}
             />
         </nav>
     )

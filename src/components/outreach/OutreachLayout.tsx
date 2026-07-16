@@ -3,6 +3,7 @@ import { Link, useLocation } from 'wouter'
 import { useAuth } from '../../hooks/useAuth'
 import { useOrganization } from '../../hooks/useOrganization'
 import { useInboxUnreadCount } from '../../hooks/useUnifiedInbox'
+import { InboxRealtimeProvider } from '../../hooks/useUnifiedInboxEvents'
 import { useBranding } from '../../lib/branding'
 import { supabase } from '../../lib/supabase'
 import { AppLogo } from '../AppLogo'
@@ -258,9 +259,13 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                     </div>
                 </header>
 
-                {/* Page content */}
+                {/* Page content. The single organization-scoped near-real-time stream is opened
+                    here (locked #9) so ONE connection keeps the unread badge live everywhere in
+                    outreach and feeds the inbox workspace's degraded-sync marker via context. */}
                 <main className="p-4 lg:p-6 bg-background">
-                    {children}
+                    <InboxRealtimeProvider organizationId={currentOrganization?.id}>
+                        {children}
+                    </InboxRealtimeProvider>
                 </main>
             </div>
         </div>

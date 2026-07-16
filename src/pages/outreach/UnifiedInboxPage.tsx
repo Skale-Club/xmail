@@ -29,6 +29,7 @@ import {
     useInboxSuppression,
     useInboxUnreadCount,
 } from '../../hooks/useUnifiedInbox'
+import { useInboxRealtimeStatus } from '../../hooks/useUnifiedInboxEvents'
 import { INBOX_BULK_LIMIT, type InboxLabel } from '../../lib/unified-inbox-api'
 import {
     activeFilterCount,
@@ -121,6 +122,12 @@ export function UnifiedInboxPage() {
     const suppression = useInboxSuppression(organizationId)
     const snippetsQuery = useInboxSnippets(organizationId)
     const composer = useInboxComposer(organizationId, state.conversation)
+
+    // Near-real-time status from the SINGLE SSE stream opened by OutreachLayout (locked #9).
+    // The page consumes it read-only to surface the degraded-sync marker; it never opens a
+    // second stream. When live, the badge/list/open-thread converge via cache invalidation
+    // WITHOUT stealing focus or touching the composer (the composer holds its own local state).
+    const realtime = useInboxRealtimeStatus()
 
     // --- Bulk selection: BOUNDED to the currently loaded set (never a filter-wide selector) ---
     const [bulkMode, setBulkMode] = React.useState(false)
@@ -284,6 +291,8 @@ export function UnifiedInboxPage() {
         lastUpdatedAt,
         syncError: listQuery.isError,
         syncFetching: listQuery.isFetching,
+        realtimeStatus: realtime.status,
+        realtimeStale: realtime.isStale,
         onCreateLabel: (name: string) => createLabel.mutate({ name }),
         creatingLabel: createLabel.isPending,
     }

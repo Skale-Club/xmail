@@ -27,6 +27,18 @@ vi.mock('@/lib/api-client', () => ({
     ApiClientError: apiClientMocks.ApiClientError,
 }))
 
+// useUnifiedInboxEvents connects with authenticated `fetch` (fetchWithAuth) — NEVER EventSource.
+// Mock the auth-fetch module so the near-real-time hook drives a controllable stream/failure.
+const apiMocks = vi.hoisted(() => ({ fetchWithAuth: vi.fn() }))
+vi.mock('@/lib/api', () => ({
+    fetchWithAuth: apiMocks.fetchWithAuth,
+    apiFetch: vi.fn(),
+    ApiError: class ApiError extends Error {},
+    isNetworkError: () => false,
+    isAuthError: () => false,
+    isTimeoutError: () => false,
+}))
+
 // EmailHtmlViewer renders email bodies into a sandboxed iframe and schedules resize
 // setTimeouts on iframe `load`. Under jsdom those can fire after teardown ("window is
 // not defined"). Any describe that renders a thread guards this by faking the timer
@@ -52,6 +64,7 @@ import {
     type InboxUrlState,
 } from '@/lib/unified-inbox-url'
 import { inboxKeys, toListQueryString } from '@/lib/unified-inbox-api'
+import { useUnifiedInboxEvents } from '@/hooks/useUnifiedInboxEvents'
 import type {
     InboxConversationDetail,
     InboxConversationListItem,
@@ -61,6 +74,7 @@ import { ConversationList, type ConversationListProps } from '@/components/outre
 import { ConversationThread } from '@/components/outreach/inbox/ConversationThread'
 import { BulkActionsBar, ConversationActions } from '@/components/outreach/inbox/ConversationActions'
 import { ConversationComposer } from '@/components/outreach/inbox/ConversationComposer'
+import { InboxSyncStatus } from '@/components/outreach/inbox/InboxSyncStatus'
 import type {
     CreateSendCommandInput,
     InboxAccountOption,
@@ -1259,5 +1273,205 @@ describe('ConversationComposer: durable reply commands', () => {
         expect(screen.getByRole('alertdialog', { name: 'Discard draft?' })).toBeInTheDocument()
         fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
         expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('unsaved words')
+    })
+})
+
+// ============================================================
+// Task 2 — near-real-time channel: authenticated SSE + polling fallback (UIX-06, locked #9)
+// ============================================================
+// The stream is opened with bearer-authenticated `fetch` (never EventSource), carries only
+// aggregate signals, converges the badge/list/open-thread via cache invalidation, and — on
+// disconnect — falls back to BOUNDED list/unread polling (never per-thread) with a visible
+// stale state, tearing everything down with AbortController on org switch / unmount.
+
+const EVENTS_URL_FRAGMENT = '/api/outreach/unified-inbox/events'
+
+/** A controllable SSE Response whose body reader yields the given raw frames, then optionally idles. */
+function makeStreamResponse(frames: string[], opts: { keepOpen?: boolean } = {}) {
+    const encoder = new TextEncoder()
+    let index = 0
+    return {
+        ok: true,
+        status: 200,
+        body: {
+            getReader() {
+                return {
+                    read() {
+                        if (index < frames.length) {
+                            return Promise.resolve({ done: false, value: encoder.encode(frames[index++]) })
+                        }
+                        // keepOpen models a healthy idle stream (never resolves → no reconnect churn).
+                        if (opts.keepOpen) return new Promise<never>(() => {})
+                        return Promise.resolve({ done: true, value: undefined })
+                    },
+                    cancel: () => Promise.resolve(),
+                    releaseLock: () => {},
+                }
+            },
+        },
+    }
+}
+
+function sseFrame(payload: Record<string, unknown>): string {
+    return `event: ${payload.kind}\ndata: ${JSON.stringify(payload)}\n\n`
+}
+
+function seedAggregateQueries(queryClient: QueryClient, organizationId: string) {
+    const unreadKey = inboxKeys.unread(organizationId)
+    const listKey = inboxKeys.list(organizationId, listFilterSignature(DEFAULT_INBOX_STATE))
+    const detailKey = inboxKeys.detail(organizationId, CONV_1)
+    queryClient.setQueryData(unreadKey, 3)
+    queryClient.setQueryData(listKey, { pages: [{ conversations: [], nextCursor: null, hasMore: false, count: 0, syncStatus: [] }], pageParams: [null] })
+    queryClient.setQueryData(detailKey, makeDetail())
+    return { unreadKey, listKey, detailKey }
+}
+const isInvalidated = (queryClient: QueryClient, key: readonly unknown[]) =>
+    queryClient.getQueryState(key)?.isInvalidated === true
+
+describe('useUnifiedInboxEvents: authenticated stream + convergence', () => {
+    beforeEach(() => {
+        apiMocks.fetchWithAuth.mockReset()
+    })
+    afterEach(() => {
+        vi.useRealTimers()
+    })
+
+    it('connects with an authenticated fetch to the org-scoped events endpoint (never EventSource)', async () => {
+        // If the hook ever reached for EventSource, constructing it would throw here.
+        const evtSpy = vi.fn(() => { throw new Error('EventSource must not be used') })
+        vi.stubGlobal('EventSource', evtSpy)
+        apiMocks.fetchWithAuth.mockImplementation(() => new Promise(() => {})) // open, idle stream
+
+        const { queryClient, wrapper } = makeWrapper()
+        renderHook(() => useUnifiedInboxEvents(ORG_A), { wrapper })
+        void queryClient
+
+        await waitFor(() => expect(apiMocks.fetchWithAuth).toHaveBeenCalled())
+        const [url, init] = apiMocks.fetchWithAuth.mock.calls[0]
+        expect(url).toContain(EVENTS_URL_FRAGMENT)
+        expect(url).toContain(`organizationId=${ORG_A}`)
+        expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal)
+        expect(evtSpy).not.toHaveBeenCalled()
+        vi.unstubAllGlobals()
+    })
+
+    it('converges the badge, list, and OPEN thread on a conversation.updated signal', async () => {
+        apiMocks.fetchWithAuth.mockResolvedValue(
+            makeStreamResponse([sseFrame({ organizationId: ORG_A, kind: 'conversation.updated', conversationId: CONV_1, version: 5, at: '2026-07-16T10:00:00.000Z' })], { keepOpen: true }),
+        )
+        const { queryClient, wrapper } = makeWrapper()
+        const { unreadKey, listKey, detailKey } = seedAggregateQueries(queryClient, ORG_A)
+
+        renderHook(() => useUnifiedInboxEvents(ORG_A), { wrapper })
+
+        await waitFor(() => expect(isInvalidated(queryClient, unreadKey)).toBe(true))
+        expect(isInvalidated(queryClient, listKey)).toBe(true)
+        // The detail namespace is invalidated so ONLY the open thread (the sole observer) refetches.
+        expect(isInvalidated(queryClient, detailKey)).toBe(true)
+    })
+
+    it('falls back to BOUNDED unread/list polling with a visible stale state on disconnect', async () => {
+        vi.useFakeTimers()
+        apiMocks.fetchWithAuth.mockRejectedValue(new Error('network down'))
+        const { queryClient, wrapper } = makeWrapper()
+        const { unreadKey, listKey, detailKey } = seedAggregateQueries(queryClient, ORG_A)
+
+        const { result } = renderHook(() => useUnifiedInboxEvents(ORG_A), { wrapper })
+
+        // Flush the initial failed connect → the hook enters the reconnecting/stale state.
+        await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+        expect(result.current.status).toBe('reconnecting')
+        expect(result.current.isStale).toBe(true)
+
+        // Advance one bounded poll interval: unread + list refresh; the thread namespace is untouched.
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+        expect(isInvalidated(queryClient, unreadKey)).toBe(true)
+        expect(isInvalidated(queryClient, listKey)).toBe(true)
+        // Bounded fallback NEVER polls per-thread — the open thread stays readable, not refetched.
+        expect(isInvalidated(queryClient, detailKey)).toBe(false)
+    })
+
+    it('aborts the stream and clears timers on unmount (teardown)', async () => {
+        let capturedSignal: AbortSignal | undefined
+        apiMocks.fetchWithAuth.mockImplementation((_url: string, init: RequestInit) => {
+            capturedSignal = init.signal ?? undefined
+            return new Promise(() => {}) // open, idle stream
+        })
+        const { wrapper } = makeWrapper()
+        const { unmount } = renderHook(() => useUnifiedInboxEvents(ORG_A), { wrapper })
+
+        await waitFor(() => expect(apiMocks.fetchWithAuth).toHaveBeenCalled())
+        expect(capturedSignal?.aborted).toBe(false)
+        unmount()
+        expect(capturedSignal?.aborted).toBe(true)
+    })
+
+    it('is an inert no-op without an organization', () => {
+        const { wrapper } = makeWrapper()
+        const { result } = renderHook(() => useUnifiedInboxEvents(undefined), { wrapper })
+        expect(result.current.status).toBe('idle')
+        expect(apiMocks.fetchWithAuth).not.toHaveBeenCalled()
+    })
+})
+
+describe('near-real-time convergence does not clobber an active composer or steal focus', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    // An incoming event invalidates queries, which re-renders the workspace around the composer.
+    // The composer holds its OWN local draft/focus, so a surrounding re-render (the observable
+    // effect of an event) must never reset the typed reply or move focus away from it.
+    function ComposerHarness() {
+        const [tick, setTick] = React.useState(0)
+        return (
+            <div>
+                <button onClick={() => setTick((t) => t + 1)}>simulate incoming event</button>
+                <span data-testid="event-tick">{tick}</span>
+                <ConversationComposer
+                    accounts={ACCOUNTS}
+                    defaultAccountId={ACCOUNT_1}
+                    replyToPreview={['lead@acme.example']}
+                    replyAllCcPreview={[]}
+                    subjectPreview="Re: Demo request"
+                    snippets={SNIPPETS}
+                    onSend={vi.fn(async () => makeCommand())}
+                    onUploadAttachment={vi.fn()}
+                    polledCommand={null}
+                />
+            </div>
+        )
+    }
+
+    it('preserves the typed reply body and keeps focus across an event-driven re-render', () => {
+        render(<ComposerHarness />)
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        const body = screen.getByRole('textbox', { name: 'Reply body' }) as HTMLTextAreaElement
+        fireEvent.change(body, { target: { value: 'half-written reply the operator is typing' } })
+        body.focus()
+        expect(document.activeElement).toBe(body)
+
+        // Simulate an incoming near-real-time event forcing the surrounding tree to re-render.
+        fireEvent.click(screen.getByRole('button', { name: 'simulate incoming event' }))
+        expect(screen.getByTestId('event-tick')).toHaveTextContent('1')
+
+        // The composer body and focus are untouched — the reply is not clobbered, focus not stolen.
+        const bodyAfter = screen.getByRole('textbox', { name: 'Reply body' }) as HTMLTextAreaElement
+        expect(bodyAfter).toHaveValue('half-written reply the operator is typing')
+        expect(document.activeElement).toBe(bodyAfter)
+    })
+})
+
+describe('InboxSyncStatus: visible degraded near-real-time state', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    it('shows "Updates delayed" with a readable-conversations reassurance when the stream is lost', () => {
+        render(<InboxSyncStatus syncStatus={[]} lastUpdatedAt={null} realtimeStatus="reconnecting" realtimeStale />)
+        expect(screen.getByText('Updates delayed')).toBeInTheDocument()
+        expect(screen.getByText(/Conversations remain readable/)).toBeInTheDocument()
+    })
+
+    it('shows a healthy live marker without hue-only signalling', () => {
+        render(<InboxSyncStatus syncStatus={[]} lastUpdatedAt={null} realtimeStatus="live" />)
+        expect(screen.getByText('Live')).toBeInTheDocument()
+        expect(screen.queryByText('Updates delayed')).not.toBeInTheDocument()
     })
 })
