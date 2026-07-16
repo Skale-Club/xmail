@@ -201,6 +201,8 @@ jobs:
               -e IMAP_PORT=993 \
               -e ENABLE_MAIL_SERVER=true \
               -e XMAIL_SERVICE_KEY="${{ secrets.XMAIL_SERVICE_KEY }}" \
+              -e XMAIL_SERVICE_USER_ID="${{ secrets.XMAIL_SERVICE_USER_ID }}" \
+              -e XMAIL_SERVICE_ORGANIZATION_ID="${{ secrets.XMAIL_SERVICE_ORGANIZATION_ID }}" \
               -e XPHERE_EVENTS_URL="${{ secrets.XPHERE_EVENTS_URL }}" \
               -e XPHERE_EVENTS_API_KEY="${{ secrets.XPHERE_EVENTS_API_KEY }}" \
               --label "traefik.enable=true" \
@@ -363,6 +365,8 @@ jobs:
                   -e IMAP_PORT=993 \
                   -e ENABLE_MAIL_SERVER=true \
                   -e XMAIL_SERVICE_KEY="${{ secrets.XMAIL_SERVICE_KEY }}" \
+                  -e XMAIL_SERVICE_USER_ID="${{ secrets.XMAIL_SERVICE_USER_ID }}" \
+                  -e XMAIL_SERVICE_ORGANIZATION_ID="${{ secrets.XMAIL_SERVICE_ORGANIZATION_ID }}" \
                   -e XPHERE_EVENTS_URL="${{ secrets.XPHERE_EVENTS_URL }}" \
                   -e XPHERE_EVENTS_API_KEY="${{ secrets.XPHERE_EVENTS_API_KEY }}" \
                   --label "traefik.enable=true" \
