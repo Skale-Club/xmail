@@ -306,6 +306,7 @@ export async function loadAttachmentsForDispatch(
 ): Promise<OutreachAttachmentInput[]> {
     if (attachmentIds.length === 0) return []
     const storage = deps.storage ?? defaultStorage()
+    const unique = Array.from(new Set(attachmentIds))
     const { db } = await import('../../db')
     const { inboxAttachments } = await import('../../db/schema')
     const { and, eq, inArray } = await import('drizzle-orm')
@@ -315,10 +316,14 @@ export async function loadAttachmentsForDispatch(
         .from(inboxAttachments)
         .where(and(
             eq(inboxAttachments.organizationId, organizationId),
-            inArray(inboxAttachments.id, Array.from(new Set(attachmentIds))),
+            inArray(inboxAttachments.id, unique),
             eq(inboxAttachments.status, 'ready'),
         ))
-    if (rows.length === 0) throw new InboxAttachmentError(404, 'attachment_not_found')
+    // Re-assert the command's attachment set is INTACT at dispatch: every referenced id must still
+    // resolve to a ready, org-owned row. If the operator deleted SOME (not all) attachments before
+    // a scheduled send, the loaded rows will not cover every id — refuse to send a partial reply
+    // missing files rather than dropping them silently.
+    if (rows.length !== unique.length) throw new InboxAttachmentError(404, 'attachment_missing', 'One or more attachments referenced by this command are missing')
 
     const attachments: OutreachAttachmentInput[] = []
     for (const row of rows) {

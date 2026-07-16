@@ -378,6 +378,80 @@ describe('executeInboxSendCommand: policy denial preserves the draft', () => {
         expect(dispatch).not.toHaveBeenCalled() // never send a reply missing its attachment
         expect(unsafeCalls.at(-1)!.query).toContain("status = 'scheduled'")
     })
+
+    // W-2: a scheduled command whose operator deletes SOME (not all) of its attachments before
+    // due_at must NOT dispatch a partial reply. A permanently missing attachment row can never be
+    // recovered by a retry, so the command is HELD with a visible reason instead of sent partial.
+    it('holds (never dispatches a partial) when a referenced attachment was deleted before dispatch', async () => {
+        const { sql, unsafeCalls } = fakeSql()
+        const dispatch = vi.fn(async (): Promise<DispatchResult> => ({ status: 'sent', rowId: 'e1' }))
+        // The default loader now throws attachment_missing when the loaded rows do not cover every
+        // referenced id (one of three was deleted). Model that permanent condition here.
+        const resolveAttachments = vi.fn(async () => { throw new InboxAttachmentError(404, 'attachment_missing') })
+        const outcome = await executeInboxSendCommand(
+            command({ attachmentIds: ['att-1', 'att-2', 'att-3'] }),
+            { sql, dispatch, resolveAttachments, now: () => new Date('2026-07-16T12:00:00.000Z') },
+        )
+        expect(outcome).toBe('held')
+        expect(dispatch).not.toHaveBeenCalled() // never send the reply missing the deleted file
+        const finalize = unsafeCalls.at(-1)!
+        expect(finalize.query).toContain("status = 'held'")
+        // The operator sees WHY it was held.
+        expect(finalize.params).toContain('attachment_missing')
+    })
+})
+
+// ============================================================
+// W-1 — a multi-recipient forward must reach EVERY resolved recipient, never
+// silently only the first To. The primary To is policy-gated by the dispatcher;
+// the remaining To recipients are folded into the envelope Cc and suppression-filtered.
+// ============================================================
+
+describe('executeInboxSendCommand: multi-recipient forward fan-out', () => {
+    it('delivers a forward to ALL recipients (extra To folded into the envelope), never only the first', async () => {
+        const { sql } = fakeSql()
+        const dispatch = vi.fn(async (_input: DispatchOutreachInput): Promise<DispatchResult> => ({ status: 'sent', rowId: 'e1' }))
+        const loadSuppressedAddresses = vi.fn(async () => new Set<string>())
+        await executeInboxSendCommand(
+            command({
+                mode: 'forward',
+                inReplyTo: null,
+                messageReferences: null,
+                toRecipients: [
+                    { address: 'a@x.example', name: null },
+                    { address: 'b@y.example', name: null },
+                ],
+            }),
+            { sql, dispatch, loadSuppressedAddresses },
+        )
+        const input = dispatch.mock.calls[0][0]
+        expect(input.to).toBe('a@x.example')
+        // The second recipient is NOT dropped — it rides the envelope so it is actually delivered.
+        expect(input.cc).toContain('b@y.example')
+    })
+
+    it('suppression-filters the folded extra forward recipients like reply-all Cc', async () => {
+        const { sql } = fakeSql()
+        const dispatch = vi.fn(async (_input: DispatchOutreachInput): Promise<DispatchResult> => ({ status: 'sent', rowId: 'e1' }))
+        const loadSuppressedAddresses = vi.fn(async () => new Set(['blocked@y.example']))
+        await executeInboxSendCommand(
+            command({
+                mode: 'forward',
+                inReplyTo: null,
+                messageReferences: null,
+                toRecipients: [
+                    { address: 'a@x.example', name: null },
+                    { address: 'blocked@y.example', name: null },
+                    { address: 'ok@y.example', name: null },
+                ],
+            }),
+            { sql, dispatch, loadSuppressedAddresses },
+        )
+        const input = dispatch.mock.calls[0][0]
+        expect(input.to).toBe('a@x.example')
+        // The suppressed extra recipient is stripped; the rest are still delivered.
+        expect(input.cc).toEqual(['ok@y.example'])
+    })
 })
 
 // ============================================================

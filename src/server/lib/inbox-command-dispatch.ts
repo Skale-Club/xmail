@@ -96,6 +96,16 @@ function isUuid(value: string | undefined | null): value is string {
 }
 
 /**
+ * True when the error signals a PERMANENTLY missing/unowned attachment (a referenced row is gone,
+ * not ready, or belongs to another org) rather than a transient storage read failure. Such a
+ * condition can never be recovered by a retry, so the command must be held — never sent partial.
+ */
+function isMissingAttachmentError(error: unknown): boolean {
+    const code = (error as { code?: unknown })?.code
+    return code === 'attachment_missing' || code === 'attachment_not_found'
+}
+
+/**
  * Default production dispatch: resolve the sending account, build its threaded-reply provider,
  * and go through the shared durable dispatcher (policy gate + lease + idempotency). Lazily
  * imports the DB/provider so this module stays importable without DATABASE_URL in tests.
@@ -215,10 +225,14 @@ export async function executeInboxSendCommand(
     const primaryToLower = primaryTo.trim().toLowerCase()
 
     // Fan-out recipients (reply-all / forward). The PRIMARY To is fully policy-gated by the
-    // dispatcher; Cc/Bcc are additionally filtered through the org's suppression list so a
-    // suppressed address is never copied on a reply-all — suppression is respected for the
-    // whole recipient set, not just the primary. The primary To is never in Cc/Bcc.
-    const ccAddresses = command.ccRecipients.map((r) => r.address.trim().toLowerCase()).filter((a) => a && a !== primaryToLower)
+    // dispatcher; the REMAINING To recipients (a multi-recipient forward addresses several people)
+    // are folded into the envelope Cc so EVERY intended recipient is actually delivered to — a
+    // forward never silently drops toRecipients[1..n]. Those folded recipients, plus any Cc/Bcc,
+    // are additionally filtered through the org's suppression list so a suppressed address is never
+    // copied — suppression is respected for the whole recipient set, not just the primary. The
+    // primary To is never duplicated into Cc/Bcc.
+    const extraToAddresses = command.toRecipients.slice(1).map((r) => r.address.trim().toLowerCase()).filter((a) => a && a !== primaryToLower)
+    const ccAddresses = [...extraToAddresses, ...command.ccRecipients.map((r) => r.address.trim().toLowerCase())].filter((a) => a && a !== primaryToLower)
     const bccAddresses = command.bccRecipients.map((r) => r.address.trim().toLowerCase()).filter((a) => a && a !== primaryToLower)
     let cc = dedupeAddresses(ccAddresses)
     let bcc = dedupeAddresses(bccAddresses).filter((a) => !cc.includes(a))
@@ -238,8 +252,16 @@ export async function executeInboxSendCommand(
             const resolved = await resolver(command.organizationId, command.attachmentIds)
             attachments = resolved.length > 0 ? resolved : undefined
         } catch (error) {
-            // A missing/unreadable attachment must not silently send a reply WITHOUT the file the
-            // operator attached. Fail (bounded by attempts) so the draft is preserved for retry.
+            // A missing/unreadable attachment must NEVER silently send a reply WITHOUT the file the
+            // operator attached. Distinguish two cases:
+            //   - Permanently missing/unowned rows (the operator deleted one before due_at): a retry
+            //     can never recover them, so HOLD the command with a visible reason instead of ever
+            //     dispatching a partial mail. The loader re-asserts the full referenced set is intact.
+            //   - Transient read failures (storage offline): retry, bounded by attempts.
+            if (isMissingAttachmentError(error)) {
+                await markHeld(sql, command, 'attachment_missing')
+                return 'held'
+            }
             const code = sanitizeError(error)
             if (command.attempts >= command.maxAttempts) {
                 await markFailed(sql, command, `attachment_unresolved:${code}`.slice(0, MAX_ERROR_LENGTH))
