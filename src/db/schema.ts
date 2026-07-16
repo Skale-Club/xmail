@@ -5,6 +5,7 @@ import {
     timestamp,
     boolean,
     integer,
+    bigint,
     jsonb,
     pgEnum,
     uniqueIndex,
@@ -1466,3 +1467,151 @@ export const greylist = pgTable('greylist', {
 
 export type GreylistEntry = typeof greylist.$inferSelect
 export type NewGreylistEntry = typeof greylist.$inferInsert
+
+// ============================================================
+// Outreach provider inbound staging (migration 039, Phase 19 PROV-04)
+// ============================================================
+// TypeScript mirror only — the running schema comes from
+// supabase/migrations/039_outreach_provider_events.sql. Composite FKs, CHECK
+// constraints, and RLS policies live there; see CLAUDE.md "Schema & Migration Workflow".
+
+/** Attachment metadata retained per event. Binary content is deliberately not stored. */
+export interface OutreachProviderAttachment {
+    providerId: string | null
+    name: string | null
+    mimeType: string | null
+    size: number | null
+    inline: boolean
+    contentId: string | null
+}
+
+export type OutreachProviderName = 'smtp' | 'outlook' | 'native'
+
+/**
+ * Classification is decided exactly once at ingestion, in DSN → auto-reply →
+ * human-reply → other order, so the reply and bounce consumers cannot disagree
+ * about the same message. 'other' preserves unmatched human mail for Phase 21.
+ */
+export type OutreachProviderEventClassification = 'reply' | 'bounce' | 'auto_reply' | 'other'
+
+/**
+ * Bounded, resumable per-account ingestion state. Replaces user-visible read/unread
+ * flags as the processing cursor — those are a human's state and mutable from any
+ * mail client.
+ */
+export const outreachProviderCursors = pgTable('outreach_provider_cursors', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    emailAccountId: uuid('email_account_id').references(() => emailAccounts.id).notNull(),
+    provider: text('provider').$type<OutreachProviderName>().notNull(),
+    /** Outlook: opaque Graph @odata.deltaLink, replayed and never parsed. */
+    deltaCursor: text('delta_cursor'),
+    /** IMAP: UIDVALIDITY guards lastUid; a change means UIDs were renumbered. */
+    uidValidity: bigint('uid_validity', { mode: 'number' }),
+    lastUid: bigint('last_uid', { mode: 'number' }),
+    /** Native: receivedAt plus an id tie breaker, since timestamps collide. */
+    lastReceivedAt: timestamp('last_received_at'),
+    lastProviderMessageId: text('last_provider_message_id'),
+    leaseToken: uuid('lease_token'),
+    leaseExpiresAt: timestamp('lease_expires_at'),
+    lastSuccessAt: timestamp('last_success_at'),
+    lastError: text('last_error'),
+    lastErrorAt: timestamp('last_error_at'),
+    retryAt: timestamp('retry_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    accountProviderUnique: uniqueIndex('outreach_provider_cursors_account_provider_unique')
+        .on(table.organizationId, table.emailAccountId, table.provider),
+    idxDue: index('idx_outreach_provider_cursors_due').on(table.retryAt),
+    providerCheck: check(
+        'outreach_provider_cursors_provider_check',
+        sql`${table.provider} IN ('smtp', 'outlook', 'native')`,
+    ),
+    uidStateCheck: check(
+        'outreach_provider_cursors_uid_state_check',
+        sql`${table.lastUid} IS NULL OR ${table.uidValidity} IS NOT NULL`,
+    ),
+    leaseCheck: check(
+        'outreach_provider_cursors_lease_check',
+        sql`(${table.leaseToken} IS NULL) = (${table.leaseExpiresAt} IS NULL)`,
+    ),
+}))
+
+/**
+ * One durable row per inbound provider item, deduplicated on
+ * (organizationId, emailAccountId, provider, providerMessageId) BEFORE any side
+ * effect. Phase 21 materializes conversation messages from these rows instead of
+ * re-polling providers, which is why full bodies are retained.
+ */
+export const outreachProviderEvents = pgTable('outreach_provider_events', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    emailAccountId: uuid('email_account_id').references(() => emailAccounts.id).notNull(),
+    provider: text('provider').$type<OutreachProviderName>().notNull(),
+    /** native mail_messages.id, IMAP `uidvalidity:uid`, or Graph message id. */
+    providerMessageId: text('provider_message_id').notNull(),
+    messageId: text('message_id'),
+    inReplyTo: text('in_reply_to'),
+    messageReferences: text('message_references'),
+    classification: text('classification').$type<OutreachProviderEventClassification>().notNull(),
+    fromAddress: text('from_address'),
+    toAddresses: jsonb('to_addresses').$type<string[]>().default([]).notNull(),
+    ccAddresses: jsonb('cc_addresses').$type<string[]>().default([]).notNull(),
+    subject: text('subject'),
+    textBody: text('text_body'),
+    htmlBody: text('html_body'),
+    headers: jsonb('headers').$type<Record<string, string>>().default({}).notNull(),
+    attachments: jsonb('attachments').$type<OutreachProviderAttachment[]>().default([]).notNull(),
+    receivedAt: timestamp('received_at').notNull(),
+    processedAt: timestamp('processed_at'),
+    processingError: text('processing_error'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    providerMessageUnique: uniqueIndex('outreach_provider_events_provider_message_unique')
+        .on(table.organizationId, table.emailAccountId, table.provider, table.providerMessageId),
+    idxPending: index('idx_outreach_provider_events_pending').on(table.classification, table.receivedAt),
+    idxOrgReceived: index('idx_outreach_provider_events_org_received').on(table.organizationId, table.receivedAt),
+    idxAccountReceived: index('idx_outreach_provider_events_account_received').on(table.emailAccountId, table.receivedAt),
+    idxMessageId: index('idx_outreach_provider_events_message_id').on(table.organizationId, table.messageId),
+    providerCheck: check(
+        'outreach_provider_events_provider_check',
+        sql`${table.provider} IN ('smtp', 'outlook', 'native')`,
+    ),
+    classificationCheck: check(
+        'outreach_provider_events_classification_check',
+        sql`${table.classification} IN ('reply', 'bounce', 'auto_reply', 'other')`,
+    ),
+    providerMessageIdCheck: check(
+        'outreach_provider_events_provider_message_id_check',
+        sql`length(btrim(${table.providerMessageId})) > 0`,
+    ),
+}))
+
+export const outreachProviderCursorsRelations = relations(outreachProviderCursors, ({ one }) => ({
+    organization: one(organizations, {
+        fields: [outreachProviderCursors.organizationId],
+        references: [organizations.id],
+    }),
+    emailAccount: one(emailAccounts, {
+        fields: [outreachProviderCursors.emailAccountId],
+        references: [emailAccounts.id],
+    }),
+}))
+
+export const outreachProviderEventsRelations = relations(outreachProviderEvents, ({ one }) => ({
+    organization: one(organizations, {
+        fields: [outreachProviderEvents.organizationId],
+        references: [organizations.id],
+    }),
+    emailAccount: one(emailAccounts, {
+        fields: [outreachProviderEvents.emailAccountId],
+        references: [emailAccounts.id],
+    }),
+}))
+
+export type OutreachProviderCursor = typeof outreachProviderCursors.$inferSelect
+export type NewOutreachProviderCursor = typeof outreachProviderCursors.$inferInsert
+export type OutreachProviderEvent = typeof outreachProviderEvents.$inferSelect
+export type NewOutreachProviderEvent = typeof outreachProviderEvents.$inferInsert
