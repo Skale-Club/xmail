@@ -17,8 +17,10 @@
 //   3. ONE DELIVERY PATH (locked #3). This module NEVER imports a provider adapter and NEVER calls
 //      the low-level threaded sender or the shared outreach dispatcher. Every send becomes a durable
 //      Phase 22 inbox command handed to the SINGLE lease-aware `executeInboxSendCommand` executor —
-//      which alone evaluates the Phase 18 delivery policy and calls the shared dispatcher. A source
-//      -level test asserts the forbidden send primitives never appear here.
+//      which alone evaluates the Phase 18 delivery policy and calls the shared dispatcher. Source
+//      -level regression tests assert the forbidden send primitives never appear in THIS module or
+//      the runtime — see the structural guard in `inbox-ai-automation.test.ts` and the entrypoint
+//      guard in `__tests__/outreach-entrypoints.test.ts`.
 //
 //   4. NO HIDDEN RETRY LOOP (locked #4). Decisions use leases, bounded attempts, and idempotency.
 //      An ambiguous provider outcome is HELD (a deferred run with no retry time — never re-claimed,
@@ -256,11 +258,12 @@ export interface ProcessAutonomousAiRunDeps {
     /** Hand the durable command to the SINGLE executeInboxSendCommand executor and report its outcome. */
     dispatchCommand: (args: { commandId: string; organizationId: string }) => Promise<AutonomousDispatchResult>
     /**
-     * Re-read effective autonomy IMMEDIATELY BEFORE dispatch (pause race). Defaults to the autonomy
-     * captured in the resolution; provide a fresh read in production so a kill switch flipped during
-     * the model call still stops the send.
+     * Re-read effective autonomy IMMEDIATELY BEFORE dispatch (pause race). REQUIRED — there is no
+     * default: a caller must supply a FRESH read (production wires a DB reader) so a kill switch
+     * flipped during the model call still stops the send. Making this optional once let a caller
+     * silently fall back to the stale pre-model autonomy and skip the pause recheck entirely (M-2).
      */
-    reloadAutonomy?: (run: AiRunRecord) => Promise<EffectiveAutonomyInputs | null>
+    reloadAutonomy: (run: AiRunRecord) => Promise<EffectiveAutonomyInputs | null>
     now?: () => Date
     leaseMs?: number
 }
@@ -423,8 +426,9 @@ export async function processAutonomousAiRun(
 
     // 9. RECHECK autonomy IMMEDIATELY BEFORE dispatch (pause race, locked #7). A kill switch flipped
     //    during the model call still stops the send — no command is created.
-    const reloadAutonomy = deps.reloadAutonomy ?? (async () => resolution!.autonomy)
-    const fresh = await reloadAutonomy(claimed)
+    // `reloadAutonomy` is a REQUIRED dep (a fresh read in production), so this recheck can never be
+    // silently skipped by falling back to the stale pre-model autonomy (M-2).
+    const fresh = await deps.reloadAutonomy(claimed)
     if (!fresh || !evaluateEffectiveAutonomy(fresh).enabled) {
         const run2 = await completeAiRun(deps.store, {
             organizationId, runId: claimed.id, leaseToken,

@@ -46,6 +46,28 @@ describe('outreach entrypoint wiring', () => {
         expect(contents).not.toMatch(/\bcreateThreadedDispatchProvider\s*\(/)
     })
 
+    // Phase 23 (AI-03/04) — M-4: the "single delivery path" invariant also binds the two AI
+    // automation modules. The pure decider and its runtime must NEVER reach the wire via a direct
+    // provider/dispatch primitive; the runtime's ONLY send capability is handing a durable command
+    // to executeInboxSendCommand (which is allowed here — the ban is on the direct primitives).
+    it.each([
+        'src/server/lib/inbox-ai-automation.ts',
+        'src/server/lib/inbox-ai-automation-runtime.ts',
+    ])('%s imports no direct provider/dispatch/sender primitive (only the durable executor)', (relativePath) => {
+        const contents = source(relativePath)
+        expect(contents).not.toMatch(/\bdispatchOutreachMessage\b/)
+        expect(contents).not.toMatch(/\bsendThreadedReply\b/)
+        expect(contents).not.toMatch(/\bcreateThreadedDispatchProvider\b/)
+        expect(contents).not.toContain('outreach-dispatch-provider')
+        expect(contents).not.toContain('outreach-sender')
+        expect(contents).not.toContain('outreach-provider')
+    })
+
+    it('the autonomous runtime reaches the wire ONLY through the single inbox send-command executor', () => {
+        const contents = source('src/server/lib/inbox-ai-automation-runtime.ts')
+        expect(contents).toContain('executeInboxSendCommand')
+    })
+
     it('uses stable origin-specific idempotency keys', () => {
         expect(source('src/server/jobs/processOutreachSequences.ts'))
             .toContain('campaign:${campaignLead.id}:${emailStep.id}')
