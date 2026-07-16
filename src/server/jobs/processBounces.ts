@@ -216,10 +216,17 @@ export async function findOutreachEmailByRecipient(
 async function findOutreachEmailByMessageId(
     messageId: string
 ): Promise<typeof outreachEmails.$inferSelect | null> {
-    const cleanMessageId = messageId.replace(/[<>]/g, '')
-    
+    const cleanMessageId = messageId.replace(/[<>]/g, '').trim()
+
+    // A bounce/DSN can carry an empty or truncated original Message-Id. Without this guard the
+    // query becomes LIKE '%%', which matches the most recent outreach email and would mark a
+    // completely unrelated lead as bounced. Require enough of an id to identify a message, and
+    // escape LIKE wildcards so a literal % or _ inside the id cannot widen the match.
+    if (cleanMessageId.length < 8) return null
+    const escaped = cleanMessageId.replace(/([%_\\])/g, '\\$1')
+
     const result = await db.query.outreachEmails.findFirst({
-        where: sql`LOWER(${outreachEmails.messageId}) LIKE LOWER(${'%' + cleanMessageId + '%'})`,
+        where: sql`LOWER(${outreachEmails.messageId}) LIKE LOWER(${'%' + escaped + '%'}) ESCAPE '\\'`,
         orderBy: [desc(outreachEmails.sentAt)]
     })
 
