@@ -208,7 +208,9 @@ export function bodyPreview(
 
 // Only headers safe to persist and expose. Credential/token-bearing headers never appear
 // here, so a stored conversation can never leak an auth secret through its header blob.
-const SAFE_HEADER_ALLOW_LIST = new Set([
+// Exported so provider adapters (e.g. the IMAP raw-MIME parser) can extract the SAME set at
+// staging time, keeping the retained headers equivalent across native/IMAP/Graph.
+export const SAFE_HEADER_ALLOW_LIST = new Set([
     'subject',
     'date',
     'message-id',

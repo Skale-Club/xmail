@@ -11,7 +11,7 @@
  */
 
 import { ImapFlow } from 'imapflow'
-import { simpleParser, type ParsedMail } from 'mailparser'
+import { simpleParser } from 'mailparser'
 import { and, asc, eq, isNotNull, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import {
@@ -20,22 +20,17 @@ import {
     mailMessages,
     outlookMailboxes,
     type OutlookMailbox,
-    type OutreachProviderAttachment,
 } from '../../db/schema'
 import { decryptSecret } from './crypto'
 import { sqlTimestamp } from './sql-timestamp'
 import { createLogger } from './logger'
 import { getNativeMailboxForOrganization } from './native-send'
+import { fetchOutlookInboxDelta } from './outlook'
+import { nativeEventFromMailRow } from './unified-inbox/providers/native'
+import { imapEventFromParsedMail } from './unified-inbox/providers/imap'
+import { outlookEventFromGraphMessage } from './unified-inbox/providers/outlook'
 import {
-    fetchOutlookInboxDelta,
-    type OutlookGraphMessage,
-} from './outlook'
-import {
-    graphProviderMessageId,
-    imapProviderMessageId,
     ingestInboundPage,
-    nativeProviderMessageId,
-    normalizeMessageId,
     resolveImapCursor,
     type InboundEventStore,
     type InboundSource,
@@ -46,21 +41,10 @@ import {
 
 const log = createLogger('outreach.inbound')
 
-const MAX_BODY_LENGTH = 100_000
-
-function truncate(value: string | null | undefined, max = MAX_BODY_LENGTH): string | null {
-    if (!value) return null
-    return value.length > max ? value.slice(0, max) : value
-}
-
-function addressList(value: unknown): string[] {
-    if (!value) return []
-    if (Array.isArray(value)) return value.map((entry) => String(entry)).filter(Boolean)
-    if (typeof value === 'string') {
-        return value.split(',').map((entry) => entry.trim()).filter(Boolean)
-    }
-    return []
-}
+// The provider-neutral field mapping for every provider now lives in the Phase 21 adapters
+// (unified-inbox/providers/*), so native mail, raw IMAP MIME, and Graph delta messages produce
+// EQUIVALENT normalized fields. Re-exported here for existing importers (outlook-inbound.test.ts).
+export { outlookEventFromGraphMessage as normalizeGraphMessage } from './unified-inbox/providers/outlook'
 
 // ============================================================
 // Native
@@ -126,38 +110,7 @@ export async function createNativeInboundSource(account: {
                 limit: pageSize,
             })
 
-            const messages: NormalizedInboundMessage[] = candidates.map((row) => {
-                const headers = (row.headers as Record<string, string> | null) ?? {}
-                const attachments = ((row.attachments as unknown[] | null) ?? []).map((entry) => {
-                    const item = (entry ?? {}) as Record<string, unknown>
-                    const attachment: OutreachProviderAttachment = {
-                        providerId: item.id ? String(item.id) : null,
-                        name: item.filename ? String(item.filename) : null,
-                        mimeType: item.contentType ? String(item.contentType) : null,
-                        size: Number.isFinite(Number(item.size)) ? Number(item.size) : null,
-                        inline: item.contentDisposition === 'inline' || Boolean(item.cid),
-                        contentId: item.cid ? String(item.cid) : null,
-                    }
-                    return attachment
-                })
-
-                return {
-                    provider: 'native',
-                    providerMessageId: nativeProviderMessageId(row.id),
-                    messageId: normalizeMessageId(row.messageId),
-                    inReplyTo: row.inReplyTo,
-                    references: row.references,
-                    fromAddress: row.fromAddress,
-                    toAddresses: addressList(row.toAddresses),
-                    ccAddresses: addressList(row.ccAddresses),
-                    subject: row.subject,
-                    textBody: truncate(row.plainBody),
-                    htmlBody: truncate(row.htmlBody),
-                    headers,
-                    attachments,
-                    receivedAt: row.receivedAt ?? row.createdAt,
-                }
-            })
+            const messages: NormalizedInboundMessage[] = candidates.map((row) => nativeEventFromMailRow(row))
 
             const last = candidates[candidates.length - 1]
             const nextCursor: ProviderCursorState = last
@@ -195,72 +148,6 @@ export interface ImapInboundAccount {
     imapUsername: string
     imapPassword: string
     imapSecure: boolean | null
-}
-
-function headerRecord(parsed: ParsedMail): Record<string, string> {
-    const headers: Record<string, string> = {}
-    for (const name of [
-        'auto-submitted',
-        'precedence',
-        'x-auto-response-suppress',
-        'content-type',
-        'return-path',
-        'list-unsubscribe',
-    ]) {
-        const value = parsed.headers.get(name)
-        if (typeof value === 'string') headers[name] = value
-        else if (value && typeof value === 'object' && 'value' in (value as object)) {
-            const structured = value as { value?: unknown }
-            if (typeof structured.value === 'string') headers[name] = structured.value
-        }
-    }
-    // mailparser exposes the structured content type separately from the raw header.
-    if (!headers['content-type'] && parsed.headers.get('content-type')) {
-        headers['content-type'] = String(parsed.headers.get('content-type'))
-    }
-    return headers
-}
-
-function normalizeParsed(
-    parsed: ParsedMail,
-    uid: number,
-    uidValidity: number,
-): NormalizedInboundMessage {
-    const references = Array.isArray(parsed.references)
-        ? parsed.references.join(' ')
-        : (parsed.references ?? null)
-
-    return {
-        provider: 'smtp',
-        providerMessageId: imapProviderMessageId({
-            messageId: parsed.messageId ?? null,
-            uidValidity,
-            uid,
-        }),
-        messageId: normalizeMessageId(parsed.messageId),
-        inReplyTo: parsed.inReplyTo ?? null,
-        references,
-        fromAddress: parsed.from?.value?.[0]?.address ?? null,
-        toAddresses: Array.isArray(parsed.to)
-            ? parsed.to.flatMap((entry) => entry.value.map((address) => address.address ?? '')).filter(Boolean)
-            : (parsed.to?.value?.map((address) => address.address ?? '').filter(Boolean) ?? []),
-        ccAddresses: Array.isArray(parsed.cc)
-            ? parsed.cc.flatMap((entry) => entry.value.map((address) => address.address ?? '')).filter(Boolean)
-            : (parsed.cc?.value?.map((address) => address.address ?? '').filter(Boolean) ?? []),
-        subject: parsed.subject ?? null,
-        textBody: truncate(parsed.text),
-        htmlBody: truncate(typeof parsed.html === 'string' ? parsed.html : null),
-        headers: headerRecord(parsed),
-        attachments: (parsed.attachments ?? []).map((attachment) => ({
-            providerId: attachment.checksum ?? null,
-            name: attachment.filename ?? null,
-            mimeType: attachment.contentType ?? null,
-            size: attachment.size ?? null,
-            inline: attachment.contentDisposition === 'inline' || Boolean(attachment.cid),
-            contentId: attachment.cid ?? null,
-        })),
-        receivedAt: parsed.date ?? new Date(),
-    }
 }
 
 /**
@@ -325,7 +212,7 @@ export function createImapInboundSource(account: ImapInboundAccount): InboundSou
                                 continue
                             }
                             const parsed = await simpleParser(fetched.source)
-                            messages.push(normalizeParsed(parsed, uid, resolved.uidValidity))
+                            messages.push(imapEventFromParsedMail(parsed, uid, resolved.uidValidity))
                             highWater = Math.max(highWater, uid)
                         } catch (error) {
                             const err = error instanceof Error ? error : new Error(String(error))
@@ -370,92 +257,6 @@ export function createImapInboundSource(account: ImapInboundAccount): InboundSou
 // ============================================================
 
 /**
- * Cap on retained headers. Graph hands back every internet header the message arrived with,
- * and these land in a jsonb column — a mail with a long Received chain would otherwise write
- * kilobytes per event.
- */
-const MAX_RETAINED_HEADERS = 100
-const MAX_HEADER_VALUE_LENGTH = 1_000
-
-/**
- * Keep ALL headers (bounded), not the IMAP source's fixed subset.
- *
- * The IMAP path can afford a subset because mailparser re-reads the raw source on demand.
- * Here the delta response is the only view of the message we will ever have, and the
- * classifier needs Content-Type (DSN detection), Auto-Submitted/Precedence (auto-replies)
- * and In-Reply-To/References (threading) — dropping anything else is a decision we cannot
- * revisit later.
- */
-function graphHeaderRecord(message: OutlookGraphMessage): Record<string, string> {
-    const headers: Record<string, string> = {}
-    for (const header of (message.internetMessageHeaders ?? []).slice(0, MAX_RETAINED_HEADERS)) {
-        if (!header?.name) continue
-        headers[header.name.toLowerCase()] = String(header.value ?? '').slice(0, MAX_HEADER_VALUE_LENGTH)
-    }
-    return headers
-}
-
-function graphAddresses(
-    recipients: Array<{ emailAddress?: { address?: string | null } | null }> | null | undefined,
-): string[] {
-    return (recipients ?? [])
-        .map((entry) => entry?.emailAddress?.address ?? '')
-        .filter((address): address is string => Boolean(address))
-}
-
-/**
- * Map a Graph message onto the shared normalized shape.
- *
- * Returns null for anything with no usable identity — the reader already drops tombstones and
- * drafts, so this is the last guard rather than the first.
- */
-export function normalizeGraphMessage(message: OutlookGraphMessage): NormalizedInboundMessage | null {
-    if (!message?.id) return null
-
-    const headers = graphHeaderRecord(message)
-    const isHtml = (message.body?.contentType ?? '').toLowerCase() === 'html'
-    const content = message.body?.content ?? null
-
-    // Graph exposes exactly one body. Whichever it is, the reply/bounce consumers already
-    // fall back across text/html, so nothing is lost by leaving the other side null rather
-    // than inventing a conversion here.
-    const textBody = isHtml ? null : truncate(content)
-    const htmlBody = isHtml ? truncate(content) : null
-
-    const receivedMs = message.receivedDateTime ? Date.parse(message.receivedDateTime) : NaN
-
-    return {
-        provider: 'outlook',
-        providerMessageId: graphProviderMessageId({
-            messageId: message.internetMessageId ?? null,
-            graphId: message.id,
-        }),
-        messageId: normalizeMessageId(message.internetMessageId),
-        inReplyTo: headers['in-reply-to'] ?? null,
-        references: headers['references'] ?? null,
-        fromAddress: message.from?.emailAddress?.address ?? null,
-        toAddresses: graphAddresses(message.toRecipients),
-        ccAddresses: graphAddresses(message.ccRecipients),
-        subject: message.subject ?? null,
-        textBody,
-        htmlBody,
-        headers,
-        attachments: (message.attachments ?? []).map((attachment) => {
-            const normalized: OutreachProviderAttachment = {
-                providerId: attachment.id ? String(attachment.id) : null,
-                name: attachment.name ? String(attachment.name) : null,
-                mimeType: attachment.contentType ? String(attachment.contentType) : null,
-                size: Number.isFinite(Number(attachment.size)) ? Number(attachment.size) : null,
-                inline: Boolean(attachment.isInline),
-                contentId: attachment.contentId ? String(attachment.contentId) : null,
-            }
-            return normalized
-        }),
-        receivedAt: Number.isFinite(receivedMs) ? new Date(receivedMs) : new Date(),
-    }
-}
-
-/**
  * Delta-driven Graph source.
  *
  * Outlook had no inbound path at all before this: replies and DSNs landed in the mailbox and
@@ -486,7 +287,7 @@ export function createGraphInboundSource(input: {
             }
 
             const messages = result.messages
-                .map((message) => normalizeGraphMessage(message))
+                .map((message) => outlookEventFromGraphMessage(message))
                 .filter((message): message is NormalizedInboundMessage => message !== null)
 
             return {
