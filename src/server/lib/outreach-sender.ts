@@ -1,27 +1,34 @@
 /**
  * Outreach Email Sender
- * Handles sending outreach emails through SMTP or Outlook OAuth
+ *
+ * Owns CONTENT: template interpolation, A/B variant selection, tracking injection,
+ * unsubscribe URL minting, send windows, warm-up limits and pacing.
+ *
+ * It does NOT own transport. Since Phase 19 (PROV-03) every provider difference lives in
+ * outreach-provider.ts, which composes the message once as MIME and hands the same bytes to
+ * SMTP, the native relay, or Outlook Graph. This module used to branch on `account.provider`
+ * and build a different message per branch — that is how Outlook lost its List-Unsubscribe
+ * headers and its Message-ID.
  */
 
-import nodemailer from 'nodemailer'
 import { db } from '../../db'
 import { campaigns, sequenceSteps, campaignLeads, leads, emailAccounts } from '../../db/schema'
 import { eq, sql } from 'drizzle-orm'
-import { decryptSecret } from './crypto'
 import { interpolateTemplate, type LeadForTemplate } from './template-variables'
 import { injectTracking } from './tracking'
-import { sendMessageWithOutlook } from './outlook'
 import { generateUnsubscribeLink } from '../routes/outreach/unsubscribe'
-import { relayMessage, storeMessage, getNativeMailboxByEmail } from './native-send'
 import {
     normalizeProviderFailure,
     type ProviderAcceptance,
     type ProviderFailure,
 } from './outreach-dispatch'
-import { buildSmtpTransportOptions } from './smtp-security'
-import { createLogger } from './logger'
+import {
+    sendComposedOutreachMessage,
+    type OutreachProviderDependencies,
+    type OutreachUnsubscribeOptions,
+} from './outreach-provider'
 
-const log = createLogger('outreach.sender')
+export { createSmtpTransporter } from './outreach-provider'
 
 interface SendOutreachEmailParams {
     account: typeof emailAccounts.$inferSelect
@@ -35,6 +42,8 @@ interface SendOutreachEmailParams {
     trackingBaseUrl?: string
     abVariant?: 'a' | 'b'
     stableMessageId?: string
+    /** Test seam forwarded to the provider adapter. Production callers omit it. */
+    providerDependencies?: OutreachProviderDependencies
 }
 
 type SendResult =
@@ -56,32 +65,6 @@ type SendResult =
         finalText?: undefined
         trackingToken?: undefined
     }
-
-export function createSmtpTransporter(account: typeof emailAccounts.$inferSelect): nodemailer.Transporter {
-    if (!account.smtpHost || !account.smtpPassword || !account.smtpUsername) {
-        throw new Error('SMTP account missing required fields')
-    }
-
-    const decryptedPassword = decryptSecret(account.smtpPassword)
-
-    // PROV-01: the port/flag → transport mapping lives in one place, shared with the
-    // verification transporter in routes/outreach/email-accounts.ts, so an inbox cannot
-    // verify under one TLS mode and then send under another.
-    const { options, resolution } = buildSmtpTransportOptions({
-        host: account.smtpHost,
-        port: account.smtpPort,
-        secure: account.smtpSecure,
-        username: account.smtpUsername,
-        password: decryptedPassword,
-    })
-
-    if (resolution.warning) {
-        // Account id only — never the host credentials or the decrypted password.
-        log.warn({ emailAccountId: account.id, mode: resolution.mode }, resolution.warning)
-    }
-
-    return nodemailer.createTransport(options)
-}
 
 export function isWithinSendWindow(campaign: typeof campaigns.$inferSelect, now: Date): boolean {
     const zoned = getZonedDateParts(now, campaign.timezone)
@@ -302,120 +285,42 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
             html = injectTracking(html, trackingToken, baseUrl, trackOpens ?? false, trackClicks ?? false)
         }
 
-        // P0-03: Inject List-Unsubscribe headers for Gmail/Yahoo bulk-sender compliance (RFC 8058 one-click).
-        // Build the mailto fallback from the campaign's reply-to domain, else fall back to MAIL_DOMAIN env.
+        // P0-03: List-Unsubscribe for Gmail/Yahoo bulk-sender compliance (RFC 8058 one-click).
+        // Build the mailto fallback from the campaign's reply-to domain, else MAIL_DOMAIN env.
+        // Since PROV-03 these reach EVERY provider, Outlook included — the composer, not the
+        // transport, decides what headers a campaign carries.
         const replyToDomain = campaign.replyToEmail?.split('@')[1] || process.env.MAIL_DOMAIN || 'example.com'
-        const headers: Record<string, string> = {
-            'List-Unsubscribe': `<${unsubscribeUrl}>, <mailto:unsubscribe@${replyToDomain}?subject=unsubscribe>`,
-            'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        const unsubscribe: OutreachUnsubscribeOptions = {
+            url: unsubscribeUrl,
+            mailto: `unsubscribe@${replyToDomain}?subject=unsubscribe`,
+            oneClick: true,
         }
 
-        if (account.provider === 'outlook' && account.outlookMailboxId) {
-            // NOTE: sendMessageWithOutlook does not currently accept arbitrary headers (Graph API
-            // limits header customization). List-Unsubscribe via Outlook is a known P1 limitation
-            // documented in deferred ideas (phase 15). For SMTP accounts the headers go through.
-            await sendMessageWithOutlook({
-                organizationId: account.organizationId,
-                mailboxId: account.outlookMailboxId,
-                fromAddress: account.email,
-                to: [lead.email],
-                subject,
-                htmlBody: html,
-                plainBody: text,
-            })
-
-            return {
-                success: true,
-                acceptance: 'accepted',
-                finalHtml: html,
-                finalText: text,
-                trackingToken,
-            }
-        }
-
-        const fromName = campaign.fromName || account.displayName || ''
-        const fromAddress = fromName ? `"${fromName}" <${account.email}>` : account.email
-
-        const mailOptions: nodemailer.SendMailOptions = {
-            from: fromAddress,
-            to: lead.email,
+        const result = await sendComposedOutreachMessage(account, {
+            from: { address: account.email, name: campaign.fromName || account.displayName || null },
+            to: [lead.email],
             subject,
-            html,
             text,
-            replyTo: campaign.replyToEmail || undefined,
-            headers,
+            html,
+            replyTo: campaign.replyToEmail || null,
             messageId: stableMessageId,
-        }
+            unsubscribe,
+        }, params.providerDependencies)
 
-        if (account.provider === 'native') {
-            // No stored SMTP credentials — compose the same MIME content via nodemailer's
-            // stream composer (buffered, never touches the network) to get a raw buffer +
-            // an auto-generated Message-ID identical in shape to the one the SMTP path
-            // relies on, then relay it through the platform's internal DKIM-signed relay
-            // and file a copy in the account owner's native Sent folder. Reply/bounce
-            // matching (processReplies.ts / processBounces.ts) key off this same
-            // Message-ID, exactly as they do for the SMTP path's info.messageId.
-            const nativeMailbox = await getNativeMailboxByEmail(account.email)
-            if (!nativeMailbox) {
-                return {
-                    success: false,
-                    acceptance: 'rejected',
-                    error: 'Native mailbox not found for outreach account — was it deleted?',
-                    failure: {
-                        code: 'native_mailbox_missing',
-                        classification: 'terminal',
-                        acceptance: 'rejected',
-                        retryable: false,
-                        message: 'Native mailbox not found for outreach account',
-                    },
-                }
-            }
-
-            const composer = nodemailer.createTransport({ streamTransport: true, buffer: true })
-            const composed = await composer.sendMail(mailOptions)
-            const rawBuffer = composed.message as Buffer
-            const generatedMessageId = composed.messageId as string
-
-            await relayMessage(account.email, [lead.email], rawBuffer)
-
-            try {
-                await storeMessage(nativeMailbox.id, 'sent', {
-                    messageId: generatedMessageId,
-                    subject,
-                    fromAddress: account.email,
-                    fromName: account.displayName || null,
-                    toAddresses: [{ address: lead.email, name: null }],
-                    ccAddresses: [],
-                    bccAddresses: [],
-                    plainBody: text,
-                    htmlBody: html,
-                    hasAttachments: false,
-                    attachments: [],
-                }, true)
-            } catch (storeErr) {
-                // Filing the Sent-folder copy is best-effort — the message was already
-                // relayed successfully, so a filing failure should not fail the send
-                // (matches how the SMTP path never fails a send over IMAP-append issues).
-                console.warn('[Outreach:Native] Failed to file Sent copy:', storeErr instanceof Error ? storeErr.message : storeErr)
-            }
-
+        if (!result.accepted) {
+            const failure = result.failure ?? normalizeProviderFailure(new Error('Provider rejected the message'))
             return {
-                success: true,
-                acceptance: 'accepted',
-                messageId: generatedMessageId,
-                finalHtml: html,
-                finalText: text,
-                trackingToken,
+                success: false,
+                acceptance: failure.acceptance,
+                error: failure.message,
+                failure,
             }
         }
-
-        const transporter = createSmtpTransporter(account)
-        const info = await transporter.sendMail(mailOptions)
 
         return {
             success: true,
             acceptance: 'accepted',
-            messageId: info.messageId,
+            messageId: result.messageId,
             finalHtml: html,
             finalText: text,
             trackingToken,
@@ -442,103 +347,58 @@ interface ThreadedReplyParams {
     replyTo?: string | null
     /** Message-ID this reply threads under (In-Reply-To + References). */
     inReplyTo?: string | null
-    /** Dispatcher-derived deterministic Message-ID for SMTP/native retries. */
+    /** Existing References chain from the inbound message; the parent id is appended to it. */
+    references?: string | null
+    /** Dispatcher-derived deterministic Message-ID, reused across retries of one attempt. */
     stableMessageId?: string
+    /**
+     * Unsubscribe metadata. Supplied for campaign-attached (agentic) follow-ups, which are
+     * bulk marketing; omitted for one-to-one transactional sends, where a List-Unsubscribe
+     * would advertise a list the recipient is not on.
+     */
+    unsubscribe?: OutreachUnsubscribeOptions | null
+    /** Test seam forwarded to the provider adapter. Production callers omit it. */
+    providerDependencies?: OutreachProviderDependencies
 }
 
 /**
- * Agentic follow-up (P002) — send a threaded reply in an existing conversation.
- * Unlike sendOutreachEmail this carries no sequence-step template: the body comes from the
- * follow-up decider. Threading headers keep it in the same mail thread. SMTP only for now
- * (Outlook path parity is deferred, matching sendOutreachEmail's known limitation).
+ * Send a threaded reply in an existing conversation (agentic follow-up P002, and manual
+ * one-to-one sends). Unlike sendOutreachEmail this carries no sequence-step template — the
+ * body comes from the caller. Threading headers keep it in the same mail thread.
+ *
+ * Since PROV-03 this works for every provider, Outlook included: the message is composed once
+ * and the adapter chooses the transport.
  */
 export async function sendThreadedReply(params: ThreadedReplyParams): Promise<SendResult> {
-    const { account, to, subject, text, html, fromName, replyTo, inReplyTo, stableMessageId } = params
+    const { account, to, subject, text, html, fromName, replyTo, inReplyTo, references, stableMessageId } = params
     try {
-        const headers: Record<string, string> = {}
-        if (inReplyTo) {
-            const bracketed = inReplyTo.startsWith('<') ? inReplyTo : `<${inReplyTo}>`
-            headers['In-Reply-To'] = bracketed
-            headers['References'] = bracketed
-        }
-
-        const displayName = fromName || account.displayName || ''
-        const fromAddress = displayName ? `"${displayName}" <${account.email}>` : account.email
-
-        const mailOptions: nodemailer.SendMailOptions = {
-            from: fromAddress,
-            to,
+        const result = await sendComposedOutreachMessage(account, {
+            from: { address: account.email, name: fromName || account.displayName || null },
+            to: [to],
             subject,
             text,
             html,
-            replyTo: replyTo || undefined,
-            headers,
+            replyTo: replyTo || null,
             messageId: stableMessageId,
-        }
+            inReplyTo,
+            references,
+            unsubscribe: params.unsubscribe ?? null,
+        }, params.providerDependencies)
 
-        if (account.provider === 'native') {
-            // Mirrors the native branch of sendOutreachEmail: native accounts hold no SMTP
-            // credentials, so compose the MIME buffer offline and hand it to the internal
-            // DKIM-signing relay, then file the Sent copy. Reply/bounce matching keys off
-            // this generated Message-ID exactly as it does for the SMTP path.
-            const nativeMailbox = await getNativeMailboxByEmail(account.email)
-            if (!nativeMailbox) {
-                return {
-                    success: false,
-                    acceptance: 'rejected',
-                    error: 'Native mailbox not found for outreach account — was it deleted?',
-                    failure: {
-                        code: 'native_mailbox_missing',
-                        classification: 'terminal',
-                        acceptance: 'rejected',
-                        retryable: false,
-                        message: 'Native mailbox not found for outreach account',
-                    },
-                }
-            }
-
-            const composer = nodemailer.createTransport({ streamTransport: true, buffer: true })
-            const composed = await composer.sendMail(mailOptions)
-            const rawBuffer = composed.message as Buffer
-            const generatedMessageId = composed.messageId as string
-
-            await relayMessage(account.email, [to], rawBuffer)
-
-            try {
-                await storeMessage(nativeMailbox.id, 'sent', {
-                    messageId: generatedMessageId,
-                    subject,
-                    fromAddress: account.email,
-                    fromName: account.displayName || null,
-                    toAddresses: [{ address: to, name: null }],
-                    ccAddresses: [],
-                    bccAddresses: [],
-                    plainBody: text,
-                    htmlBody: html,
-                    hasAttachments: false,
-                    attachments: [],
-                }, true)
-            } catch (storeErr) {
-                // Best-effort, as in sendOutreachEmail — the reply was already relayed.
-                console.warn('[Outreach:Native] Failed to file Sent copy for threaded reply:', storeErr instanceof Error ? storeErr.message : storeErr)
-            }
-
+        if (!result.accepted) {
+            const failure = result.failure ?? normalizeProviderFailure(new Error('Provider rejected the reply'))
             return {
-                success: true,
-                acceptance: 'accepted',
-                messageId: generatedMessageId,
-                finalHtml: html,
-                finalText: text,
+                success: false,
+                acceptance: failure.acceptance,
+                error: failure.message,
+                failure,
             }
         }
-
-        const transporter = createSmtpTransporter(account)
-        const info = await transporter.sendMail(mailOptions)
 
         return {
             success: true,
             acceptance: 'accepted',
-            messageId: info.messageId ? info.messageId.replace(/[<>]/g, '').trim() : undefined,
+            messageId: result.messageId,
             finalHtml: html,
             finalText: text,
         }

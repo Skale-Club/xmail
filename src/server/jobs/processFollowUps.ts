@@ -18,6 +18,7 @@ import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { runWithLock } from '../lib/cron-lock'
 import { dispatchOutreachMessage } from '../lib/outreach-dispatch'
 import { createThreadedDispatchProvider } from '../lib/outreach-dispatch-provider'
+import { generateUnsubscribeLink } from '../routes/outreach/unsubscribe'
 
 const log = createLogger('outreach.followup')
 
@@ -130,6 +131,12 @@ export async function processFollowUps(): Promise<{ processed: number; sent: num
                 ? decision.subject
                 : `Re: ${campaign.name}`
 
+            // An agentic follow-up is campaign traffic, so it owes the recipient the same
+            // one-click opt-out the first touch carried (PROV-03). Before Phase 19 this was
+            // not merely unset — the threaded path had no way to carry the header at all.
+            const baseUrl = process.env.FRONTEND_URL || 'http://localhost:9000'
+            const replyToDomain = campaign.replyToEmail?.split('@')[1] || process.env.MAIL_DOMAIN || 'example.com'
+
             const dispatchResult = await dispatchOutreachMessage({
                 origin: 'agentic',
                 organizationId: campaign.organizationId,
@@ -148,6 +155,11 @@ export async function processFollowUps(): Promise<{ processed: number; sent: num
                     account,
                     fromName: campaign.fromName,
                     replyTo: campaign.replyToEmail,
+                    unsubscribe: {
+                        url: generateUnsubscribeLink(cl.id, campaign.id, baseUrl),
+                        mailto: `unsubscribe@${replyToDomain}?subject=unsubscribe`,
+                        oneClick: true,
+                    },
                 }),
             })
 

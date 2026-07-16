@@ -1,7 +1,34 @@
+/**
+ * The dispatcher's provider boundary.
+ *
+ * Phase 18 made every origin (campaign, manual, agentic, and later Unified Inbox) go through
+ * one durable dispatcher. Phase 19 (PROV-03/PROV-05) makes every origin go through one
+ * provider adapter as well: these factories translate a claimed dispatch payload into a
+ * content-level send, and translate the provider's normalized outcome back into the
+ * dispatcher's result union.
+ *
+ * There is deliberately no `account.provider` branch left in this file. Outlook used to be
+ * special-cased here onto Graph's JSON `message` shape, which silently dropped unsubscribe
+ * and threading headers; provider differences now live only in outreach-provider.ts.
+ */
+
 import type { Campaign, EmailAccount, Lead, SequenceStep } from '../../db/schema'
-import { sendMessageWithOutlook } from './outlook'
 import { sendOutreachEmail, sendThreadedReply } from './outreach-sender'
+import type { OutreachUnsubscribeOptions } from './outreach-provider'
 import type { DispatchProvider, ProviderDispatchResult } from './outreach-dispatch'
+
+function toDispatch(result: Awaited<ReturnType<typeof sendThreadedReply>>): ProviderDispatchResult {
+    if (result.success) {
+        return {
+            success: true,
+            acceptance: 'accepted',
+            messageId: result.messageId,
+            finalHtml: result.finalHtml,
+            finalText: result.finalText,
+        }
+    }
+    return { success: false, acceptance: result.acceptance, failure: result.failure }
+}
 
 export interface CampaignDispatchProviderContext {
     account: EmailAccount
@@ -20,7 +47,7 @@ export function createCampaignDispatchProvider(
     context: CampaignDispatchProviderContext,
 ): DispatchProvider {
     return {
-        send: (input) => sendOutreachEmail({
+        send: async (input) => toDispatch(await sendOutreachEmail({
             ...context,
             step: {
                 ...context.step,
@@ -35,7 +62,7 @@ export function createCampaignDispatchProvider(
             trackingToken: input.trackingToken ?? context.trackingToken,
             abVariant: 'a',
             stableMessageId: input.stableMessageId,
-        }),
+        })),
     }
 }
 
@@ -43,6 +70,11 @@ export interface ThreadedDispatchProviderContext {
     account: EmailAccount
     fromName?: string | null
     replyTo?: string | null
+    /**
+     * Supplied by campaign-attached (agentic) follow-ups, which are bulk marketing and owe
+     * the recipient a one-click opt-out. Omitted by transactional one-to-one sends.
+     */
+    unsubscribe?: OutreachUnsubscribeOptions | null
 }
 
 export function createThreadedDispatchProvider(
@@ -50,22 +82,7 @@ export function createThreadedDispatchProvider(
 ): DispatchProvider {
     return {
         async send(input): Promise<ProviderDispatchResult> {
-            // Outlook already has a Graph send capability. Phase 19 owns MIME/header
-            // parity; this adapter deliberately uses today's supported payload only.
-            if (context.account.provider === 'outlook' && context.account.outlookMailboxId) {
-                await sendMessageWithOutlook({
-                    organizationId: context.account.organizationId,
-                    mailboxId: context.account.outlookMailboxId,
-                    fromAddress: context.account.email,
-                    to: [input.to],
-                    subject: input.subject,
-                    htmlBody: input.html ?? undefined,
-                    plainBody: input.text ?? undefined,
-                })
-                return { success: true, acceptance: 'accepted' }
-            }
-
-            return sendThreadedReply({
+            return toDispatch(await sendThreadedReply({
                 account: context.account,
                 to: input.to,
                 subject: input.subject,
@@ -74,8 +91,12 @@ export function createThreadedDispatchProvider(
                 fromName: context.fromName,
                 replyTo: context.replyTo,
                 inReplyTo: input.inReplyTo,
+                // Forwarding the frozen claim's chain is what keeps a retried reply in the
+                // same thread rather than starting a new one.
+                references: input.references,
+                unsubscribe: context.unsubscribe,
                 stableMessageId: input.stableMessageId,
-            })
+            }))
         },
     }
 }

@@ -480,10 +480,16 @@ describe('sendComposedOutreachMessage normalizes provider failures', () => {
 })
 
 describe('createSmtpTransporter uses the shared TLS resolver', () => {
+    /** Nodemailer's types do not surface the underlying transport's resolved options. */
+    function transportOptions(transporter: ReturnType<typeof createSmtpTransporter>) {
+        return (transporter.transporter as unknown as { options: Record<string, unknown> }).options
+    }
+
+    // The legacy broken row shape: smtp_secure defaults true while smtp_port defaults 587.
     it('dials port 587 with STARTTLS rather than implicit TLS', () => {
         const transporter = createSmtpTransporter(emailAccount({ smtpPort: 587, smtpSecure: true }))
 
-        expect(transporter.transporter.options).toMatchObject({
+        expect(transportOptions(transporter)).toMatchObject({
             port: 587,
             secure: false,
             requireTLS: true,
@@ -493,7 +499,7 @@ describe('createSmtpTransporter uses the shared TLS resolver', () => {
     it('dials port 465 with implicit TLS', () => {
         const transporter = createSmtpTransporter(emailAccount({ smtpPort: 465, smtpSecure: null }))
 
-        expect(transporter.transporter.options).toMatchObject({ port: 465, secure: true })
+        expect(transportOptions(transporter)).toMatchObject({ port: 465, secure: true })
     })
 })
 

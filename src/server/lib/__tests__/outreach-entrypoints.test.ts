@@ -11,7 +11,6 @@ vi.mock('../outreach-sender', () => ({
     sendOutreachEmail,
     sendThreadedReply,
 }))
-vi.mock('../outlook', () => ({ sendMessageWithOutlook: vi.fn() }))
 
 import {
     createCampaignDispatchProvider,
@@ -87,13 +86,38 @@ describe('shared dispatch providers', () => {
             text: 'Follow-up',
             html: '<p>Follow-up</p>',
             inReplyTo: 'inbound@example.com',
+            references: '<root@example.com> <inbound@example.com>',
             stableMessageId: '<stable@outreach.local>',
         } as never)
 
         expect(sendThreadedReply).toHaveBeenCalledWith(expect.objectContaining({
             to: 'lead@example.com',
             inReplyTo: 'inbound@example.com',
+            // The frozen claim's chain must survive a retry, or the reply starts a new thread.
+            references: '<root@example.com> <inbound@example.com>',
             stableMessageId: '<stable@outreach.local>',
         }))
+    })
+
+    // PROV-03: Outlook was special-cased here onto Graph's JSON `message` shape, which has
+    // nowhere to put List-Unsubscribe and returns no Message-ID. Provider differences now
+    // belong to outreach-provider.ts alone.
+    it('keeps provider branching out of the dispatch boundary', () => {
+        const contents = source('src/server/lib/outreach-dispatch-provider.ts')
+        expect(contents).not.toMatch(/\bsendMessageWithOutlook\b/)
+        expect(contents).not.toMatch(/provider === 'outlook'/)
+    })
+
+    it('routes outreach content through the single compose-once provider module', () => {
+        const sender = source('src/server/lib/outreach-sender.ts')
+        expect(sender).toContain('sendComposedOutreachMessage')
+        expect(sender).not.toMatch(/provider === 'native'/)
+        expect(sender).not.toMatch(/provider === 'outlook'/)
+    })
+
+    it('sends Outlook outreach as MIME rather than the header-losing JSON shape', () => {
+        const provider = source('src/server/lib/outreach-provider.ts')
+        expect(provider).toContain('sendMimeMessageWithOutlook')
+        expect(provider).not.toMatch(/\bsendMessageWithOutlook\b/)
     })
 })
