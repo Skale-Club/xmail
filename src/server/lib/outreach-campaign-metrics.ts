@@ -18,9 +18,17 @@
  *   - `preSendExcludedLeads` = leads unsubscribed/bounced with no send, i.e. excluded before any
  *     outbound mail. These never enter the rate denominator.
  *
- * All rates are per unique LEAD over `contactedLeads`, which is how the cold-email industry
+ * All rates are per contacted lead over `contactedLeads`, which is how the cold-email industry
  * (Instantly, Smartlead, Lemlist) defines them and is bounded 0–100 by construction (each
  * numerator is a subset of contacted). Event totals are still returned; they are not rates.
+ *
+ * GRAIN HONESTY: the cohort counts are computed PER CAMPAIGN and then SUMMED across the requested
+ * ids (see computeCampaignMetrics). For a single campaign they are unique-lead counts. For the org
+ * rollup (every campaign in an org) a lead enrolled in N campaigns is counted N times, so the
+ * absolute counts are "unique (campaign, lead) pairs", not distinct people. The rates stay correct
+ * and bounded because numerator and denominator share that same (campaign, lead) grain; only the
+ * raw totals should be read as pairs rather than distinct leads. De-duplicating to a true
+ * distinct-lead rollup is deliberately out of scope (it would not change any rate).
  *
  * Every campaign surface — list, dashboard /stats, campaign /:id/stats, /analytics — consumes
  * this one module (aggregate via computeCampaignMetrics, per-campaign via
@@ -31,13 +39,15 @@ import { db } from '../../db'
 import { sql } from 'drizzle-orm'
 
 export interface CampaignMetrics {
-    // Cohort sizes / named denominators.
+    // Cohort sizes / named denominators. Per campaign these are unique-lead counts; in a
+    // multi-campaign rollup they are summed, i.e. "(campaign, lead) pairs" (see module GRAIN note).
     totalLeads: number
     eligibleLeads: number
     contactedLeads: number
     sentEmails: number
     preSendExcludedLeads: number
-    // Unique-lead numerators (each a subset of contactedLeads).
+    // Numerators, each a subset of contactedLeads at the same grain (unique lead per campaign,
+    // (campaign, lead) pair in a rollup).
     uniqueOpeners: number
     uniqueClickers: number
     repliedLeads: number
@@ -221,7 +231,12 @@ async function queryRawCohorts(campaignIds: string[]): Promise<Map<string, RawCo
 
 /**
  * Aggregate across the given campaigns. One id for a single campaign, or every id in an org for
- * the rollup — identical math either way, which is the entire point of this function existing.
+ * the rollup — identical rate math either way, which is the entire point of this function existing.
+ *
+ * The per-campaign cohorts are SUMMED, so in a multi-campaign rollup the absolute counts are
+ * "unique (campaign, lead) pairs": a lead in N campaigns contributes N. Rates remain bounded and
+ * correct (numerator and denominator share that grain); read the counts as pairs, not distinct
+ * people. See the module doc's GRAIN HONESTY note.
  */
 export async function computeCampaignMetrics(campaignIds: string[]): Promise<CampaignMetrics> {
     if (campaignIds.length === 0) return { ...EMPTY_CAMPAIGN_METRICS }
