@@ -1,70 +1,53 @@
 ---
-status: issues_found
+status: clean
 phase: 18
 depth: standard
-iteration: 2
-files_reviewed: 31
+iteration: 3
+files_reviewed: 32
 findings:
   critical: 0
-  warning: 3
+  warning: 0
   info: 0
-  total: 3
+  total: 0
 ---
 
-# Phase 18 Code Review — Iteration 2
+# Phase 18 Code Review — Iteration 3
 
-## Scope
+## Result
 
-Re-reviewed the Phase 18 implementation plus fixes `41bf478` through `412d273`, checking each of the seven previous findings against current source and tests. The fixes close the critical tenant, state-regression, quota, retry-classification, and frozen-payload defects. Three integration issues remain around completion/follow-up coordination and post-send bookkeeping.
+Clean. Commit `4921984` resolves the three warnings from iteration 2 without regressing the seven findings fixed in iteration 1. The Phase 18 safety, tenant-isolation, lease/idempotency, provider-payload, scheduling, completion, and agentic-context contracts now pass source review and automated verification.
 
-## Resolution of Previous Findings
+## Iteration 2 Findings
 
-| Previous finding | Result | Evidence |
-|---|---|---|
-| CR-01 reply/bounce tenant scope | Resolved | Exact Message-ID matching now requires the active account; reply matching joins account and outreach organization, bounce matching also requires organization. Two-tenant PostgreSQL tests pass. |
-| CR-02 terminal state overwrite | Resolved | Campaign-lead advancement compares the expected step and excludes all terminal statuses; lead promotion compares `status = 'new'`. |
-| CR-03 shared account capacity | Resolved | `startDispatch` atomically reserves the account row, applies daily/warm-up/spacing conditions, and accepted/failure finalization counts or releases capacity idempotently. Daily and spacing contention tests pass. |
-| WR-01 unknown timeout retry | Resolved | Phase-sensitive socket failures require an explicit pre-DATA SMTP command; missing phase is ambiguous/held. |
-| WR-02 retry payload/tracking drift | Resolved | Claim returns the stored payload, including tracking/threading/A-B data, and provider dispatch uses it on retries. |
-| WR-03 campaign completion race | Partially resolved | The select/update gap is gone, but enrollment is not serialized with the conditional update; see WR2-02. |
-| WR-04 agentic reply context | Partially resolved | Message-ID and bounded body are persisted with scheduling, but campaign completion can cancel the scheduled follow-up; see WR2-03. |
+### WR2-01 — Accepted-send bookkeeping after a lost progress CAS
 
-## Warning Findings
+**Resolved.** `finalizeCampaignDispatchProgress` records fresh-send side effects before attempting the campaign-lead compare-and-set. A terminal reply/bounce/unsubscribe can still prevent status/step advancement while the accepted send remains represented in in-tick spacing, campaign contacted analytics, Xphere events, and processor counts. The regression test explicitly covers `advanceProgress = false` with one bookkeeping call.
 
-### WR2-01 — Losing the terminal-state CAS suppresses bookkeeping for an email that was sent
+### WR2-02 — Enrollment/completion serialization
 
-**File/lines:** `src/server/jobs/processOutreachSequences.ts:340-369`
+**Resolved.** Enrollment rejects completed/archived campaigns, then locks and rechecks the campaign row inside the insertion transaction. Completion locks active campaign rows in deterministic order and evaluates eligibility in a subsequent READ COMMITTED statement, so an enrollment that held the lock commits before completion's new snapshot. Repository search confirms this route is the only production `campaign_leads` insertion path. The disposable PostgreSQL test proves the real blocking/commit/recheck order and leaves the campaign active with the new pending lead.
 
-**Evidence:** After `dispatchOutreachMessage` returns `sent`, a failed progress CAS immediately executes `continue`. The dispatcher has already persisted `sent`, retained daily capacity, and incremented account `total_sent`, but the branch skips `result.sent`, the Xphere `sent` event, campaign `leads_contacted`, and the in-tick account spacing state.
+### WR2-03 — Agentic follow-up canceled by completion
 
-**Impact:** The safety fix correctly preserves reply/bounce/unsubscribe status, but a real accepted send racing with that event is missing from campaign/operator analytics and event integrations. The same tick can also attempt another row for that account; the database reservation still blocks it, but the scheduler's local accounting becomes inconsistent.
+**Resolved.** Completion now treats a non-null `next_follow_up_at` as incomplete for agentic-enabled campaigns. The lifecycle PostgreSQL test confirms the campaign remains active while reply context is pending, the follow-up processor clears the schedule, and only the following completion tick marks the campaign completed.
 
-**Correction:** Separate terminal progress preservation from fresh-send bookkeeping. Always perform idempotent sent-side effects for `dispatchResult.status === 'sent'`; only skip the campaign-lead status/step mutation. Persist campaign/event side effects from the durable ledger or an outbox so crash and race recovery cannot double-count. Add a test where provider finalization succeeds and the campaign-lead CAS returns zero rows.
+## Regression Check of Original Findings
 
-### WR2-02 — A single conditional completion statement does not serialize concurrent or later enrollment
-
-**Files/lines:** `src/server/jobs/processOutreachSequences.ts:425-454`, `src/server/routes/outreach/campaigns.ts:1080-1192`
-
-**Evidence:** Completion now uses one `UPDATE ... NOT EXISTS`, which removes the prior application-level select/update window. Under PostgreSQL READ COMMITTED, however, the statement evaluates one MVCC snapshot and does not see a `campaign_leads` insert that commits after that snapshot. The enrollment route takes no shared campaign lock and does not reject a `completed` campaign; it can also add leads after completion normally.
-
-**Impact:** A campaign can still become or remain `completed` while containing a nonterminal newly enrolled lead. Because due-work selection requires `campaign.status = 'active'`, that lead never runs.
-
-**Correction:** Define and enforce enrollment lifecycle semantics. Serialize enrollment and completion on the same campaign row/advisory lock, rechecking terminal progress after acquiring it; reject enrollment into completed campaigns or atomically reactivate them with a defined policy. Add a PostgreSQL concurrency test, not a source-string assertion.
-
-### WR2-03 — Terminal campaign completion can cancel a persisted agentic follow-up
-
-**Files/lines:** `src/server/jobs/processReplies.ts:637-648`, `src/server/jobs/processOutreachSequences.ts:425-454`, `src/server/jobs/processFollowUps.ts:36-62`
-
-**Evidence:** Reply ingestion now correctly stores `last_reply_message_id`, `last_reply_text`, and `next_follow_up_at`. The same mutation sets campaign-lead status to terminal `replied`. `markCompletedCampaigns` ignores pending agentic follow-up state, so when all campaign leads are terminal it marks the campaign completed. `processFollowUps` then requires `campaign.status === 'active'` and clears the persisted schedule.
-
-**Impact:** Single-lead campaigns, or campaigns where all remaining leads replied, can lose their agentic response before it reaches the dispatcher. The cron schedules make this likely: completion runs every five minutes while follow-ups run every ten.
-
-**Correction:** Make completion and agentic lifecycle semantics explicit: either exclude leads with pending agentic work from campaign completion, or allow opted-in agentic follow-ups to execute for completed sequence campaigns while still honoring pause/kill controls. Add an integration test covering reply ingestion, completion tick, and follow-up tick in order.
+| Original contract | Current evidence |
+|---|---|
+| Reply/bounce account and tenant scope | Exact account-scoped matching, organization equality, guarded mutations, and two-tenant PostgreSQL coverage remain intact. |
+| Terminal-state CAS | Expected-step and exhaustive nonterminal CAS remains intact; lead promotion still compares from `new`. |
+| Daily/warm-up/spacing capacity | Atomic account reservation, idempotent release/counting, and daily/spacing contention coverage remain intact. |
+| Ambiguous provider failures | Socket timeouts without positive pre-DATA evidence remain ambiguous and held. |
+| Frozen retry payload/tracking | Claims still return persisted recipient/content/tracking/threading/A-B values and provider dispatch uses that payload. |
+| Campaign completion | Completion now combines exhaustive terminal semantics, shared row serialization, and pending-agentic exclusion. |
+| Agentic reply context | Native/IMAP paths still persist bounded reply body and normalized Message-ID before scheduling. |
+| Migration/schema/harness | Migration 038 remains rerunnable in the guarded disposable database; Drizzle threading/capacity columns and constraints remain aligned. |
 
 ## Verification Evidence
 
-- `npm run test` — PASS, 11 files / 91 tests, including migration rerun, quota/spacing contention, and two-tenant inbound matching.
+- `npm run test` — PASS, 12 files / 94 tests.
+- PostgreSQL coverage passed for migration rerun, capacity/spacing contention, cross-tenant inbound matching, campaign enrollment contention, and agentic lifecycle sequencing.
 - `npm run build` — PASS for Vite client and TypeScript server.
 - `npm run lint` — PASS with zero warnings.
-- Migration 038 and the Drizzle mirror include the same threading/capacity columns and reservation constraint; the disposable harness remains explicitly guarded and applies migration 038 twice.
-- No product source, migration, test, or commit was changed by this re-review.
+- No product source, migration, test, or commit was changed by this review.
