@@ -342,6 +342,21 @@ describe('ConversationList: async states', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
         expect(onRetry).toHaveBeenCalledOnce()
     })
+
+    // W-6: a FAILED background list refetch (SSE/unread invalidation, a mutation onSettled) must
+    // not replace the loaded/cached rows the operator was scrolling with the blanking error card.
+    it('keeps cached rows visible when a background list refetch fails, showing a non-destructive indicator', () => {
+        renderList({
+            isError: true,
+            conversations: [makeConversation({ id: CONV_1, subject: 'Still here' })],
+        })
+        // The loaded rows stay put — the operator does not lose their place.
+        expect(screen.getByRole('button', { name: /Conversation with Lead Person/ })).toBeInTheDocument()
+        expect(screen.getByText('Still here')).toBeInTheDocument()
+        // A non-destructive refresh-failed indicator replaces the full blanking error card.
+        expect(screen.getByText(/Couldn’t refresh — showing the last loaded list/)).toBeInTheDocument()
+        expect(screen.queryByText(/Couldn’t load conversations/)).not.toBeInTheDocument()
+    })
 })
 
 describe('ConversationList: rows + pagination', () => {

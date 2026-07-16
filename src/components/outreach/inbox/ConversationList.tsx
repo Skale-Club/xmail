@@ -203,7 +203,13 @@ export function ConversationList(props: ConversationListProps) {
 
             <div className="min-h-0 flex-1 overflow-y-auto">
                 <p className="sr-only" role="status" aria-live="polite">
-                    {isLoading ? 'Loading conversations' : isError ? 'Failed to load conversations' : `${conversations.length} conversations loaded`}
+                    {isLoading
+                        ? 'Loading conversations'
+                        : isError && conversations.length === 0
+                            ? 'Failed to load conversations'
+                            : isError
+                                ? 'Couldn’t refresh conversations; showing the last loaded list'
+                                : `${conversations.length} conversations loaded`}
                 </p>
 
                 {isLoading ? (
@@ -216,7 +222,8 @@ export function ConversationList(props: ConversationListProps) {
                             </li>
                         ))}
                     </ul>
-                ) : isError ? (
+                ) : isError && conversations.length === 0 ? (
+                    // Only blank to the error card when there is NO cached data to fall back to.
                     <div className="p-6 text-center">
                         <AlertTriangle className="mx-auto mb-2 h-6 w-6 text-amber-600 dark:text-amber-400" aria-hidden="true" />
                         <p className="mb-3 text-sm text-muted-foreground">Couldn’t load conversations.</p>
@@ -246,6 +253,24 @@ export function ConversationList(props: ConversationListProps) {
                     </div>
                 ) : (
                     <>
+                        {isError && (
+                            // Background refetch failed but the loaded pages are still cached: keep
+                            // the rows and surface a non-destructive refresh-failed indicator.
+                            <div
+                                role="status"
+                                className="flex items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-300"
+                            >
+                                <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                <span className="flex-1">Couldn’t refresh — showing the last loaded list.</span>
+                                <button
+                                    type="button"
+                                    onClick={onRetry}
+                                    className="shrink-0 font-medium underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                    Retry
+                                </button>
+                            </div>
+                        )}
                         <ul className="divide-y divide-border">
                             {conversations.map((conversation) => (
                                 <ConversationRow
