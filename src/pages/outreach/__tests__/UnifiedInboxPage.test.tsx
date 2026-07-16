@@ -1,6 +1,31 @@
 import React from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider, type InfiniteData } from '@tanstack/react-query'
+
+// The operator mutation hooks call apiFetch<T> through api-client. Mock the module so the
+// REAL hooks (loaded via vi.importActual below) drive a fake network we fully control — no
+// supabase session, no real fetch. ApiClientError mirrors the real class's status/details.
+const apiClientMocks = vi.hoisted(() => {
+    class ApiClientError extends Error {
+        status: number
+        details?: unknown
+        code?: string
+        constructor(message: string, opts: { status: number; details?: unknown; code?: string }) {
+            super(message)
+            this.name = 'ApiClientError'
+            this.status = opts.status
+            this.details = opts.details
+            this.code = opts.code
+        }
+    }
+    return { apiFetch: vi.fn(), ApiClientError }
+})
+vi.mock('@/lib/api-client', () => ({
+    apiFetch: apiClientMocks.apiFetch,
+    apiRequest: vi.fn(),
+    ApiClientError: apiClientMocks.ApiClientError,
+}))
 
 // EmailHtmlViewer renders email bodies into a sandboxed iframe and schedules resize
 // setTimeouts on iframe `load`. Under jsdom those can fire after teardown ("window is
@@ -527,6 +552,8 @@ vi.mock('@/components/outreach/OutreachLayout', () => ({
     default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
 
+const stubMutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn().mockResolvedValue(undefined), isPending: false, isError: false, reset: vi.fn() })
+
 vi.mock('@/hooks/useUnifiedInbox', () => ({
     useInboxConversations: () => hooks.state.list,
     useInboxConversation: () => hooks.state.detail,
@@ -534,6 +561,18 @@ vi.mock('@/hooks/useUnifiedInbox', () => ({
     useInboxCampaignOptions: () => ({ data: [] }),
     useInboxAccountOptions: () => ({ data: [] }),
     useInboxUnreadCount: () => ({ data: 0 }),
+    // Operator mutations are stubbed for the page/wiring tests; the REAL implementations are
+    // exercised against a fake network in the "operator mutations" describe via importActual.
+    useInboxReadState: () => stubMutation(),
+    useInboxArchive: () => stubMutation(),
+    useInboxStatus: () => stubMutation(),
+    useInboxLabelAttach: () => stubMutation(),
+    useInboxLabelDetach: () => stubMutation(),
+    useCreateInboxLabel: () => stubMutation(),
+    useInboxBulkAction: () => stubMutation(),
+    useInboxConversationReminders: () => ({ data: [], isLoading: false }),
+    useInboxReminderMutations: () => ({ create: stubMutation(), update: stubMutation(), remove: stubMutation() }),
+    useInboxSuppression: () => ({ preview: vi.fn(), apply: vi.fn().mockResolvedValue(undefined), isApplying: false }),
 }))
 
 // Imported AFTER the mocks so the page picks up the mocked modules.
@@ -583,5 +622,161 @@ describe('UnifiedInboxPage: tenant isolation + selection', () => {
         render(<UnifiedInboxPage />)
         fireEvent.click(screen.getByRole('button', { name: /Back/ }))
         expect(hooks.navigate).toHaveBeenCalledWith('/outreach/unified-inbox')
+    })
+})
+
+// ============================================================
+// Task 1 — operator mutations: optimistic patch + snapshot rollback (locked #4)
+// ============================================================
+// These exercise the REAL hooks (imported past the module mock) against the mocked apiFetch.
+// A fresh QueryClient per test keeps caches isolated; seeded list/detail data has no observer,
+// so the onSettled invalidation marks-stale without a refetch — assertions stay deterministic.
+
+type RealInboxHooks = typeof import('@/hooks/useUnifiedInbox')
+
+function makeWrapper() {
+    const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    )
+    return { queryClient, wrapper }
+}
+
+function seedList(
+    queryClient: QueryClient,
+    organizationId: string,
+    conversations: InboxConversationListItem[],
+) {
+    const sig = listFilterSignature(DEFAULT_INBOX_STATE)
+    const key = inboxKeys.list(organizationId, sig)
+    queryClient.setQueryData(key, {
+        pages: [{ conversations, nextCursor: null, hasMore: false, count: conversations.length, syncStatus: [] }],
+        pageParams: [null],
+    })
+    return key
+}
+
+function listConversations(queryClient: QueryClient, key: readonly unknown[]): InboxConversationListItem[] {
+    const data = queryClient.getQueryData(key) as InfiniteData<{ conversations: InboxConversationListItem[] }> | undefined
+    return data?.pages.flatMap((p) => p.conversations) ?? []
+}
+
+describe('operator mutations: optimistic + rollback', () => {
+    let hooksModule: RealInboxHooks
+    beforeAll(async () => {
+        hooksModule = await vi.importActual<RealInboxHooks>('@/hooks/useUnifiedInbox')
+    })
+    beforeEach(() => {
+        apiClientMocks.apiFetch.mockReset()
+    })
+
+    it('optimistically marks read and reconciles unread from the server response', async () => {
+        const { queryClient, wrapper } = makeWrapper()
+        const listKey = seedList(queryClient, ORG_A, [makeConversation({ unread: true })])
+        const detailKey = inboxKeys.detail(ORG_A, CONV_1)
+        queryClient.setQueryData(detailKey, makeDetail({
+            conversation: { ...makeDetail().conversation, unread: true },
+        }))
+        apiClientMocks.apiFetch.mockResolvedValueOnce({ conversationId: CONV_1, read: true, unread: false })
+
+        const { result } = renderHook(() => hooksModule.useInboxReadState(ORG_A), { wrapper })
+        await act(async () => {
+            await result.current.mutateAsync({ conversationId: CONV_1, read: true })
+        })
+
+        expect(listConversations(queryClient, listKey)[0].unread).toBe(false)
+        expect((queryClient.getQueryData(detailKey) as InboxConversationDetail).conversation.unread).toBe(false)
+        // read-state PATCH carries organizationId in the query string.
+        expect(apiClientMocks.apiFetch.mock.calls[0][0]).toContain(`organizationId=${ORG_A}`)
+    })
+
+    it.each([403, 409, 500])('restores the EXACT prior list + thread state when the request fails with %s', async (status) => {
+        const { queryClient, wrapper } = makeWrapper()
+        const listKey = seedList(queryClient, ORG_A, [makeConversation({ unread: true })])
+        const detailKey = inboxKeys.detail(ORG_A, CONV_1)
+        const originalDetail = makeDetail({ conversation: { ...makeDetail().conversation, unread: true } })
+        queryClient.setQueryData(detailKey, originalDetail)
+        apiClientMocks.apiFetch.mockRejectedValueOnce(new apiClientMocks.ApiClientError('nope', { status }))
+
+        const { result } = renderHook(() => hooksModule.useInboxReadState(ORG_A), { wrapper })
+        await act(async () => {
+            await result.current.mutateAsync({ conversationId: CONV_1, read: true }).catch(() => undefined)
+        })
+        await waitFor(() => expect(result.current.isError).toBe(true))
+
+        // Prior state restored byte-for-byte: still unread in BOTH caches.
+        expect(listConversations(queryClient, listKey)[0].unread).toBe(true)
+        expect((queryClient.getQueryData(detailKey) as InboxConversationDetail).conversation.unread).toBe(true)
+    })
+
+    it('never touches another organization’s cache on rollback', async () => {
+        const { queryClient, wrapper } = makeWrapper()
+        const orgAKey = seedList(queryClient, ORG_A, [makeConversation({ unread: true })])
+        const orgBKey = seedList(queryClient, ORG_B, [makeConversation({ unread: true })])
+        apiClientMocks.apiFetch.mockRejectedValueOnce(new apiClientMocks.ApiClientError('nope', { status: 500 }))
+
+        const { result } = renderHook(() => hooksModule.useInboxReadState(ORG_A), { wrapper })
+        await act(async () => {
+            await result.current.mutateAsync({ conversationId: CONV_1, read: true }).catch(() => undefined)
+        })
+
+        expect(listConversations(queryClient, orgAKey)[0].unread).toBe(true) // rolled back
+        expect(listConversations(queryClient, orgBKey)[0].unread).toBe(true) // untouched throughout
+    })
+
+    it('composes sequential read then archive patches on the same conversation', async () => {
+        const { queryClient, wrapper } = makeWrapper()
+        const listKey = seedList(queryClient, ORG_A, [makeConversation({ unread: true, archived: false })])
+        apiClientMocks.apiFetch
+            .mockResolvedValueOnce({ conversationId: CONV_1, read: true, unread: false })
+            .mockResolvedValueOnce({ conversation: { id: CONV_1, status: 'open', archived: true, updatedAt: '2026-07-16T11:00:00.000Z' } })
+
+        const read = renderHook(() => hooksModule.useInboxReadState(ORG_A), { wrapper })
+        await act(async () => { await read.result.current.mutateAsync({ conversationId: CONV_1, read: true }) })
+        const archive = renderHook(() => hooksModule.useInboxArchive(ORG_A), { wrapper })
+        await act(async () => { await archive.result.current.mutateAsync({ conversationId: CONV_1, archived: true }) })
+
+        const conv = listConversations(queryClient, listKey)[0]
+        expect(conv.unread).toBe(false)
+        expect(conv.archived).toBe(true)
+    })
+
+    it('applies a bounded bulk read to only the selected loaded ids and reports partial results', async () => {
+        const { queryClient, wrapper } = makeWrapper()
+        const listKey = seedList(queryClient, ORG_A, [
+            makeConversation({ id: CONV_1, unread: true }),
+            makeConversation({ id: CAMPAIGN_1, unread: true }),
+        ])
+        apiClientMocks.apiFetch.mockResolvedValueOnce({ matched: 2, updated: 2, skipped: 0 })
+
+        const { result } = renderHook(() => hooksModule.useInboxBulkAction(ORG_A), { wrapper })
+        let outcome: { matched: number; updated: number; skipped: number } | undefined
+        await act(async () => {
+            outcome = await result.current.mutateAsync({ conversationIds: [CONV_1, CAMPAIGN_1], action: 'read' })
+        })
+
+        expect(outcome).toEqual({ matched: 2, updated: 2, skipped: 0 })
+        expect(listConversations(queryClient, listKey).every((c) => c.unread === false)).toBe(true)
+        // The bulk POST body carries exactly the two selected ids — never a filter-wide selector.
+        const body = JSON.parse(apiClientMocks.apiFetch.mock.calls[0][1].body)
+        expect(body.conversationIds).toEqual([CONV_1, CAMPAIGN_1])
+    })
+
+    it('rolls back a failed bulk action across every affected row', async () => {
+        const { queryClient, wrapper } = makeWrapper()
+        const listKey = seedList(queryClient, ORG_A, [
+            makeConversation({ id: CONV_1, unread: true }),
+            makeConversation({ id: CAMPAIGN_1, unread: true }),
+        ])
+        apiClientMocks.apiFetch.mockRejectedValueOnce(new apiClientMocks.ApiClientError('nope', { status: 500 }))
+
+        const { result } = renderHook(() => hooksModule.useInboxBulkAction(ORG_A), { wrapper })
+        await act(async () => {
+            await result.current.mutateAsync({ conversationIds: [CONV_1, CAMPAIGN_1], action: 'read' }).catch(() => undefined)
+        })
+
+        expect(listConversations(queryClient, listKey).every((c) => c.unread === true)).toBe(true)
     })
 })

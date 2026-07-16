@@ -148,6 +148,80 @@ export interface InboxAccountOption {
 }
 
 // ------------------------------------------------------------
+// Operator mutation DTOs (Phase 22 UIX-04 / UIX-05)
+// ------------------------------------------------------------
+
+/** Deterministic conversation state returned by archive/status mutations (server truth). */
+export interface InboxConversationState {
+    id: string
+    status: InboxConversationStatus
+    archived: boolean
+    updatedAt: string
+}
+
+export type InboxReminderStatus = 'scheduled' | 'notified' | 'cancelled' | 'done'
+
+export interface InboxReminder {
+    id: string
+    conversationId: string
+    userId: string
+    remindAt: string
+    note: string | null
+    status: InboxReminderStatus
+    notifiedAt: string | null
+    createdAt: string
+    updatedAt: string
+}
+
+/** The seven bounded bulk actions the server accepts (mirrors inbox-operator BULK actions). */
+export type BulkInboxAction =
+    | 'read'
+    | 'unread'
+    | 'status'
+    | 'archive'
+    | 'unarchive'
+    | 'add_label'
+    | 'remove_label'
+
+export interface BulkInboxInput {
+    conversationIds: string[]
+    action: BulkInboxAction
+    status?: InboxConversationStatus
+    labelId?: string
+}
+
+/** Honest matched/updated/skipped accounting — an empty/partial set can never widen to the org. */
+export interface BulkInboxResult {
+    matched: number
+    updated: number
+    skipped: number
+}
+
+export type SuppressionScope = 'sender' | 'domain'
+
+/** Server preview of a destructive suppression — the client NEVER classifies domains itself. */
+export interface SuppressionPreview {
+    email: string
+    domain: string
+    scope: SuppressionScope
+    /** Server-authoritative: a public/free-mail domain may not be blocked at domain scope. */
+    isPublicDomain: boolean
+    alreadySuppressed: boolean
+    warnings: string[]
+}
+
+export interface SuppressionResult {
+    suppressed: boolean
+    scope: SuppressionScope
+    email: string
+    domain: string
+    alreadySuppressed: boolean
+}
+
+/** The hard bulk ceiling, mirrored from the server's BULK_CONVERSATION_LIMIT. */
+export const INBOX_BULK_LIMIT = 100
+
+// ------------------------------------------------------------
 // Org-scoped query keys — tenant separation is structural, not incidental.
 // ------------------------------------------------------------
 
@@ -165,6 +239,17 @@ export const inboxKeys = {
         ['outreach-inbox', organizationId, 'campaign-index'] as const,
     accounts: (organizationId: string | undefined) =>
         ['outreach-inbox', organizationId, 'account-index'] as const,
+    reminders: (organizationId: string | undefined, conversationId: string) =>
+        ['outreach-inbox', organizationId, 'reminders', conversationId] as const,
+}
+
+/** Predicate matcher for every list query of one organization (used by optimistic patch/rollback). */
+export function isInboxListQueryKey(queryKey: readonly unknown[], organizationId: string | undefined): boolean {
+    return (
+        queryKey[0] === 'outreach-inbox' &&
+        queryKey[1] === organizationId &&
+        queryKey[2] === 'list'
+    )
 }
 
 const INBOX_BASE = '/api/outreach/unified-inbox'
@@ -249,4 +334,145 @@ export async function listInboxAccountOptions(organizationId: string): Promise<I
         `/api/outreach/email-accounts?organizationId=${organizationId}&page=1&limit=100`,
     )
     return (data.emailAccounts ?? []).map((a) => ({ id: a.id, email: a.email, provider: a.provider }))
+}
+
+// ------------------------------------------------------------
+// Operator mutations (all authenticated via apiFetch<T>; org id in the query string, the
+// same predicate every server route reads). JSON bodies are stringified so api-client sets
+// the Content-Type. Every server response returns the updated conversation/version so the
+// client can reconcile its optimistic patch to server truth.
+// ------------------------------------------------------------
+
+function withOrg(path: string, organizationId: string): string {
+    return `${INBOX_BASE}${path}?organizationId=${encodeURIComponent(organizationId)}`
+}
+
+function jsonBody(method: 'POST' | 'PATCH' | 'DELETE', body?: unknown) {
+    return { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }
+}
+
+/** Explicit per-user read/unread. Returns the reconciled unread flag for the current user. */
+export async function setInboxReadState(
+    organizationId: string,
+    conversationId: string,
+    read: boolean,
+): Promise<{ conversationId: string; read: boolean; unread: boolean }> {
+    return apiFetch(withOrg(`/conversations/${conversationId}/read-state`, organizationId), jsonBody('PATCH', { read }))
+}
+
+export async function setInboxArchived(
+    organizationId: string,
+    conversationId: string,
+    archived: boolean,
+): Promise<InboxConversationState> {
+    const data = await apiFetch<{ conversation: InboxConversationState }>(
+        withOrg(`/conversations/${conversationId}/archive`, organizationId),
+        jsonBody('PATCH', { archived }),
+    )
+    return data.conversation
+}
+
+export async function setInboxStatus(
+    organizationId: string,
+    conversationId: string,
+    status: InboxConversationStatus,
+): Promise<InboxConversationState> {
+    const data = await apiFetch<{ conversation: InboxConversationState }>(
+        withOrg(`/conversations/${conversationId}/status`, organizationId),
+        jsonBody('PATCH', { status }),
+    )
+    return data.conversation
+}
+
+export async function attachInboxLabel(
+    organizationId: string,
+    conversationId: string,
+    labelId: string,
+): Promise<void> {
+    await apiFetch(withOrg(`/conversations/${conversationId}/labels`, organizationId), jsonBody('POST', { labelId }))
+}
+
+export async function detachInboxLabel(
+    organizationId: string,
+    conversationId: string,
+    labelId: string,
+): Promise<void> {
+    await apiFetch(withOrg(`/conversations/${conversationId}/labels/${labelId}`, organizationId), jsonBody('DELETE'))
+}
+
+export async function createInboxLabel(
+    organizationId: string,
+    name: string,
+    color?: string | null,
+): Promise<InboxLabel> {
+    const data = await apiFetch<{ label: InboxLabel }>(
+        withOrg('/labels', organizationId),
+        jsonBody('POST', { name, color: color ?? null }),
+    )
+    return data.label
+}
+
+export async function listConversationReminders(
+    organizationId: string,
+    conversationId: string,
+): Promise<InboxReminder[]> {
+    const data = await apiFetch<{ reminders?: InboxReminder[] }>(
+        withOrg(`/conversations/${conversationId}/reminders`, organizationId),
+    )
+    return data.reminders ?? []
+}
+
+export async function createInboxReminder(
+    organizationId: string,
+    conversationId: string,
+    remindAt: string,
+    note?: string | null,
+): Promise<InboxReminder> {
+    const data = await apiFetch<{ reminder: InboxReminder }>(
+        withOrg(`/conversations/${conversationId}/reminders`, organizationId),
+        jsonBody('POST', { remindAt, note: note ?? null }),
+    )
+    return data.reminder
+}
+
+export async function updateInboxReminder(
+    organizationId: string,
+    reminderId: string,
+    patch: { remindAt?: string; note?: string | null; status?: InboxReminderStatus },
+): Promise<InboxReminder> {
+    const data = await apiFetch<{ reminder: InboxReminder }>(
+        withOrg(`/reminders/${reminderId}`, organizationId),
+        jsonBody('PATCH', patch),
+    )
+    return data.reminder
+}
+
+export async function deleteInboxReminder(organizationId: string, reminderId: string): Promise<void> {
+    await apiFetch(withOrg(`/reminders/${reminderId}`, organizationId), jsonBody('DELETE'))
+}
+
+/** Bounded bulk update. The server rejects >100 ids; the client also caps selection at INBOX_BULK_LIMIT. */
+export async function bulkUpdateInboxConversations(
+    organizationId: string,
+    input: BulkInboxInput,
+): Promise<BulkInboxResult> {
+    return apiFetch<BulkInboxResult>(withOrg('/conversations/bulk', organizationId), jsonBody('POST', input))
+}
+
+/** Server preview of a suppression — returns the exact target, public-domain classification, and warnings. */
+export async function previewInboxSuppression(
+    organizationId: string,
+    email: string,
+    scope: SuppressionScope,
+): Promise<SuppressionPreview> {
+    return apiFetch<SuppressionPreview>(withOrg('/suppressions/preview', organizationId), jsonBody('POST', { email, scope }))
+}
+
+/** Execute a suppression server-side. A public-domain block at domain scope is rejected with 400. */
+export async function applyInboxSuppression(
+    organizationId: string,
+    email: string,
+    scope: SuppressionScope,
+): Promise<SuppressionResult> {
+    return apiFetch<SuppressionResult>(withOrg('/suppressions', organizationId), jsonBody('POST', { email, scope }))
 }
