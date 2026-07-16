@@ -232,11 +232,11 @@ Plans:
 **Goal:** Give SMTP, native, and Outlook accounts equivalent send/reply/bounce behavior and route every follow-up through the same deliverability controls.
 **Requirements:** PROV-01, PROV-02, PROV-03, PROV-04, PROV-05
 **Depends on:** Phase 18
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 Plans:
 
 - [x] 19-01-PLAN.md — Correct SMTP implicit TLS/STARTTLS configuration
-- [ ] 19-02-PLAN.md — Provider-neutral MIME and equivalent outbound adapters
+- [x] 19-02-PLAN.md — Provider-neutral MIME and equivalent outbound adapters
 - [ ] 19-03-PLAN.md — Migration 039 + bounded provider event/cursor staging
 - [ ] 19-04-PLAN.md — Outlook Graph delta parity and real reply context
 

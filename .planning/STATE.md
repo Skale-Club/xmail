@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-stopped_at: Completed 19-01-PLAN.md
-last_updated: "2026-07-16T04:32:20.399Z"
+stopped_at: Completed 19-02-PLAN.md
+last_updated: "2026-07-16T04:57:42.646Z"
 progress:
   total_phases: 14
   completed_phases: 6
   total_plans: 45
-  completed_plans: 26
-  percent: 58
+  completed_plans: 27
+  percent: 60
 ---
 
 # Project State
@@ -28,15 +28,15 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 19 (Provider Parity and Deliverability) — IN PROGRESS
-Plan: 1 of 4
+Plan: 2 of 4 complete (19-01 SMTP TLS parity, 19-02 provider MIME parity)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
 Status: Ready to execute
 
-**Resume point:** Execute 19-02-PLAN.md. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
+**Resume point:** Execute 19-03-PLAN.md. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
 
-Progress: [██████░░░░] 58%
+Progress: [██████░░░░] 60%
 
 ### v1.2 Phase Status
 
@@ -116,8 +116,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T04:32:06.589Z
-Stopped at: Completed 19-01-PLAN.md
+Last session: 2026-07-16T04:55:42.772Z
+Stopped at: Completed 19-02-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 02 (Outlook Graph MIME send parity).
 
@@ -130,6 +130,7 @@ Next action: execute Phase 19 Plan 02 (Outlook Graph MIME send parity).
 | Phase 18 P03 | 18 min | 2 tasks | 10 files |
 | Phase 18 P04 | 16 min | 3 tasks | 11 files |
 | Phase 19 P01 | 12min | 2 tasks | 7 files |
+| Phase 19 P02 | 18min | 2 tasks | 7 files |
 
 ## Decisions
 
@@ -143,3 +144,5 @@ Next action: execute Phase 19 Plan 02 (Outlook Graph MIME send parity).
 - [Phase 18]: Due-work selection and campaign completion import one exhaustive terminal-status set. — New lead statuses cannot silently diverge between scheduling and completion.
 - [Phase 19]: SMTP port 465 = implicit TLS, 587 = required STARTTLS, 25 = opportunistic STARTTLS; one resolver (smtp-security.ts) shared by verify, send, presets, and CSV import
 - [Phase 19]: Legacy smtp_secure/port contradictions normalize with a warning rather than failing; only explicit contradictory writes get 422 smtp_tls_mode_mismatch
+- [Phase 19]: Outlook outreach uses Graph MIME sendMail; the JSON message shape cannot carry List-Unsubscribe and returns no Message-ID
+- [Phase 19]: Outreach MIME is composed once and transmitted byte-identically by SMTP, native, and Outlook; the precomposed Message-ID always wins over a transport-invented one
