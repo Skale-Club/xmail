@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-stopped_at: Completed 22-03-PLAN.md
-last_updated: "2026-07-16T18:37:24.299Z"
+stopped_at: Completed 22-04-PLAN.md
+last_updated: "2026-07-16T19:22:27.125Z"
 progress:
   total_phases: 15
   completed_phases: 8
   total_plans: 41
-  completed_plans: 35
+  completed_plans: 36
   percent: 60
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 22 (Unified Inbox Operator Experience) — IN PROGRESS
-Plan: 3 of 5 complete (22-01 operator workflow BACKEND done: migration 042 + operator services/APIs + durable command/reminder claimer; 567/567 tests)
+Plan: 4 of 5 complete (22-01 operator workflow BACKEND done: migration 042 + operator services/APIs + durable command/reminder claimer; 567/567 tests)
 Phase 21 (Unified Inbox Foundation) — COMPLETE + VERIFIED (UIF-01..05, 43/43 must-haves; 3-lens review 0 critical + 3 warnings all fixed and re-reviewed; 527/527 tests deterministic)
 Phase 20 (Outreach Product and API Consistency) — COMPLETE + VERIFIED (CONS-01..07; security + data-migration reviews clean; verifier found 1 blocking gap + 5 non-blocking, all fixed and re-reviewed clean; 422/422 tests)
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
@@ -134,8 +134,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T18:37:24.294Z
-Stopped at: Completed 22-03-PLAN.md
+Last session: 2026-07-16T19:22:13.501Z
+Stopped at: Completed 22-04-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -161,6 +161,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 22 P01 | 42min | 3 tasks | 12 files |
 | Phase 22 P02 | 23 min | 3 tasks | 11 files |
 | Phase 22 P03 | 28min | 3 tasks | 13 files |
+| Phase 22 P04 | 34min | 3 tasks | 16 files |
 
 ## Decisions
 
@@ -200,3 +201,5 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 22]: (22-02) Responsive workspace is CSS-driven: desktop three regions, tablet filter overlay, mobile single staged list->thread with Back — no JS width math; list/thread async states are independently recoverable.
 - [Phase 22]: (22-03) Operator actions use optimistic UI ONLY with rollback (locked #4): a shared engine snapshots every affected org list query + the detail, patches deterministic fields, restores the exact snapshot on 4xx/5xx, reconciles from the server response, and invalidates unread+list on settle so the server owns ordering/membership.
 - [Phase 22]: (22-03) Suppression is server-authoritative (locked #8): client always previews server-side, always confirms, needs a SECOND confirm for domain scope; a public/free-mail domain block is refused with 400. Domain blocks store an @domain sentinel that the delivery policy matches, denying every current+future address at the domain. Bulk is bounded at the source to 100 and honest about its real selected count.
+- [Phase 22]: (22-04) Reply/reply-all/forward recipients + RFC threading headers are resolved SERVER-SIDE from persisted messages (the route schema has no reply-mode recipient/header field, so a client cannot spoof them); every immediate or scheduled send is a durable command dispatched only by executeInboxSendCommand behind the Phase 18 policy gate.
+- [Phase 22]: (22-04) Attachments are bounded, org-owned, private-bucket, non-base64 bytes (server measures actual size; authenticated raw-body upload; server-chosen path); reply-all Cc/Bcc are suppression-filtered before the MIME; policy denial reschedules and preserves the draft with a recoverable reason.
