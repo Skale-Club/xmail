@@ -1,9 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
-import { campaigns, sequences, sequenceSteps, campaignLeads, leads, organizationUsers, outreachEmails, emailAccounts } from '../../../db/schema'
+import { campaigns, sequences, sequenceSteps, campaignLeads, leads, outreachEmails, emailAccounts } from '../../../db/schema'
 import { eq, and, sql, inArray, desc } from 'drizzle-orm'
-import { isPlatformAdmin } from '../../lib/admin'
+import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-access'
 import { computeCampaignMetrics, computeCampaignMetricsByCampaign } from '../../lib/outreach-campaign-metrics'
 import { resolveOutreachSettings } from '../../lib/outreach-settings'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
@@ -93,24 +93,6 @@ const addLeadsToCampaignSchema = z.object({
     (data) => (data.leadIds !== undefined && data.leadIds.length > 0) || data.leadListId !== undefined,
     { message: 'Provide a non-empty leadIds array or a leadListId' },
 )
-
-// Helper to check org membership (platform admins bypass membership check)
-async function checkOrgMembership(userId: string, organizationId: string) {
-    const admin = await isPlatformAdmin(userId)
-    if (admin) return { role: 'admin' as const }
-
-    const membership = await db.query.organizationUsers.findFirst({
-        where: and(
-            eq(organizationUsers.organizationId, organizationId),
-            eq(organizationUsers.userId, userId)
-        ),
-    })
-    return membership
-}
-
-function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembership>>): boolean {
-    return membership?.role === 'admin' || membership?.role === 'member'
-}
 
 // P009 — the domains cold outreach must NOT send from (primary transactional domain).
 // Sourced from MAIL_DOMAIN plus an optional OUTREACH_PROTECTED_DOMAINS (comma-separated) override.
@@ -226,10 +208,8 @@ router.get('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, organizationId)
+        if (!membership) return
 
         const { page, limit } = paginationQuerySchema.parse(req.query)
 
@@ -305,10 +285,8 @@ router.get('/stats', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, organizationId)
+        if (!membership) return
 
         // Get all campaigns for the organization
         const campaignsList = await db.query.campaigns.findMany({
@@ -374,10 +352,8 @@ router.get('/sequences', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, organizationId)
+        if (!membership) return
 
         const { page, limit } = paginationQuerySchema.parse(req.query)
 
@@ -429,10 +405,8 @@ router.get('/analytics', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, organizationId)
+        if (!membership) return
 
         const campaignsList = await db.query.campaigns.findMany({
             where: eq(campaigns.organizationId, organizationId),
@@ -483,10 +457,8 @@ router.get('/analytics/daily', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, organizationId)
+        if (!membership) return
 
         const orgCampaigns = await db.query.campaigns.findMany({
             where: eq(campaigns.organizationId, organizationId),
@@ -550,10 +522,8 @@ router.get('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, campaign.organizationId)
+        if (!membership) return
 
         res.json({ campaign })
     } catch (error) {
@@ -576,13 +546,8 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, organizationId)
+        if (!membership) return
 
         const validatedData = createCampaignSchema.parse(req.body)
 
@@ -651,13 +616,8 @@ router.put('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, campaign.organizationId)
+        if (!membership) return
 
         const validatedData = updateCampaignSchema.parse(req.body)
 
@@ -715,13 +675,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, campaign.organizationId)
+        if (!membership) return
 
         // Wrap in transaction for defense-in-depth. The schema-level ON DELETE CASCADE
         // (migration 020) handles sequences, sequence_steps, campaign_leads, outreach_emails
@@ -758,10 +713,8 @@ router.get('/:campaignId/sequence', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, campaign.organizationId)
+        if (!membership) return
 
         const sequence = await getCanonicalSequence(campaignId, campaign.organizationId)
         res.json({ sequence })
@@ -789,13 +742,8 @@ router.put('/:campaignId/sequence', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, campaign.organizationId)
+        if (!membership) return
 
         const payload = sequencePayloadSchema.parse(req.body)
         const result = await replaceCanonicalSequence({
@@ -853,10 +801,8 @@ router.get('/:campaignId/sequences', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, campaign.organizationId)
+        if (!membership) return
 
         res.setHeader('Deprecation', 'true')
         res.setHeader('Link', `</api/outreach/campaigns/${campaignId}/sequence>; rel="successor-version"`)
@@ -888,13 +834,8 @@ router.post('/:campaignId/sequences', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, campaign.organizationId)
+        if (!membership) return
 
         const validatedData = createSequenceSchema.parse(req.body)
 
@@ -942,13 +883,8 @@ router.delete('/sequences/:sequenceId', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Sequence not found' })
         }
 
-        const membership = await checkOrgMembership(userId, sequence.campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, sequence.campaign.organizationId)
+        if (!membership) return
 
         await db.delete(sequenceSteps).where(eq(sequenceSteps.sequenceId, sequenceId))
         await db.delete(sequences).where(eq(sequences.id, sequenceId))
@@ -983,13 +919,8 @@ router.post('/sequences/:sequenceId/steps', async (req: Request, res: Response) 
             return res.status(404).json({ error: 'Sequence not found' })
         }
 
-        const membership = await checkOrgMembership(userId, sequence.campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, sequence.campaign.organizationId)
+        if (!membership) return
 
         const validatedData = createSequenceStepSchema.parse(req.body)
 
@@ -1033,13 +964,8 @@ router.put('/sequences/steps/:stepId', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Step not found' })
         }
 
-        const membership = await checkOrgMembership(userId, step.sequence.campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, step.sequence.campaign.organizationId)
+        if (!membership) return
 
         const validatedData = createSequenceStepSchema.partial().parse(req.body)
 
@@ -1088,13 +1014,8 @@ router.delete('/sequences/steps/:stepId', async (req: Request, res: Response) =>
             return res.status(404).json({ error: 'Step not found' })
         }
 
-        const membership = await checkOrgMembership(userId, step.sequence.campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, step.sequence.campaign.organizationId)
+        if (!membership) return
 
         await db.delete(sequenceSteps).where(eq(sequenceSteps.id, stepId))
 
@@ -1128,10 +1049,8 @@ router.get('/:campaignId/leads', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, campaign.organizationId)
+        if (!membership) return
 
         const offset = (page - 1) * limit
 
@@ -1214,13 +1133,8 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, campaign.organizationId)
+        if (!membership) return
         if (campaign.status === 'completed' || campaign.status === 'archived') {
             return res.status(409).json({
                 error: `Cannot enroll leads into a ${campaign.status} campaign`,
@@ -1392,13 +1306,8 @@ router.delete('/:campaignId/leads/:leadId', async (req: Request, res: Response) 
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, campaign.organizationId)
+        if (!membership) return
 
         await db.delete(campaignLeads)
             .where(and(
@@ -1440,10 +1349,8 @@ router.get('/:id/stats', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' })
         }
 
-        const membership = await checkOrgMembership(userId, campaign.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, campaign.organizationId)
+        if (!membership) return
 
         const metrics = await computeCampaignMetrics([campaignId])
 

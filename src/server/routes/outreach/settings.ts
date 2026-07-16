@@ -1,9 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
-import { outreachSettings, organizationUsers } from '../../../db/schema'
+import { outreachSettings } from '../../../db/schema'
 import { eq, and } from 'drizzle-orm'
-import { isPlatformAdmin } from '../../lib/admin'
+import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-access'
 import {
     OUTREACH_SETTINGS_DEFAULTS,
     resolveOutreachSettings,
@@ -11,24 +11,6 @@ import {
 } from '../../lib/outreach-settings'
 
 const router = Router()
-
-// Helper to check org membership (platform admins bypass membership check)
-async function checkOrgMembership(userId: string, organizationId: string) {
-    const admin = await isPlatformAdmin(userId)
-    if (admin) return { role: 'admin' as const }
-
-    const membership = await db.query.organizationUsers.findFirst({
-        where: and(
-            eq(organizationUsers.organizationId, organizationId),
-            eq(organizationUsers.userId, userId)
-        ),
-    })
-    return membership
-}
-
-function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembership>>): boolean {
-    return membership?.role === 'admin' || membership?.role === 'member'
-}
 
 // The API accepts and returns exactly the settings that are actually consumed somewhere.
 // `weekly_report` is deliberately absent: there is no weekly-report transport, so the control
@@ -71,10 +53,8 @@ router.get('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, organizationId)
+        if (!membership) return
 
         const resolved = await resolveOutreachSettings(organizationId)
         return res.json(toApiOutreachSettings(resolved))
@@ -98,13 +78,8 @@ router.patch('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, organizationId)
+        if (!membership) return
 
         const validatedData = updateSettingsSchema.parse(req.body)
 

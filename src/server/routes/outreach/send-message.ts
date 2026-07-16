@@ -3,8 +3,8 @@ import { Router, type Request, type Response } from 'express'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../../../db'
-import { emailAccounts, organizationUsers } from '../../../db/schema'
-import { isPlatformAdmin } from '../../lib/admin'
+import { emailAccounts } from '../../../db/schema'
+import { requireOutreachWrite } from '../../lib/outreach-access'
 import { dispatchOutreachMessage } from '../../lib/outreach-dispatch'
 import { createThreadedDispatchProvider } from '../../lib/outreach-dispatch-provider'
 
@@ -19,21 +19,6 @@ const sendMessageSchema = z.object({
     idempotencyKey: z.string().min(1).max(200).optional(),
 })
 
-async function checkOrgMembership(userId: string, organizationId: string) {
-    const admin = await isPlatformAdmin(userId)
-    if (admin) return { role: 'admin' as const }
-    return db.query.organizationUsers.findFirst({
-        where: and(
-            eq(organizationUsers.organizationId, organizationId),
-            eq(organizationUsers.userId, userId),
-        ),
-    })
-}
-
-function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembership>>): boolean {
-    return membership?.role === 'admin' || membership?.role === 'member'
-}
-
 router.post('/', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
@@ -41,9 +26,8 @@ router.post('/', async (req: Request, res: Response) => {
         if (!userId) return res.status(401).json({ error: 'Unauthorized' })
         if (!organizationId) return res.status(400).json({ error: 'organizationId is required' })
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) return res.status(403).json({ error: 'Access denied' })
-        if (!canWriteOutreach(membership)) return res.status(403).json({ error: 'Write access denied' })
+        const membership = await requireOutreachWrite(req, res, organizationId)
+        if (!membership) return
 
         const { from, to, subject, html, text, idempotencyKey } = sendMessageSchema.parse(req.body)
         const requestId = idempotencyKey || req.get('Idempotency-Key')?.trim() || randomUUID()

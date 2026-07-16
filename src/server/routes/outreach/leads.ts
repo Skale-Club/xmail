@@ -1,9 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
-import { leads, leadLists, organizationUsers } from '../../../db/schema'
+import { leads, leadLists } from '../../../db/schema'
 import { eq, and, or, sql, ilike, inArray, asc, desc, type SQL } from 'drizzle-orm'
-import { isPlatformAdmin } from '../../lib/admin'
+import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-access'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 
 const router = Router()
@@ -85,24 +85,6 @@ const createLeadListSchema = z.object({
     color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
 })
 
-// Helper to check org membership (platform admins bypass membership check)
-async function checkOrgMembership(userId: string, organizationId: string) {
-    const admin = await isPlatformAdmin(userId)
-    if (admin) return { role: 'admin' as const }
-
-    const membership = await db.query.organizationUsers.findFirst({
-        where: and(
-            eq(organizationUsers.organizationId, organizationId),
-            eq(organizationUsers.userId, userId)
-        ),
-    })
-    return membership
-}
-
-function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembership>>): boolean {
-    return membership?.role === 'admin' || membership?.role === 'member'
-}
-
 async function validateLeadListAccess(organizationId: string, leadListId: string | undefined): Promise<boolean> {
     if (!leadListId) return true
     const list = await db.query.leadLists.findFirst({
@@ -131,10 +113,8 @@ router.get('/lists', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, organizationId)
+        if (!membership) return
 
         const { page, limit } = paginationQuerySchema.parse(req.query)
 
@@ -166,13 +146,8 @@ router.post('/lists', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, organizationId)
+        if (!membership) return
 
         const validatedData = createLeadListSchema.parse(req.body)
 
@@ -209,13 +184,8 @@ router.delete('/lists/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Lead list not found' })
         }
 
-        const membership = await checkOrgMembership(userId, list.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, list.organizationId)
+        if (!membership) return
 
         // Remove list from leads (set leadListId to null)
         await db.update(leads)
@@ -247,10 +217,8 @@ router.get('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, organizationId)
+        if (!membership) return
 
         const { page, limit, search, status, leadListId, sort, order } = leadListQuerySchema.parse(req.query)
         const offset = (page - 1) * limit
@@ -337,10 +305,8 @@ router.get('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Lead not found' })
         }
 
-        const membership = await checkOrgMembership(userId, lead.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, lead.organizationId)
+        if (!membership) return
 
         res.json({ lead })
     } catch (error) {
@@ -363,13 +329,8 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, organizationId)
+        if (!membership) return
 
         const validatedData = createLeadSchema.parse(req.body)
         if (!(await validateLeadListAccess(organizationId, validatedData.leadListId))) {
@@ -426,13 +387,8 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, organizationId)
+        if (!membership) return
 
         const validatedData = bulkImportSchema.parse(req.body)
         const leadListIds = [...new Set([
@@ -532,13 +488,8 @@ router.put('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Lead not found' })
         }
 
-        const membership = await checkOrgMembership(userId, lead.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, lead.organizationId)
+        if (!membership) return
 
         const validatedData = updateLeadSchema.parse(req.body)
 
@@ -580,13 +531,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Lead not found' })
         }
 
-        const membership = await checkOrgMembership(userId, lead.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, lead.organizationId)
+        if (!membership) return
 
         await db.delete(leads).where(eq(leads.id, leadId))
 
@@ -625,13 +571,8 @@ router.post('/bulk-delete', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'leadIds array is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, organizationId)
+        if (!membership) return
 
         // Verify all leads belong to the organization
         const leadsToDelete = await db.query.leads.findMany({

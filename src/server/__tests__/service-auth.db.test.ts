@@ -8,8 +8,11 @@ import {
     TEST_DATABASE_GUARD_ENV,
     TEST_DATABASE_URL_ENV,
 } from '../../test/postgres-harness'
-import { createApiAuthMiddleware } from '../lib/api-auth'
-import { resolveServiceAuthConfig } from '../lib/service-auth'
+
+// Imported dynamically in beforeAll so the app's Supabase/DB clients are constructed only
+// after the test environment variables are set.
+let createApiAuthMiddleware: typeof import('../lib/api-auth')['createApiAuthMiddleware']
+let resolveServiceAuthConfig: typeof import('../lib/service-auth')['resolveServiceAuthConfig']
 
 const runGuard = process.env[TEST_DATABASE_GUARD_ENV]
 const testDatabaseUrl = process.env[TEST_DATABASE_URL_ENV]
@@ -73,6 +76,9 @@ beforeAll(async () => {
     assertSafeTestDatabaseUrl(testDatabaseUrl, { runGuard })
     process.env.DATABASE_URL = testDatabaseUrl
     process.env.JWT_SECRET ||= 'test'
+    process.env.SUPABASE_URL ||= 'http://localhost:54321'
+    process.env.SUPABASE_ANON_KEY ||= 'test-anon-key'
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||= 'test-service-role-key'
     sql = postgres(testDatabaseUrl, { max: 4, prepare: false })
 
     await sql`INSERT INTO users (id, email, is_admin) VALUES
@@ -93,6 +99,8 @@ beforeAll(async () => {
         (${CAMP_OORG}::uuid, ${OORG}::uuid, 'Other Campaign', 'draft')
         ON CONFLICT (id) DO NOTHING`
 
+    createApiAuthMiddleware = (await import('../lib/api-auth')).createApiAuthMiddleware
+    resolveServiceAuthConfig = (await import('../lib/service-auth')).resolveServiceAuthConfig
     const campaignsRouter = (await import('../routes/outreach/campaigns')).default
     closeApplicationDatabase = (await import('../../db')).closeDatabaseConnection
 

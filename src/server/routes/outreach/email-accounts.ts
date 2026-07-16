@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { db } from '../../../db'
 import { emailAccounts, organizationUsers, outlookMailboxes, users } from '../../../db/schema'
 import { eq, and, desc, inArray } from 'drizzle-orm'
-import { isPlatformAdmin } from '../../lib/admin'
+import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-access'
 import { encryptSecret, decryptSecret } from '../../lib/crypto'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import { getEffectiveDailySendLimit } from '../../lib/outreach-sender'
@@ -195,24 +195,6 @@ const updateEmailAccountSchema = z.object({
     status: z.enum(['pending', 'verified', 'failed', 'paused']).optional(),
 })
 
-// Helper to check org membership (platform admins bypass membership check)
-async function checkOrgMembership(userId: string, organizationId: string) {
-    const admin = await isPlatformAdmin(userId)
-    if (admin) return { role: 'admin' as const }
-
-    const membership = await db.query.organizationUsers.findFirst({
-        where: and(
-            eq(organizationUsers.organizationId, organizationId),
-            eq(organizationUsers.userId, userId)
-        ),
-    })
-    return membership
-}
-
-function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembership>>): boolean {
-    return membership?.role === 'admin' || membership?.role === 'member'
-}
-
 // NOTE: getDecryptedCredentials helper previously defined here was removed (Phase 12 COR-07 lint
 // cleanup); routes inline `decryptSecret` calls. Re-add helper if needed by future routes.
 
@@ -230,10 +212,8 @@ router.get('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, organizationId)
+        if (!membership) return
 
         const { page, limit } = paginationQuerySchema.parse(req.query)
 
@@ -293,13 +273,8 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, organizationId)
+        if (!membership) return
 
         const { provider, mailboxes } = bulkImportEmailAccountsSchema.parse(req.body)
 
@@ -419,10 +394,8 @@ router.get('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Email account not found' })
         }
 
-        const membership = await checkOrgMembership(userId, account.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
+        const membership = await requireOutreachRead(req, res, account.organizationId)
+        if (!membership) return
 
         res.json({
             emailAccount: {
@@ -458,13 +431,8 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'organizationId is required' })
         }
 
-        const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, organizationId)
+        if (!membership) return
 
         // createEmailAccountSchema lowercases email, so validatedData.email is already the canonical
         // form used for the duplicate check, the lookups and storage alike — and it matches the
@@ -621,13 +589,8 @@ router.put('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Email account not found' })
         }
 
-        const membership = await checkOrgMembership(userId, account.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, account.organizationId)
+        if (!membership) return
 
         const validatedData = updateEmailAccountSchema.parse(req.body)
 
@@ -715,13 +678,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Email account not found' })
         }
 
-        const membership = await checkOrgMembership(userId, account.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, account.organizationId)
+        if (!membership) return
 
         await db.delete(emailAccounts).where(eq(emailAccounts.id, accountId))
 
@@ -750,13 +708,8 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Email account not found' })
         }
 
-        const membership = await checkOrgMembership(userId, account.organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        const membership = await requireOutreachWrite(req, res, account.organizationId)
+        if (!membership) return
 
         const smtpPassword = account.smtpPassword ? decryptSecret(account.smtpPassword) : null
         const errors: string[] = []

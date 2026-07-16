@@ -6,7 +6,6 @@ import { existsSync } from 'fs'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
 import { eq } from 'drizzle-orm'
-import crypto from 'crypto'
 import { closeDatabaseConnection, db } from '../db'
 import { users } from '../db/schema'
 import authRoutes from './routes/auth'
@@ -33,8 +32,9 @@ import { createSMTPServer } from './smtp-server'
 import { createIMAPServer, loadImapBranding } from './imap-server'
 import { createMXServer } from './mx-server'
 import { runReadinessChecks } from './lib/health'
-import { resolveUserFromToken } from './lib/auth-cache'
 import { getMailTLSOptions } from './lib/mail-tls'
+import { createApiAuthMiddleware } from './lib/api-auth'
+import { describeServiceAuthState } from './lib/service-auth'
 
 const app = express()
 const PORT = process.env.PORT || 9001
@@ -229,86 +229,22 @@ app.get('/app-config.js', (_req, res) => {
     res.send(`window.__APP_CONFIG__ = ${JSON.stringify(publicConfig)};`)
 })
 
-// SEC — each entry binds a METHOD to a path. The earlier version matched on path alone, so
-// any path public for reads was also public for writes. GET /api/system/branding is read by
-// the login page before auth, but the same string also whitelisted PATCH /api/system/branding:
-// that write skipped this middleware entirely, and since this middleware is the only thing that
-// overwrites the client-supplied x-user-id header with a token-verified one, the branding
-// handler's getRequestingUser(req) then trusted a forged x-user-id and its isAdmin gate was
-// bypassable by anyone who knew an admin's user id. Binding the method closes that.
-const PUBLIC_ROUTES: { method: string; path: string }[] = [
-    { method: 'POST', path: '/api/auth/login' },
-    { method: 'POST', path: '/api/auth/register' },
-    { method: 'POST', path: '/api/auth/reset-password' },
-    { method: 'POST', path: '/api/auth/refresh' },
-    { method: 'GET', path: '/api/system/branding' },
-    { method: 'GET', path: '/api/system/mail-server-info' },
-]
+// API authentication (public routes, machine-to-machine service-key with a bound
+// principal/organization, then Supabase JWT). Extracted to src/server/lib/api-auth.ts so it
+// can be exercised directly in tests; this is the only place that overwrites x-user-id from a
+// verified identity.
+app.use('/api', createApiAuthMiddleware())
 
-// GET-only autodiscover config (Apple .mobileconfig); a prefix because the path carries a query.
-const PUBLIC_GET_PREFIXES = [
-    '/api/system/mail-config/',
-]
-
-function timingSafeEqual(a: string, b: string): boolean {
-    const bufA = Buffer.from(a)
-    const bufB = Buffer.from(b)
-    if (bufA.length !== bufB.length) {
-        // Still run comparison to avoid timing leak on length
-        crypto.timingSafeEqual(bufA, Buffer.alloc(bufA.length))
-        return false
+// Loud startup diagnostic when the machine service principal is partially configured — the
+// service path stays disabled (fails closed) until the full set is present.
+{
+    const serviceAuth = describeServiceAuthState()
+    if (serviceAuth.partial) {
+        console.warn(
+            `⚠️  Outreach service auth is partially configured — machine auth is DISABLED (fails closed). Missing: ${serviceAuth.missing.join(', ')}`,
+        )
     }
-    return crypto.timingSafeEqual(bufA, bufB)
 }
-
-app.use('/api', async (req, res, next) => {
-    const path = req.originalUrl.split('?')[0]
-
-    if (PUBLIC_ROUTES.some(r => r.method === req.method && r.path === path)) {
-        return next()
-    }
-    if (req.method === 'GET' && PUBLIC_GET_PREFIXES.some(p => path.startsWith(p))) {
-        return next()
-    }
-
-    // Machine-to-machine auth for the Xphere orchestrator, which drives
-    // outreach campaigns server-to-server and cannot hold a Supabase
-    // session. Only active when XMAIL_SERVICE_KEY is configured (fails
-    // closed — unset env means this bypass does not exist at all). The
-    // trusted caller supplies its own x-user-id; downstream org-membership
-    // checks (checkOrgMembership) still enforce authorization per request.
-    const serviceKey = process.env.XMAIL_SERVICE_KEY
-    if (path.startsWith('/api/outreach/') && serviceKey) {
-        const providedKey = req.headers['x-service-key']
-        if (typeof providedKey === 'string' && providedKey.length > 0) {
-            if (!timingSafeEqual(providedKey, serviceKey)) {
-                return res.status(401).json({ error: 'Unauthorized' })
-            }
-            return next()
-        }
-    }
-
-    const authHeader = req.headers.authorization
-    if (!authHeader?.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'Unauthorized' })
-    }
-
-    const token = authHeader.replace('Bearer ', '')
-    // SEC-03 — see src/server/lib/auth-cache.ts
-    const { user, error } = await resolveUserFromToken(token)
-
-    if (error || !user) {
-        return res.status(401).json({ error: error ?? 'Invalid or expired token' })
-    }
-
-    req.headers['x-user-id'] = user.id
-    req.headers['x-user-email'] = user.email ?? ''
-    req.headers['x-user-first-name'] = user.firstName
-    req.headers['x-user-last-name'] = user.lastName
-    req.headers['x-user-email-verified'] = String(user.emailVerified)
-
-    next()
-})
 
 type MailServer = { start: () => void; close: () => Promise<void> }
 let runningSmtpServer: MailServer | null = null
