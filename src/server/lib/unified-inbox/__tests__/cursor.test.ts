@@ -115,4 +115,33 @@ describe('conversation cursor — opaque, stable, keyset codec', () => {
         const bad = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
         expect(() => decodeConversationCursor(bad, BASE_FILTERS)).toThrow(ConversationCursorError)
     })
+
+    // N-1 (Phase 21 re-review residual of W-1): the original `t` guard used `Date.parse`, which is
+    // MORE LENIENT than Postgres `::timestamp`. Calendar-invalid dates — Feb 30, Feb 29 of a
+    // non-leap year, Apr 31 — parse in JS (it silently rolls them over: `2026-02-30` becomes Mar 2)
+    // and so pass `Date.parse`, but Postgres rejects them ("date/time field value out of range"),
+    // so the ${t}::timestamp cast throws downstream and surfaces the exact self-inflicted 500 W-1
+    // targets. The codec must reject a calendar-invalid `t` itself (→ ConversationCursorError → 400).
+    it('rejects a valid-fingerprint cursor whose timestamp is calendar-invalid (Date.parse-valid, Postgres-invalid)', () => {
+        const cursor = encodeConversationCursor(POSITION, BASE_FILTERS)
+        const payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+        expect(payload.f).toBe(fingerprintConversationFilters(BASE_FILTERS)) // fingerprint genuinely matches
+        for (const calendarInvalid of ['2026-02-30 12:00:00', '2027-02-29 12:00:00', '2026-04-31 12:00:00']) {
+            expect(Number.isNaN(Date.parse(calendarInvalid))).toBe(false) // Date.parse accepts it (the residual gap)
+            const bad = Buffer.from(JSON.stringify({ ...payload, t: calendarInvalid }), 'utf8').toString('base64url')
+            expect(() => decodeConversationCursor(bad, BASE_FILTERS)).toThrow(ConversationCursorError)
+        }
+    })
+
+    // Positive counterpart: a genuine full-precision `last_message_at::text` value (microsecond
+    // fractional seconds, space separator, no timezone) must still decode — the stricter `t` guard
+    // must not reject real Postgres timestamp renderings.
+    it('still decodes a real microsecond-precision last_message_at::text value', () => {
+        const microsecond: ConversationCursorPosition = {
+            lastMessageAt: '2026-07-16 12:00:00.123456',
+            id: '21040000-0000-4000-8000-0000000000c1',
+        }
+        const cursor = encodeConversationCursor(microsecond, BASE_FILTERS)
+        expect(decodeConversationCursor(cursor, BASE_FILTERS)).toEqual(microsecond)
+    })
 })

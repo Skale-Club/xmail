@@ -401,6 +401,25 @@ describe('unified inbox — opaque, stable, filter-bound cursor', () => {
         // The genuine cursor still paginates.
         expect((await call(`/conversations?organizationId=${ORG_A}&limit=2&cursor=${encodeURIComponent(cursor)}`)).status).toBe(200)
     })
+
+    // N-1 (W-1 residual): the codec's original `t` guard used `Date.parse`, which accepts
+    // calendar-invalid dates (Feb 30, Feb 29 of a non-leap year, Apr 31) that Postgres `::timestamp`
+    // rejects. Such a cursor passed decode and threw on the cast in the query → a self-inflicted 500.
+    // It must now be a 400 like any other malformed cursor, while a real value still returns 200.
+    it('returns 400 (not 500) for a valid-fingerprint cursor with a calendar-invalid timestamp', async () => {
+        const page1 = await call(`/conversations?organizationId=${ORG_A}&limit=2`)
+        const cursor = page1.body.nextCursor as string
+        expect(cursor).toBeTruthy()
+
+        const payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+        // Keep `f`/`v` intact so the filter fingerprint still matches — only `t` is calendar-invalid.
+        for (const calendarInvalid of ['2026-02-30 12:00:00', '2027-02-29 12:00:00', '2026-04-31 12:00:00']) {
+            const bad = Buffer.from(JSON.stringify({ ...payload, t: calendarInvalid }), 'utf8').toString('base64url')
+            expect((await call(`/conversations?organizationId=${ORG_A}&limit=2&cursor=${encodeURIComponent(bad)}`)).status).toBe(400)
+        }
+        // The genuine cursor still paginates.
+        expect((await call(`/conversations?organizationId=${ORG_A}&limit=2&cursor=${encodeURIComponent(cursor)}`)).status).toBe(200)
+    })
 })
 
 describe('unified inbox — conversation detail', () => {
