@@ -78,9 +78,23 @@ interface ClaimRow {
     body_html: string | null
     in_reply_to: string | null
     message_references: string | null
+    attachment_ids: ClaimedInboxCommand['attachmentIds']
     idempotency_key: string
     attempts: number
     max_attempts: number
+}
+
+function parseAttachmentIds(value: unknown): string[] {
+    if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string')
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value)
+            return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+        } catch {
+            return []
+        }
+    }
+    return []
 }
 
 // Under prepare:false (the pooler-safe production config), postgres-js can return jsonb from a
@@ -114,6 +128,7 @@ function toClaimedCommand(row: ClaimRow, leaseToken: string): ClaimedInboxComman
         bodyHtml: row.body_html,
         inReplyTo: row.in_reply_to,
         messageReferences: row.message_references,
+        attachmentIds: parseAttachmentIds(row.attachment_ids),
         idempotencyKey: row.idempotency_key,
         leaseToken,
         attempts: Number(row.attempts),
@@ -169,7 +184,7 @@ export async function processInboxCommands(deps: ProcessInboxCommandsDeps = {}):
             WHERE c.id = candidate.id
             RETURNING c.id, c.organization_id, c.conversation_id, c.email_account_id, c.actor_user_id,
                 c.mode, c.to_recipients, c.cc_recipients, c.bcc_recipients, c.subject, c.body_text, c.body_html,
-                c.in_reply_to, c.message_references, c.idempotency_key, c.attempts, c.max_attempts
+                c.in_reply_to, c.message_references, c.attachment_ids, c.idempotency_key, c.attempts, c.max_attempts
         `
         const row = claimed[0]
         if (!row) break

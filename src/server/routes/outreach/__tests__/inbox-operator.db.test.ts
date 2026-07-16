@@ -526,6 +526,7 @@ describe('inbox commands — policy denials, terminal failure, and ambiguous hel
             bodyHtml: null,
             inReplyTo: null,
             messageReferences: null,
+            attachmentIds: [],
             idempotencyKey: 'cmd-revalidate',
             leaseToken,
             attempts: 1,

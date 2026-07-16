@@ -24,6 +24,7 @@ import {
 } from './outreach-dispatch'
 import {
     sendComposedOutreachMessage,
+    type OutreachAttachmentInput,
     type OutreachProviderDependencies,
     type OutreachUnsubscribeOptions,
 } from './outreach-provider'
@@ -340,6 +341,11 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
 interface ThreadedReplyParams {
     account: typeof emailAccounts.$inferSelect
     to: string
+    /** Additional Cc/Bcc recipients (Unified Inbox reply-all / forward). Optional. */
+    cc?: string[]
+    bcc?: string[]
+    /** Resolved attachment content (Unified Inbox). Optional; composed into the MIME when present. */
+    attachments?: OutreachAttachmentInput[]
     subject: string
     text: string
     html?: string
@@ -370,11 +376,14 @@ interface ThreadedReplyParams {
  * and the adapter chooses the transport.
  */
 export async function sendThreadedReply(params: ThreadedReplyParams): Promise<SendResult> {
-    const { account, to, subject, text, html, fromName, replyTo, inReplyTo, references, stableMessageId } = params
+    const { account, to, cc, bcc, attachments, subject, text, html, fromName, replyTo, inReplyTo, references, stableMessageId } = params
     try {
         const result = await sendComposedOutreachMessage(account, {
             from: { address: account.email, name: fromName || account.displayName || null },
             to: [to],
+            cc: cc && cc.length > 0 ? cc : undefined,
+            bcc: bcc && bcc.length > 0 ? bcc : undefined,
+            attachments: attachments && attachments.length > 0 ? attachments : undefined,
             subject,
             text,
             html,

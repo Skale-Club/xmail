@@ -85,6 +85,11 @@ export function createThreadedDispatchProvider(
             return toDispatch(await sendThreadedReply({
                 account: context.account,
                 to: input.to,
+                // Cc/Bcc + attachments are optional (reply-all / forward). Undefined for every
+                // other origin, so the composed MIME is unchanged when they are absent.
+                cc: input.cc,
+                bcc: input.bcc,
+                attachments: input.attachments,
                 subject: input.subject,
                 text: input.text ?? '',
                 html: input.html ?? undefined,

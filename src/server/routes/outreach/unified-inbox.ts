@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from 'express'
+import { Router, raw, type Request, type Response } from 'express'
 import { z } from 'zod'
 import { requireOutreachRead, requireOutreachWrite, type OutreachMembership } from '../../lib/outreach-access'
 import { ConversationCursorError } from '../../lib/unified-inbox/cursor'
@@ -18,7 +18,6 @@ import {
     cancelInboxSendCommand,
     createInboxLabel,
     createInboxReminder,
-    createInboxSendCommand,
     createInboxSnippet,
     deleteInboxLabel,
     deleteInboxReminder,
@@ -41,6 +40,17 @@ import {
     previewSuppression,
     type SuppressionScope,
 } from '../../lib/inbox-suppression'
+import {
+    createResolvedSendCommand,
+    InboxCommandResolutionError,
+} from '../../lib/inbox-command-dispatch'
+import {
+    InboxAttachmentError,
+    MAX_ATTACHMENTS_PER_COMMAND,
+    createInboxAttachment,
+    deleteInboxAttachment,
+    getAttachmentDownloadUrl,
+} from '../../lib/inbox-attachments'
 
 // ============================================================
 // Unified Inbox read API (Phase 21 UIF-04 / UIF-05)
@@ -88,7 +98,7 @@ const recipientSchema = z.object({
 
 /** Maps a thrown InboxOperatorError (or Zod/cursor errors) to a response. Returns true if handled. */
 function handleOperatorError(error: unknown, res: Response, context: string): void {
-    if (error instanceof InboxOperatorError) {
+    if (error instanceof InboxOperatorError || error instanceof InboxCommandResolutionError || error instanceof InboxAttachmentError) {
         res.status(error.status).json({ error: error.code })
         return
     }
@@ -313,19 +323,21 @@ const suppressionSchema = z.object({
     email: z.string().trim().email().max(320),
     scope: z.enum(['sender', 'domain']),
 })
+// Recipients + threading headers are RESOLVED SERVER-SIDE from persisted messages — the client
+// never supplies To/Cc/Bcc/In-Reply-To/References for reply modes (that would let it address or
+// thread the mail arbitrarily). The ONLY recipients a client may name are forward recipients,
+// which are still validated as emails here.
 const sendCommandSchema = z.object({
     emailAccountId: z.string().uuid(),
     mode: z.enum(['reply', 'reply_all', 'forward']),
     sourceMessageId: z.string().uuid().nullish(),
-    to: z.array(recipientSchema).min(1).max(100),
-    cc: z.array(recipientSchema).max(100).optional(),
-    bcc: z.array(recipientSchema).max(100).optional(),
+    // Forward-only recipients; ignored for reply/reply_all (resolver derives those from the thread).
+    forwardTo: z.array(recipientSchema).max(100).optional(),
+    forwardCc: z.array(recipientSchema).max(100).optional(),
     subject: z.string().max(2000).nullish(),
     bodyText: z.string().max(500000).nullish(),
     bodyHtml: z.string().max(1000000).nullish(),
-    inReplyTo: z.string().max(2000).nullish(),
-    references: z.string().max(8000).nullish(),
-    attachmentIds: z.array(z.string().uuid()).max(25).optional(),
+    attachmentIds: z.array(z.string().uuid()).max(MAX_ATTACHMENTS_PER_COMMAND).optional(),
     scheduledAt: z.string().datetime().nullish(),
     idempotencyKey: z.string().trim().min(1).max(200).optional(),
 })
@@ -594,21 +606,21 @@ router.post('/conversations/:id/send-commands', async (req: Request, res: Respon
         if (!ctx) return
         if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'conversation_not_found' })
         const body = sendCommandSchema.parse(req.body)
-        const { command, created } = await createInboxSendCommand({
+        // Route hands off a DURABLE command; recipients + threading headers are resolved from the
+        // persisted thread server-side. This path has no dispatch capability — the claimer
+        // (processInboxCommands) later runs it through the single policy-gated executor.
+        const { command, created } = await createResolvedSendCommand({
             organizationId: ctx.organizationId,
             conversationId: req.params.id,
             actorUserId: ctx.userId,
             emailAccountId: body.emailAccountId,
             mode: body.mode,
             sourceMessageId: body.sourceMessageId ?? null,
-            to: body.to,
-            cc: body.cc,
-            bcc: body.bcc,
+            forwardRecipients: body.forwardTo,
+            forwardCc: body.forwardCc,
             subject: body.subject ?? null,
             bodyText: body.bodyText ?? null,
             bodyHtml: body.bodyHtml ?? null,
-            inReplyTo: body.inReplyTo ?? null,
-            references: body.references ?? null,
             attachmentIds: body.attachmentIds,
             scheduledAt: body.scheduledAt ? new Date(body.scheduledAt) : null,
             idempotencyKey: body.idempotencyKey,
@@ -641,6 +653,67 @@ router.post('/send-commands/:id/cancel', async (req: Request, res: Response) => 
         res.json({ command })
     } catch (error) {
         handleOperatorError(error, res, 'cancelling send command')
+    }
+})
+
+// --- Bounded attachments (locked #7) ---
+// Upload streams the RAW bytes through the authenticated fetchWithAuth path (bounded by
+// express.raw, never base64 JSON). The server validates filename/MIME/extension/size, stores
+// the bytes under a SERVER-CHOSEN path in the single private bucket, and marks the row ready.
+// A slightly-over-limit ceiling lets an oversize upload be rejected with a clean 413 rather than
+// a truncated stream.
+const ATTACHMENT_UPLOAD_BYTE_CEILING = 26 * 1024 * 1024
+
+router.post(
+    '/conversations/:id/attachments',
+    raw({ type: () => true, limit: ATTACHMENT_UPLOAD_BYTE_CEILING }),
+    async (req: Request, res: Response) => {
+        try {
+            const ctx = await authorizeWrite(req, res)
+            if (!ctx) return
+            if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'conversation_not_found' })
+            const filenameHeader = req.headers['x-attachment-filename']
+            const filename = typeof filenameHeader === 'string' ? decodeURIComponent(filenameHeader) : ''
+            const mimeType = (req.headers['x-attachment-content-type'] as string | undefined)
+                ?? (req.headers['content-type'] as string | undefined)
+                ?? ''
+            const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
+            if (bytes.length === 0) return res.status(400).json({ error: 'attachment_empty' })
+            const attachment = await createInboxAttachment({
+                organizationId: ctx.organizationId,
+                userId: ctx.userId,
+                filename,
+                mimeType,
+                bytes,
+            })
+            res.status(201).json({ attachment })
+        } catch (error) {
+            handleOperatorError(error, res, 'uploading inbox attachment')
+        }
+    },
+)
+
+router.get('/attachments/:id/download', async (req: Request, res: Response) => {
+    try {
+        const organizationId = await authorizeOrganization(req, res)
+        if (!organizationId) return
+        if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'attachment_not_found' })
+        const download = await getAttachmentDownloadUrl(organizationId, req.params.id)
+        res.json(download)
+    } catch (error) {
+        handleOperatorError(error, res, 'downloading inbox attachment')
+    }
+})
+
+router.delete('/attachments/:id', async (req: Request, res: Response) => {
+    try {
+        const ctx = await authorizeWrite(req, res)
+        if (!ctx) return
+        if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'attachment_not_found' })
+        await deleteInboxAttachment(ctx.organizationId, req.params.id)
+        res.json({ success: true })
+    } catch (error) {
+        handleOperatorError(error, res, 'deleting inbox attachment')
     }
 })
 

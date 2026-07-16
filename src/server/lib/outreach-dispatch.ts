@@ -9,6 +9,7 @@ import {
     type AccountPolicySnapshot,
 } from './outreach-delivery-policy'
 import { createLogger } from './logger'
+import type { OutreachAttachmentInput } from './outreach-provider'
 
 const dispatchLog = createLogger('outreach.dispatch')
 
@@ -144,6 +145,20 @@ export interface DispatchOutreachInput {
     references?: string | null
     abVariant?: 'a' | 'b'
     maxAttempts?: number
+    /**
+     * Additional Cc/Bcc recipients (Unified Inbox reply-all / forward). Additive and optional:
+     * campaign/manual/agentic sends omit them and behave byte-for-byte as before. These are
+     * carried on the live dispatch input (not frozen into the outreach_emails payload), so the
+     * executor re-resolves them from the durable command on every attempt.
+     */
+    cc?: string[]
+    bcc?: string[]
+    /**
+     * Resolved attachment content (Unified Inbox). Loaded by the executor from private Storage
+     * for the command's ready, org-owned attachments — never base64 in the row. Optional; other
+     * origins omit it. Carried on the live input so a retry re-loads rather than freezing bytes.
+     */
+    attachments?: OutreachAttachmentInput[]
 }
 
 export interface DispatchClaimed {
