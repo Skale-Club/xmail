@@ -530,6 +530,37 @@ function createProcessDeps() {
     }
 }
 
+/**
+ * Log a GLOBAL, tenant-content-free snapshot of autonomous automation enablement at startup so an
+ * operator can immediately see the effective kill-control posture (how many orgs have autonomy on,
+ * and how many are paused) without any org id, campaign, or message content in the log.
+ */
+export async function logAutonomousAutomationStatus(): Promise<void> {
+    try {
+        const rows = await db
+            .select({ enabled: outreachAiSettings.autonomousEnabled, pausedAt: outreachAiSettings.autonomyPausedAt })
+            .from(outreachAiSettings)
+        let autonomyEnabled = 0
+        let autonomyPaused = 0
+        for (const row of rows) {
+            if (row.enabled) autonomyEnabled += 1
+            if (row.pausedAt != null) autonomyPaused += 1
+        }
+        log.info({
+            action: 'outreach.aiAutomation.status',
+            orgsWithSettings: rows.length,
+            autonomyEnabled,
+            autonomyDisabled: rows.length - autonomyEnabled,
+            autonomyPaused,
+        }, 'autonomous AI automation kill-control posture')
+    } catch (error) {
+        log.warn({
+            action: 'outreach.aiAutomation.status_failed',
+            error: { message: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200) },
+        }, 'could not read autonomous automation status')
+    }
+}
+
 export interface ProcessAutonomousRunsResult {
     claimable: number
     processed: number

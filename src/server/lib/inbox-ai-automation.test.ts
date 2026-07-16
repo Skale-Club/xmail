@@ -615,13 +615,31 @@ describe('processAutonomousAiRun — leases make concurrent ticks + restarts saf
 // The strongest "one delivery path" proof: the automation module cannot dispatch directly because
 // it has no dispatcher/provider import. A future edit that wires one in fails this test loudly.
 
-describe('the autonomous automation module is structurally incapable of dispatching directly', () => {
-    const FORBIDDEN = ['dispatchOutreachMessage', 'sendThreadedReply', 'createThreadedDispatchProvider']
-    function sourceOf(file: string): string {
-        return readFileSync(path.resolve(process.cwd(), 'src/server/lib', file), 'utf8')
+describe('the autonomous automation path is structurally incapable of dispatching directly', () => {
+    // The strongest "one delivery path" proof: the whole agentic surface cannot dispatch directly
+    // because it has no dispatcher/provider/sender import. A future edit that wires one in fails here.
+    const FORBIDDEN = [
+        'dispatchOutreachMessage',
+        'sendThreadedReply',
+        'createThreadedDispatchProvider',
+        'outreach-dispatch-provider',
+        'outreach-sender',
+        'outreach-provider',
+    ]
+    function sourceOf(relativePath: string): string {
+        return readFileSync(path.resolve(process.cwd(), relativePath), 'utf8')
     }
-    it('inbox-ai-automation.ts references no direct provider/sender primitive', () => {
-        const src = sourceOf('inbox-ai-automation.ts')
+    it.each([
+        'src/server/lib/inbox-ai-automation.ts',
+        'src/server/lib/inbox-ai-automation-runtime.ts',
+        'src/server/jobs/processFollowUps.ts',
+    ])('%s references no provider adapter, low-level sender, or shared dispatcher', (file) => {
+        const src = sourceOf(file)
         for (const token of FORBIDDEN) expect(src).not.toContain(token)
+    })
+
+    it('the runtime reaches the wire ONLY through the single inbox send-command executor', () => {
+        const src = sourceOf('src/server/lib/inbox-ai-automation-runtime.ts')
+        expect(src).toContain('executeInboxSendCommand')
     })
 })

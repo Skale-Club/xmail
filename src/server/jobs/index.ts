@@ -9,6 +9,7 @@ import { runFollowUpsProcessorWithLock } from './processFollowUps'
 import { runMaterializerWithLock } from './materializeUnifiedInbox'
 import { runInboxCommandsWithLock } from './processInboxCommands'
 import { cleanupExpiredAttachments } from '../lib/inbox-attachments'
+import { logAutonomousAutomationStatus } from '../lib/inbox-ai-automation-runtime'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
 import { createLogger } from '../lib/logger'
@@ -187,4 +188,8 @@ export function startJobs(): void {
         action: 'outreach.jobs.scheduler_ready',
         schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, followups=10min, unifiedInbox=5min, inboxCommands=1min, cleanupInboxAttachments=daily-3:30am',
     }, 'scheduler ready')
+
+    // Phase 23 (AI-03): log the GLOBAL autonomous-automation kill-control posture once at startup
+    // (enabled/disabled/paused org counts only — never any tenant content). Best-effort.
+    logAutonomousAutomationStatus().catch(() => { /* status logging is best-effort */ })
 }
