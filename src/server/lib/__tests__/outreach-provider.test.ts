@@ -370,6 +370,42 @@ describe('provider adapters ship the composed bytes', () => {
         expect(result.providerId).toBe('graph-req-1')
     })
 
+    // W-3. Graph's MIME sendMail derives recipients from the headers alone — there is no
+    // envelope parameter — and the composer deliberately omits the Bcc header (see
+    // "keeps blind recipients in the envelope and out of the message headers"). A bcc
+    // address is therefore in neither the headers nor an envelope on this path: Graph
+    // accepts with 202 and never delivers it. The same bytes reach a bcc recipient on SMTP
+    // and native, which breaks the module's "same bytes, same outcome, every provider"
+    // contract silently and in the direction nobody checks.
+    it('Outlook refuses a bcc rather than accepting a message it cannot deliver', async () => {
+        const sendOutlookMime = vi.fn()
+        const message = await composeOutreachMime({ ...CAMPAIGN_MIME, bcc: ['archive@example.com'] })
+        const adapter = createOutreachProviderAdapter(
+            emailAccount({ provider: 'outlook', outlookMailboxId: MAILBOX_ID }),
+            { sendOutlookMime: sendOutlookMime as never },
+        )
+
+        const result = await adapter.send(message)
+
+        expect(sendOutlookMime).not.toHaveBeenCalled()
+        expect(result.accepted).toBe(false)
+        expect(result.failure).toMatchObject({ code: 'outlook_bcc_unsupported', classification: 'terminal' })
+    })
+
+    it('Outlook still sends normally when there is no bcc', async () => {
+        const sendOutlookMime = vi.fn(async () => ({ mailbox: outlookMailbox(), requestId: 'graph-req-2' }))
+        const message = await composeOutreachMime({ ...CAMPAIGN_MIME, cc: ['cc@prospect.com'] })
+        const adapter = createOutreachProviderAdapter(
+            emailAccount({ provider: 'outlook', outlookMailboxId: MAILBOX_ID }),
+            { sendOutlookMime: sendOutlookMime as never },
+        )
+
+        const result = await adapter.send(message)
+
+        expect(result.accepted).toBe(true)
+        expect(sendOutlookMime).toHaveBeenCalledTimes(1)
+    })
+
     it('Outlook refuses to dispatch a buffer missing required headers', async () => {
         const sendOutlookMime = vi.fn()
         const adapter = createOutreachProviderAdapter(
