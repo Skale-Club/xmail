@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
-status: executing
-stopped_at: Completed 22-05-PLAN.md
-last_updated: "2026-07-16T19:49:58.386Z"
+status: verifying
+stopped_at: Completed 23-01-PLAN.md
+last_updated: "2026-07-16T21:11:00.916Z"
 progress:
   total_phases: 15
   completed_phases: 9
   total_plans: 41
-  completed_plans: 37
+  completed_plans: 38
   percent: 60
 ---
 
@@ -27,8 +27,9 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 23 (AI Inbox Automation and Guardrails) — NEXT (FINAL phase of milestone v1.4)
-Plan: 0 of N
+Phase: 23 (AI Inbox Automation and Guardrails) — IN PROGRESS (FINAL phase of milestone v1.4)
+Plan: 1 of 4
+Phase 23 Plan 01 (AI foundation: settings/audit migration 043 + context builder + audit lib) — COMPLETE (AI-01/03/05; 44 new tests, 744/744 total; migration 043 written+tested, NOT applied to prod)
 Phase 22 (Unified Inbox Operator Experience) — COMPLETE + VERIFIED (UIX-01..06, 19/19 must-haves; 3-lens review 1 critical + 6 warnings all fixed and re-reviewed; 700/700 tests deterministic)
 Phase 21 (Unified Inbox Foundation) — COMPLETE + VERIFIED (UIF-01..05, 43/43 must-haves; 3-lens review 0 critical + 3 warnings all fixed and re-reviewed; 527/527 tests deterministic)
 Phase 20 (Outreach Product and API Consistency) — COMPLETE + VERIFIED (CONS-01..07; security + data-migration reviews clean; verifier found 1 blocking gap + 5 non-blocking, all fixed and re-reviewed clean; 422/422 tests)
@@ -40,7 +41,7 @@ Status: Phases 18-22 all COMPLETE + VERIFIED. Only Phase 23 (guarded AI automati
 
 **Also this session:** made the Vitest postgres project a deterministic gate (commit a87ee0b) — root-level fileParallelism:false + container max_connections=300 + a suite that self-applies its migration. This fixed the flaky deadlocks/timeouts that dogged phases 19-20 reviews.
 
-**Resume point:** Execute Phase 23 (AI inbox automation + guardrails) — the FINAL phase. After it closes, the v1.4 milestone is code-complete and ready for the manual production deploy (apply migrations 038→042 in order, provision the private inbox-attachments Storage bucket, set the service-principal env vars, run the Outlook Graph sandbox gate).
+**Resume point:** Execute Phase 23 Plan 02 (on-demand AI suggestion endpoint, AI-02) — consumes `buildInboxAiContext` + the `inbox-ai-audit` draft lifecycle (`createAiRun`/`completeAiRun` with `awaitingApproval`), extends only `src/server/routes/outreach/unified-inbox.ts` via `requireOutreachRead`/`requireOutreachWrite`, and NEVER sends. After Phase 23 closes, v1.4 is code-complete and ready for the manual production deploy (apply migrations 038→043 in ascending order, provision the private inbox-attachments Storage bucket, set the service-principal env vars, run the Outlook Graph sandbox gate).
 
 **Every send in the system now flows through the Phase 18 shared delivery policy gate** (campaign, follow-up, manual, and inbox reply/forward). Phase 23 AI automation MUST use that same gate — no autonomous send may bypass it.
 
@@ -137,8 +138,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T19:49:47.512Z
-Stopped at: Completed 22-05-PLAN.md
+Last session: 2026-07-16T21:11:00.770Z
+Stopped at: Completed 23-01-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -166,6 +167,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 22 P03 | 28min | 3 tasks | 13 files |
 | Phase 22 P04 | 34min | 3 tasks | 16 files |
 | Phase 22 P05 | 16 | 3 tasks | 12 files |
+| Phase 23 P01 | 20min | 3 tasks | 6 files |
 
 ## Decisions
 
@@ -208,3 +210,4 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 22]: (22-04) Reply/reply-all/forward recipients + RFC threading headers are resolved SERVER-SIDE from persisted messages (the route schema has no reply-mode recipient/header field, so a client cannot spoof them); every immediate or scheduled send is a durable command dispatched only by executeInboxSendCommand behind the Phase 18 policy gate.
 - [Phase 22]: (22-04) Attachments are bounded, org-owned, private-bucket, non-base64 bytes (server measures actual size; authenticated raw-body upload; server-chosen path); reply-all Cc/Bcc are suppression-filtered before the MIME; policy denial reschedules and preserves the draft with a recoverable reason.
 - [Phase 22]: Near-real-time via ONE org-scoped authenticated-fetch SSE stream (never EventSource) carrying ids/counts only; disconnect falls back to bounded unread/list polling with visible stale state
+- [Phase 23]: Effective AI autonomy = intersection of org autonomous_enabled AND campaign ai_autonomous_enabled AND clear kill switch AND Phase 18 policy; both flags default OFF (migration 043)
