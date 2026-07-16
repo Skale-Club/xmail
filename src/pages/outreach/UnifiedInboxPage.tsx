@@ -1,9 +1,10 @@
 import React from 'react'
 import { useLocation, useSearch } from 'wouter'
-import { AlertTriangle, ArrowLeft, Filter, Inbox as InboxIcon, Search, X } from 'lucide-react'
+import { Filter, X } from 'lucide-react'
 import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { InboxFilterRail } from '../../components/outreach/inbox/InboxFilterRail'
-import { Skeleton } from '../../components/ui/Skeleton'
+import { ConversationList } from '../../components/outreach/inbox/ConversationList'
+import { ConversationThread } from '../../components/outreach/inbox/ConversationThread'
 import { Button } from '../../components/ui/button'
 import { useOrganization } from '../../hooks/useOrganization'
 import {
@@ -15,14 +16,14 @@ import {
     useInboxUnreadCount,
 } from '../../hooks/useUnifiedInbox'
 import {
+    activeFilterCount,
     buildInboxSearch,
     hasAnyFilter,
     mergeInboxState,
     parseInboxUrl,
     type InboxUrlState,
 } from '../../lib/unified-inbox-url'
-import type { InboxConversationListItem } from '../../lib/unified-inbox-api'
-import { cn, formatRelativeDate, truncate } from '../../lib/utils'
+import { cn } from '../../lib/utils'
 
 const INBOX_PATH = '/outreach/unified-inbox'
 
@@ -43,8 +44,7 @@ export function UnifiedInboxPage() {
     const [filtersOpen, setFiltersOpen] = React.useState(false)
 
     // --- URL hygiene: discard unknown/invalid params with replaceState so a poisoned
-    // query never reaches the server. buildInboxSearch is a fixed point, so this
-    // converges in one replace.
+    // query never reaches the server. buildInboxSearch is a fixed point → converges in one.
     const cleaned = React.useMemo(() => buildInboxSearch(state), [state])
     React.useEffect(() => {
         if (search !== cleaned) {
@@ -53,9 +53,8 @@ export function UnifiedInboxPage() {
     }, [search, cleaned, navigate])
 
     // --- Organization change: never render another tenant's selection/cursor. Query keys
-    // are org-scoped so caches don't bleed; we also drop the selected conversation + cursor
-    // from the URL (they belong to the previous tenant). A ref avoids clearing a valid
-    // deep-link selection on first mount.
+    // are org-scoped so caches never bleed; we also drop the selected conversation + cursor
+    // (they belong to the previous tenant). A ref avoids clearing a valid deep link on mount.
     const prevOrgRef = React.useRef<string | undefined>(organizationId)
     React.useEffect(() => {
         if (prevOrgRef.current !== undefined && prevOrgRef.current !== organizationId) {
@@ -101,6 +100,17 @@ export function UnifiedInboxPage() {
     const syncStatus = listQuery.data?.pages[0]?.syncStatus ?? []
     const lastUpdatedAt = listQuery.dataUpdatedAt ? new Date(listQuery.dataUpdatedAt) : null
 
+    const providerByAccount = React.useMemo(() => {
+        const map: Record<string, string> = {}
+        for (const account of syncStatus) map[account.emailAccountId] = account.provider
+        return map
+    }, [syncStatus])
+    const campaignNameById = React.useMemo(() => {
+        const map: Record<string, string> = {}
+        for (const campaign of campaignsQuery.data ?? []) map[campaign.id] = campaign.name
+        return map
+    }, [campaignsQuery.data])
+
     // --- Search box (debounced; the URL remains authoritative) ---
     const [searchInput, setSearchInput] = React.useState(state.q ?? '')
     React.useEffect(() => { setSearchInput(state.q ?? '') }, [state.q])
@@ -143,17 +153,12 @@ export function UnifiedInboxPage() {
                 {/* Workspace header */}
                 <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
                     <h1 className="text-lg font-semibold text-foreground">Unified Inbox</h1>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        className="xl:hidden"
-                        onClick={() => setFiltersOpen(true)}
-                    >
+                    <Button variant="outline" size="sm" className="xl:hidden" onClick={() => setFiltersOpen(true)}>
                         <Filter className="mr-1.5 h-4 w-4" />
                         Filters
                         {hasAnyFilter(state) && (
                             <span className="ml-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary px-1 text-[0.6rem] font-semibold text-primary-foreground">
-                                {(state.labels.length) + (state.q ? 1 : 0) + (state.campaign ? 1 : 0) + (state.account ? 1 : 0)}
+                                {activeFilterCount(state) + (state.status || state.unread || state.reminder || state.archived ? 1 : 0)}
                             </span>
                         )}
                     </Button>
@@ -169,89 +174,29 @@ export function UnifiedInboxPage() {
                     <section
                         aria-label="Conversations"
                         className={cn(
-                            'min-h-0 flex-col border-r border-border md:w-80 md:shrink-0 xl:w-[380px]',
-                            selectedId ? 'hidden md:flex' : 'flex w-full',
+                            'min-h-0 flex-col border-r border-border md:flex md:w-80 md:shrink-0 xl:w-[380px]',
+                            selectedId ? 'hidden' : 'flex w-full',
                         )}
                     >
-                        {/* Sticky search */}
-                        <div className="border-b border-border p-3">
-                            <div className="relative">
-                                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-                                <input
-                                    type="search"
-                                    value={searchInput}
-                                    onChange={(event) => setSearchInput(event.target.value)}
-                                    placeholder="Search conversations…"
-                                    aria-label="Search conversations"
-                                    className="w-full rounded-md border border-border bg-background py-2 pl-9 pr-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                />
-                            </div>
-                        </div>
-
-                        <div className="min-h-0 flex-1 overflow-y-auto">
-                            <p className="sr-only" role="status" aria-live="polite">
-                                {listQuery.isLoading ? 'Loading conversations' : `${conversations.length} conversations loaded`}
-                            </p>
-
-                            {listQuery.isLoading ? (
-                                <ul className="divide-y divide-border">
-                                    {Array.from({ length: 8 }).map((_, index) => (
-                                        <li key={index} className="space-y-2 p-3">
-                                            <Skeleton className="h-4 w-2/3" />
-                                            <Skeleton className="h-3 w-1/2" />
-                                            <Skeleton className="h-3 w-11/12" />
-                                        </li>
-                                    ))}
-                                </ul>
-                            ) : listQuery.isError ? (
-                                <div className="p-6 text-center">
-                                    <AlertTriangle className="mx-auto mb-2 h-6 w-6 text-amber-600 dark:text-amber-400" />
-                                    <p className="mb-3 text-sm text-muted-foreground">Couldn’t load conversations.</p>
-                                    <Button variant="outline" size="sm" onClick={() => listQuery.refetch()}>Retry</Button>
-                                </div>
-                            ) : conversations.length === 0 ? (
-                                <div className="p-8 text-center">
-                                    {hasAnyFilter(state) ? (
-                                        <>
-                                            <p className="mb-2 text-sm font-medium text-foreground">No conversations match these filters</p>
-                                            <Button variant="outline" size="sm" onClick={clearFilters}>Clear filters</Button>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <InboxIcon className="mx-auto mb-3 h-10 w-10 text-muted-foreground/50" />
-                                            <p className="text-sm font-medium text-foreground">No outreach replies yet</p>
-                                            <p className="mt-1 text-sm text-muted-foreground">Replies to your campaigns will appear here.</p>
-                                        </>
-                                    )}
-                                </div>
-                            ) : (
-                                <>
-                                    <ul className="divide-y divide-border">
-                                        {conversations.map((conversation) => (
-                                            <ListRowPreview
-                                                key={conversation.id}
-                                                conversation={conversation}
-                                                selected={conversation.id === selectedId}
-                                                onSelect={selectConversation}
-                                            />
-                                        ))}
-                                    </ul>
-                                    {listQuery.hasNextPage && (
-                                        <div className="p-3">
-                                            <Button
-                                                variant="outline"
-                                                size="sm"
-                                                className="w-full"
-                                                disabled={listQuery.isFetchingNextPage}
-                                                onClick={() => listQuery.fetchNextPage()}
-                                            >
-                                                {listQuery.isFetchingNextPage ? 'Loading…' : 'Load more'}
-                                            </Button>
-                                        </div>
-                                    )}
-                                </>
-                            )}
-                        </div>
+                        <ConversationList
+                            conversations={conversations}
+                            isLoading={listQuery.isLoading}
+                            isError={listQuery.isError}
+                            onRetry={() => listQuery.refetch()}
+                            hasMore={Boolean(listQuery.hasNextPage)}
+                            isFetchingNextPage={listQuery.isFetchingNextPage}
+                            onLoadMore={() => listQuery.fetchNextPage()}
+                            selectedId={selectedId}
+                            onSelect={selectConversation}
+                            hasFilters={hasAnyFilter(state)}
+                            hasSearch={Boolean(state.q)}
+                            searchTerm={state.q ?? ''}
+                            onClearFilters={clearFilters}
+                            searchValue={searchInput}
+                            onSearchChange={setSearchInput}
+                            providerByAccount={providerByAccount}
+                            campaignNameById={campaignNameById}
+                        />
                     </section>
 
                     {/* Thread pane */}
@@ -264,47 +209,16 @@ export function UnifiedInboxPage() {
                                 <p className="text-sm text-muted-foreground">Select a conversation to read the thread</p>
                             </div>
                         ) : (
-                            <div className="flex h-full flex-col">
-                                <div className="flex items-center gap-2 border-b border-border p-3">
-                                    <button
-                                        type="button"
-                                        onClick={clearSelection}
-                                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:hidden"
-                                    >
-                                        <ArrowLeft className="h-4 w-4" /> Back
-                                    </button>
-                                    <h2 className="truncate text-base font-semibold text-foreground">
-                                        {detailQuery.data?.conversation.subject || '(No subject)'}
-                                    </h2>
-                                    <button
-                                        type="button"
-                                        onClick={clearSelection}
-                                        aria-label="Close thread"
-                                        className="ml-auto hidden rounded-md p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:inline-flex"
-                                    >
-                                        <X className="h-4 w-4" />
-                                    </button>
-                                </div>
-                                <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                                    {detailQuery.isLoading ? (
-                                        <div className="space-y-3">
-                                            <Skeleton className="h-4 w-1/2" />
-                                            <Skeleton className="h-24 w-full" />
-                                            <Skeleton className="h-24 w-full" />
-                                        </div>
-                                    ) : detailQuery.isError ? (
-                                        <div className="p-6 text-center">
-                                            <AlertTriangle className="mx-auto mb-2 h-6 w-6 text-amber-600 dark:text-amber-400" />
-                                            <p className="mb-3 text-sm text-muted-foreground">Couldn’t load this conversation.</p>
-                                            <Button variant="outline" size="sm" onClick={() => detailQuery.refetch()}>Retry</Button>
-                                        </div>
-                                    ) : (
-                                        <p className="text-sm text-muted-foreground">
-                                            {detailQuery.data?.messages.length ?? 0} messages
-                                        </p>
-                                    )}
-                                </div>
-                            </div>
+                            <ConversationThread
+                                detail={detailQuery.data}
+                                isLoading={detailQuery.isLoading}
+                                isError={detailQuery.isError}
+                                onRetry={() => detailQuery.refetch()}
+                                onBack={clearSelection}
+                                onClose={clearSelection}
+                                providerByAccount={providerByAccount}
+                                campaignNameById={campaignNameById}
+                            />
                         )}
                     </section>
                 </div>
@@ -333,54 +247,6 @@ export function UnifiedInboxPage() {
                 )}
             </div>
         </OutreachLayout>
-    )
-}
-
-/** Temporary lightweight list row for the shell. Task 3 replaces this with the full
- *  ConversationList (attribution badges, attachment/reminder cues, keyboard semantics). */
-function ListRowPreview({
-    conversation,
-    selected,
-    onSelect,
-}: {
-    conversation: InboxConversationListItem
-    selected: boolean
-    onSelect: (id: string) => void
-}) {
-    const primary = conversation.participants.find((p) => p.role === 'from') ?? conversation.participants[0]
-    const displayName = primary?.name || primary?.address || 'Unknown sender'
-
-    return (
-        <li>
-            <button
-                type="button"
-                onClick={() => onSelect(conversation.id)}
-                aria-current={selected ? 'true' : undefined}
-                className={cn(
-                    'flex w-full flex-col gap-1 px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-                    selected ? 'bg-accent' : 'hover:bg-accent/50',
-                )}
-            >
-                <div className="flex items-center gap-2">
-                    {conversation.unread && (
-                        <span className="h-2 w-2 shrink-0 rounded-full bg-primary" aria-hidden="true" />
-                    )}
-                    <span className={cn('flex-1 truncate text-sm', conversation.unread ? 'font-semibold text-foreground' : 'text-foreground')}>
-                        {displayName}
-                    </span>
-                    {conversation.lastMessageAt && (
-                        <span className="shrink-0 text-xs text-muted-foreground" title={conversation.lastMessageAt}>
-                            {formatRelativeDate(conversation.lastMessageAt)}
-                        </span>
-                    )}
-                </div>
-                <span className="truncate text-sm text-muted-foreground">{conversation.subject || '(No subject)'}</span>
-                {conversation.preview && (
-                    <span className="truncate text-xs text-muted-foreground">{truncate(conversation.preview, 120)}</span>
-                )}
-                {conversation.unread && <span className="sr-only">Unread</span>}
-            </button>
-        </li>
     )
 }
 
