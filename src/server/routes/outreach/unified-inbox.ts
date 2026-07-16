@@ -923,6 +923,8 @@ async function loadInboxAiContextInput(args: {
     const messageRows = await db
         .select({
             id: outreachConversationMessages.id,
+            organizationId: outreachConversationMessages.organizationId,
+            conversationId: outreachConversationMessages.conversationId,
             direction: outreachConversationMessages.direction,
             subject: outreachConversationMessages.subject,
             fromAddress: outreachConversationMessages.fromAddress,
@@ -945,10 +947,13 @@ async function loadInboxAiContextInput(args: {
             asc(outreachConversationMessages.id),
         )
 
+    // Stamp org/conversation from the actual DB ROW (not the request args) so buildInboxAiContext's
+    // attribution_mismatch guard is a LIVE second line of defense (M-1): if the org-scoped query ever
+    // returned a foreign row, the guard fails the build closed instead of trusting the caller's scope.
     const messages: InboxAiContextMessage[] = messageRows.map((m) => ({
         id: m.id,
-        organizationId,
-        conversationId,
+        organizationId: m.organizationId,
+        conversationId: m.conversationId,
         direction: m.direction,
         subject: m.subject,
         fromAddress: m.fromAddress,
