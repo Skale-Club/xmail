@@ -5,6 +5,7 @@ import {
     isCampaignProgressComplete,
     isTerminalCampaignLeadStatus,
     selectFairDueCandidates,
+    finalizeCampaignDispatchProgress,
 } from '../outreach-sequence-state'
 
 const ALL_LEAD_STATUSES = [
@@ -18,6 +19,18 @@ const ALL_LEAD_STATUSES = [
 ] as const
 
 describe('campaign lead progress contract', () => {
+    it('records an accepted send even when terminal-state CAS prevents progress advancement', async () => {
+        let recorded = 0
+        const advanced = await finalizeCampaignDispatchProgress({
+            freshSend: true,
+            recordFreshSend: async () => { recorded++ },
+            advanceProgress: async () => false,
+        })
+
+        expect(advanced).toBe(false)
+        expect(recorded).toBe(1)
+    })
+
     it.each([
         ['new', false],
         ['contacted', false],

@@ -29,10 +29,14 @@ describe('Phase 18 review regressions', () => {
 
     it('uses guarded progress finalization and one conditional campaign completion update', () => {
         const processor = source('src/server/jobs/processOutreachSequences.ts')
+        const campaignsRoute = source('src/server/routes/outreach/campaigns.ts')
 
         expect(processor).toContain('eq(campaignLeads.currentStepId, sequenceAction.step.id)')
         expect(processor).toContain('outreach.processor.terminal_race_preserved')
         expect(processor).toContain('UPDATE campaigns AS campaign')
         expect(processor).not.toContain('const completedCampaigns = await db')
+        expect(processor).toContain('campaign_leads.next_follow_up_at IS NOT NULL')
+        expect(campaignsRoute).toContain('FOR UPDATE')
+        expect(campaignsRoute).toContain("code: 'campaign_enrollment_closed'")
     })
 })

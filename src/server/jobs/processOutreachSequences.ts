@@ -11,6 +11,7 @@ import { createLogger, OUTREACH_PROCESSOR_SLOW_MS } from '../lib/logger'
 import {
     resolveSequenceAction,
     TERMINAL_CAMPAIGN_LEAD_STATUSES,
+    finalizeCampaignDispatchProgress,
 } from '../lib/outreach-sequence-state'
 import { incrementCampaignStats } from '../lib/outreach-sender'
 import { generateOutreachToken } from '../lib/outreach-tokens'
@@ -338,7 +339,28 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
             }
 
             const sentAt = new Date()
-            const progressAdvanced = await advanceCampaignLeadAfterDispatch(campaignLead, sequenceAction, sentAt)
+            const progressAdvanced = await finalizeCampaignDispatchProgress({
+                freshSend: dispatchResult.status === 'sent',
+                recordFreshSend: async () => {
+                    emailAccount.currentDailySent += 1
+                    emailAccount.lastSentAt = sentAt
+                    accountDeferredUntil.set(
+                        emailAccount.id,
+                        new Date(sentAt.getTime() + emailAccount.minMinutesBetweenEmails * 60_000),
+                    )
+                    if (!campaignLead.firstContactedAt) {
+                        await incrementCampaignStats(campaign.id, 'leadsContacted')
+                    }
+                    sendXphereOutreachEvent('sent', {
+                        email: lead.email,
+                        campaign_id: campaign.id,
+                        lead_id: lead.id,
+                        customFields: lead.customFields,
+                    })
+                    result.sent++
+                },
+                advanceProgress: () => advanceCampaignLeadAfterDispatch(campaignLead, sequenceAction, sentAt),
+            })
             if (!progressAdvanced) {
                 log.info({
                     action: 'outreach.processor.terminal_race_preserved',
@@ -353,24 +375,6 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                     .where(and(eq(leads.id, lead.id), eq(leads.status, 'new')))
             }
 
-            if (dispatchResult.status === 'sent') {
-                emailAccount.currentDailySent += 1
-                emailAccount.lastSentAt = sentAt
-                accountDeferredUntil.set(
-                    emailAccount.id,
-                    new Date(sentAt.getTime() + emailAccount.minMinutesBetweenEmails * 60_000),
-                )
-                if (!campaignLead.firstContactedAt) {
-                    await incrementCampaignStats(campaign.id, 'leadsContacted')
-                }
-                sendXphereOutreachEvent('sent', {
-                    email: lead.email,
-                    campaign_id: campaign.id,
-                    lead_id: lead.id,
-                    customFields: lead.customFields,
-                })
-                result.sent++
-            }
         } catch (error) {
             const err = error instanceof Error ? error : new Error(String(error))
             log.error({
@@ -428,24 +432,46 @@ export async function markCompletedCampaigns(): Promise<void> {
         sql`, `,
     )
     const completedAt = new Date()
-    const updated = rowsOf<{ id: string }>(await db.execute(sql`
-        UPDATE campaigns AS campaign
-        SET status = 'completed',
-            completed_at = ${completedAt},
-            updated_at = ${completedAt}
-        WHERE campaign.status = 'active'
-          AND EXISTS (
-              SELECT 1 FROM campaign_leads
-              WHERE campaign_leads.campaign_id = campaign.id
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM campaign_leads
-              WHERE campaign_leads.campaign_id = campaign.id
-                AND campaign_leads.completed_at IS NULL
-                AND campaign_leads.status NOT IN (${terminalStatuses})
-          )
-        RETURNING campaign.id
-    `))
+    const completedAtIso = completedAt.toISOString()
+    const updated = await db.transaction(async (tx) => {
+        const lockedCampaigns = rowsOf<{ id: string }>(await tx.execute(sql`
+            SELECT id
+            FROM campaigns
+            WHERE status = 'active'
+            ORDER BY id
+            FOR UPDATE
+        `))
+        if (lockedCampaigns.length === 0) return []
+        const lockedIds = sql.join(lockedCampaigns.map((campaign) => sql`${campaign.id}::uuid`), sql`, `)
+
+        return rowsOf<{ id: string }>(await tx.execute(sql`
+            UPDATE campaigns AS campaign
+            SET status = 'completed',
+                completed_at = ${completedAtIso}::timestamp,
+                updated_at = ${completedAtIso}::timestamp
+            WHERE campaign.id IN (${lockedIds})
+              AND campaign.status = 'active'
+              AND EXISTS (
+                  SELECT 1 FROM campaign_leads
+                  WHERE campaign_leads.campaign_id = campaign.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM campaign_leads
+                  WHERE campaign_leads.campaign_id = campaign.id
+                    AND (
+                        (
+                            campaign_leads.completed_at IS NULL
+                            AND campaign_leads.status NOT IN (${terminalStatuses})
+                        )
+                        OR (
+                            campaign.agentic_followup_enabled = TRUE
+                            AND campaign_leads.next_follow_up_at IS NOT NULL
+                        )
+                    )
+              )
+            RETURNING campaign.id
+        `))
+    })
     if (updated.length === 0) return
     log.info({
         action: 'outreach.processor.campaigns_completed',

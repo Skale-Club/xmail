@@ -13,6 +13,17 @@ import {
 
 const router = Router()
 
+class CampaignEnrollmentClosedError extends Error {}
+
+function resultRows<T>(value: unknown): T[] {
+    if (Array.isArray(value)) return value as T[]
+    if (value && typeof value === 'object' && 'rows' in value) {
+        const rows = (value as { rows?: unknown }).rows
+        return Array.isArray(rows) ? rows as T[] : []
+    }
+    return []
+}
+
 // Validation schemas
 const createCampaignSchema = z.object({
     name: z.string().min(1, 'Name is required').max(100),
@@ -1101,6 +1112,12 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
         if (!canWriteOutreach(membership)) {
             return res.status(403).json({ error: 'Write access denied' })
         }
+        if (campaign.status === 'completed' || campaign.status === 'archived') {
+            return res.status(409).json({
+                error: `Cannot enroll leads into a ${campaign.status} campaign`,
+                code: 'campaign_enrollment_closed',
+            })
+        }
 
         const validatedData = addLeadsToCampaignSchema.parse(req.body)
 
@@ -1179,31 +1196,55 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
         // Add leads to campaign. nextScheduledAt MUST be non-NULL or the processor's
         // lte(nextScheduledAt, now) filter treats the row as not-yet-due (NULL semantics in SQL).
         // See audit P0-01.
-        const now = new Date()
-        const insertedCampaignLeads = await db.insert(campaignLeads).values(
-            newLeadIds.map(leadId => ({
-                campaignId,
-                leadId,
-                assignedEmailAccountId: validatedData.emailAccountId,
-                currentStepId: firstStep.id,
-                currentStepOrder: firstStep.stepOrder,
-                nextScheduledAt: now,
-            }))
-        ).returning()
+        const insertedCampaignLeads = await db.transaction(async (tx) => {
+            const lockedCampaign = resultRows<{ status: string }>(await tx.execute(sql`
+                SELECT status::text AS status
+                FROM campaigns
+                WHERE id = ${campaignId}::uuid
+                FOR UPDATE
+            `))[0]
+            if (!lockedCampaign) throw new CampaignEnrollmentClosedError('Campaign no longer exists')
+            if (lockedCampaign.status === 'completed' || lockedCampaign.status === 'archived') {
+                throw new CampaignEnrollmentClosedError(`Cannot enroll leads into a ${lockedCampaign.status} campaign`)
+            }
 
-        // Update campaign total leads count
-        await db.update(campaigns)
-            .set({
-                totalLeads: sql`${campaigns.totalLeads} + ${insertedCampaignLeads.length}`,
-            })
-            .where(eq(campaigns.id, campaignId))
+            const currentRows = await tx
+                .select({ leadId: campaignLeads.leadId })
+                .from(campaignLeads)
+                .where(and(
+                    eq(campaignLeads.campaignId, campaignId),
+                    inArray(campaignLeads.leadId, newLeadIds),
+                ))
+            const currentLeadIds = new Set(currentRows.map((row) => row.leadId))
+            const lockedNewLeadIds = newLeadIds.filter((leadId) => !currentLeadIds.has(leadId))
+            if (lockedNewLeadIds.length === 0) return []
+
+            const now = new Date()
+            const inserted = await tx.insert(campaignLeads).values(
+                lockedNewLeadIds.map((leadId) => ({
+                    campaignId,
+                    leadId,
+                    assignedEmailAccountId: validatedData.emailAccountId,
+                    currentStepId: firstStep.id,
+                    currentStepOrder: firstStep.stepOrder,
+                    nextScheduledAt: now,
+                })),
+            ).returning()
+            await tx.update(campaigns)
+                .set({ totalLeads: sql`${campaigns.totalLeads} + ${inserted.length}` })
+                .where(eq(campaigns.id, campaignId))
+            return inserted
+        })
 
         res.status(201).json({
             added: insertedCampaignLeads.length,
-            existing: existingLeadIds.size,
+            existing: validatedData.leadIds.length - insertedCampaignLeads.length,
             campaignLeads: insertedCampaignLeads,
         })
     } catch (error) {
+        if (error instanceof CampaignEnrollmentClosedError) {
+            return res.status(409).json({ error: error.message, code: 'campaign_enrollment_closed' })
+        }
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: 'Validation error', details: error.errors })
         }

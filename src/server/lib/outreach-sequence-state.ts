@@ -19,6 +19,15 @@ export const TERMINAL_CAMPAIGN_LEAD_STATUSES = Object.freeze(
         .map(([status]) => status),
 )
 
+export async function finalizeCampaignDispatchProgress(input: {
+    freshSend: boolean
+    recordFreshSend: () => Promise<void>
+    advanceProgress: () => Promise<boolean>
+}): Promise<boolean> {
+    if (input.freshSend) await input.recordFreshSend()
+    return input.advanceProgress()
+}
+
 const terminalCampaignLeadStatuses = new Set<Lead['status']>(TERMINAL_CAMPAIGN_LEAD_STATUSES)
 
 export function isTerminalCampaignLeadStatus(status: Lead['status']): boolean {
