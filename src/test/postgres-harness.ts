@@ -141,6 +141,33 @@ async function installSupabaseAuthStubs(target: MigrationTarget): Promise<void> 
     }
 }
 
+/**
+ * Production defines these membership helpers in 020_consolidate_rls.sql, which the
+ * baseline below deliberately does not replay (see the schema-history note in
+ * applyHandWrittenMigrations). Migrations that attach defense-in-depth RLS policies
+ * reference them by name, so the disposable database needs the signatures to exist.
+ *
+ * They always return false: the tests assert that policies were ATTACHED, never that
+ * they grant access. Tenant isolation is enforced in JS (src/server/lib/access.ts) —
+ * the app role bypasses RLS — so a stub that authorized rows would be a lie about
+ * where the real boundary lives.
+ */
+async function installRlsHelperStubs(target: MigrationTarget): Promise<void> {
+    assertSafeTestDatabaseUrl(target.databaseUrl, target)
+
+    const sql = postgres(target.databaseUrl, { max: 1, prepare: false, onnotice: () => {} })
+    try {
+        await sql.unsafe(`
+            CREATE OR REPLACE FUNCTION public.is_org_member(target_organization_id uuid)
+            RETURNS boolean LANGUAGE sql STABLE AS $$ SELECT false $$;
+            CREATE OR REPLACE FUNCTION public.is_platform_admin()
+            RETURNS boolean LANGUAGE sql STABLE AS $$ SELECT false $$;
+        `)
+    } finally {
+        await sql.end({ timeout: 1 })
+    }
+}
+
 export async function applyHandWrittenMigrations(
     target: MigrationTarget,
     rootDir = process.cwd(),
@@ -148,6 +175,7 @@ export async function applyHandWrittenMigrations(
     assertSafeTestDatabaseUrl(target.databaseUrl, target)
     await applyDrizzleBootstrap(target, rootDir)
     await installSupabaseAuthStubs(target)
+    await installRlsHelperStubs(target)
 
     // The repository's old Drizzle snapshot and early SQL history describe
     // mutually exclusive server-vs-organization schemas. Replaying both would
