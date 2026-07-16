@@ -883,6 +883,20 @@ export const OUTLOOK_CAPABILITY_GATE =
     + 'read capability is proven by a bounded initial inbox sync.'
 
 /**
+ * What an inbound probe must report back for the gate to trust it.
+ *
+ * Both fields already exist at the call site and used to be discarded. Deliberately not
+ * "did it throw": the reader treats a throttle as a control signal and returns, so silence
+ * carries no information about whether a read happened.
+ */
+export interface OutlookInboundProbe {
+    /** Provider pages actually read. Zero means the sync never got a response. */
+    pagesFetched?: number
+    /** Provider-stated backoff, when Graph asked us to slow down. */
+    retryAfter?: Date | null
+}
+
+/**
  * Decide whether an Outlook outreach account may be activated.
  *
  * Deliberately free of db/HTTP so the decision table is unit-testable: the caller injects the
@@ -891,7 +905,12 @@ export const OUTLOOK_CAPABILITY_GATE =
 export async function evaluateOutlookOutreachCapability(input: {
     account: { id: string; organizationId: string; email: string; outlookMailboxId: string | null }
     loadMailbox: (mailboxId: string, organizationId: string) => Promise<OutlookMailbox | null | undefined>
-    probeInbound: (mailbox: OutlookMailbox) => Promise<void>
+    /**
+     * Must report what the sync actually achieved. Resolving is NOT proof of a read:
+     * fetchOutlookInboxDelta returns on a throttle or a 5xx instead of throwing, so a probe
+     * that "did not throw" may have read nothing at all (W-1).
+     */
+    probeInbound: (mailbox: OutlookMailbox) => Promise<OutlookInboundProbe>
 }): Promise<OutlookCapabilityResult> {
     const { account } = input
 
@@ -920,8 +939,9 @@ export async function evaluateOutlookOutreachCapability(input: {
         return { verified: false, status: 'failed', code: 'outlook_missing_scopes', missingScopes }
     }
 
+    let probe: OutlookInboundProbe
     try {
-        await input.probeInbound(mailbox)
+        probe = await input.probeInbound(mailbox)
     } catch (error) {
         if (error instanceof OutlookGraphError) {
             // A revoked or under-scoped grant needs a human; a throttle or a Graph outage
@@ -932,6 +952,14 @@ export async function evaluateOutlookOutreachCapability(input: {
                 return { verified: false, status: 'failed', code: 'outlook_auth_failed' }
             }
         }
+        return { verified: false, status: 'pending', code: 'outlook_inbound_sync_failed' }
+    }
+
+    // The gate's claim is "read capability is proven by a bounded initial inbox sync", so
+    // it must hold evidence that a sync happened. A throttled or unavailable Graph returns
+    // a perfectly well-formed empty result, which proves nothing — same 'pending' outcome
+    // as a thrown throttle, and for the same reason: retry, never re-consent, never send.
+    if ((probe.pagesFetched ?? 0) <= 0) {
         return { verified: false, status: 'pending', code: 'outlook_inbound_sync_failed' }
     }
 

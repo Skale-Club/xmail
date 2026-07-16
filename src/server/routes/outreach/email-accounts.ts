@@ -762,11 +762,17 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
                         eq(outlookMailboxes.organizationId, organizationId),
                     ),
                 }),
-                probeInbound: (mailbox) => syncOutlookInboundOnce({
-                    account,
-                    mailbox,
-                    store: createDrizzleInboundEventStore(),
-                }).then(() => undefined),
+                // The probe's own result is the evidence — discarding it (as `.then(() =>
+                // undefined)` did) left "it didn't throw" as the only signal, which a
+                // throttled Graph satisfies without reading anything (W-1).
+                probeInbound: async (mailbox) => {
+                    const ingested = await syncOutlookInboundOnce({
+                        account,
+                        mailbox,
+                        store: createDrizzleInboundEventStore(),
+                    })
+                    return { pagesFetched: ingested.pagesFetched, retryAfter: ingested.retryAfter }
+                },
             })
 
             if (!capability.verified) {

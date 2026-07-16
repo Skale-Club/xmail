@@ -498,6 +498,9 @@ export function createGraphInboundSource(input: {
                     lastProviderMessageId: null,
                 },
                 retryAfter: result.retryAfter,
+                // The reader returns rather than throws on a throttle, so this is the only
+                // signal distinguishing "read an empty inbox" from "never got a response".
+                pagesFetched: result.pagesFetched,
             }
         },
     }

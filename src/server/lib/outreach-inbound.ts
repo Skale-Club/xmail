@@ -365,6 +365,13 @@ export interface InboundSourcePage {
      * than thrown, so the work already done this page is still staged.
      */
     retryAfter?: Date | null
+    /**
+     * How many provider pages were actually read. Zero means the source returned without
+     * reading anything — a throttle or an outage — which is indistinguishable from "the
+     * mailbox is empty" unless the source says so. The activation gate needs the
+     * difference: "did not throw" is not evidence that a read succeeded (W-1).
+     */
+    pagesFetched?: number
 }
 
 export interface InboundSource {
@@ -382,6 +389,8 @@ export interface IngestResult {
     classifications: Record<InboundClassification, number>
     /** Provider-stated backoff, echoed for the caller's logs/metrics. */
     retryAfter?: Date | null
+    /** Provider pages actually read; 0 means nothing was read. See InboundSourcePage. */
+    pagesFetched?: number
 }
 
 // ============================================================
@@ -409,6 +418,9 @@ export async function ingestInboundPage(deps: {
         recorded: 0,
         duplicates: 0,
         classifications: { reply: 0, bounce: 0, auto_reply: 0, other: 0 },
+        // Sources that do not report it read exactly one page by construction (native and
+        // IMAP both query directly and throw on failure), so absence means one.
+        pagesFetched: page.pagesFetched ?? 1,
     }
 
     for (const message of messages) {
