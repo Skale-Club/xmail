@@ -19,9 +19,10 @@
  */
 
 import { db } from '../../db'
-import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns } from '../../db/schema'
+import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, outreachConversationMessages } from '../../db/schema'
 import { eq, and, sql, gte } from 'drizzle-orm'
 import { createLogger } from '../lib/logger'
+import { buildSourceKey } from '../lib/unified-inbox/normalize'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { shouldNotifyOutreachEvent } from '../lib/outreach-settings'
 import { runWithLock } from '../lib/cron-lock'
@@ -98,6 +99,46 @@ export function normalizeReplyText(text: string | null | undefined, html?: strin
         ? html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
         : '')
     return source.slice(0, MAX_REPLY_CONTEXT_LENGTH)
+}
+
+/**
+ * Reply context text, preferring the durable Phase 21 normalized conversation message.
+ *
+ * Phase 21 materializes each staged event into an immutable outreach_conversation_messages
+ * row; when that has already happened, its persisted body is the canonical reply context.
+ * This read is a strict ENRICHMENT: it never gates or duplicates the Phase 19 reply side
+ * effects (those key on processed_at), and if the Unified Inbox tables are not present yet
+ * (migration 041 not applied) or the lookup fails for any reason, it falls back to the
+ * event's own staged bodies so reply processing can never break. Read-only: it writes nothing.
+ */
+export async function resolveReplyContextText(event: StoredProviderEvent): Promise<string> {
+    const fallback = normalizeReplyText(event.textBody, event.htmlBody)
+    try {
+        const sourceKey = buildSourceKey(event.provider, event.providerMessageId)
+        const rows = await db
+            .select({
+                plainBody: outreachConversationMessages.plainBody,
+                htmlBody: outreachConversationMessages.htmlBody,
+            })
+            .from(outreachConversationMessages)
+            .where(and(
+                eq(outreachConversationMessages.organizationId, event.organizationId),
+                eq(outreachConversationMessages.emailAccountId, event.emailAccountId),
+                eq(outreachConversationMessages.sourceKey, sourceKey),
+            ))
+            .limit(1)
+        const persisted = rows[0]
+        if (persisted && (persisted.plainBody || persisted.htmlBody)) {
+            return normalizeReplyText(persisted.plainBody, persisted.htmlBody)
+        }
+    } catch {
+        // The durable message is an enrichment, never a dependency. No body content is logged.
+        log.debug({
+            action: 'outreach.replies.reply_context_fallback',
+            emailAccountId: event.emailAccountId,
+        }, 'durable reply context unavailable; using staged event body')
+    }
+    return fallback
 }
 
 // P0-06 / audit-2026-07 — advisory lock prevents concurrent runs across Node instances.
@@ -189,9 +230,11 @@ async function handleReplyEvent(event: StoredProviderEvent): Promise<boolean> {
         matched.outreachEmail.organizationId,
         {
             messageId: normalizeInboundMessageId(event.messageId, `event:${event.id}`),
-            // Full bodies are staged now, so last_reply_text is finally populated for
-            // external accounts — the old IMAP path fetched headers only and left it null.
-            text: normalizeReplyText(event.textBody, event.htmlBody),
+            // Reply context comes from the durable Phase 21 normalized message when it has been
+            // materialized, falling back to the staged event bodies otherwise. Full bodies are
+            // staged now, so last_reply_text is populated for external accounts either way —
+            // the old IMAP path fetched headers only and left it null.
+            text: await resolveReplyContextText(event),
         },
     )
 

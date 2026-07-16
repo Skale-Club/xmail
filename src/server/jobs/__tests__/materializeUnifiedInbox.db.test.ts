@@ -108,10 +108,10 @@ beforeAll(async () => {
         await sql`INSERT INTO campaign_leads (id, campaign_id, lead_id) VALUES (${CL_A}::uuid, ${CAMP_A}::uuid, ${LEAD_A}::uuid) ON CONFLICT (id) DO NOTHING`
         await sql`
             INSERT INTO outreach_emails (
-                id, organization_id, origin, idempotency_key, to_address,
+                id, organization_id, origin, idempotency_key, to_address, subject,
                 campaign_id, campaign_lead_id, email_account_id, message_id, status, sent_at
             ) VALUES (
-                ${OE_A}::uuid, ${ORG_A}::uuid, 'agentic', 'job-oe', 'alice@lead.test',
+                ${OE_A}::uuid, ${ORG_A}::uuid, 'agentic', 'job-oe', 'alice@lead.test', 'Hi',
                 ${CAMP_A}::uuid, ${CL_A}::uuid, ${ACCOUNT_A}::uuid, ${OE_A_MESSAGE_ID}, 'sent', now()
             )
             ON CONFLICT (id) DO NOTHING

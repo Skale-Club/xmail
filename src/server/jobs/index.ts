@@ -6,6 +6,7 @@ import { runOutreachProcessorWithLock, resetDailyLimits } from './processOutreac
 import { runRepliesProcessorWithLock } from './processReplies'
 import { runBouncesProcessorWithLock } from './processBounces'
 import { runFollowUpsProcessorWithLock } from './processFollowUps'
+import { runMaterializerWithLock } from './materializeUnifiedInbox'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
 import { createLogger } from '../lib/logger'
@@ -131,8 +132,22 @@ export function startJobs(): void {
         })
     })
 
+    // Materialize staged provider events into the Unified Inbox every 5 minutes. Runs AFTER
+    // the reply/bounce staging cadence and consumes the same durable events through the
+    // dedicated, independent materialization lifecycle (never touches processed_at). The
+    // named advisory lock inside runMaterializerWithLock makes overlapping ticks a no-op.
+    cron.schedule('*/5 * * * *', () => {
+        runMaterializerWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.materializeUnifiedInbox_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'materializeUnifiedInbox failed')
+        })
+    })
+
     log.info({
         action: 'outreach.jobs.scheduler_ready',
-        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, followups=10min',
+        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, followups=10min, unifiedInbox=5min',
     }, 'scheduler ready')
 }
