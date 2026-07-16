@@ -30,22 +30,21 @@ const ACCOUNT_A = `${P}11`
 const ACCOUNT_A2 = `${P}12`
 const ACCOUNT_B = `${P}13`
 const LEAD_A1 = `${P}21`
-const LEAD_A_DUP1 = `${P}22`
-const LEAD_A_DUP2 = `${P}23`
+const LEAD_A_AMB = `${P}22`
 const LEAD_A_MULTI = `${P}24`
 const LEAD_B1 = `${P}25`
 const CAMP_A = `${P}31`
 const CAMP_A2 = `${P}32`
 const CAMP_B = `${P}33`
 const CL_A1 = `${P}41`
-const CL_A_DUP1 = `${P}42`
-const CL_A_DUP2 = `${P}43`
+const CL_A_AMB1 = `${P}42`
+const CL_A_AMB2 = `${P}43`
 const CL_A_MULTI_A = `${P}44`
 const CL_A_MULTI_A2 = `${P}45`
 const CL_B1 = `${P}46`
 const OE_A1 = `${P}51`
-const OE_A_DUP1 = `${P}52`
-const OE_A_DUP2 = `${P}53`
+const OE_A_AMB1 = `${P}52`
+const OE_A_AMB2 = `${P}53`
 const OE_A_MULTI_A = `${P}54`
 const OE_A_MULTI_A2 = `${P}55`
 const OE_B1 = `${P}56`
@@ -172,8 +171,7 @@ beforeAll(async () => {
         await sql`
             INSERT INTO leads (id, organization_id, email) VALUES
                 (${LEAD_A1}::uuid, ${ORG_A}::uuid, 'alice@lead.test'),
-                (${LEAD_A_DUP1}::uuid, ${ORG_A}::uuid, 'dup@lead.test'),
-                (${LEAD_A_DUP2}::uuid, ${ORG_A}::uuid, 'dup@lead.test'),
+                (${LEAD_A_AMB}::uuid, ${ORG_A}::uuid, 'amb@lead.test'),
                 (${LEAD_A_MULTI}::uuid, ${ORG_A}::uuid, 'multi@lead.test'),
                 (${LEAD_B1}::uuid, ${ORG_B}::uuid, 'alice@lead.test')
             ON CONFLICT (id) DO NOTHING
@@ -188,8 +186,8 @@ beforeAll(async () => {
         await sql`
             INSERT INTO campaign_leads (id, campaign_id, lead_id) VALUES
                 (${CL_A1}::uuid, ${CAMP_A}::uuid, ${LEAD_A1}::uuid),
-                (${CL_A_DUP1}::uuid, ${CAMP_A}::uuid, ${LEAD_A_DUP1}::uuid),
-                (${CL_A_DUP2}::uuid, ${CAMP_A}::uuid, ${LEAD_A_DUP2}::uuid),
+                (${CL_A_AMB1}::uuid, ${CAMP_A}::uuid, ${LEAD_A_AMB}::uuid),
+                (${CL_A_AMB2}::uuid, ${CAMP_A2}::uuid, ${LEAD_A_AMB}::uuid),
                 (${CL_A_MULTI_A}::uuid, ${CAMP_A}::uuid, ${LEAD_A_MULTI}::uuid),
                 (${CL_A_MULTI_A2}::uuid, ${CAMP_A2}::uuid, ${LEAD_A_MULTI}::uuid),
                 (${CL_B1}::uuid, ${CAMP_B}::uuid, ${LEAD_B1}::uuid)
@@ -199,20 +197,20 @@ beforeAll(async () => {
         // (038 origin_shape_check), so the seed needs no sequences/steps.
         await sql`
             INSERT INTO outreach_emails (
-                id, organization_id, origin, idempotency_key, to_address,
+                id, organization_id, origin, idempotency_key, to_address, subject,
                 campaign_id, campaign_lead_id, email_account_id, message_id, status, sent_at
             ) VALUES
-                (${OE_A1}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-a1', 'alice@lead.test',
+                (${OE_A1}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-a1', 'alice@lead.test', 'Hi',
                  ${CAMP_A}::uuid, ${CL_A1}::uuid, ${ACCOUNT_A}::uuid, ${OE_A1_MESSAGE_ID}, 'sent', now()),
-                (${OE_A_DUP1}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-dup1', 'dup@lead.test',
-                 ${CAMP_A}::uuid, ${CL_A_DUP1}::uuid, ${ACCOUNT_A}::uuid, 'dup1@mail.test', 'sent', now()),
-                (${OE_A_DUP2}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-dup2', 'dup@lead.test',
-                 ${CAMP_A}::uuid, ${CL_A_DUP2}::uuid, ${ACCOUNT_A}::uuid, 'dup2@mail.test', 'sent', now()),
-                (${OE_A_MULTI_A}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-multi-a', 'multi@lead.test',
+                (${OE_A_AMB1}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-amb1', 'amb@lead.test', 'Hi',
+                 ${CAMP_A}::uuid, ${CL_A_AMB1}::uuid, ${ACCOUNT_A}::uuid, 'amb1@mail.test', 'sent', now()),
+                (${OE_A_AMB2}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-amb2', 'amb@lead.test', 'Hi',
+                 ${CAMP_A2}::uuid, ${CL_A_AMB2}::uuid, ${ACCOUNT_A}::uuid, 'amb2@mail.test', 'sent', now()),
+                (${OE_A_MULTI_A}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-multi-a', 'multi@lead.test', 'Hi',
                  ${CAMP_A}::uuid, ${CL_A_MULTI_A}::uuid, ${ACCOUNT_A}::uuid, 'multiA@mail.test', 'sent', now()),
-                (${OE_A_MULTI_A2}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-multi-a2', 'multi@lead.test',
+                (${OE_A_MULTI_A2}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-multi-a2', 'multi@lead.test', 'Hi',
                  ${CAMP_A2}::uuid, ${CL_A_MULTI_A2}::uuid, ${ACCOUNT_A2}::uuid, 'multiA2@mail.test', 'sent', now()),
-                (${OE_B1}::uuid, ${ORG_B}::uuid, 'agentic', 'oe-b1', 'alice@lead.test',
+                (${OE_B1}::uuid, ${ORG_B}::uuid, 'agentic', 'oe-b1', 'alice@lead.test', 'Hi',
                  ${CAMP_B}::uuid, ${CL_B1}::uuid, ${ACCOUNT_B}::uuid, 'thread-b1-root@mail.test', 'sent', now())
             ON CONFLICT (id) DO NOTHING
         `
@@ -425,14 +423,14 @@ describe('materializeProviderEvent — address heuristic and tenant safety', () 
         }
     })
 
-    it('leaves an ambiguous address (two leads, same email) unattributed', async () => {
+    it('leaves an ambiguous address (one lead across two campaigns) unattributed', async () => {
         const sql = connect()
         try {
             const eventId = await insertEvent(sql, {
                 providerMessageId: 'native-ambiguous',
-                fromAddress: 'dup@lead.test',
+                fromAddress: 'amb@lead.test',
                 emailAccountId: ACCOUNT_A,
-                textBody: 'which lead am I?',
+                textBody: 'which campaign thread am I?',
             })
             const result = await materialize(sql, eventId)
             expect(result.attribution.matchStrategy).toBe('none')
