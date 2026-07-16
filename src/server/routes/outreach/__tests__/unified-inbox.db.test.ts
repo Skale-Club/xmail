@@ -382,6 +382,25 @@ describe('unified inbox — opaque, stable, filter-bound cursor', () => {
     it('rejects a malformed cursor with 400', async () => {
         expect((await call(`/conversations?organizationId=${ORG_A}&cursor=not-a-real-cursor`)).status).toBe(400)
     })
+
+    // W-1: a well-shaped cursor whose (unkeyed) fingerprint still matches the current filters but
+    // whose keyset fields are corrupted used to pass decode and throw on the ::timestamp / ::uuid
+    // cast in the query → a self-inflicted 500. The codec now rejects it → 400, like any bad cursor.
+    it('returns 400 (not 500) for a valid-fingerprint cursor with a malformed timestamp or id', async () => {
+        const page1 = await call(`/conversations?organizationId=${ORG_A}&limit=2`)
+        const cursor = page1.body.nextCursor as string
+        expect(cursor).toBeTruthy()
+
+        const payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+        // Keep `f`/`v` intact so the filter fingerprint still matches — only the keyset is corrupt.
+        const badTs = Buffer.from(JSON.stringify({ ...payload, t: 'not-a-timestamp' }), 'utf8').toString('base64url')
+        const badId = Buffer.from(JSON.stringify({ ...payload, i: 'not-a-uuid' }), 'utf8').toString('base64url')
+
+        expect((await call(`/conversations?organizationId=${ORG_A}&limit=2&cursor=${encodeURIComponent(badTs)}`)).status).toBe(400)
+        expect((await call(`/conversations?organizationId=${ORG_A}&limit=2&cursor=${encodeURIComponent(badId)}`)).status).toBe(400)
+        // The genuine cursor still paginates.
+        expect((await call(`/conversations?organizationId=${ORG_A}&limit=2&cursor=${encodeURIComponent(cursor)}`)).status).toBe(200)
+    })
 })
 
 describe('unified inbox — conversation detail', () => {

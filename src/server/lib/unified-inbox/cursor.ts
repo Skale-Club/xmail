@@ -19,10 +19,14 @@
 // fingerprint only guarantees a cursor is used with the query that produced it.
 
 import { createHash } from 'node:crypto'
+import { z } from 'zod'
 import type { OutreachConversationStatus } from '@/db/schema'
 
 /** Current cursor envelope version. Bumped if the payload shape ever changes. */
 const CURSOR_VERSION = 1
+
+/** Reused UUID validator (same shape the routes enforce with `z.string().uuid()`). */
+const uuidSchema = z.string().uuid()
 
 /**
  * The canonical filter set a conversation list query runs under. Every field that
@@ -128,6 +132,17 @@ export function decodeConversationCursor(
     }
     if (typeof envelope.f !== 'string' || typeof envelope.t !== 'string' || typeof envelope.i !== 'string') {
         throw new ConversationCursorError('Invalid cursor fields')
+    }
+    // The fingerprint is UNKEYED (a client can recompute it for its own filters), so a well-shaped
+    // envelope can still carry a `t`/`i` that is a string but not a real timestamp / UUID. Validate
+    // the keyset value shape HERE so the query's `${t}::timestamp` / `${i}::uuid` casts can never
+    // throw downstream — that would surface a self-inflicted 500 instead of the correct 400 the
+    // route already maps ConversationCursorError to. Purely defensive; no cross-tenant impact.
+    if (Number.isNaN(Date.parse(envelope.t))) {
+        throw new ConversationCursorError('Invalid cursor timestamp')
+    }
+    if (!uuidSchema.safeParse(envelope.i).success) {
+        throw new ConversationCursorError('Invalid cursor id')
     }
     if (envelope.f !== fingerprintConversationFilters(filters)) {
         throw new ConversationCursorError('Cursor does not match the current filter set')

@@ -3,6 +3,7 @@ import {
     ConversationCursorError,
     decodeConversationCursor,
     encodeConversationCursor,
+    fingerprintConversationFilters,
     type ConversationCursorFilters,
     type ConversationCursorPosition,
 } from '../cursor'
@@ -89,6 +90,28 @@ describe('conversation cursor — opaque, stable, keyset codec', () => {
         const cursor = encodeConversationCursor(POSITION, BASE_FILTERS)
         const payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
         payload.i = 12345 // id should be a string
+        const bad = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
+        expect(() => decodeConversationCursor(bad, BASE_FILTERS)).toThrow(ConversationCursorError)
+    })
+
+    // W-1: the fingerprint is UNKEYED, so a caller can recompute it for their own filters and
+    // craft a well-shaped cursor whose `t`/`i` are strings but not a real timestamp / UUID. Those
+    // must be rejected in the codec (→ ConversationCursorError → 400) rather than passed through to
+    // the query, where the ::timestamp / ::uuid cast throws and surfaces as a self-inflicted 500.
+    it('rejects a valid-fingerprint cursor whose timestamp field is not a timestamp', () => {
+        const cursor = encodeConversationCursor(POSITION, BASE_FILTERS)
+        const payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+        expect(payload.f).toBe(fingerprintConversationFilters(BASE_FILTERS)) // fingerprint still matches
+        payload.t = 'not-a-timestamp'
+        const bad = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
+        expect(() => decodeConversationCursor(bad, BASE_FILTERS)).toThrow(ConversationCursorError)
+    })
+
+    it('rejects a valid-fingerprint cursor whose id field is not a UUID', () => {
+        const cursor = encodeConversationCursor(POSITION, BASE_FILTERS)
+        const payload = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+        expect(payload.f).toBe(fingerprintConversationFilters(BASE_FILTERS))
+        payload.i = 'not-a-uuid'
         const bad = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
         expect(() => decodeConversationCursor(bad, BASE_FILTERS)).toThrow(ConversationCursorError)
     })
