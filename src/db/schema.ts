@@ -779,9 +779,13 @@ export const campaigns = pgTable('campaigns', {
     // Tracking settings
     trackOpens: boolean('track_opens').default(true).notNull(),
     trackClicks: boolean('track_clicks').default(true).notNull(),
-    // Agentic follow-up (P001/P002, migration 034) — OFF by default.
+    // Agentic follow-up (P001/P002, migration 034) — legacy direct-send path, OFF by default.
     agenticFollowupEnabled: boolean('agentic_followup_enabled').default(false).notNull(),
     maxFollowUps: integer('max_follow_ups').default(2).notNull(),
+    // Phase 23 (AI-03, migration 043): per-campaign AI autonomy opt-in — OFF by default.
+    // EFFECTIVE autonomy is the INTERSECTION of this flag AND outreach_ai_settings.autonomous_enabled
+    // AND a clear org kill switch AND the Phase 18 delivery policy. This flag alone never sends.
+    aiAutonomousEnabled: boolean('ai_autonomous_enabled').default(false).notNull(),
     // Statistics (cached)
     totalLeads: integer('total_leads').default(0).notNull(),
     leadsContacted: integer('leads_contacted').default(0).notNull(),
@@ -2140,3 +2144,121 @@ export type InboxSendCommand = typeof inboxSendCommands.$inferSelect
 export type NewInboxSendCommand = typeof inboxSendCommands.$inferInsert
 export type InboxAttachment = typeof inboxAttachments.$inferSelect
 export type NewInboxAttachment = typeof inboxAttachments.$inferInsert
+
+// ============================================================
+// AI inbox automation + audit (Phase 23 AI-01 / AI-03 / AI-05) — migration 043
+// ============================================================
+// Two SEPARATE default-off controls plus an append-only AI-run audit. Tables mirror 043
+// byte-for-byte on names. EFFECTIVE autonomy is the INTERSECTION of the org and campaign flags
+// with the kill switch and the Phase 18 delivery policy — never a single stored "on" bit.
+
+export type OutreachAiRunKind = 'draft' | 'autonomous'
+export type OutreachAiRunStatus =
+    | 'pending'
+    | 'running'
+    | 'awaiting_approval'
+    | 'completed'
+    | 'failed'
+    | 'deferred'
+    | 'cancelled'
+export type OutreachAiRunAction = 'draft' | 'wait' | 'complete' | 'escalate' | 'none'
+
+/**
+ * Per-organization AI controls. draftAssistanceEnabled and autonomousEnabled are SEPARATE
+ * permissions, BOTH default OFF. autonomyPausedAt is the immediate org kill switch. This row alone
+ * never authorizes an autonomous send — the campaign flag + policy gate complete the intersection.
+ */
+export const outreachAiSettings = pgTable('outreach_ai_settings', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').notNull().unique().references(() => organizations.id, { onDelete: 'cascade' }),
+    draftAssistanceEnabled: boolean('draft_assistance_enabled').default(false).notNull(),
+    autonomousEnabled: boolean('autonomous_enabled').default(false).notNull(),
+    autonomyPausedAt: timestamp('autonomy_paused_at'),
+    autonomyPausedReason: text('autonomy_paused_reason'),
+    modelProfile: text('model_profile'),
+    maxAutonomousFollowUps: integer('max_autonomous_follow_ups').default(2).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    maxFollowUpsCheck: check('outreach_ai_settings_max_follow_ups_check', sql`${table.maxAutonomousFollowUps} >= 0 AND ${table.maxAutonomousFollowUps} <= 100`),
+    pauseReasonRequiresPause: check('outreach_ai_settings_pause_reason_requires_pause', sql`${table.autonomyPausedReason} IS NULL OR ${table.autonomyPausedAt} IS NOT NULL`),
+}))
+
+/**
+ * Append-only AI-run audit. Stores stable input message REFERENCES + a deterministic context hash,
+ * the prompt version / provider / model / allowlisted parameters, the sanitized draft, the policy
+ * result, actor/approval, and the durable send-command / outreach-email links. It NEVER stores API
+ * keys, Authorization headers, or the system prompt / hidden reasoning (locked decision #5).
+ */
+export const outreachAiRuns = pgTable('outreach_ai_runs', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    conversationId: uuid('conversation_id'),
+    campaignId: uuid('campaign_id'),
+    campaignLeadId: uuid('campaign_lead_id'),
+    triggerMessageId: uuid('trigger_message_id'),
+    inputMessageIds: jsonb('input_message_ids').$type<string[]>().default([]).notNull(),
+    contextHash: text('context_hash'),
+    runKind: text('run_kind').$type<OutreachAiRunKind>().notNull(),
+    status: text('status').$type<OutreachAiRunStatus>().default('pending').notNull(),
+    action: text('action').$type<OutreachAiRunAction>(),
+    promptVersion: text('prompt_version'),
+    provider: text('provider'),
+    model: text('model'),
+    modelParameters: jsonb('model_parameters').$type<Record<string, unknown>>().default({}).notNull(),
+    outputSubject: text('output_subject'),
+    outputBody: text('output_body'),
+    outputOutcome: text('output_outcome'),
+    policyCode: text('policy_code'),
+    policyRetryAt: timestamp('policy_retry_at'),
+    actorUserId: uuid('actor_user_id'),
+    approvedByUserId: uuid('approved_by_user_id'),
+    approvedAt: timestamp('approved_at'),
+    sendCommandId: uuid('send_command_id'),
+    outreachEmailId: uuid('outreach_email_id'),
+    leaseToken: uuid('lease_token'),
+    leaseExpiresAt: timestamp('lease_expires_at'),
+    attempts: integer('attempts').default(0).notNull(),
+    maxAttempts: integer('max_attempts').default(5).notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    latencyMs: integer('latency_ms'),
+    promptTokens: integer('prompt_tokens'),
+    completionTokens: integer('completion_tokens'),
+    totalTokens: integer('total_tokens'),
+    errorCode: text('error_code'),
+    errorDetail: text('error_detail'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    orgIdempotencyUnique: uniqueIndex('outreach_ai_runs_org_idempotency_unique').on(table.organizationId, table.idempotencyKey),
+    idxClaim: index('idx_outreach_ai_runs_claim').on(table.createdAt),
+    idxLease: index('idx_outreach_ai_runs_lease').on(table.leaseExpiresAt),
+    idxOrgCreated: index('idx_outreach_ai_runs_org_created').on(table.organizationId, table.createdAt),
+    idxConversation: index('idx_outreach_ai_runs_conversation').on(table.organizationId, table.conversationId, table.createdAt),
+    idxCampaign: index('idx_outreach_ai_runs_campaign').on(table.organizationId, table.campaignId, table.createdAt),
+    idxSendCommand: index('idx_outreach_ai_runs_send_command').on(table.organizationId, table.sendCommandId),
+    kindCheck: check('outreach_ai_runs_kind_check', sql`${table.runKind} IN ('draft', 'autonomous')`),
+    statusCheck: check('outreach_ai_runs_status_check', sql`${table.status} IN ('pending', 'running', 'awaiting_approval', 'completed', 'failed', 'deferred', 'cancelled')`),
+    actionCheck: check('outreach_ai_runs_action_check', sql`${table.action} IS NULL OR ${table.action} IN ('draft', 'wait', 'complete', 'escalate', 'none')`),
+    leaseCheck: check('outreach_ai_runs_lease_check', sql`(${table.leaseToken} IS NULL) = (${table.leaseExpiresAt} IS NULL)`),
+    attemptsCheck: check('outreach_ai_runs_attempts_check', sql`${table.attempts} >= 0 AND ${table.maxAttempts} >= 1 AND ${table.attempts} <= ${table.maxAttempts}`),
+    idempotencyKeyCheck: check('outreach_ai_runs_idempotency_key_check', sql`length(btrim(${table.idempotencyKey})) > 0`),
+    approvalCheck: check('outreach_ai_runs_approval_check', sql`(${table.approvedByUserId} IS NULL) = (${table.approvedAt} IS NULL)`),
+}))
+
+export const outreachAiSettingsRelations = relations(outreachAiSettings, ({ one }) => ({
+    organization: one(organizations, { fields: [outreachAiSettings.organizationId], references: [organizations.id] }),
+}))
+
+export const outreachAiRunsRelations = relations(outreachAiRuns, ({ one }) => ({
+    organization: one(organizations, { fields: [outreachAiRuns.organizationId], references: [organizations.id] }),
+    conversation: one(outreachConversations, { fields: [outreachAiRuns.conversationId], references: [outreachConversations.id] }),
+    campaign: one(campaigns, { fields: [outreachAiRuns.campaignId], references: [campaigns.id] }),
+    actor: one(users, { fields: [outreachAiRuns.actorUserId], references: [users.id] }),
+    sendCommand: one(inboxSendCommands, { fields: [outreachAiRuns.sendCommandId], references: [inboxSendCommands.id] }),
+}))
+
+export type OutreachAiSettings = typeof outreachAiSettings.$inferSelect
+export type NewOutreachAiSettings = typeof outreachAiSettings.$inferInsert
+export type OutreachAiRun = typeof outreachAiRuns.$inferSelect
+export type NewOutreachAiRun = typeof outreachAiRuns.$inferInsert
