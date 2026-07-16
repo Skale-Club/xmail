@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.3
-milestone_name: — Outreach Hardening)
-status: verifying
-stopped_at: Completed 17-04-PLAN.md (daily outreach digest cron) — Phase 17 + v1.3 milestone DONE
-last_updated: "2026-05-17T15:50:38.131Z"
+milestone: v1.4
+milestone_name: Reliable Outreach + Unified Inbox
+status: planning
+stopped_at: Phases 18-23 planned and checker-reviewed; ready to execute Phase 18
+last_updated: "2026-07-15T00:00:00.000Z"
 progress:
-  total_phases: 9
-  completed_phases: 9
-  total_plans: 28
-  completed_plans: 28
-  percent: 100
+  total_phases: 6
+  completed_phases: 0
+  total_plans: 24
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -27,15 +27,15 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 17
+Phase: 18
 Plan: Not started
-Milestone: v1.3 (Outreach Hardening) — **all code complete**
+Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
-Status: Phase 17 complete — ready for verification
+Status: Phases 18–23 planned and reviewed; ready to execute Phase 18
 
-**Resume point:** Verification pass on Phase 17, then attend `.planning/OPERATOR-CHECKLIST.md` items (certbot install on Hetzner, Hetzner port 25 ticket, Thunderbird end-to-end test).
+**Resume point:** Execute `18-01-PLAN.md`. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
 
-Progress: [██████████] 100% (code 28/28 plans done; v1.2 ops still pending)
+Progress: [----------] 0% (24 executable v1.4 plans authored; no product code executed; v1.2 ops still pending independently)
 
 ### v1.2 Phase Status
 
@@ -82,6 +82,7 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 ### Roadmap Evolution
 
 - 2026-05-16: Phase 14 added — **Outreach P0 fixes** (numbered 14 to follow v1.2 phases 10-13; effectively kicks off informal milestone v1.3 "Outreach Hardening"). Driven by deep audit at `.planning/debug/outreach-system-deep-audit.md` (10 P0 / 20 P1 / 19 P2 findings).
+- 2026-07-15: Opened milestone v1.4 with phases 18–23 for outreach execution reliability, provider parity, product/API consistency, Unified Inbox, and guarded AI automation. Source: `.planning/AUDIT-PRD.md`; traceability: `.planning/REQUIREMENTS.md`.
 
 ### Decisions (v1.3 — Outreach Hardening)
 
@@ -114,7 +115,7 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-05-17T15:46:34.589Z
-Stopped at: Completed 17-04-PLAN.md (daily outreach digest cron) — Phase 17 + v1.3 milestone DONE
+Last session: 2026-07-15T00:00:00.000Z
+Stopped at: Authored and checker-reviewed all 24 plans for phases 18–23; no product code executed
 Resume file: None
-Next action: execute `.planning/OPERATOR-CHECKLIST.md` section 2 (install certbot on Hetzner) — unblocks Thunderbird TLS connection
+Next action: execute `.planning/phases/18-outreach-safety-and-execution-reliability/18-01-PLAN.md`
