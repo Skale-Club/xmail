@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
-status: executing
-last_updated: "2026-07-16T03:03:48.872Z"
+status: verifying
+last_updated: "2026-07-16T03:25:19.797Z"
 progress:
   total_phases: 14
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 45
-  completed_plans: 20
-  percent: 44
+  completed_plans: 21
+  percent: 47
 ---
 
 # Project State
@@ -26,15 +26,15 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 18 (Outreach Safety and Execution Reliability) — EXECUTING
+Phase: 18 (Outreach Safety and Execution Reliability) — COMPLETE
 Plan: 4 of 4
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
-Status: Ready to execute
+Status: Phase complete — ready for verification
 
-**Resume point:** Execute `18-04-PLAN.md`. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
+**Resume point:** Verify Phase 18, then advance to Phase 19. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
 
-Progress: [████░░░░░░] 44%
+Progress: [█████░░░░░] 47%
 
 ### v1.2 Phase Status
 
@@ -114,10 +114,10 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T03:03:48.864Z
-Stopped at: Completed 18-03-PLAN.md
+Last session: 2026-07-16T03:25:19.788Z
+Stopped at: Completed 18-04-PLAN.md
 Resume file: None
-Next action: execute `.planning/phases/18-outreach-safety-and-execution-reliability/18-04-PLAN.md`
+Next action: verify Phase 18 and continue with Phase 19 provider parity.
 
 ## Performance Metrics
 
@@ -126,6 +126,7 @@ Next action: execute `.planning/phases/18-outreach-safety-and-execution-reliabil
 | Phase 18 P01 | 13 min | 3 tasks | 11 files |
 | Phase 18 P02 | 8 min | 2 tasks | 4 files |
 | Phase 18 P03 | 18 min | 2 tasks | 10 files |
+| Phase 18 P04 | 16 min | 3 tasks | 11 files |
 
 ## Decisions
 
@@ -134,3 +135,6 @@ Next action: execute `.planning/phases/18-outreach-safety-and-execution-reliabil
 - [Phase 18]: Unknown provider acceptance becomes held and is never retried automatically. — SMTP cannot prove exactly-once delivery after remote acceptance and process loss.
 - [Phase 18]: Every dispatch finalize is conditioned on the owning lease token. — Expired workers cannot overwrite a newer recovery decision.
 - [Phase 18]: Retry classification distinguishes known pre-acceptance negatives from terminal and ambiguous failures. — Only safe SMTP 4xx, HTTP 408/429/5xx, DNS, and pre-DATA connection failures receive bounded backoff.
+- [Phase 18]: Rank due work per account before applying the global cap. — One blocked or backlogged inbox cannot starve other verified accounts.
+- [Phase 18]: All outreach origins use one durable dispatcher boundary. — Campaign, manual, and agentic sends share policy, leases, retries, and idempotency.
+- [Phase 18]: Due-work selection and campaign completion import one exhaustive terminal-status set. — New lead statuses cannot silently diverge between scheduling and completion.

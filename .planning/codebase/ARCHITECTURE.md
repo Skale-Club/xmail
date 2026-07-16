@@ -229,6 +229,7 @@ Users
 | Monolithic single-process deployment | Simpler ops, single deploy, shared DB connection pool | Harder to scale individual subsystems independently |
 | Drizzle ORM with raw SQL for analytics | Type-safe schema, but raw SQL needed for upserts/increments (`tracking.ts`) | Split pattern — some queries use ORM, some use `db.execute()` |
 | Database polling for jobs (no message queue) | Simpler infrastructure, no Redis/SQS dependency | Higher latency for job processing (1-5 min poll intervals) |
+| Durable outreach dispatcher with origin adapters | Campaign, manual, and agentic sends share policy, leases, idempotency, and retry state | Provider-specific MIME parity remains an adapter concern |
 | Supabase for auth + Postgres | Managed auth service, RLS for multi-tenancy, single vendor | Vendor lock-in, RLS policies in raw SQL migrations |
 | Express 5 (beta) | Needed for modern middleware patterns | `req.params` vs `req.query` inconsistency noted in CLAUDE.md |
 | Single schema.ts file (1250+ lines) | Simple discovery, all types in one place, shared across modules | Very large file, harder to navigate as domain grows |
