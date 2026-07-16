@@ -37,6 +37,7 @@ export default defineConfig({
                     name: 'postgres',
                     environment: 'node',
                     include: ['src/**/*.db.{test,spec}.ts'],
+                    globalSetup: ['./src/test/postgres-global-setup.ts'],
                     restoreMocks: true,
                 },
             },
