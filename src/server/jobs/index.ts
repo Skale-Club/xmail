@@ -55,7 +55,8 @@ export function startJobs(): void {
         })
     })
 
-    // Process outreach sequences every 5 minutes (advisory-locked at the DB layer)
+    // Process outreach sequences and terminal campaign completion every 5 minutes.
+    // Both operations run inside the same advisory-locked tick, including empty due-work ticks.
     cron.schedule('*/5 * * * *', () => {
         runOutreachProcessorWithLock()
             .catch((err) => {

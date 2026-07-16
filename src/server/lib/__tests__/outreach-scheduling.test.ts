@@ -46,6 +46,18 @@ describe('campaign lead progress contract', () => {
         expect(isCampaignProgressComplete([{ status, completedAt: new Date() }])).toBe(true)
     })
 
+    it.each([
+        ['new', false],
+        ['contacted', false],
+        ['replied', true],
+        ['interested', true],
+        ['not_interested', true],
+        ['bounced', true],
+        ['unsubscribed', true],
+    ] as const)('completes a campaign with one %s lead only when terminal=%s', (status, complete) => {
+        expect(isCampaignProgressComplete([{ status, completedAt: null }])).toBe(complete)
+    })
+
     it('requires at least one lead and rejects any incomplete nonterminal lead', () => {
         expect(isCampaignProgressComplete([])).toBe(false)
         expect(isCampaignProgressComplete([
