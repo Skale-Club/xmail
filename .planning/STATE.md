@@ -27,8 +27,9 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 21 (Unified Inbox Foundation) — IMPLEMENTED (4/4 plans), in phase-gate review
-Plan: 4 of 4 complete (21-01 schema+migration 041, 21-02 materializer, 21-03 provider parity+outbound+backfill, 21-04 read API)
+Phase: 22 (Unified Inbox Operator Experience) — NEXT
+Plan: 0 of N
+Phase 21 (Unified Inbox Foundation) — COMPLETE + VERIFIED (UIF-01..05, 43/43 must-haves; 3-lens review 0 critical + 3 warnings all fixed and re-reviewed; 527/527 tests deterministic)
 Phase 20 (Outreach Product and API Consistency) — COMPLETE + VERIFIED (CONS-01..07; security + data-migration reviews clean; verifier found 1 blocking gap + 5 non-blocking, all fixed and re-reviewed clean; 422/422 tests)
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
@@ -38,7 +39,7 @@ Status: Phase 21 code complete (519 tests, deterministic); running 3-lens review
 
 **Also this session:** made the Vitest postgres project a deterministic gate (commit a87ee0b) — root-level fileParallelism:false + container max_connections=300 + a suite that self-applies its migration. This fixed the flaky deadlocks/timeouts that dogged phases 19-20 reviews.
 
-**Resume point:** Close Phase 21 after review-fix, then execute Phase 22 (Unified Inbox operator UX) and 23 (guarded AI automation).
+**Resume point:** Execute Phase 22 (Unified Inbox operator UX — the frontend on the Phase 21 read API + reply/forward/actions), then 23 (guarded AI automation).
 
 **Operator prerequisites accumulated (do NOT auto-apply):**
 

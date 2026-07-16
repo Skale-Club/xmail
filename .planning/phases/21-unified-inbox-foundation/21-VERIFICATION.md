@@ -146,3 +146,31 @@ None required to accept Phase 21. Live-provider ingestion (real IMAP UIDVALIDITY
 ---
 _Verified: 2026-07-16T16:05:00Z_
 _Verifier: Claude (gsd-verifier) — source inspection + fresh twice-run gates_
+
+## Resolution addendum (2026-07-16, post review-fix)
+
+The phase passed verification with no gaps. It also went through a full 3-lens code review
+(`21-REVIEW.md`) — idempotency/concurrency, tenant-isolation/API, and requirements verification —
+which found **0 critical**, 3 warnings, and 2 accepted design observations. All actionable warnings
+were fixed and independently re-reviewed:
+
+- **W-1 (cursor 400-not-500)** — a malformed keyset field in a fingerprint-valid cursor returned 500.
+  Fixed by validating `t`/`i` shape in the codec. The re-review found the first fix used `Date.parse`,
+  which accepts calendar-invalid dates (`2026-02-30`) that Postgres rejects — a residual (N-1) of the
+  same defect. Closed with a strict validator (format regex + range gates + UTC calendar round-trip)
+  that matches `timestamp::text` exactly while rejecting rolled-over dates. Real microsecond-precision
+  cursors still decode.
+- **W-2 (thread-split race)** — the cron materializer and the operator backfill used distinct advisory
+  locks and could split a header-less-root non-outreach thread into two conversations if run
+  concurrently. Fixed by pointing the backfill at the cron materializer's lock, making them mutually
+  exclusive (one lock, deadlock-free). Campaign reply attribution was never affected. Re-review
+  confirmed no in-tree caller depends on the old always-run behavior and skip-and-return is retry-safe.
+- **O-1 (poison-event auto-recovery)** and **O-2 (inline outbound await)** — accepted as designed
+  (poison-park is correct; inline await never delays the sent mail), documented, not changed.
+
+**Fresh gates after fixes:** `npm run test` **527 passed (45 files)**, green and byte-identical on
+repeat runs; build exit 0; lint 0 warnings; client and server `tsc --noEmit` both clean.
+
+Phase 21 status remains **passed**, now with the review warnings resolved. The Unified Inbox
+foundation (schema, provider-neutral materializer, cross-provider ingestion, outbound + backfill, and
+the read API) is complete and safe to build the Phase 22 operator UX on top of.
