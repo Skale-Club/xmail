@@ -35,7 +35,9 @@ import { encryptSecret } from '../crypto'
 import {
     GRAPH_DELTA_INBOX_PATH,
     OutlookGraphError,
+    evaluateOutlookOutreachCapability,
     fetchOutlookInboxDelta,
+    findMissingOutlookScopes,
     type OutlookGraphMessage,
 } from '../outlook'
 import {
@@ -681,5 +683,127 @@ describe('Graph inbound obeys the shared inbound contracts', () => {
 
         expect(store.retries()).toHaveLength(1)
         expect(store.retries()[0].retryAt?.getTime()).toBe(NOW.getTime() + 90_000)
+    })
+})
+
+// ---------------------------------------------------------------------------
+// PROV-02 — activation gate
+// ---------------------------------------------------------------------------
+
+describe('findMissingOutlookScopes', () => {
+    it('accepts fully-qualified scope URIs and any casing', () => {
+        // Graph's token endpoint returns either shape. A strict string compare would fail
+        // the gate for every correctly-granted mailbox.
+        expect(findMissingOutlookScopes([
+            'https://graph.microsoft.com/Mail.Read',
+            'https://graph.microsoft.com/mail.readwrite',
+            'MAIL.SEND',
+            'offline_access',
+        ])).toEqual([])
+    })
+
+    it('names exactly what is missing', () => {
+        expect(findMissingOutlookScopes(['Mail.Send'])).toEqual(['Mail.Read', 'Mail.ReadWrite'])
+    })
+
+    it('treats an absent or malformed scope list as granting nothing', () => {
+        expect(findMissingOutlookScopes(null)).toEqual(['Mail.Read', 'Mail.ReadWrite', 'Mail.Send'])
+        expect(findMissingOutlookScopes([42, {}])).toEqual(['Mail.Read', 'Mail.ReadWrite', 'Mail.Send'])
+    })
+})
+
+describe('evaluateOutlookOutreachCapability', () => {
+    const account: {
+        id: string
+        organizationId: string
+        email: string
+        outlookMailboxId: string | null
+    } = {
+        id: ACCOUNT_ID,
+        organizationId: ORGANIZATION_ID,
+        email: 'seller@example.com',
+        outlookMailboxId: MAILBOX_ID,
+    }
+
+    function evaluate(overrides: {
+        account?: typeof account
+        mailbox?: unknown
+        probeInbound?: () => Promise<void>
+    } = {}) {
+        return evaluateOutlookOutreachCapability({
+            account: overrides.account ?? account,
+            loadMailbox: async () => (overrides.mailbox === undefined ? outlookMailbox() : overrides.mailbox) as never,
+            probeInbound: overrides.probeInbound ?? (async () => {}),
+        })
+    }
+
+    it('activates only when scopes and a real inbound sync both succeed', async () => {
+        const probeInbound = vi.fn(async () => {})
+        const result = await evaluate({ probeInbound })
+
+        expect(result).toMatchObject({ verified: true })
+        expect(probeInbound).toHaveBeenCalledTimes(1)
+        // The response must not imply we exercised the send path — Graph has no zero-send probe.
+        expect(result).toHaveProperty('gate', expect.stringContaining('asserted from the granted Mail.Send scope'))
+    })
+
+    it('never activates a send-only mailbox', async () => {
+        // The whole point of PROV-02: Mail.Send alone lets us mail leads we can never hear
+        // back from, so bounces accumulate invisibly.
+        const result = await evaluate({ mailbox: outlookMailbox({ scopes: ['Mail.Send'] }) })
+
+        expect(result).toMatchObject({
+            verified: false,
+            status: 'failed',
+            code: 'outlook_missing_scopes',
+            missingScopes: ['Mail.Read', 'Mail.ReadWrite'],
+        })
+    })
+
+    it('refuses an account with no linked mailbox', async () => {
+        const result = await evaluate({ account: { ...account, outlookMailboxId: null } })
+        expect(result).toMatchObject({ verified: false, status: 'failed', code: 'outlook_mailbox_unlinked' })
+    })
+
+    it('refuses a mailbox that does not resolve inside the account organization', async () => {
+        // Tenant isolation is JS-side here; a mailbox id pointing at another tenant must not
+        // resolve, and the gate must not fall back to an unscoped lookup.
+        const result = await evaluate({ mailbox: null })
+        expect(result).toMatchObject({ verified: false, status: 'failed', code: 'outlook_mailbox_unreachable' })
+    })
+
+    it('refuses a mailbox that owns a different address', async () => {
+        const result = await evaluate({ mailbox: outlookMailbox({ email: 'someone-else@example.com' }) })
+        expect(result).toMatchObject({ verified: false, status: 'failed', code: 'outlook_mailbox_address_mismatch' })
+    })
+
+    it('refuses an expired or revoked grant', async () => {
+        const result = await evaluate({ mailbox: outlookMailbox({ status: 'expired' }) })
+        expect(result).toMatchObject({ verified: false, status: 'failed', code: 'outlook_mailbox_inactive' })
+    })
+
+    it('keeps the account pending when the initial sync is only throttled', async () => {
+        // Retryable: a throttle is not a reason to make someone re-consent.
+        const result = await evaluate({
+            probeInbound: async () => { throw new OutlookGraphError('throttled', 429) },
+        })
+
+        expect(result).toMatchObject({ verified: false, status: 'pending', code: 'outlook_inbound_sync_failed' })
+    })
+
+    it('fails the account when Microsoft rejects the credentials', async () => {
+        const result = await evaluate({
+            probeInbound: async () => { throw new OutlookGraphError('revoked', 403) },
+        })
+
+        expect(result).toMatchObject({ verified: false, status: 'failed', code: 'outlook_auth_failed' })
+    })
+
+    it('never reports verified when the inbound probe throws for any reason', async () => {
+        const result = await evaluate({
+            probeInbound: async () => { throw new Error('socket hang up') },
+        })
+
+        expect(result.verified).toBe(false)
     })
 })

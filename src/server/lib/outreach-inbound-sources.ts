@@ -38,6 +38,7 @@ import {
     resolveImapCursor,
     type InboundEventStore,
     type InboundSource,
+    type IngestResult,
     type NormalizedInboundMessage,
     type ProviderCursorState,
 } from './outreach-inbound'
@@ -485,6 +486,32 @@ export function createGraphInboundSource(input: {
             }
         },
     }
+}
+
+/**
+ * One bounded inbound page for a single Outlook mailbox.
+ *
+ * This is the probe behind the activation gate (PROV-02): it proves read capability against
+ * the live mailbox and leaves a durable cursor behind, so "verified" means an initial sync
+ * actually happened rather than that a token merely existed. Deliberately small — the caller
+ * is a synchronous HTTP request, not a cron tick.
+ */
+export async function syncOutlookInboundOnce(input: {
+    account: { id: string; email: string; organizationId: string }
+    mailbox: OutlookMailbox
+    store: InboundEventStore
+    pageSize?: number
+}): Promise<IngestResult> {
+    return ingestInboundPage({
+        store: input.store,
+        source: createGraphInboundSource({
+            account: { id: input.account.id, email: input.account.email },
+            mailbox: input.mailbox,
+        }),
+        account: { id: input.account.id, organizationId: input.account.organizationId },
+        pageSize: input.pageSize ?? 25,
+        isKnownCorrespondent: createKnownCorrespondentLookup(input.account.id),
+    })
 }
 
 // ============================================================

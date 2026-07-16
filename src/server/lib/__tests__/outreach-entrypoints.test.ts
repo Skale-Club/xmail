@@ -151,6 +151,23 @@ describe('inbound entrypoint wiring', () => {
         expect(contents).not.toMatch(/\\Seen/)
     })
 
+    // PROV-02: the Outlook branch of the verify route used to set status 'verified' with no
+    // scope check, no token check and no network call whatsoever. The property is one of
+    // absence, so nothing but a guard stops it from coming back.
+    it('never activates an Outlook account without the capability gate', () => {
+        const contents = source('src/server/routes/outreach/email-accounts.ts')
+        expect(contents).toContain('evaluateOutlookOutreachCapability')
+        expect(contents).toContain('syncOutlookInboundOnce')
+    })
+
+    it('reads every verified outreach provider, including Outlook', () => {
+        // Outlook accounts were excluded from ingestion entirely, which is what made the
+        // provider send-only in the first place.
+        const contents = source('src/server/lib/outreach-inbound-sources.ts')
+        expect(contents).toContain('createGraphInboundSource')
+        expect(contents).toMatch(/eq\(emailAccounts\.provider, 'outlook'\)/)
+    })
+
     it('keeps one classifier rather than a second copy in the bounce job', () => {
         // processBounces used to carry its own BOUNCE_SENDERS/BOUNCE_SUBJECTS lists.
         // Two copies of "what is a bounce" is how the jobs disagreed in the first place.

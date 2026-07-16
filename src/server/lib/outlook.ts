@@ -816,6 +816,132 @@ export async function sendMimeMessageWithOutlook(input: OutlookMimeSendInput): P
     return { mailbox: sanitizeOutlookMailbox(activeMailbox), requestId }
 }
 
+// ---------------------------------------------------------------------------
+// Outreach capability gate (PROV-02)
+// ---------------------------------------------------------------------------
+
+/**
+ * Outreach needs all three: Mail.Send to deliver, Mail.Read to see replies and DSNs, and
+ * Mail.ReadWrite because the inbound reader may need to write message state later. An
+ * account granted only Mail.Send can send campaigns it can never hear the answer to — it
+ * looks healthy while silently mailing addresses that already hard-bounced.
+ */
+export const REQUIRED_OUTLOOK_OUTREACH_SCOPES = ['Mail.Read', 'Mail.ReadWrite', 'Mail.Send'] as const
+
+export type OutlookCapabilityCode =
+    | 'outlook_mailbox_unlinked'
+    | 'outlook_mailbox_unreachable'
+    | 'outlook_mailbox_address_mismatch'
+    | 'outlook_mailbox_inactive'
+    | 'outlook_missing_scopes'
+    | 'outlook_auth_failed'
+    | 'outlook_inbound_sync_failed'
+
+export type OutlookCapabilityResult =
+    | { verified: true; scopes: string[]; gate: string }
+    | {
+        verified: false
+        /** 'pending' means "try again"; 'failed' means "a human must fix the grant". */
+        status: 'pending' | 'failed'
+        code: OutlookCapabilityCode
+        missingScopes?: string[]
+    }
+
+/**
+ * Graph's token endpoint may return a scope as a bare name (`Mail.Read`) or as a fully
+ * qualified resource URI (`https://graph.microsoft.com/Mail.Read`), and casing is not
+ * guaranteed. Comparing raw strings would fail the gate for every correctly-granted mailbox.
+ */
+function normalizeScope(scope: string): string {
+    const trimmed = scope.trim()
+    const lastSegment = trimmed.slice(trimmed.lastIndexOf('/') + 1)
+    return lastSegment.toLowerCase()
+}
+
+export function findMissingOutlookScopes(
+    granted: unknown,
+    required: readonly string[] = REQUIRED_OUTLOOK_OUTREACH_SCOPES,
+): string[] {
+    const grantedSet = new Set(
+        (Array.isArray(granted) ? granted : [])
+            .filter((scope): scope is string => typeof scope === 'string')
+            .map(normalizeScope),
+    )
+    return required.filter((scope) => !grantedSet.has(normalizeScope(scope)))
+}
+
+/**
+ * Graph offers no zero-send probe for Mail.Send: creating a draft exercises Mail.ReadWrite,
+ * not Mail.Send, and the only call that proves the permission is one that actually delivers
+ * mail to a real recipient. Sending a live "test" email from an outreach inbox during
+ * verification is exactly the behaviour this phase exists to prevent, so send capability is
+ * asserted from the granted scopes while read capability is proven by a real bounded sync.
+ * The response states this gate rather than implying the send path was exercised.
+ */
+export const OUTLOOK_CAPABILITY_GATE =
+    'Send capability is asserted from the granted Mail.Send scope (Graph has no zero-send probe); '
+    + 'read capability is proven by a bounded initial inbox sync.'
+
+/**
+ * Decide whether an Outlook outreach account may be activated.
+ *
+ * Deliberately free of db/HTTP so the decision table is unit-testable: the caller injects the
+ * mailbox lookup and the inbound probe.
+ */
+export async function evaluateOutlookOutreachCapability(input: {
+    account: { id: string; organizationId: string; email: string; outlookMailboxId: string | null }
+    loadMailbox: (mailboxId: string, organizationId: string) => Promise<OutlookMailbox | null | undefined>
+    probeInbound: (mailbox: OutlookMailbox) => Promise<void>
+}): Promise<OutlookCapabilityResult> {
+    const { account } = input
+
+    if (!account.outlookMailboxId) {
+        return { verified: false, status: 'failed', code: 'outlook_mailbox_unlinked' }
+    }
+
+    // Scoped by organization: tenant isolation is JS-side (the app role bypasses RLS), so a
+    // mailbox id pointing at another tenant must not resolve.
+    const mailbox = await input.loadMailbox(account.outlookMailboxId, account.organizationId)
+    if (!mailbox) {
+        return { verified: false, status: 'failed', code: 'outlook_mailbox_unreachable' }
+    }
+
+    if (mailbox.email.trim().toLowerCase() !== account.email.trim().toLowerCase()) {
+        // Graph only lets a mailbox send as itself, so this account could never deliver.
+        return { verified: false, status: 'failed', code: 'outlook_mailbox_address_mismatch' }
+    }
+
+    if (mailbox.status !== 'active') {
+        return { verified: false, status: 'failed', code: 'outlook_mailbox_inactive' }
+    }
+
+    const missingScopes = findMissingOutlookScopes(mailbox.scopes)
+    if (missingScopes.length > 0) {
+        return { verified: false, status: 'failed', code: 'outlook_missing_scopes', missingScopes }
+    }
+
+    try {
+        await input.probeInbound(mailbox)
+    } catch (error) {
+        if (error instanceof OutlookGraphError) {
+            // A revoked or under-scoped grant needs a human; a throttle or a Graph outage
+            // does not. Keeping the latter 'pending' lets a retry activate the account
+            // without re-consenting, while never letting it send in the meantime.
+            const transient = error.statusCode === 429 || error.statusCode >= 500
+            if (!transient) {
+                return { verified: false, status: 'failed', code: 'outlook_auth_failed' }
+            }
+        }
+        return { verified: false, status: 'pending', code: 'outlook_inbound_sync_failed' }
+    }
+
+    return {
+        verified: true,
+        scopes: (mailbox.scopes as string[]) || [],
+        gate: OUTLOOK_CAPABILITY_GATE,
+    }
+}
+
 export async function sendMessageWithOutlook(input: OutlookSendInput) {
     const mailbox = await resolveOutlookMailboxForServer(input.organizationId, input.mailboxId)
 

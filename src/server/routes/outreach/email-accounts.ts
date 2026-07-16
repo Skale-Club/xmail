@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
-import { emailAccounts, organizationUsers, users } from '../../../db/schema'
+import { emailAccounts, organizationUsers, outlookMailboxes, users } from '../../../db/schema'
 import { eq, and, desc, inArray } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { encryptSecret, decryptSecret } from '../../lib/crypto'
@@ -11,9 +11,40 @@ import { listInboxProviders } from '../../lib/inbox-providers'
 import { getNativeMailboxByEmail } from '../../lib/native-send'
 import { isPrivateHostWithDns } from '../../lib/network-guard'
 import { buildSmtpTransportOptions, resolveSmtpSecurity } from '../../lib/smtp-security'
+import {
+    evaluateOutlookOutreachCapability,
+    REQUIRED_OUTLOOK_OUTREACH_SCOPES,
+    type OutlookCapabilityCode,
+} from '../../lib/outlook'
+import { createDrizzleInboundEventStore } from '../../lib/outreach-inbound'
+import { syncOutlookInboundOnce } from '../../lib/outreach-inbound-sources'
 import { createLogger } from '../../lib/logger'
 
 const log = createLogger('outreach.email-accounts')
+
+/**
+ * Operator-facing text for a sanitized capability code. The code is what gets stored; this
+ * only ever reaches the HTTP response, so it can explain the fix without leaking Graph
+ * internals.
+ */
+function describeOutlookCapability(code: OutlookCapabilityCode, missingScopes?: string[]): string {
+    switch (code) {
+        case 'outlook_mailbox_unlinked':
+            return 'This Outlook account is not linked to a connected mailbox. Reconnect it through the Outlook OAuth flow.'
+        case 'outlook_mailbox_unreachable':
+            return 'The linked Outlook mailbox no longer exists in this organization.'
+        case 'outlook_mailbox_address_mismatch':
+            return 'The linked Outlook mailbox belongs to a different address; Graph only permits sending as the mailbox owner.'
+        case 'outlook_mailbox_inactive':
+            return 'The Outlook grant is expired or revoked. Reconnect the mailbox.'
+        case 'outlook_missing_scopes':
+            return `Outreach needs ${REQUIRED_OUTLOOK_OUTREACH_SCOPES.join(', ')}. Missing: ${(missingScopes ?? []).join(', ')}. Reconnect and accept every permission.`
+        case 'outlook_auth_failed':
+            return 'Microsoft rejected the mailbox credentials. Reconnect the mailbox.'
+        case 'outlook_inbound_sync_failed':
+            return 'The initial inbox sync did not complete (Microsoft was unavailable or throttling). The account stays pending — retry verification shortly.'
+    }
+}
 
 /** Stable code so clients can branch on the TLS mismatch rather than parse the message. */
 const SMTP_TLS_MODE_MISMATCH = 'smtp_tls_mode_mismatch'
@@ -718,11 +749,64 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
         const errors: string[] = []
 
         if (account.provider === 'outlook') {
+            // PROV-02: this used to mark the account verified unconditionally — no scope
+            // check, no token check, no mailbox check, no network call at all. An Outlook
+            // inbox therefore reported "verified" while being unable to read a single reply
+            // or bounce, which is precisely how an Outlook-assigned lead kept receiving a
+            // sequence after hard-bouncing. Verified now means both directions work.
+            const capability = await evaluateOutlookOutreachCapability({
+                account,
+                loadMailbox: (mailboxId, organizationId) => db.query.outlookMailboxes.findFirst({
+                    where: and(
+                        eq(outlookMailboxes.id, mailboxId),
+                        eq(outlookMailboxes.organizationId, organizationId),
+                    ),
+                }),
+                probeInbound: (mailbox) => syncOutlookInboundOnce({
+                    account,
+                    mailbox,
+                    store: createDrizzleInboundEventStore(),
+                }).then(() => undefined),
+            })
+
+            if (!capability.verified) {
+                // Sanitized codes only: a raw Graph error can carry mailbox names, tenant
+                // ids and request context that has no business in a stored column.
+                const [updatedAccount] = await db.update(emailAccounts)
+                    .set({
+                        status: capability.status,
+                        lastError: capability.code,
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(emailAccounts.id, accountId))
+                    .returning()
+
+                log.warn({
+                    action: 'outreach.email_accounts.outlook_capability_denied',
+                    emailAccountId: account.id,
+                    code: capability.code,
+                    status: capability.status,
+                }, 'Outlook account failed the outreach capability gate')
+
+                return res.status(400).json({
+                    emailAccount: {
+                        ...updatedAccount,
+                        smtpPassword: undefined,
+                        imapPassword: undefined,
+                    },
+                    verified: false,
+                    code: capability.code,
+                    missingScopes: capability.missingScopes,
+                    errors: [describeOutlookCapability(capability.code, capability.missingScopes)],
+                })
+            }
+
             const [updatedAccount] = await db.update(emailAccounts)
                 .set({
                     status: 'verified',
                     verifiedAt: new Date(),
                     lastError: null,
+                    lastSyncAt: new Date(),
                     updatedAt: new Date(),
                 })
                 .where(eq(emailAccounts.id, accountId))
@@ -735,6 +819,9 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
                     imapPassword: undefined,
                 },
                 verified: true,
+                scopes: capability.scopes,
+                // Stated explicitly so nobody reads "verified" as "we sent a test email".
+                gate: capability.gate,
             })
         }
 
