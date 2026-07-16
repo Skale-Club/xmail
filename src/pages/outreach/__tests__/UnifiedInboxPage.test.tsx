@@ -60,7 +60,18 @@ import type {
 import { ConversationList, type ConversationListProps } from '@/components/outreach/inbox/ConversationList'
 import { ConversationThread } from '@/components/outreach/inbox/ConversationThread'
 import { BulkActionsBar, ConversationActions } from '@/components/outreach/inbox/ConversationActions'
-import type { InboxLabel, SuppressionPreview, SuppressionResult, SuppressionScope } from '@/lib/unified-inbox-api'
+import { ConversationComposer } from '@/components/outreach/inbox/ConversationComposer'
+import type {
+    CreateSendCommandInput,
+    InboxAccountOption,
+    InboxLabel,
+    InboxSendCommand,
+    InboxSnippet,
+    InboxUploadedAttachment,
+    SuppressionPreview,
+    SuppressionResult,
+    SuppressionScope,
+} from '@/lib/unified-inbox-api'
 
 // Fixed, syntactically valid UUIDs for deterministic assertions.
 const ORG_A = '11111111-1111-4111-8111-111111111111'
@@ -575,6 +586,15 @@ vi.mock('@/hooks/useUnifiedInbox', () => ({
     useInboxConversationReminders: () => ({ data: [], isLoading: false }),
     useInboxReminderMutations: () => ({ create: stubMutation(), update: stubMutation(), remove: stubMutation() }),
     useInboxSuppression: () => ({ preview: vi.fn(), apply: vi.fn().mockResolvedValue(undefined), isApplying: false }),
+    useInboxSnippets: () => ({ data: [] }),
+    useInboxComposer: () => ({
+        send: vi.fn().mockResolvedValue({ id: 'cmd-1', status: 'scheduled' }),
+        cancel: vi.fn(),
+        uploadAttachment: vi.fn(),
+        removeAttachment: vi.fn(),
+        polledCommand: null,
+        reset: vi.fn(),
+    }),
 }))
 
 // Imported AFTER the mocks so the page picks up the mocked modules.
@@ -1034,5 +1054,210 @@ describe('ConversationActions: suppression confirmation gating', () => {
         fireEvent.click(screen.getByRole('button', { name: /Block sender \(/ }))
         fireEvent.click(await screen.findByRole('button', { name: 'Block sender' }))
         expect(await screen.findByText(/was already blocked/)).toBeInTheDocument()
+    })
+})
+
+// ============================================================
+// Task 3 — reply composer: durable commands, schedule, snippets, attachments,
+// recoverable drafts, and visible command state (locked #5/#6/#7)
+// ============================================================
+
+const ACCOUNTS: InboxAccountOption[] = [
+    { id: ACCOUNT_1, email: 'rep@skale.club', provider: 'native' },
+    { id: '88888888-8888-4888-8888-888888888888', email: 'other@skale.club', provider: 'smtp' },
+]
+const SNIPPETS: InboxSnippet[] = [
+    { id: 's1', name: 'Thanks', body: 'Thanks for the reply!', shortcut: null, createdAt: '', updatedAt: '' },
+]
+
+function makeCommand(overrides: Partial<InboxSendCommand> = {}): InboxSendCommand {
+    return {
+        id: 'cmd-1',
+        conversationId: CONV_1,
+        status: 'scheduled',
+        mode: 'reply',
+        scheduledAt: null,
+        dueAt: '2026-07-16T12:00:00.000Z',
+        attempts: 0,
+        lastPolicyCode: null,
+        lastError: null,
+        idempotencyKey: 'idem',
+        createdAt: '',
+        updatedAt: '',
+        ...overrides,
+    }
+}
+
+function renderComposer(overrides: Partial<React.ComponentProps<typeof ConversationComposer>> = {}) {
+    const props: React.ComponentProps<typeof ConversationComposer> = {
+        accounts: ACCOUNTS,
+        defaultAccountId: ACCOUNT_1,
+        replyToPreview: ['lead@acme.example'],
+        replyAllCcPreview: ['colleague@acme.example'],
+        subjectPreview: 'Re: Demo request',
+        snippets: SNIPPETS,
+        onSend: vi.fn(async (_input: CreateSendCommandInput) => makeCommand()),
+        onUploadAttachment: vi.fn(async (): Promise<InboxUploadedAttachment> => ({
+            id: 'att-1', filename: 'brief.pdf', mimeType: 'application/pdf', sizeBytes: 2048, status: 'ready', createdAt: '',
+        })),
+        onRemoveAttachment: vi.fn(),
+        onCancelCommand: vi.fn(),
+        polledCommand: null,
+        ...overrides,
+    }
+    return { props, ...render(<ConversationComposer {...props} />) }
+}
+
+describe('ConversationComposer: durable reply commands', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    it('is collapsed to mode buttons and never sends inline', () => {
+        renderComposer()
+        expect(screen.getByRole('button', { name: 'Reply' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Reply all' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Forward' })).toBeInTheDocument()
+        expect(screen.queryByRole('textbox', { name: 'Reply body' })).not.toBeInTheDocument()
+    })
+
+    it('creates a durable reply command carrying a stable idempotency key (server resolves recipients)', async () => {
+        const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand())
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'Sounds good.' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+        const input = onSend.mock.calls[0][0]
+        expect(input.mode).toBe('reply')
+        expect(input.bodyText).toBe('Sounds good.')
+        expect(input.idempotencyKey).toMatch(/^inbox-ui:/)
+        // The composer NEVER supplies recipients/threading for a reply — the server resolves them.
+        expect(input).not.toHaveProperty('forwardTo')
+        expect(input.scheduledAt).toBeNull()
+    })
+
+    it('shows resolved Cc for reply-all and a server-authoritative note', () => {
+        renderComposer()
+        fireEvent.click(screen.getByRole('button', { name: 'Reply all' }))
+        expect(screen.getByText(/colleague@acme.example/)).toBeInTheDocument()
+        expect(screen.getByText(/resolved by the server/i)).toBeInTheDocument()
+    })
+
+    it('requires valid forward recipients before it can send', async () => {
+        const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand({ mode: 'forward' }))
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Forward' }))
+        const sendBtn = screen.getByRole('button', { name: /Send forward/ })
+        expect(sendBtn).toBeDisabled()
+        fireEvent.change(screen.getByRole('textbox', { name: 'Forward recipients' }), { target: { value: 'not-an-email' } })
+        expect(sendBtn).toBeDisabled()
+        fireEvent.change(screen.getByRole('textbox', { name: 'Forward recipients' }), { target: { value: 'new@partner.example' } })
+        expect(sendBtn).toBeEnabled()
+        fireEvent.click(sendBtn)
+        await waitFor(() => expect(onSend).toHaveBeenCalled())
+        expect(onSend.mock.calls[0][0].forwardTo).toEqual([{ address: 'new@partner.example', name: null }])
+    })
+
+    it('does not submit twice while a create is in flight', async () => {
+        let resolve!: (c: InboxSendCommand) => void
+        const onSend = vi.fn(() => new Promise<InboxSendCommand>((r) => { resolve = r }))
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'hi' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        // While pending, the button is disabled — a second click cannot create a duplicate command.
+        const pending = await screen.findByRole('button', { name: /Sending/ })
+        expect(pending).toBeDisabled()
+        fireEvent.click(pending)
+        expect(onSend).toHaveBeenCalledTimes(1)
+        resolve(makeCommand())
+        await waitFor(() => expect(screen.queryByRole('button', { name: /Sending/ })).not.toBeInTheDocument())
+    })
+
+    it('schedules a reply with an explicit time and shows the timezone', async () => {
+        const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand({ status: 'scheduled' }))
+        renderComposer({ onSend, organizationTimezone: 'America/Sao_Paulo' })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'later' } })
+        fireEvent.click(screen.getByRole('checkbox', { name: /Schedule for later/ }))
+        expect(screen.getByText('America/Sao_Paulo')).toBeInTheDocument()
+        fireEvent.change(screen.getByLabelText('Scheduled time'), { target: { value: '2026-07-20T09:30' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Schedule reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalled())
+        expect(onSend.mock.calls[0][0].scheduledAt).not.toBeNull()
+    })
+
+    it('inserts a snippet into the body', () => {
+        renderComposer()
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('combobox', { name: 'Insert snippet' }), { target: { value: 's1' } })
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('Thanks for the reply!')
+    })
+
+    it('shows an upload error and preserves the typed body', async () => {
+        const onUploadAttachment = vi.fn(async () => { throw new Error('attachment_too_large') })
+        renderComposer({ onUploadAttachment })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'keep me' } })
+        const file = new File([new Uint8Array(10)], 'big.pdf', { type: 'application/pdf' })
+        fireEvent.change(screen.getByLabelText('Attach file'), { target: { files: [file] } })
+        expect(await screen.findByText('attachment_too_large')).toBeInTheDocument()
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('keep me')
+    })
+
+    it('preserves the draft and shows the reason when the create fails', async () => {
+        const onSend = vi.fn(async () => { throw new Error('Access denied') })
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'my draft' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        expect(await screen.findByText('Access denied')).toBeInTheDocument()
+        // Draft is intact — nothing is cleared on failure.
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('my draft')
+    })
+
+    it('renders a recoverable policy denial from the polled command state without clearing the draft', async () => {
+        const onSend = vi.fn(async () => makeCommand({ id: 'cmd-9', status: 'scheduled' }))
+        const { rerender } = renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'draft body' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalled())
+        // The claimer defers the send; the polled command reports the recoverable code.
+        rerender(<ConversationComposer
+            accounts={ACCOUNTS}
+            defaultAccountId={ACCOUNT_1}
+            replyToPreview={['lead@acme.example']}
+            replyAllCcPreview={[]}
+            subjectPreview="Re: Demo request"
+            snippets={SNIPPETS}
+            onSend={onSend}
+            onUploadAttachment={vi.fn()}
+            polledCommand={makeCommand({ id: 'cmd-9', status: 'scheduled', lastPolicyCode: 'organization_disabled' })}
+        />)
+        expect(await screen.findByText(/Outreach is paused/)).toBeInTheDocument()
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('draft body')
+    })
+
+    it('offers Cancel for a scheduled command and calls the handler', async () => {
+        const onSend = vi.fn(async () => makeCommand({ id: 'cmd-7', status: 'scheduled' }))
+        const onCancelCommand = vi.fn()
+        renderComposer({ onSend, onCancelCommand, polledCommand: makeCommand({ id: 'cmd-7', status: 'scheduled' }) })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'x' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        const cancel = await screen.findByRole('button', { name: 'Cancel send' })
+        fireEvent.click(cancel)
+        await waitFor(() => expect(onCancelCommand).toHaveBeenCalledWith('cmd-7'))
+    })
+
+    it('asks for confirmation before discarding an unsaved draft', () => {
+        renderComposer()
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'unsaved words' } })
+        // The footer Cancel with dirty content prompts a discard confirmation, not a silent drop.
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+        expect(screen.getByRole('alertdialog', { name: 'Discard draft?' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('unsaved words')
     })
 })

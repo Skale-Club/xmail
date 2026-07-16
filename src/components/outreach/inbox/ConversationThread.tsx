@@ -20,6 +20,8 @@ export interface ConversationThreadProps {
     campaignNameById: Record<string, string>
     /** Operator action toolbar (ConversationActions), rendered in the thread header. */
     actions?: ReactNode
+    /** Reply/forward composer (ConversationComposer), rendered as a sticky thread footer. */
+    composer?: ReactNode
 }
 
 const NOT_LINKED = 'Not linked'
@@ -135,6 +137,7 @@ export function ConversationThread({
     providerByAccount,
     campaignNameById,
     actions,
+    composer,
 }: ConversationThreadProps) {
     // Latest message always expands; the latest inbound also expands so a new reply is
     // readable immediately. Older messages collapse behind a keyboard-operable toggle.
@@ -243,6 +246,8 @@ export function ConversationThread({
                     ))
                 )}
             </div>
+
+            {composer && <div className="shrink-0">{composer}</div>}
         </div>
     )
 }

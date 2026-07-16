@@ -9,6 +9,7 @@
 // Every key is scoped by `organizationId`, so switching organizations yields fresh keys
 // (no cross-tenant list/thread/count reuse) and disables fetching when no org is selected.
 
+import { useCallback, useEffect, useState } from 'react'
 import {
     useInfiniteQuery,
     useMutation,
@@ -22,11 +23,15 @@ import {
     applyInboxSuppression,
     attachInboxLabel,
     bulkUpdateInboxConversations,
+    cancelInboxSendCommand,
     createInboxLabel,
     createInboxReminder,
+    createInboxSendCommand,
+    deleteInboxAttachment,
     deleteInboxReminder,
     detachInboxLabel,
     getInboxConversation,
+    getInboxSendCommand,
     getInboxUnreadCount,
     inboxKeys,
     isInboxListQueryKey,
@@ -35,14 +40,17 @@ import {
     listInboxCampaignOptions,
     listInboxConversations,
     listInboxLabels,
+    listInboxSnippets,
     previewInboxSuppression,
     setInboxArchived,
     setInboxReadState,
     setInboxStatus,
     updateInboxReminder,
+    uploadInboxAttachment,
     type BulkInboxAction,
     type BulkInboxInput,
     type BulkInboxResult,
+    type CreateSendCommandInput,
     type InboxAccountOption,
     type InboxCampaignOption,
     type InboxConversationDetail,
@@ -53,6 +61,8 @@ import {
     type InboxLabel,
     type InboxReminder,
     type InboxReminderStatus,
+    type InboxSendCommand,
+    type InboxSnippet,
     type SuppressionScope,
 } from '../lib/unified-inbox-api'
 import { listFilterSignature, type InboxUrlState } from '../lib/unified-inbox-url'
@@ -443,6 +453,80 @@ export function useInboxReminderMutations(organizationId: string | undefined, co
         onSuccess: invalidate,
     })
     return { create, update, remove }
+}
+
+// --- Snippets --------------------------------------------------
+
+export function useInboxSnippets(organizationId: string | undefined) {
+    return useQuery<InboxSnippet[], Error>({
+        queryKey: inboxKeys.snippets(organizationId),
+        enabled: !!organizationId,
+        queryFn: () => listInboxSnippets(organizationId as string),
+        staleTime: 5 * 60_000,
+    })
+}
+
+// --- Reply composer: durable send commands + attachments (locked #5/#6/#7) ---
+// Replies are never sent from React: `send` POSTs a durable command the server resolves +
+// dispatches through the policy gate. We then POLL the command's durable state (scheduled →
+// queued → sent, or a policy-denial code) and, on a confirmed send, refresh the thread + list.
+
+const TERMINAL_COMMAND_STATUSES = new Set(['sent', 'failed', 'cancelled', 'held'])
+
+export function useInboxComposer(organizationId: string | undefined, conversationId: string | undefined) {
+    const queryClient = useQueryClient()
+    const [activeCommandId, setActiveCommandId] = useState<string | null>(null)
+
+    const commandQuery = useQuery<InboxSendCommand, Error>({
+        queryKey: inboxKeys.sendCommand(organizationId, activeCommandId ?? '__none__'),
+        enabled: !!organizationId && !!activeCommandId,
+        queryFn: () => getInboxSendCommand(organizationId as string, activeCommandId as string),
+        refetchInterval: (query) => {
+            const status = query.state.data?.status
+            if (status && TERMINAL_COMMAND_STATUSES.has(status)) return false
+            return 3000
+        },
+    })
+
+    // On a confirmed send, the thread has a new outbound message and list ordering changes.
+    const settledStatus = commandQuery.data?.status
+    useEffect(() => {
+        if (settledStatus === 'sent') {
+            if (conversationId) queryClient.invalidateQueries({ queryKey: inboxKeys.detail(organizationId, conversationId) })
+            queryClient.invalidateQueries({ predicate: isOrgListQuery(organizationId) })
+            queryClient.invalidateQueries({ queryKey: inboxKeys.unread(organizationId) })
+        }
+    }, [settledStatus, organizationId, conversationId, queryClient])
+
+    const send = useCallback(async (input: CreateSendCommandInput): Promise<InboxSendCommand> => {
+        const command = await createInboxSendCommand(organizationId as string, conversationId as string, input)
+        setActiveCommandId(command.id)
+        return command
+    }, [organizationId, conversationId])
+
+    const cancel = useCallback((commandId: string) => {
+        cancelInboxSendCommand(organizationId as string, commandId)
+            .then(() => commandQuery.refetch())
+            .catch(() => undefined)
+    }, [organizationId, commandQuery])
+
+    const uploadAttachment = useCallback(
+        (file: File) => uploadInboxAttachment(organizationId as string, conversationId as string, file),
+        [organizationId, conversationId],
+    )
+    const removeAttachment = useCallback(
+        (attachmentId: string) => deleteInboxAttachment(organizationId as string, attachmentId),
+        [organizationId],
+    )
+
+    return {
+        send,
+        cancel,
+        uploadAttachment,
+        removeAttachment,
+        polledCommand: commandQuery.data ?? null,
+        reset: () => setActiveCommandId(null),
+    }
 }
 
 // --- Suppression (destructive; server-authoritative) ----------

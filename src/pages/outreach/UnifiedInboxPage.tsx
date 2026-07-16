@@ -5,6 +5,7 @@ import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { InboxFilterRail } from '../../components/outreach/inbox/InboxFilterRail'
 import { ConversationList } from '../../components/outreach/inbox/ConversationList'
 import { ConversationThread } from '../../components/outreach/inbox/ConversationThread'
+import { ConversationComposer } from '../../components/outreach/inbox/ConversationComposer'
 import { BulkActionsBar, ConversationActions } from '../../components/outreach/inbox/ConversationActions'
 import { Button } from '../../components/ui/button'
 import { useOrganization } from '../../hooks/useOrganization'
@@ -20,8 +21,10 @@ import {
     useInboxLabelAttach,
     useInboxLabelDetach,
     useInboxLabels,
+    useInboxComposer,
     useInboxReadState,
     useInboxReminderMutations,
+    useInboxSnippets,
     useInboxStatus,
     useInboxSuppression,
     useInboxUnreadCount,
@@ -116,6 +119,8 @@ export function UnifiedInboxPage() {
     const bulk = useInboxBulkAction(organizationId)
     const reminderMutations = useInboxReminderMutations(organizationId, state.conversation)
     const suppression = useInboxSuppression(organizationId)
+    const snippetsQuery = useInboxSnippets(organizationId)
+    const composer = useInboxComposer(organizationId, state.conversation)
 
     // --- Bulk selection: BOUNDED to the currently loaded set (never a filter-wide selector) ---
     const [bulkMode, setBulkMode] = React.useState(false)
@@ -172,6 +177,46 @@ export function UnifiedInboxPage() {
         const from = participants.find((p) => p.role === 'from') ?? participants[0]
         return from?.address ?? null
     }, [detailQuery.data])
+    const accountOptions = accountsQuery.data ?? []
+
+    // DISPLAY-ONLY recipient/subject preview from the latest inbound message. The SERVER
+    // re-derives and validates recipients + threading headers on send — this is never trusted.
+    const composerPreview = React.useMemo(() => {
+        const messages = detailQuery.data?.messages ?? []
+        const selfEmail = accountOptions.find((a) => a.id === detailConversation?.emailAccountId)?.email?.toLowerCase() ?? ''
+        const latestInbound = [...messages].reverse().find((m) => m.direction === 'inbound') ?? messages[messages.length - 1]
+        const notSelf = (addr: string) => addr && addr.toLowerCase() !== selfEmail
+        const replyTo = latestInbound?.fromAddress && notSelf(latestInbound.fromAddress) ? [latestInbound.fromAddress] : []
+        const ccPool = [
+            ...(latestInbound?.toAddresses ?? []).map((a) => a.address),
+            ...(latestInbound?.ccAddresses ?? []).map((a) => a.address),
+        ]
+        const cc = Array.from(new Set(ccPool.map((a) => a.toLowerCase())))
+            .filter((a) => notSelf(a) && !replyTo.map((r) => r.toLowerCase()).includes(a))
+        const baseSubject = (detailConversation?.subject ?? '').replace(/^(re|fwd?|fw)\s*:\s*/i, '').trim()
+        return {
+            replyTo,
+            cc,
+            subject: `Re: ${baseSubject || '(no subject)'}`,
+        }
+    }, [detailQuery.data, accountOptions, detailConversation])
+
+    const conversationComposer = detailConversation && accountOptions.length > 0 ? (
+        <ConversationComposer
+            key={detailConversation.id}
+            accounts={accountOptions}
+            defaultAccountId={detailConversation.emailAccountId}
+            replyToPreview={composerPreview.replyTo}
+            replyAllCcPreview={composerPreview.cc}
+            subjectPreview={composerPreview.subject}
+            snippets={snippetsQuery.data ?? []}
+            onSend={composer.send}
+            onUploadAttachment={composer.uploadAttachment}
+            onRemoveAttachment={composer.removeAttachment}
+            onCancelCommand={composer.cancel}
+            polledCommand={composer.polledCommand}
+        />
+    ) : null
 
     const bulkBar = (
         <BulkActionsBar
@@ -320,6 +365,7 @@ export function UnifiedInboxPage() {
                                 providerByAccount={providerByAccount}
                                 campaignNameById={campaignNameById}
                                 actions={conversationActions}
+                                composer={conversationComposer}
                             />
                         )}
                     </section>

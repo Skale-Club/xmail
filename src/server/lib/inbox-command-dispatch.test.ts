@@ -204,6 +204,8 @@ function orchestratorDeps(overrides: Partial<CreateResolvedSendCommandDeps> = {}
             scheduledAt: args.scheduledAt ?? null,
             dueAt: args.scheduledAt ?? new Date(),
             attempts: 0,
+            lastPolicyCode: null,
+            lastError: null,
             idempotencyKey: 'idem',
             createdAt: new Date(),
             updatedAt: new Date(),
