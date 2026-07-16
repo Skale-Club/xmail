@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
-status: executing
-stopped_at: Completed 21-04-PLAN.md
-last_updated: "2026-07-16T15:32:27.817Z"
+status: verifying
+stopped_at: Completed 22-01-PLAN.md
+last_updated: "2026-07-16T17:21:51.792Z"
 progress:
   total_phases: 15
   completed_phases: 8
   total_plans: 41
-  completed_plans: 32
+  completed_plans: 33
   percent: 60
 ---
 
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 22 (Unified Inbox Operator Experience) — NEXT
-Plan: 0 of N
+Phase: 22 (Unified Inbox Operator Experience) — IN PROGRESS
+Plan: 1 of 5 complete (22-01 operator workflow BACKEND done: migration 042 + operator services/APIs + durable command/reminder claimer; 567/567 tests)
 Phase 21 (Unified Inbox Foundation) — COMPLETE + VERIFIED (UIF-01..05, 43/43 must-haves; 3-lens review 0 critical + 3 warnings all fixed and re-reviewed; 527/527 tests deterministic)
 Phase 20 (Outreach Product and API Consistency) — COMPLETE + VERIFIED (CONS-01..07; security + data-migration reviews clean; verifier found 1 blocking gap + 5 non-blocking, all fixed and re-reviewed clean; 422/422 tests)
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
@@ -39,11 +39,11 @@ Status: Phase 21 code complete (519 tests, deterministic); running 3-lens review
 
 **Also this session:** made the Vitest postgres project a deterministic gate (commit a87ee0b) — root-level fileParallelism:false + container max_connections=300 + a suite that self-applies its migration. This fixed the flaky deadlocks/timeouts that dogged phases 19-20 reviews.
 
-**Resume point:** Execute Phase 22 (Unified Inbox operator UX — the frontend on the Phase 21 read API + reply/forward/actions), then 23 (guarded AI automation).
+**Resume point:** Execute Phase 22 Plan 02+ (Unified Inbox operator UX — the frontend on the Phase 21 read API + the 22-01 operator/command backend), then 23 (guarded AI automation).
 
 **Operator prerequisites accumulated (do NOT auto-apply):**
 
-- Migrations 038 (dispatch state machine), 039 (provider events/cursors), 040 (outreach product consistency: one-sequence-per-campaign + step CHECKs), and 041 (unified inbox foundation: conversations/messages/participants/reads + provider-event materialization lifecycle) are written + tested against disposable Postgres but NOT applied to production. Applying them is a manual deploy step, in ascending order. 040 aborts with actionable diagnostics if legacy multi-sequence data conflicts.
+- Migrations 038 (dispatch state machine), 039 (provider events/cursors), 040 (outreach product consistency: one-sequence-per-campaign + step CHECKs), 041 (unified inbox foundation: conversations/messages/participants/reads + provider-event materialization lifecycle), and 042 (unified inbox operator workflows: labels/archive/reminders/snippets/send-commands/attachments + one private `inbox-attachments` Storage bucket) are written + tested against disposable Postgres but NOT applied to production. Applying them is a manual deploy step, in ascending order. 040 aborts with actionable diagnostics if legacy multi-sequence data conflicts. 042 configures the private Storage bucket only where a `storage` schema exists.
 - New env vars `XMAIL_SERVICE_USER_ID` + `XMAIL_SERVICE_ORGANIZATION_ID` bind the outreach service key to a principal+org; all three (with `XMAIL_SERVICE_KEY`) must be set in prod or machine auth stays disabled (fails closed). Wired into build-deploy.yml run_app_container() + legacy deploy-hetzner.yml.
 - Outlook Graph sandbox gate (19-04 <verification>) unrun — needs a real Microsoft 365 tenant. Entire Graph surface is mock-verified only.
 
@@ -134,8 +134,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T15:32:14.186Z
-Stopped at: Completed 21-04-PLAN.md
+Last session: 2026-07-16T17:20:52.432Z
+Stopped at: Completed 22-01-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -158,6 +158,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 21 P02 | 35min | 3 tasks | 9 files |
 | Phase 21 P03 | 30min | 3 tasks | 14 files |
 | Phase 21 P04 | 17min | 3 tasks | 6 files |
+| Phase 22 P01 | 42min | 3 tasks | 12 files |
 
 ## Decisions
 
@@ -190,3 +191,5 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 21]: (21-03) Provider field mapping lives in one boundary (unified-inbox/providers/{native,imap,outlook}.ts); IMAP now retains the full safe-header allow-list (was a 6-header subset), so native/IMAP/Graph materialize equivalent fields. Attachments stay metadata-only (id/name/mime/size/inline/contentId).
 - [Phase 21]: (21-03) Every durably sent outreach_email materializes to ONE outbound conversation message (source_key outreach-email:<id>) via the SOLE best-effort hook in outreach-dispatch.ts after finalizeSent; a bounded restart-safe NOT EXISTS anti-join backfill (outbound before inbound) closes crash windows without resending. Outbound roots its thread by its own Message-ID so inbound replies converge.
 - [Phase 21]: Unified Inbox read API: opaque filter-bound keyset cursor (SHA-256 fingerprint of the filter set, lossless microsecond keyset timestamp); detail/read-state authorize org before id lookup so cross-tenant ids return an existence-safe 404; per-user idempotent read state
+- [Phase 22]: (22-01) Archive is orthogonal to Phase 21 open/closed status (additive archived_at columns); operator state (labels/archive/reminders/snippets/send-commands) is durable org-scoped rows, never browser state. Composite (id,organization_id) FKs bind every operator row to its tenant; PG15+ column-list ON DELETE SET NULL keeps organization_id intact.
+- [Phase 22]: (22-01) Bulk ops are transactional + bounded (<=100, dedup, matched/updated/skipped) and key every mutation on the org-matched id set so an empty/partial filter never widens to the org. Durable send commands are lease-claimed; executeInboxSendCommand is the ONE inbox caller of dispatchOutreachMessage and a stable idempotency key yields at-most-once across restarts. Reminders notify once via a transactional scheduled->notified + user_notification insert.

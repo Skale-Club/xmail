@@ -278,10 +278,10 @@ Plans:
 **Goal:** Deliver the centralized inbox workflow: searchable conversation list, thread reader/composer, organization actions, scheduled work, and reply notifications.
 **Requirements:** UIX-01, UIX-02, UIX-03, UIX-04, UIX-05, UIX-06
 **Depends on:** Phase 21
-**Plans:** 0/5 plans executed
+**Plans:** 1/5 plans executed
 Plans:
 
-- [ ] 22-01-PLAN.md — Migration 042 + durable labels/reminders/commands/attachments
+- [x] 22-01-PLAN.md — Migration 042 + durable labels/reminders/commands/attachments
 - [ ] 22-02-PLAN.md — Responsive Unified Inbox list and thread reader
 - [ ] 22-03-PLAN.md — Read/archive/label/bulk/suppression actions
 - [ ] 22-04-PLAN.md — Reply/reply-all/forward, attachments, snippets, scheduling

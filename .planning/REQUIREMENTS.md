@@ -43,8 +43,8 @@
 - [ ] **UIX-01** — Outreach navigation includes a centralized Unified Inbox with a conversation list and full thread view across connected accounts.
 - [ ] **UIX-02** — Operators can filter by unread/status/campaign/account/label and perform bounded keyword search with shareable URL state.
 - [ ] **UIX-03** — Operators can reply, reply-all, and forward with quoted context, correct provider/thread headers, attachments, and shared send-policy enforcement.
-- [ ] **UIX-04** — Operators can mark read/unread, label, archive, bulk-act, and add a sender/domain to suppression/blocklist with confirmation.
-- [ ] **UIX-05** — Scheduled replies, reminders, reusable snippets/macros, and attachment handling are durable and recover across restarts.
+- [x] **UIX-04** — Operators can mark read/unread, label, archive, bulk-act, and add a sender/domain to suppression/blocklist with confirmation.
+- [x] **UIX-05** — Scheduled replies, reminders, reusable snippets/macros, and attachment handling are durable and recover across restarts.
 - [ ] **UIX-06** — New-reply notifications and unread counts are visible without polling every thread and degrade safely when provider sync fails.
 
 ## AI assistance and automation
