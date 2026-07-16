@@ -265,10 +265,10 @@ Plans:
 **Goal:** Persist and thread complete incoming/outgoing messages from every outreach provider, attribute them to outreach entities, and expose tenant-safe conversation APIs.
 **Requirements:** UIF-01, UIF-02, UIF-03, UIF-04, UIF-05
 **Depends on:** Phase 20
-**Plans:** 0/4 plans executed
+**Plans:** 1/4 plans executed
 Plans:
 
-- [ ] 21-01-PLAN.md — Migration 041 + conversation/message/read-state foundation
+- [x] 21-01-PLAN.md — Migration 041 + conversation/message/read-state foundation
 - [ ] 21-02-PLAN.md — Idempotent inbound materialization and attribution
 - [ ] 21-03-PLAN.md — Outbound history materialization and provider-complete backfill
 - [ ] 21-04-PLAN.md — Tenant-safe conversation list/detail/search/read APIs

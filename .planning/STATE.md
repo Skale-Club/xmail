@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-stopped_at: Completed 20-03-PLAN.md
-last_updated: "2026-07-16T10:08:33.432Z"
+stopped_at: Completed 21-01-PLAN.md
+last_updated: "2026-07-16T11:34:02.894Z"
 progress:
   total_phases: 15
   completed_phases: 7
   total_plans: 41
-  completed_plans: 28
+  completed_plans: 29
   percent: 60
 ---
 
@@ -28,13 +28,13 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 21 (Unified Inbox Foundation) — NEXT
-Plan: 0 of 4
+Plan: 1 of 4
 Phase 20 (Outreach Product and API Consistency) — COMPLETE + VERIFIED (CONS-01..07; security + data-migration reviews clean; verifier found 1 blocking gap + 5 non-blocking, all fixed and re-reviewed clean; 422/422 tests)
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
-Status: Ready to execute Phase 21. Milestone reliability half (18-20) complete; Unified Inbox half (21-23) begins.
+Status: Ready to execute
 
 **Resume point:** Execute Phase 21 (Unified Inbox foundation — conversation persistence + aggregated API over the Phase 19 provider events). Then 22 (Unified Inbox UX), 23 (guarded AI automation).
 
@@ -131,8 +131,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T10:08:33.428Z
-Stopped at: Completed 20-03-PLAN.md
+Last session: 2026-07-16T11:33:42.411Z
+Stopped at: Completed 21-01-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -151,6 +151,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 20 P01 | 34min | 3 tasks | 11 files |
 | Phase 20 P02 | 41min | 3 tasks | 19 files |
 | Phase 20 P03 | 24min | 3 tasks | 17 files |
+| Phase 21 P01 | 35min | 3 tasks | 4 files |
 
 ## Decisions
 
@@ -175,3 +176,6 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 20]: (20-02) Settings are create-time defaults merged explicit ?? resolved; existing rows never rewritten. Notification toggles gate the Xphere reply/bounce/unsubscribe event transport (weekly_report removed as unsupported).
 - [Phase 20]: (20-02) Campaign metric denominators: contactedLeads = unique leads with >=1 sent email (excludes pre-send suppressed); sentEmails email-grain; one shared DTO across list/stats/detail/analytics. Lead list bounded to limit<=100 with escaped ILIKE search and id tie-break.
 - [Phase 20]: (20-03) Outreach uses one canonical JS access module (requireOutreachRead/Write); the service key binds identity+org server-side (overwrite x-user-id, reject/marker-enforce org scope), and a dedicated OutreachCheck guard lets org members enter outreach without platform admin.
+- [Phase 21]: (21-01) Provider-event materialization is a dedicated leased CAS lifecycle (materialization_status/lease/attempts/error/materialized_at/conversation_message_id), never reusing Phase 19 processed_at; a partial claim index over pending|processing drives it.
+- [Phase 21]: (21-01) Message dedupe key is the provider-native source_key unique per (organization_id, email_account_id, source_key); RFC Message-ID is indexed but deliberately non-unique.
+- [Phase 21]: (21-01) Cross-tenant safety is DB-enforced via composite (id, organization_id) FKs on every child; campaign_lead is bound through its campaign via (campaign_lead_id, campaign_id) since campaign_leads has no organization_id.
