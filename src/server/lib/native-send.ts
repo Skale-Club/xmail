@@ -17,7 +17,7 @@
 import nodemailer from 'nodemailer'
 import { db } from '../../db'
 import { mailboxes, mailFolders, mailMessages } from '../../db/schema'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { getDkimConfigForEmail, toNodemailerDkim } from './dkim'
 
 export interface StoreMessageData {
@@ -147,12 +147,46 @@ export async function storeMessage(
  * Resolve a user's native mailbox by email address. Used by outreach account
  * creation/verification and the reply/bounce processors to route through the native
  * mail model instead of stored IMAP credentials.
+ *
+ * Deliberately NOT tenant-scoped: a native mailbox belongs to a user, not to an
+ * organization, and the create-time gate in routes/outreach/email-accounts.ts checks
+ * membership separately. Anything that READS a mailbox on a recurring basis must use
+ * getNativeMailboxForOrganization instead — membership is revocable, so a check that only
+ * ran at create time is not a check.
  */
 export async function getNativeMailboxByEmail(email: string) {
     return db.query.mailboxes.findFirst({
         where: and(
             eq(mailboxes.email, email.toLowerCase()),
             eq(mailboxes.isNative, true)
+        ),
+    })
+}
+
+/**
+ * Resolve a native mailbox only if its owner is still a member of `organizationId`.
+ *
+ * C-3: the inbound scanner used getNativeMailboxByEmail, which matches on email +
+ * isNative alone. Removing a user from an organization deletes their organization_users
+ * row but leaves any verified email_accounts row behind, so the scanner kept staging that
+ * person's entire private INBOX — full bodies, retained for Phase 21 — under an
+ * organization they had left. The Outlook path re-checks outlook_mailboxes.organization_id
+ * for the same reason.
+ *
+ * Tenant isolation is JS-side (CLAUDE.md): the app's Postgres role bypasses RLS, so this
+ * predicate is the boundary, not a second opinion about one.
+ */
+export async function getNativeMailboxForOrganization(email: string, organizationId: string) {
+    return db.query.mailboxes.findFirst({
+        where: and(
+            eq(mailboxes.email, email.toLowerCase()),
+            eq(mailboxes.isNative, true),
+            // The mailbox's owner — not the address — must still be a member.
+            sql`EXISTS (
+                SELECT 1 FROM organization_users membership
+                WHERE membership.user_id = ${mailboxes.userId}
+                  AND membership.organization_id = ${organizationId}
+            )`,
         ),
     })
 }

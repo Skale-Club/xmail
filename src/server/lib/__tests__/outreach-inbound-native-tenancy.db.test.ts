@@ -182,6 +182,23 @@ describe('native inbound source tenancy', () => {
         expect(source).toBeNull()
     })
 
+    it('resolves nothing for the verify path once the owner has left, so re-verify cannot pass', async () => {
+        // The same hole one level up: /verify re-checked that the user and mailbox still
+        // existed but not that the membership did, so an operator could re-verify an
+        // ex-member's account and see a green tick.
+        await setMembership(false)
+        const { getNativeMailboxForOrganization, getNativeMailboxByEmail } =
+            await import('../native-send')
+
+        // The mailbox itself still exists — this is why the old check passed.
+        expect(await getNativeMailboxByEmail('bob@skale.test')).not.toBeNull()
+        expect(await getNativeMailboxForOrganization('bob@skale.test', IDS.orgA)).toBeUndefined()
+
+        // ...and Org B, where bob is still a member, is unaffected.
+        await setMembership(true)
+        expect(await getNativeMailboxForOrganization('bob@skale.test', IDS.orgB)).toBeDefined()
+    })
+
     it('refuses a native mailbox belonging to a user with no membership anywhere near the org', async () => {
         await setMembership(true)
         const { createNativeInboundSource } = await import('../outreach-inbound-sources')

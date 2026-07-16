@@ -24,7 +24,7 @@ import {
 } from '../../db/schema'
 import { decryptSecret } from './crypto'
 import { createLogger } from './logger'
-import { getNativeMailboxByEmail } from './native-send'
+import { getNativeMailboxForOrganization } from './native-send'
 import {
     fetchOutlookInboxDelta,
     type OutlookGraphMessage,
@@ -68,6 +68,14 @@ function addressList(value: unknown): string[] {
 /**
  * Reads the account owner's native INBOX rows directly.
  *
+ * The organization is re-checked on every tick rather than trusted from the account row:
+ * a native mailbox belongs to a user, and membership is revocable. Removing someone from
+ * an organization deletes only their organization_users row — the verified email_accounts
+ * row survives — so resolving the mailbox by email alone would keep staging an ex-member's
+ * entire private inbox, bodies included, under an organization they had left. Mirrors the
+ * Graph path's organization re-check below. Tenant isolation is JS-side here (the app's
+ * Postgres role bypasses RLS), so this is the boundary itself.
+ *
  * Cursor: (received_at, id). A timestamp alone is not enough — several messages can
  * share one received_at, so a `> last_received_at` scan would skip the rest of that
  * second, while `>=` would re-read them forever. The id tie breaker resolves both.
@@ -75,9 +83,16 @@ function addressList(value: unknown): string[] {
 export async function createNativeInboundSource(account: {
     id: string
     email: string
+    organizationId: string
 }): Promise<InboundSource | null> {
-    const mailbox = await getNativeMailboxByEmail(account.email)
-    if (!mailbox) return null
+    const mailbox = await getNativeMailboxForOrganization(account.email, account.organizationId)
+    if (!mailbox) {
+        log.warn({
+            action: 'outreach.inbound.native_mailbox_unavailable',
+            emailAccountId: account.id,
+        }, 'verified native account has no native mailbox owned by a member of its organization')
+        return null
+    }
 
     const inbox = await db.query.mailFolders.findFirst({
         where: and(eq(mailFolders.mailboxId, mailbox.id), eq(mailFolders.type, 'inbox')),
@@ -554,7 +569,11 @@ export async function ingestOutreachInbound(deps: {
     for (const account of accounts) {
         try {
             const source = account.provider === 'native'
-                ? await createNativeInboundSource({ id: account.id, email: account.email })
+                ? await createNativeInboundSource({
+                    id: account.id,
+                    email: account.email,
+                    organizationId: account.organizationId,
+                })
                 : account.provider === 'outlook'
                     ? await createOutlookInboundSourceForAccount(account)
                     : createImapInboundSource({

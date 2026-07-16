@@ -8,7 +8,7 @@ import { encryptSecret, decryptSecret } from '../../lib/crypto'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import { getEffectiveDailySendLimit } from '../../lib/outreach-sender'
 import { listInboxProviders } from '../../lib/inbox-providers'
-import { getNativeMailboxByEmail } from '../../lib/native-send'
+import { getNativeMailboxByEmail, getNativeMailboxForOrganization } from '../../lib/native-send'
 import { isPrivateHostWithDns } from '../../lib/network-guard'
 import { buildSmtpTransportOptions, resolveSmtpSecurity } from '../../lib/smtp-security'
 import {
@@ -826,18 +826,24 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
         }
 
         if (account.provider === 'native') {
-            // No network test — re-validate that the backing platform user and native
-            // mailbox still exist (they may have been deleted since account creation).
+            // No network test — re-validate all three create-time preconditions, because
+            // every one of them is revocable: the platform user still exists, still has a
+            // native mailbox, and is STILL a member of this organization. Checking only the
+            // first two would re-verify an account whose owner has left the org (C-3),
+            // which is the same hole the inbound scanner had.
             const targetUser = await db.query.users.findFirst({
                 where: eq(users.email, account.email.toLowerCase()),
             })
-            const nativeMailbox = targetUser ? await getNativeMailboxByEmail(account.email) : null
+            const nativeMailbox = targetUser
+                ? await getNativeMailboxForOrganization(account.email, account.organizationId)
+                : null
 
             if (!targetUser || !nativeMailbox) {
+                const reason = 'No native mailbox for a member of this organization matches this address'
                 const [updatedAccount] = await db.update(emailAccounts)
                     .set({
                         status: 'failed',
-                        lastError: 'Native mailbox no longer exists for this user',
+                        lastError: reason,
                         updatedAt: new Date(),
                     })
                     .where(eq(emailAccounts.id, accountId))
@@ -850,7 +856,7 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
                         imapPassword: undefined,
                     },
                     verified: false,
-                    errors: ['Native mailbox no longer exists for this user'],
+                    errors: [reason],
                 })
             }
 
