@@ -490,6 +490,23 @@ function outlookAdapter(account: EmailAccount, deps: OutreachProviderDependencie
                 return terminal('mime_headers_missing', `Composed message is missing headers: ${missing.join(', ')}`)
             }
 
+            // Graph's MIME sendMail takes no envelope — it derives recipients from the
+            // headers — and the composer deliberately keeps Bcc out of the headers so blind
+            // recipients are not disclosed to everyone else. A bcc address would therefore
+            // exist nowhere Graph can see: it would return 202 and simply never deliver it,
+            // while SMTP and native deliver the same bytes via RCPT TO.
+            //
+            // Fail closed. Adding the Bcc header instead would trade a silent
+            // non-delivery for a silent disclosure, which is strictly worse.
+            if ((message.content?.bcc?.length ?? 0) > 0) {
+                return terminal(
+                    'outlook_bcc_unsupported',
+                    'Outlook sends MIME through Graph, which takes recipients from the message headers only. '
+                    + 'A blind recipient cannot be delivered without disclosing it, so this message is refused '
+                    + 'rather than sent with the bcc silently dropped.',
+                )
+            }
+
             const result = await send({
                 organizationId: account.organizationId,
                 mailboxId: account.outlookMailboxId,
