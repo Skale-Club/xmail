@@ -810,6 +810,8 @@ export const sequences = pgTable('sequences', {
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
     idxSequencesCampaignId: index('idx_sequences_campaign_id').on(table.campaignId),
+    // Phase 20 (CONS-01, migration 040): exactly one canonical sequence per campaign.
+    sequencesCampaignIdUnique: uniqueIndex('sequences_campaign_id_unique').on(table.campaignId),
 }))
 
 // Sequence Steps (individual emails in a sequence)
@@ -845,6 +847,26 @@ export const sequenceSteps = pgTable('sequence_steps', {
     idxSequenceStepsSequenceId: index('idx_sequence_steps_sequence_id').on(table.sequenceId),
     sequenceStepsDelayHoursPositive: check('sequence_steps_delay_hours_positive', sql`${table.delayHours} >= 0`),
     sequenceStepsOrderPositive: check('sequence_steps_order_positive', sql`${table.stepOrder} >= 1`),
+    // Phase 20 (CONS-07, migration 040): step-content and A/B invariants reconciled with Zod + SQL.
+    sequenceStepsAbTestPercentageBounds: check(
+        'sequence_steps_ab_test_percentage_bounds',
+        sql`${table.abTestPercentage} IS NULL OR (${table.abTestPercentage} >= 0 AND ${table.abTestPercentage} <= 100)`,
+    ),
+    sequenceStepsContentValid: check(
+        'sequence_steps_content_valid',
+        sql`(
+            ${table.type} = 'email'
+            AND ${table.subject} IS NOT NULL AND btrim(${table.subject}) <> ''
+            AND (
+                (${table.plainBody} IS NOT NULL AND btrim(${table.plainBody}) <> '')
+                OR (${table.htmlBody} IS NOT NULL AND btrim(${table.htmlBody}) <> '')
+            )
+        ) OR (
+            ${table.type} <> 'email'
+            AND ${table.subject} IS NULL AND ${table.plainBody} IS NULL AND ${table.htmlBody} IS NULL
+            AND ${table.subjectB} IS NULL AND ${table.plainBodyB} IS NULL AND ${table.htmlBodyB} IS NULL
+        )`,
+    ),
 }))
 
 // Campaign Leads (junction table - leads assigned to campaigns)
