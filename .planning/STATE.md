@@ -27,19 +27,21 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 22 (Unified Inbox Operator Experience) — IN PROGRESS
-Plan: 5 of 5 complete (22-01 operator workflow BACKEND done: migration 042 + operator services/APIs + durable command/reminder claimer; 567/567 tests)
+Phase: 22 (Unified Inbox Operator Experience) — IMPLEMENTED (5/5 plans), in phase-gate review
+Plan: 5 of 5 complete (22-01 operator backend+migration 042, 22-02 workspace UI, 22-03 actions+optimistic rollback, 22-04 reply/forward composer+durable send commands, 22-05 SSE near-real-time+UAT; 692/692 tests)
 Phase 21 (Unified Inbox Foundation) — COMPLETE + VERIFIED (UIF-01..05, 43/43 must-haves; 3-lens review 0 critical + 3 warnings all fixed and re-reviewed; 527/527 tests deterministic)
 Phase 20 (Outreach Product and API Consistency) — COMPLETE + VERIFIED (CONS-01..07; security + data-migration reviews clean; verifier found 1 blocking gap + 5 non-blocking, all fixed and re-reviewed clean; 422/422 tests)
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
-Status: Ready to execute
+Status: Phase 22 code complete (692 tests, deterministic); running 3-lens review (backend-security/frontend-correctness/verification) before closing. Only Phase 23 (guarded AI automation) remains in the milestone.
 
 **Also this session:** made the Vitest postgres project a deterministic gate (commit a87ee0b) — root-level fileParallelism:false + container max_connections=300 + a suite that self-applies its migration. This fixed the flaky deadlocks/timeouts that dogged phases 19-20 reviews.
 
-**Resume point:** Execute Phase 22 Plan 02+ (Unified Inbox operator UX — the frontend on the Phase 21 read API + the 22-01 operator/command backend), then 23 (guarded AI automation).
+**Resume point:** Close Phase 22 after review-fix, then execute Phase 23 (guarded AI automation) — the final phase of milestone v1.4.
+
+**Watch in Phase 22 review:** 22-03 widened the Phase 18 shared `evaluateOutreachDeliveryPolicy` to enforce an `@domain` suppression sentinel — a change to safety-critical send-gating code that the backend-security reviewer is scrutinizing for over-suppression / substring matching.
 
 **Operator prerequisites accumulated (do NOT auto-apply):**
 
