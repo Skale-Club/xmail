@@ -10,13 +10,15 @@
  */
 
 import { db } from '../../db'
-import { campaignLeads, outreachEmails, suppressions } from '../../db/schema'
-import { eq, and, lte, isNotNull, desc } from 'drizzle-orm'
-import { isWithinSendWindow, sendThreadedReply } from '../lib/outreach-sender'
+import { campaignLeads } from '../../db/schema'
+import { eq, and, lte, isNotNull } from 'drizzle-orm'
+import { incrementAccountStats } from '../lib/outreach-sender'
 import { decideFollowUp, enforceGuardrails, type FollowUpContext } from '../lib/outreach-followup'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { runWithLock } from '../lib/cron-lock'
+import { dispatchOutreachMessage } from '../lib/outreach-dispatch'
+import { createThreadedDispatchProvider } from '../lib/outreach-dispatch-provider'
 
 const log = createLogger('outreach.followup')
 
@@ -76,12 +78,12 @@ export async function processFollowUps(): Promise<{ processed: number; sent: num
 
             const raw = await decideFollowUp(ctx)
 
-            // Guardrails need live suppression + window + unsubscribe state.
-            const suppressed = await isSuppressed(campaign.organizationId, lead.email)
+            // The dispatcher owns live suppression, schedule, organization, and
+            // account policy. The decision guard retains only conversation limits.
             const decision = enforceGuardrails(raw, {
                 unsubscribed: lead.unsubscribedAt != null,
-                suppressed,
-                withinWindow: isWithinSendWindow(campaign, now),
+                suppressed: false,
+                withinWindow: true,
                 followUpCount: cl.followUpCount,
                 maxFollowUps: campaign.maxFollowUps,
             })
@@ -118,35 +120,64 @@ export async function processFollowUps(): Promise<{ processed: number; sent: num
                 continue
             }
 
-            // Thread under our most-recent sent email to this lead.
-            const lastSent = await db
-                .select({ messageId: outreachEmails.messageId })
-                .from(outreachEmails)
-                .where(and(eq(outreachEmails.campaignLeadId, cl.id), isNotNull(outreachEmails.sentAt)))
-                .orderBy(desc(outreachEmails.sentAt))
-                .limit(1)
+            if (!cl.lastReplyMessageId) {
+                await clearSchedule(cl.id)
+                result.errors++
+                log.warn({ action: 'outreach.followup.no_inbound_reply', campaignLeadId: cl.id }, 'follow-up has no inbound reply id')
+                continue
+            }
 
             const subject = decision.subject && decision.subject.trim().length > 0
                 ? decision.subject
                 : `Re: ${campaign.name}`
 
-            const sendResult = await sendThreadedReply({
-                account,
+            const dispatchResult = await dispatchOutreachMessage({
+                origin: 'agentic',
+                organizationId: campaign.organizationId,
+                emailAccountId: account.id,
+                campaignId: campaign.id,
+                campaignLeadId: cl.id,
+                leadId: lead.id,
+                idempotencyKey: `agentic:${cl.id}:${cl.lastReplyMessageId}:${cl.followUpCount + 1}`,
                 to: lead.email,
                 subject,
                 text: decision.message!,
-                fromName: campaign.fromName,
-                replyTo: campaign.replyToEmail,
-                inReplyTo: lastSent[0]?.messageId ?? null,
+                inReplyTo: cl.lastReplyMessageId,
+                references: cl.lastReplyMessageId,
+            }, {
+                provider: createThreadedDispatchProvider({
+                    account,
+                    fromName: campaign.fromName,
+                    replyTo: campaign.replyToEmail,
+                }),
             })
 
-            if (!sendResult.success) {
-                // Re-arm a short retry; guardrails' max_follow_ups still bounds total attempts.
+            if (dispatchResult.status === 'deferred') {
                 await db.update(campaignLeads)
-                    .set({ nextFollowUpAt: hoursFromNow(DEFAULT_WAIT_HOURS) })
+                    .set({ nextFollowUpAt: dispatchResult.retryAt ?? null, updatedAt: new Date() })
                     .where(eq(campaignLeads.id, cl.id))
+                log.info({ action: 'outreach.followup.policy_deferred', campaignLeadId: cl.id, code: dispatchResult.code, retryAt: dispatchResult.retryAt }, 'follow-up deferred by policy')
+                continue
+            }
+
+            if (dispatchResult.status === 'retry_scheduled') {
+                await db.update(campaignLeads)
+                    .set({ nextFollowUpAt: dispatchResult.nextAttemptAt, updatedAt: new Date() })
+                    .where(eq(campaignLeads.id, cl.id))
+                continue
+            }
+
+            if (dispatchResult.status === 'in_progress' || dispatchResult.status === 'lost_lease') {
+                await db.update(campaignLeads)
+                    .set({ nextFollowUpAt: hoursFromNow(1 / 12), updatedAt: new Date() })
+                    .where(eq(campaignLeads.id, cl.id))
+                continue
+            }
+
+            if (dispatchResult.status === 'held' || dispatchResult.status === 'exhausted' || dispatchResult.status === 'failed') {
+                await clearSchedule(cl.id)
                 result.errors++
-                log.error({ action: 'outreach.followup.send_failed', campaignLeadId: cl.id, error: { message: sendResult.error } }, 'follow-up send failed')
+                log.error({ action: 'outreach.followup.dispatch_stopped', campaignLeadId: cl.id, status: dispatchResult.status }, 'follow-up dispatch stopped')
                 continue
             }
 
@@ -160,14 +191,19 @@ export async function processFollowUps(): Promise<{ processed: number; sent: num
                 })
                 .where(eq(campaignLeads.id, cl.id))
 
-            result.sent++
-            sendXphereOutreachEvent('followup.sent', {
-                email: lead.email,
-                campaign_id: campaign.id,
-                lead_id: lead.id,
-                customFields: lead.customFields,
-            })
-            log.info({ action: 'outreach.followup.sent', campaignLeadId: cl.id, followUpCount: cl.followUpCount + 1 }, 'follow-up sent')
+            if (dispatchResult.status === 'sent') {
+                await incrementAccountStats(account.id, 'totalSent')
+                result.sent++
+                sendXphereOutreachEvent('followup.sent', {
+                    email: lead.email,
+                    campaign_id: campaign.id,
+                    lead_id: lead.id,
+                    customFields: lead.customFields,
+                })
+                log.info({ action: 'outreach.followup.sent', campaignLeadId: cl.id, followUpCount: cl.followUpCount + 1 }, 'follow-up sent')
+            } else {
+                log.info({ action: 'outreach.followup.duplicate_recovered', campaignLeadId: cl.id, followUpCount: cl.followUpCount + 1 }, 'recovered already-sent follow-up progress')
+            }
         } catch (error) {
             const err = error instanceof Error ? error : new Error(String(error))
             result.errors++
@@ -182,17 +218,6 @@ async function clearSchedule(campaignLeadId: string): Promise<void> {
     await db.update(campaignLeads)
         .set({ nextFollowUpAt: null })
         .where(eq(campaignLeads.id, campaignLeadId))
-}
-
-async function isSuppressed(organizationId: string, email: string): Promise<boolean> {
-    const hit = await db.query.suppressions.findFirst({
-        where: and(
-            eq(suppressions.organizationId, organizationId),
-            eq(suppressions.emailAddress, email.toLowerCase()),
-        ),
-        columns: { id: true },
-    })
-    return hit != null
 }
 
 const FOLLOWUP_PROCESSOR_LOCK_NAME = 'outreach-followups-processor'

@@ -32,7 +32,7 @@ SET origin = 'campaign'
 WHERE origin IS NULL;
 
 UPDATE outreach_emails
-SET idempotency_key = 'campaign:' || campaign_lead_id::text || ':step:' || sequence_step_id::text
+SET idempotency_key = 'campaign:' || campaign_lead_id::text || ':' || sequence_step_id::text
 WHERE idempotency_key IS NULL
   AND campaign_lead_id IS NOT NULL
   AND sequence_step_id IS NOT NULL;

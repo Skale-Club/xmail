@@ -1,63 +1,29 @@
-/**
- * Process Outreach Email Sequences
- *
- * This job runs on a cron schedule to process pending outreach emails:
- * - Finds campaign leads with nextScheduledAt <= now
- * - Sends emails through assigned email accounts
- * - Tracks email delivery
- * - Advances leads through sequence steps
- * - Updates campaign stats
- */
-
-import { createHash } from 'crypto'
+import { createHash } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { db } from '../../db'
-import { campaigns, sequenceSteps, campaignLeads, leads, emailAccounts, outreachEmails, suppressions } from '../../db/schema'
-import { eq, and, inArray, sql } from 'drizzle-orm'
-import {
-    sendOutreachEmail,
-    isWithinSendWindow,
-    canSendFromAccount,
-    getEffectiveDailySendLimit,
-    incrementAccountStats,
-    incrementCampaignStats,
-    applySendJitter,
-} from '../lib/outreach-sender'
-import { generateOutreachToken } from '../lib/outreach-tokens'
-import { createLogger, OUTREACH_PROCESSOR_SLOW_MS } from '../lib/logger'
-import { sendXphereOutreachEvent } from '../lib/xphere-events'
+import { campaigns, campaignLeads, emailAccounts, leads, sequenceSteps } from '../../db/schema'
 import { runWithLock } from '../lib/cron-lock'
+import type { DeliveryPolicyCode } from '../lib/outreach-delivery-policy'
+import { dispatchOutreachMessage, type DispatchResult } from '../lib/outreach-dispatch'
+import { createCampaignDispatchProvider } from '../lib/outreach-dispatch-provider'
+import { createLogger, OUTREACH_PROCESSOR_SLOW_MS } from '../lib/logger'
 import {
     resolveSequenceAction,
     TERMINAL_CAMPAIGN_LEAD_STATUSES,
 } from '../lib/outreach-sequence-state'
+import { incrementAccountStats, incrementCampaignStats } from '../lib/outreach-sender'
+import { generateOutreachToken } from '../lib/outreach-tokens'
+import { sendXphereOutreachEvent } from '../lib/xphere-events'
 
 const log = createLogger('outreach.processor')
-
-// Phase 17-02 — In-memory ring buffer of the last N processor tick latencies (ms).
-// Plan 17-03's health endpoint consumes this via getRecentTickLatencies() to compute
-// p50/p95 without needing a DB table. Not durable across restarts (acceptable per
-// 17-CONTEXT.md §"Processor tick metrics").
 const TICK_HISTORY_SIZE = 100
+const PENDING_LEADS_LIMIT = 200
+const OUTREACH_PROCESSOR_LOCK_NAME = 'outreach-sequences-processor'
 const tickHistory: number[] = []
 
-function recordTick(latencyMs: number): void {
-    tickHistory.push(latencyMs)
-    if (tickHistory.length > TICK_HISTORY_SIZE) {
-        tickHistory.shift()
-    }
-}
-
-/**
- * Phase 17 — exposes the last 100 processor tick latencies (ms) for the
- * health endpoint to compute p50/p95. In-memory ring buffer; not durable
- * across restarts (acceptable per 17-CONTEXT.md §"Processor tick metrics").
- */
-export function getRecentTickLatencies(): readonly number[] {
-    return tickHistory.slice()
-}
-
 type SequenceStep = typeof sequenceSteps.$inferSelect
+type CampaignLeadWithRelations = Awaited<ReturnType<typeof hydrateDueCampaignLeads>>[number]
 
 interface DueCampaignLeadIdRow {
     id: string
@@ -70,6 +36,22 @@ function rowsOf<T>(value: unknown): T[] {
         return Array.isArray(rows) ? rows as T[] : []
     }
     return []
+}
+
+function recordTick(latencyMs: number): void {
+    tickHistory.push(latencyMs)
+    if (tickHistory.length > TICK_HISTORY_SIZE) tickHistory.shift()
+}
+
+export function getRecentTickLatencies(): readonly number[] {
+    return tickHistory.slice()
+}
+
+function selectAbVariant(step: SequenceStep, leadId: string): 'a' | 'b' {
+    if (!step.abTestEnabled) return 'a'
+    const hash = createHash('md5').update(leadId + step.id).digest('hex')
+    const threshold = step.abTestPercentage ?? 50
+    return (parseInt(hash.slice(0, 8), 16) % 100) < threshold ? 'a' : 'b'
 }
 
 async function selectDueCampaignLeadIds(now: Date, limit: number): Promise<string[]> {
@@ -104,74 +86,82 @@ async function selectDueCampaignLeadIds(now: Date, limit: number): Promise<strin
     return selected.map((row) => row.id)
 }
 
-function selectAbVariant(step: SequenceStep, leadId: string): 'a' | 'b' {
-    if (!step.abTestEnabled) return 'a'
-    // Deterministic hash — same lead+step always produces same variant on retry (SEND-04)
-    const hash = createHash('md5').update(leadId + step.id).digest('hex')
-    const hashInt = parseInt(hash.slice(0, 8), 16)
-    const threshold = step.abTestPercentage ?? 50
-    return (hashInt % 100) < threshold ? 'a' : 'b'
-}
-
-// Phase 16 — standardized skip-reason log shape. Phase 17-02 promoted the carrier
-// to pino structured logging; the enumerated `reason` values are preserved so ops
-// dashboards can pivot by reason without re-mapping.
-type SkipReason =
-    | 'rate_limit_per_inbox'
-    | 'daily_limit_reached'
-    | 'suppression'
-    | 'no_active_step'
-    | 'outside_send_window'
-    | 'claim_conflict'
-    | 'unsubscribed'
-    | 'campaign_inactive'
-    | 'campaign_not_found'
-    | 'lead_not_found'
-    | 'no_account'
-    | 'account_not_verified'
-    | 'in_batch_duplicate'
-
-function logSkip(reason: SkipReason, ctx: {
-    campaignId?: string
-    leadId?: string
-    campaignLeadId?: string
-    emailAccountId?: string
-    extra?: Record<string, unknown>
-}): void {
-    log.info({
-        action: 'outreach.send.skipped',
-        reason,
-        campaignId: ctx.campaignId,
-        leadId: ctx.leadId,
-        campaignLeadId: ctx.campaignLeadId,
-        emailAccountId: ctx.emailAccountId,
-        ...(ctx.extra ?? {}),
-    }, `send skipped: ${reason}`)
-}
-
-export async function processOutreachSequences(): Promise<{ processed: number; sent: number; errors: number }> {
-    const now = new Date()
-    const result = { processed: 0, sent: 0, errors: 0 }
-    const PENDING_LEADS_LIMIT = 200
-
-    const selectedIds = await selectDueCampaignLeadIds(now, PENDING_LEADS_LIMIT)
-    if (selectedIds.length === 0) return result
-
-    const hydratedLeads = await db.query.campaignLeads.findMany({
+async function hydrateDueCampaignLeads(selectedIds: string[]) {
+    if (selectedIds.length === 0) return []
+    const hydrated = await db.query.campaignLeads.findMany({
         where: inArray(campaignLeads.id, selectedIds),
         with: {
             campaign: true,
             lead: true,
             currentStep: true,
-            assignedEmailAccount: true
-        }
+            assignedEmailAccount: true,
+        },
     })
-    const hydratedById = new Map(hydratedLeads.map((lead) => [lead.id, lead]))
-    const pendingLeads = selectedIds.flatMap((id) => {
-        const lead = hydratedById.get(id)
-        return lead ? [lead] : []
+    const byId = new Map(hydrated.map((campaignLead) => [campaignLead.id, campaignLead]))
+    return selectedIds.flatMap((id) => {
+        const campaignLead = byId.get(id)
+        return campaignLead ? [campaignLead] : []
     })
+}
 
+function isAccountTemporalDenial(code: DeliveryPolicyCode): boolean {
+    return code === 'account_spacing'
+        || code === 'daily_limit_exhausted'
+        || code === 'warmup_limit_exhausted'
+}
+
+async function applyCampaignDeferral(
+    campaignLeadId: string,
+    dispatchResult: Extract<DispatchResult, { status: 'deferred' }>,
+    now: Date,
+): Promise<void> {
+    if (dispatchResult.retryAt && dispatchResult.retryAt.getTime() > now.getTime()) {
+        await db.update(campaignLeads)
+            .set({ nextScheduledAt: dispatchResult.retryAt, updatedAt: new Date() })
+            .where(eq(campaignLeads.id, campaignLeadId))
+        return
+    }
+
+    if (dispatchResult.code === 'lead_unsubscribed' || dispatchResult.code === 'recipient_suppressed') {
+        await db.update(campaignLeads)
+            .set({ status: 'unsubscribed', nextScheduledAt: null, updatedAt: new Date() })
+            .where(eq(campaignLeads.id, campaignLeadId))
+        return
+    }
+
+    await db.update(campaignLeads)
+        .set({ nextScheduledAt: null, updatedAt: new Date() })
+        .where(eq(campaignLeads.id, campaignLeadId))
+}
+
+async function advanceCampaignLeadAfterDispatch(
+    campaignLead: CampaignLeadWithRelations,
+    sequenceAction: Extract<ReturnType<typeof resolveSequenceAction>, { type: 'send_email' }>,
+    sentAt: Date,
+): Promise<void> {
+    await db.update(campaignLeads)
+        .set({
+            status: 'contacted',
+            firstContactedAt: campaignLead.firstContactedAt ?? sentAt,
+            lastContactedAt: sentAt,
+            currentStepId: sequenceAction.nextStep?.id ?? sequenceAction.step.id,
+            currentStepOrder: sequenceAction.nextStep?.stepOrder ?? sequenceAction.step.stepOrder,
+            nextScheduledAt: sequenceAction.nextScheduledAt,
+            completedAt: sequenceAction.nextStep ? campaignLead.completedAt : sentAt,
+            updatedAt: sentAt,
+        })
+        .where(eq(campaignLeads.id, campaignLead.id))
+}
+
+export async function processOutreachSequences(): Promise<{ processed: number; sent: number; errors: number }> {
+    const now = new Date()
+    const result = { processed: 0, sent: 0, errors: 0 }
+    const deferredCounts: Partial<Record<DeliveryPolicyCode, number>> = {}
+    const accountDeferredUntil = new Map<string, Date>()
+    const campaignDeferredUntil = new Map<string, Date>()
+
+    const selectedIds = await selectDueCampaignLeadIds(now, PENDING_LEADS_LIMIT)
+    const pendingLeads = await hydrateDueCampaignLeads(selectedIds)
     log.debug({
         action: 'outreach.processor.work_selected',
         selected: selectedIds.length,
@@ -179,115 +169,37 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
         hardLimit: PENDING_LEADS_LIMIT,
     }, 'selected fair due-work batch')
 
-    const campaignsMap = new Map(
-        pendingLeads.map((campaignLead) => [campaignLead.campaign.id, campaignLead.campaign]),
-    )
+    if (pendingLeads.length === 0) return result
 
     const sequenceIds = [...new Set(
-        pendingLeads
-            .filter(cl => cl.currentStep?.sequenceId)
-            .map(cl => cl.currentStep!.sequenceId)
+        pendingLeads.flatMap((campaignLead) => campaignLead.currentStep?.sequenceId ?? []),
     )]
-
-    const allSteps = await db.query.sequenceSteps.findMany({
-        where: inArray(sequenceSteps.sequenceId, sequenceIds),
-        orderBy: (steps, { asc }) => [asc(steps.stepOrder)]
-    })
-    const stepsBySequence = new Map<string, typeof allSteps>()
+    const allSteps = sequenceIds.length > 0
+        ? await db.query.sequenceSteps.findMany({
+            where: inArray(sequenceSteps.sequenceId, sequenceIds),
+            orderBy: (steps, { asc }) => [asc(steps.stepOrder)],
+        })
+        : []
+    const stepsBySequence = new Map<string, SequenceStep[]>()
     for (const step of allSteps) {
-        if (!stepsBySequence.has(step.sequenceId)) {
-            stepsBySequence.set(step.sequenceId, [])
-        }
-        stepsBySequence.get(step.sequenceId)!.push(step)
+        const steps = stepsBySequence.get(step.sequenceId) ?? []
+        steps.push(step)
+        stepsBySequence.set(step.sequenceId, steps)
     }
 
-    // Batch-load all suppressed emails for involved organizations
-    const orgIds = [...new Set(pendingLeads.map(cl => cl.campaign.organizationId))]
-    const allSuppressions = await db.query.suppressions.findMany({
-        where: inArray(suppressions.organizationId, orgIds),
-        columns: { organizationId: true, emailAddress: true },
-    })
-    // audit-2026-07 (H4/#2): suppressions are written lowercased (unsubscribe.ts, processBounces.ts)
-    // but lead emails are stored as-entered (mixed case), so a case-insensitive comparison is
-    // required or an unsubscribed/bounced address re-imported with different casing gets mailed
-    // again (CAN-SPAM/GDPR). Normalize both sides of the key to lowercase.
-    const suppressedSet = new Set(allSuppressions.map(s => `${s.organizationId}:${s.emailAddress.toLowerCase()}`))
-
-    // Batch-load existing outreach emails for idempotency checks
-    const allExistingEmails = await db.query.outreachEmails.findMany({
-        where: inArray(
-            outreachEmails.campaignLeadId,
-            pendingLeads.map(cl => cl.id)
-        ),
-        columns: { campaignLeadId: true, sequenceStepId: true },
-    })
-    const existingEmailsSet = new Set(
-        allExistingEmails.map(e => `${e.campaignLeadId}:${e.sequenceStepId}`)
-    )
-
-    // audit-2026-07 (SEND-BURST / C1): the batch query loads a SEPARATE assignedEmailAccount
-    // snapshot per lead, so incrementing an account's currentDailySent / lastSentAt in the DB
-    // after a send was invisible to the other 199 leads' stale copies — the whole daily-limit,
-    // warmup and min-spacing gate was only enforced at tick boundaries, letting a single tick
-    // fire an entire inbox's backlog back-to-back. Collapse to one canonical object per inbox so
-    // in-tick increments (below) are seen by every subsequent lead sharing that inbox.
     const accountByIdInTick = new Map<string, typeof emailAccounts.$inferSelect>()
-    for (const cl of pendingLeads) {
-        const acct = cl.assignedEmailAccount
-        if (acct && !accountByIdInTick.has(acct.id)) {
-            accountByIdInTick.set(acct.id, acct)
+    for (const campaignLead of pendingLeads) {
+        if (campaignLead.assignedEmailAccount) {
+            accountByIdInTick.set(campaignLead.assignedEmailAccount.id, campaignLead.assignedEmailAccount)
         }
     }
 
     for (const campaignLead of pendingLeads) {
         result.processed++
-
         try {
-            // Skip leads whose next send was pushed into the future earlier in THIS tick
-            // (the per-inbox jitter reschedule below). They are picked up on a later tick.
-            if (campaignLead.nextScheduledAt && campaignLead.nextScheduledAt.getTime() > now.getTime()) {
-                continue
-            }
-            const campaign = campaignsMap.get(campaignLead.campaignId)
-            if (!campaign) {
-                logSkip('campaign_not_found', { campaignId: campaignLead.campaignId, campaignLeadId: campaignLead.id })
-                result.errors++
-                continue
-            }
-
-            if (campaign.status !== 'active') {
-                logSkip('campaign_inactive', { campaignId: campaign.id, campaignLeadId: campaignLead.id })
-                continue
-            }
-
-            const lead = campaignLead.lead
-            if (!lead) {
-                logSkip('lead_not_found', { campaignId: campaign.id, campaignLeadId: campaignLead.id })
-                result.errors++
-                continue
-            }
-
-            if (lead.unsubscribedAt) {
-                logSkip('unsubscribed', { campaignId: campaign.id, leadId: lead.id, campaignLeadId: campaignLead.id })
-                await db.update(campaignLeads)
-                    .set({ status: 'unsubscribed', nextScheduledAt: null })
-                    .where(eq(campaignLeads.id, campaignLead.id))
-                continue
-            }
-
-            const isSuppressed = suppressedSet.has(`${campaign.organizationId}:${lead.email.toLowerCase()}`)
-            if (isSuppressed) {
-                logSkip('suppression', { campaignId: campaign.id, leadId: lead.id, campaignLeadId: campaignLead.id })
-                await db.update(campaignLeads)
-                    .set({ status: 'bounced', nextScheduledAt: null })
-                    .where(eq(campaignLeads.id, campaignLead.id))
-                continue
-            }
-
+            const { campaign, lead } = campaignLead
             const currentStep = campaignLead.currentStep
-            const steps = currentStep
-                ? stepsBySequence.get(currentStep.sequenceId) ?? []
-                : []
+            const steps = currentStep ? stepsBySequence.get(currentStep.sequenceId) ?? [] : []
             const sequenceAction = resolveSequenceAction(steps, currentStep, now, {
                 timezone: campaign.timezone,
                 sendStartTime: campaign.sendStartTime,
@@ -301,32 +213,20 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                         currentStepId: sequenceAction.nextStep.id,
                         currentStepOrder: sequenceAction.nextStep.stepOrder,
                         nextScheduledAt: sequenceAction.nextScheduledAt,
+                        updatedAt: new Date(),
                     })
                     .where(eq(campaignLeads.id, campaignLead.id))
-                log.debug({
-                    action: 'outreach.processor.sequence_advanced_without_send',
-                    campaignId: campaign.id,
-                    campaignLeadId: campaignLead.id,
-                    fromStepId: sequenceAction.fromStep.id,
-                    nextStepId: sequenceAction.nextStep.id,
-                    nextScheduledAt: sequenceAction.nextScheduledAt.toISOString(),
-                }, 'advanced delay step without provider dispatch')
                 continue
             }
-
             if (sequenceAction.type === 'complete') {
                 await db.update(campaignLeads)
-                    .set({
-                        completedAt: sequenceAction.completedAt,
-                        nextScheduledAt: null,
-                    })
+                    .set({ completedAt: sequenceAction.completedAt, nextScheduledAt: null, updatedAt: new Date() })
                     .where(eq(campaignLeads.id, campaignLead.id))
                 continue
             }
-
             if (sequenceAction.type === 'quarantine') {
                 await db.update(campaignLeads)
-                    .set({ nextScheduledAt: null })
+                    .set({ nextScheduledAt: null, updatedAt: new Date() })
                     .where(eq(campaignLeads.id, campaignLead.id))
                 log.error({
                     action: 'outreach.processor.sequence_configuration_error',
@@ -334,264 +234,124 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                     campaignId: campaign.id,
                     campaignLeadId: campaignLead.id,
                     sequenceStepId: sequenceAction.step.id,
-                    sequenceStepType: sequenceAction.step.type,
-                    sequenceStepOrder: sequenceAction.step.stepOrder,
                 }, 'sequence row quarantined before dispatch')
                 result.errors++
                 continue
             }
 
-            // Discriminated-union invariant: the provider branch is unreachable for
-            // delay/condition rows even if malformed legacy data enters the batch.
-            if (sequenceAction.step.type !== 'email') {
-                throw new Error(`Sequence action invariant violated for step ${sequenceAction.step.id}`)
-            }
             const emailStep = sequenceAction.step
-
-            if (!isWithinSendWindow(campaign, now)) {
-                logSkip('outside_send_window', { campaignId: campaign.id, leadId: lead.id, campaignLeadId: campaignLead.id })
-                continue
-            }
-
             const emailAccount = campaignLead.assignedEmailAccountId
-                ? accountByIdInTick.get(campaignLead.assignedEmailAccountId) ?? campaignLead.assignedEmailAccount
+                ? accountByIdInTick.get(campaignLead.assignedEmailAccountId)
                 : campaignLead.assignedEmailAccount
             if (!emailAccount) {
-                logSkip('no_account', { campaignId: campaign.id, leadId: lead.id, campaignLeadId: campaignLead.id })
                 result.errors++
                 continue
             }
 
-            if (emailAccount.status !== 'verified') {
-                logSkip('account_not_verified', { campaignId: campaign.id, emailAccountId: emailAccount.id, campaignLeadId: campaignLead.id })
-                result.errors++
-                continue
-            }
-
-            // Phase 16 — INBOX-THROTTLE wire. canSendFromAccount(account, now) was extended
-            // in Plan 16-01 to check (lastSentAt + minMinutesBetweenEmails*60s > now).
-            // We discriminate the cause to emit the correct skip reason for ops visibility.
-            if (!canSendFromAccount(emailAccount, now)) {
-                const effectiveDailyLimit = getEffectiveDailySendLimit(emailAccount)
-                if (emailAccount.currentDailySent >= effectiveDailyLimit) {
-                    logSkip('daily_limit_reached', {
-                        campaignId: campaign.id,
-                        emailAccountId: emailAccount.id,
-                        campaignLeadId: campaignLead.id,
-                        extra: {
-                            currentDailySent: emailAccount.currentDailySent,
-                            dailySendLimit: emailAccount.dailySendLimit,
-                            effectiveDailyLimit,
-                            warmupEnabled: emailAccount.warmupEnabled,
-                            warmupCurrentDay: emailAccount.warmupCurrentDay,
-                            warmupDays: emailAccount.warmupDays,
-                        },
-                    })
-                } else {
-                    // Implied cause: lastSentAt + min*60s > now (the only other branch in canSendFromAccount).
-                    logSkip('rate_limit_per_inbox', {
-                        campaignId: campaign.id,
-                        emailAccountId: emailAccount.id,
-                        campaignLeadId: campaignLead.id,
-                        extra: {
-                            minMinutesBetweenEmails: emailAccount.minMinutesBetweenEmails,
-                            lastSentAt: emailAccount.lastSentAt?.toISOString() ?? null,
-                        },
-                    })
-                }
-                continue
-            }
-
-            // P0-05 idempotency-first: the in-memory guard catches duplicates within the
-            // current batch; the ON CONFLICT DO NOTHING below is the DB-level guard that
-            // survives process crashes and multi-instance races (in addition to the advisory
-            // lock from Task 3 of plan 14-06).
-            if (existingEmailsSet.has(`${campaignLead.id}:${emailStep.id}`)) {
-                logSkip('in_batch_duplicate', { campaignId: campaign.id, campaignLeadId: campaignLead.id, extra: { sequenceStepId: emailStep.id } })
+            const blockedUntil = [
+                accountDeferredUntil.get(emailAccount.id),
+                campaignDeferredUntil.get(campaign.id),
+            ]
+                .filter((value): value is Date => value != null)
+                .sort((left, right) => right.getTime() - left.getTime())[0]
+            if (blockedUntil && blockedUntil.getTime() > now.getTime()) {
+                await db.update(campaignLeads)
+                    .set({ nextScheduledAt: blockedUntil, updatedAt: new Date() })
+                    .where(eq(campaignLeads.id, campaignLead.id))
                 continue
             }
 
             const abVariant = selectAbVariant(emailStep, lead.id)
-
-            // Generate the HMAC tracking token up-front so the placeholder row has the NOT NULL value
-            // AND the same token is passed to sendOutreachEmail so the URL-embedded token matches
-            // the persisted one. Without this contract, track.ts lookups silently miss (Phase 15.1 fix).
             const trackingToken = generateOutreachToken({ kind: 'track', clid: campaignLead.id, cid: campaign.id })
-
-            // Claim the (campaignLeadId, sequenceStepId) slot. The unique index
-            // outreach_emails_campaign_lead_step_unique guarantees that only one INSERT wins.
-            // Concurrent workers (or a re-tick after crash) see 0 rows returned → we skip
-            // without sending. Status='queued' is used as the claim marker (the enum has no
-            // 'sending' value — Plan 14-06 deviation Rule 1: enum does not include 'sending',
-            // so we map sending→queued semantically).
-            const claim = await db.insert(outreachEmails).values({
-                organizationId: campaign.organizationId,
+            const dispatchResult = await dispatchOutreachMessage({
                 origin: 'campaign',
-                idempotencyKey: `campaign:${campaignLead.id}:step:${emailStep.id}`,
-                toAddress: lead.email,
+                organizationId: campaign.organizationId,
+                emailAccountId: emailAccount.id,
                 campaignId: campaign.id,
                 campaignLeadId: campaignLead.id,
                 sequenceStepId: emailStep.id,
-                emailAccountId: emailAccount.id,
+                leadId: lead.id,
+                trackingToken,
+                idempotencyKey: `campaign:${campaignLead.id}:${emailStep.id}`,
+                to: lead.email,
                 subject: sequenceAction.content.subject,
-                plainBody: sequenceAction.content.plainBody,
-                htmlBody: null,     // populated post-send with sendResult.finalHtml
+                text: sequenceAction.content.plainBody,
+                html: sequenceAction.content.htmlBody,
                 abVariant,
-                trackingToken,
-                status: 'queued',
-                // sentAt deliberately NULL — set on successful send
-            }).onConflictDoNothing({ target: [outreachEmails.campaignLeadId, outreachEmails.sequenceStepId] }).returning({ id: outreachEmails.id })
-
-            if (claim.length === 0) {
-                logSkip('claim_conflict', { campaignId: campaign.id, campaignLeadId: campaignLead.id, extra: { sequenceStepId: emailStep.id } })
-                continue
-            }
-
-            const claimedEmailId = claim[0].id
-
-            const trackingBaseUrl = process.env.FRONTEND_URL || 'http://localhost:9000'
-            if (emailStep.type !== 'email') {
-                throw new Error(`Refusing provider dispatch for non-email step ${emailStep.id}`)
-            }
-            const sendResult = await sendOutreachEmail({
-                account: emailAccount,
-                lead,
-                campaign,
-                step: emailStep,
-                campaignLeadId: campaignLead.id,
-                trackingToken,
-                trackOpens: campaign.trackOpens,
-                trackClicks: campaign.trackClicks,
-                trackingBaseUrl,
-                abVariant,
+            }, {
+                provider: createCampaignDispatchProvider({
+                    account: emailAccount,
+                    lead,
+                    campaign,
+                    step: emailStep,
+                    campaignLeadId: campaignLead.id,
+                    trackingToken,
+                    trackOpens: campaign.trackOpens,
+                    trackClicks: campaign.trackClicks,
+                    trackingBaseUrl: process.env.FRONTEND_URL || 'http://localhost:9000',
+                    abVariant,
+                }),
             })
 
-            if (!sendResult.success) {
-                log.error({
-                    action: 'outreach.send.failed',
-                    campaignId: campaign.id,
-                    leadId: lead.id,
-                    campaignLeadId: campaignLead.id,
-                    emailAccountId: emailAccount.id,
-                    error: { message: sendResult.error || 'Unknown send error' },
-                }, 'send failed')
-                await db.update(outreachEmails)
-                    .set({
-                        status: 'failed',
-                        bounceReason: (sendResult.error || 'Unknown send error').slice(0, 500),
-                        updatedAt: new Date(),
-                    })
-                    .where(eq(outreachEmails.id, claimedEmailId))
+            if (dispatchResult.status === 'deferred') {
+                deferredCounts[dispatchResult.code] = (deferredCounts[dispatchResult.code] ?? 0) + 1
+                await applyCampaignDeferral(campaignLead.id, dispatchResult, now)
+                if (dispatchResult.retryAt) {
+                    if (dispatchResult.code === 'outside_send_window') {
+                        campaignDeferredUntil.set(campaign.id, dispatchResult.retryAt)
+                    } else if (isAccountTemporalDenial(dispatchResult.code)) {
+                        accountDeferredUntil.set(emailAccount.id, dispatchResult.retryAt)
+                    }
+                }
+                continue
+            }
+            if (dispatchResult.status === 'retry_scheduled') {
+                await db.update(campaignLeads)
+                    .set({ nextScheduledAt: dispatchResult.nextAttemptAt, updatedAt: new Date() })
+                    .where(eq(campaignLeads.id, campaignLead.id))
+                continue
+            }
+            if (dispatchResult.status === 'in_progress' || dispatchResult.status === 'lost_lease') {
+                await db.update(campaignLeads)
+                    .set({ nextScheduledAt: new Date(now.getTime() + 5 * 60_000), updatedAt: new Date() })
+                    .where(eq(campaignLeads.id, campaignLead.id))
+                continue
+            }
+            if (dispatchResult.status === 'held' || dispatchResult.status === 'exhausted' || dispatchResult.status === 'failed') {
+                await db.update(campaignLeads)
+                    .set({ nextScheduledAt: null, updatedAt: new Date() })
+                    .where(eq(campaignLeads.id, campaignLead.id))
                 result.errors++
                 continue
             }
 
-            // audit-2026-07 (H2/#10): nodemailer returns messageId bracketed (`<id@host>`), but
-            // the reply processor strips brackets from incoming In-Reply-To/References and does an
-            // exact-match lookup — so a bracketed stored value never matched and stop-on-reply
-            // silently degraded to the address heuristic. Persist the normalized (unbracketed) id.
-            const normalizedMessageId = sendResult.messageId
-                ? sendResult.messageId.replace(/[<>]/g, '').trim()
-                : null
-
-            // Update the claimed row to reflect successful send.
-            await db.update(outreachEmails)
-                .set({
-                    status: 'sent',
-                    messageId: normalizedMessageId,
-                    htmlBody: sendResult.finalHtml ?? null,
-                    sentAt: new Date(),
-                    updatedAt: new Date(),
-                })
-                .where(eq(outreachEmails.id, claimedEmailId))
-
-            sendXphereOutreachEvent('sent', {
-                email: lead.email,
-                campaign_id: campaign.id,
-                lead_id: lead.id,
-                customFields: lead.customFields,
-            })
-
-            const isFirstContact = !campaignLead.firstContactedAt
-            await db.update(campaignLeads)
-                .set({
-                    status: 'contacted',
-                    firstContactedAt: campaignLead.firstContactedAt || new Date(),
-                    lastContactedAt: new Date(),
-                    currentStepId: emailStep.id,
-                    currentStepOrder: emailStep.stepOrder
-                })
-                .where(eq(campaignLeads.id, campaignLead.id))
-
+            const sentAt = new Date()
+            await advanceCampaignLeadAfterDispatch(campaignLead, sequenceAction, sentAt)
             if (lead.status === 'new') {
                 await db.update(leads)
-                    .set({ status: 'contacted', lastContactedAt: new Date() })
+                    .set({ status: 'contacted', lastContactedAt: sentAt, updatedAt: sentAt })
                     .where(eq(leads.id, lead.id))
             }
 
-            await incrementAccountStats(emailAccount.id, 'totalSent')
-            // NOTE: incrementAccountStats('totalSent') increments BOTH totalSent AND currentDailySent in a single UPDATE
-            // and also sets emailAccounts.lastSentAt = NOW() so the next canSendFromAccount call
-            // for this inbox returns false until minMinutesBetweenEmails has elapsed.
-            //
-            // audit-2026-07 (SEND-BURST / C1): mirror that DB increment into the shared in-tick
-            // snapshot so the daily-limit and min-spacing checks (canSendFromAccount) for the NEXT
-            // lead on this inbox see the updated counter and lastSentAt WITHIN this same tick.
-            emailAccount.currentDailySent += 1
-            emailAccount.lastSentAt = new Date()
-
-            // Phase 16 — INBOX-THROTTLE: spread out the NEXT pending lead on the same inbox
-            // so it doesn't become eligible at the same tick. Find the next eligible lead
-            // in this batch sharing this emailAccountId; jitter its nextScheduledAt by a
-            // random number of minutes in [min, max). No extra query — we walk the batch
-            // we already loaded at line 81.
-            const sameInboxNext = pendingLeads.find(cl =>
-                cl.id !== campaignLead.id
-                && cl.assignedEmailAccountId === emailAccount.id
-                && cl.nextScheduledAt != null
-                && cl.nextScheduledAt.getTime() <= now.getTime()
-            )
-            if (sameInboxNext) {
-                const jittered = applySendJitter(
-                    emailAccount.minMinutesBetweenEmails,
-                    emailAccount.maxMinutesBetweenEmails,
-                    new Date(),
+            if (dispatchResult.status === 'sent') {
+                await incrementAccountStats(emailAccount.id, 'totalSent')
+                emailAccount.currentDailySent += 1
+                emailAccount.lastSentAt = sentAt
+                accountDeferredUntil.set(
+                    emailAccount.id,
+                    new Date(sentAt.getTime() + emailAccount.minMinutesBetweenEmails * 60_000),
                 )
-                await db.update(campaignLeads)
-                    .set({ nextScheduledAt: jittered })
-                    .where(eq(campaignLeads.id, sameInboxNext.id))
-                // Mutate the in-memory copy so the rest of this tick's loop sees the new schedule.
-                sameInboxNext.nextScheduledAt = jittered
-                log.debug({
-                    action: 'outreach.processor.jitter_next',
-                    emailAccountId: emailAccount.id,
-                    campaignLeadId: sameInboxNext.id,
-                    jitteredAt: jittered.toISOString(),
-                }, 'jittered next eligible send')
+                if (!campaignLead.firstContactedAt) {
+                    await incrementCampaignStats(campaign.id, 'leadsContacted')
+                }
+                sendXphereOutreachEvent('sent', {
+                    email: lead.email,
+                    campaign_id: campaign.id,
+                    lead_id: lead.id,
+                    customFields: lead.customFields,
+                })
+                result.sent++
             }
-
-            if (isFirstContact) {
-                await incrementCampaignStats(campaign.id, 'leadsContacted')
-            }
-
-            if (sequenceAction.nextStep && sequenceAction.nextScheduledAt) {
-                await db.update(campaignLeads)
-                    .set({
-                        currentStepId: sequenceAction.nextStep.id,
-                        currentStepOrder: sequenceAction.nextStep.stepOrder,
-                        nextScheduledAt: sequenceAction.nextScheduledAt,
-                    })
-                    .where(eq(campaignLeads.id, campaignLead.id))
-            } else {
-                await db.update(campaignLeads)
-                    .set({
-                        completedAt: new Date(),
-                        nextScheduledAt: null
-                    })
-                    .where(eq(campaignLeads.id, campaignLead.id))
-            }
-
-            result.sent++
         } catch (error) {
             const err = error instanceof Error ? error : new Error(String(error))
             log.error({
@@ -603,6 +363,9 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
         }
     }
 
+    if (Object.keys(deferredCounts).length > 0) {
+        log.info({ action: 'outreach.processor.deferred', counts: deferredCounts }, 'deferred outreach work')
+    }
     return result
 }
 
@@ -620,75 +383,60 @@ export async function resetDailyLimits(): Promise<void> {
         })
         .where(sql`${emailAccounts.currentDailySent} > 0 OR (${emailAccounts.warmupEnabled} = TRUE AND ${emailAccounts.warmupCurrentDay} < ${emailAccounts.warmupDays})`)
         .returning({ id: emailAccounts.id })
-    log.info({
-        action: 'outreach.processor.reset_daily_limits',
-        accountsReset: result.length,
-    }, 'reset daily limits')
+    log.info({ action: 'outreach.processor.reset_daily_limits', accountsReset: result.length }, 'reset daily limits')
 }
-
-// P0-06 / audit-2026-07: Postgres advisory lock — prevents two container instances (or a
-// blue-green deploy overlap) from running the processor concurrently.
-//
-// Uses runWithLock (src/server/lib/cron-lock.ts), which acquires and releases the advisory
-// lock on the SAME reserved postgres-js connection. The previous inline implementation issued
-// pg_try_advisory_lock / pg_advisory_unlock via the shared pool (db.execute), so acquire and
-// release routinely landed on different sessions: the unlock no-op'd, the lock stranded on the
-// acquiring connection, and later ticks were skipped as "contended" while nothing ran (and it
-// provided no exclusion at all behind a transaction pooler). See audit findings H1/#8.
-//
-// Inspect held locks in production: `SELECT * FROM pg_locks WHERE locktype='advisory';`
-const OUTREACH_PROCESSOR_LOCK_NAME = 'outreach-sequences-processor'
 
 export async function runOutreachProcessorWithLock(): Promise<void> {
     await runWithLock(OUTREACH_PROCESSOR_LOCK_NAME, async () => {
         log.info({ action: 'outreach.processor.tick.start' }, 'tick start')
         const tickStart = performance.now()
         const result = await processOutreachSequences()
+        await markCompletedCampaigns()
         const latencyMs = Math.round(performance.now() - tickStart)
         recordTick(latencyMs)
-        const tickLogPayload = {
-            action: 'outreach.processor.tick.complete',
-            latencyMs,
-            processed: result.processed,
-            sent: result.sent,
-            errors: result.errors,
-        }
+        const payload = { action: 'outreach.processor.tick.complete', latencyMs, ...result }
         if (latencyMs > OUTREACH_PROCESSOR_SLOW_MS) {
-            log.warn({ ...tickLogPayload, action: 'outreach.processor.tick.slow', threshold: OUTREACH_PROCESSOR_SLOW_MS }, 'processor tick exceeded slow threshold')
+            log.warn({ ...payload, action: 'outreach.processor.tick.slow', threshold: OUTREACH_PROCESSOR_SLOW_MS }, 'processor tick exceeded slow threshold')
         } else {
-            log.info(tickLogPayload, 'tick complete')
+            log.info(payload, 'tick complete')
         }
     })
 }
 
 export async function markCompletedCampaigns(): Promise<void> {
-    // Find all active campaigns that have zero incomplete leads
-    // Using a NOT EXISTS subquery — single query instead of N queries
+    const terminalStatuses = sql.join(
+        TERMINAL_CAMPAIGN_LEAD_STATUSES.map((status) => sql`${status}`),
+        sql`, `,
+    )
     const completedCampaigns = await db
         .select({ id: campaigns.id })
         .from(campaigns)
-        .where(
-            and(
-                eq(campaigns.status, 'active'),
-                sql`NOT EXISTS (
-                    SELECT 1 FROM campaign_leads
-                    WHERE campaign_leads.campaign_id = ${campaigns.id}
-                    AND campaign_leads.status NOT IN ('replied', 'bounced', 'unsubscribed')
-                )`
-            )
-        )
+        .where(and(
+            eq(campaigns.status, 'active'),
+            sql`EXISTS (
+                SELECT 1 FROM campaign_leads
+                WHERE campaign_leads.campaign_id = ${campaigns.id}
+            )`,
+            sql`NOT EXISTS (
+                SELECT 1 FROM campaign_leads
+                WHERE campaign_leads.campaign_id = ${campaigns.id}
+                  AND campaign_leads.completed_at IS NULL
+                  AND campaign_leads.status NOT IN (${terminalStatuses})
+            )`,
+        ))
 
     if (completedCampaigns.length === 0) return
-
-    await db.update(campaigns)
-        .set({
-            status: 'completed',
-            completedAt: new Date()
-        })
-        .where(inArray(campaigns.id, completedCampaigns.map(c => c.id)))
-
+    const completedAt = new Date()
+    const updated = await db.update(campaigns)
+        .set({ status: 'completed', completedAt, updatedAt: completedAt })
+        .where(and(
+            inArray(campaigns.id, completedCampaigns.map((campaign) => campaign.id)),
+            eq(campaigns.status, 'active'),
+        ))
+        .returning({ id: campaigns.id })
     log.info({
         action: 'outreach.processor.campaigns_completed',
-        count: completedCampaigns.length,
+        count: updated.length,
+        campaignIds: updated.map((campaign) => campaign.id),
     }, 'marked campaigns completed')
 }

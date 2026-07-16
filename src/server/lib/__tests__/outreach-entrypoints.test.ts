@@ -2,20 +2,23 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const sendOutreachEmail = vi.fn()
-const sendThreadedReply = vi.fn()
+const { sendOutreachEmail, sendThreadedReply } = vi.hoisted(() => ({
+    sendOutreachEmail: vi.fn(),
+    sendThreadedReply: vi.fn(),
+}))
 
 vi.mock('../outreach-sender', () => ({
     sendOutreachEmail,
     sendThreadedReply,
 }))
+vi.mock('../outlook', () => ({ sendMessageWithOutlook: vi.fn() }))
 
 import {
     createCampaignDispatchProvider,
     createThreadedDispatchProvider,
 } from '../outreach-dispatch-provider'
 
-const repositoryRoot = resolve(import.meta.dirname, '../../../../..')
+const repositoryRoot = resolve(process.cwd())
 
 function source(relativePath: string): string {
     return readFileSync(resolve(repositoryRoot, relativePath), 'utf8')

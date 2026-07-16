@@ -126,6 +126,7 @@ export interface DispatchOutreachInput {
     html?: string | null
     inReplyTo?: string | null
     references?: string | null
+    abVariant?: 'a' | 'b'
     maxAttempts?: number
 }
 
@@ -285,13 +286,13 @@ export function createSqlDispatchRepository(
                 INSERT INTO outreach_emails (
                     organization_id, origin, idempotency_key, to_address,
                     campaign_id, campaign_lead_id, sequence_step_id, email_account_id,
-                    tracking_token, subject, plain_body, html_body, status,
+                    tracking_token, subject, plain_body, html_body, ab_variant, status,
                     attempt_count, max_attempts, lease_token, lease_expires_at,
                     created_at, updated_at
                 ) VALUES (
                     ${input.organizationId}, ${input.origin}, ${input.idempotencyKey}, ${input.to},
                     ${input.campaignId ?? null}, ${input.campaignLeadId ?? null}, ${input.sequenceStepId ?? null}, ${input.emailAccountId},
-                    ${input.trackingToken ?? null}, ${input.subject}, ${input.text ?? null}, ${input.html ?? null}, 'queued',
+                    ${input.trackingToken ?? null}, ${input.subject}, ${input.text ?? null}, ${input.html ?? null}, ${input.abVariant ?? null}, 'queued',
                     0, ${Math.max(1, input.maxAttempts ?? 3)}, ${context.leaseToken}::uuid, ${context.leaseExpiresAt},
                     ${context.now}, ${context.now}
                 )

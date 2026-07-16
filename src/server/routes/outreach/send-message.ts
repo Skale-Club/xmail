@@ -1,11 +1,13 @@
-import { Router, Request, Response } from 'express'
+import { randomUUID } from 'node:crypto'
+import { Router, type Request, type Response } from 'express'
+import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
-import nodemailer from 'nodemailer'
 import { db } from '../../../db'
 import { emailAccounts, organizationUsers } from '../../../db/schema'
-import { eq, and } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
-import { relayMessage, storeMessage, getNativeMailboxByEmail } from '../../lib/native-send'
+import { dispatchOutreachMessage } from '../../lib/outreach-dispatch'
+import { createThreadedDispatchProvider } from '../../lib/outreach-dispatch-provider'
+import { incrementAccountStats } from '../../lib/outreach-sender'
 
 const router = Router()
 
@@ -15,117 +17,91 @@ const sendMessageSchema = z.object({
     subject: z.string().min(1, 'Subject is required'),
     html: z.string().min(1, 'html is required'),
     text: z.string().optional(),
+    idempotencyKey: z.string().min(1).max(200).optional(),
 })
 
-// Helper to check org membership (platform admins bypass membership check)
-// Copied from campaigns.ts/leads.ts to keep this route's auth pattern identical.
 async function checkOrgMembership(userId: string, organizationId: string) {
     const admin = await isPlatformAdmin(userId)
     if (admin) return { role: 'admin' as const }
-
-    const membership = await db.query.organizationUsers.findFirst({
+    return db.query.organizationUsers.findFirst({
         where: and(
             eq(organizationUsers.organizationId, organizationId),
-            eq(organizationUsers.userId, userId)
+            eq(organizationUsers.userId, userId),
         ),
     })
-    return membership
 }
 
 function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembership>>): boolean {
     return membership?.role === 'admin' || membership?.role === 'member'
 }
 
-// POST /api/outreach/send-message — one-to-one transactional send from a verified
-// native outreach inbox. This is NOT campaign traffic: it deliberately does not
-// touch dailySendLimit/warmup state, and does not inject open/click tracking.
 router.post('/', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
         const organizationId = req.query.organizationId as string
-
-        if (!userId) {
-            return res.status(401).json({ error: 'Unauthorized' })
-        }
-
-        if (!organizationId) {
-            return res.status(400).json({ error: 'organizationId is required' })
-        }
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' })
+        if (!organizationId) return res.status(400).json({ error: 'organizationId is required' })
 
         const membership = await checkOrgMembership(userId, organizationId)
-        if (!membership) {
-            return res.status(403).json({ error: 'Access denied' })
-        }
-        if (!canWriteOutreach(membership)) {
-            return res.status(403).json({ error: 'Write access denied' })
-        }
+        if (!membership) return res.status(403).json({ error: 'Access denied' })
+        if (!canWriteOutreach(membership)) return res.status(403).json({ error: 'Write access denied' })
 
-        const { from, to, subject, html, text } = sendMessageSchema.parse(req.body)
-
-        // Resolve the sending account: must be a verified native inbox in this org.
+        const { from, to, subject, html, text, idempotencyKey } = sendMessageSchema.parse(req.body)
+        const requestId = idempotencyKey || req.get('Idempotency-Key')?.trim() || randomUUID()
         const account = await db.query.emailAccounts.findFirst({
             where: and(
                 eq(emailAccounts.organizationId, organizationId),
                 eq(emailAccounts.email, from),
-                eq(emailAccounts.provider, 'native'),
-                eq(emailAccounts.status, 'verified')
+                eq(emailAccounts.status, 'verified'),
             ),
         })
-
         if (!account) {
-            return res.status(400).json({ error: `No verified native sending inbox for ${from} in this organization` })
+            return res.status(400).json({ error: `No verified sending inbox for ${from} in this organization` })
         }
 
-        const nativeMailbox = await getNativeMailboxByEmail(from)
-        if (!nativeMailbox) {
-            return res.status(400).json({ error: 'Native mailbox not found for outreach account — was it deleted?' })
-        }
-
-        // Compose MIME exactly like sendOutreachEmail's native branch: buffer via
-        // nodemailer's stream composer (never touches the network), then relay
-        // through the platform's internal DKIM-signed relay.
-        const fromAddress = account.displayName ? `"${account.displayName}" <${from}>` : from
-
-        const composer = nodemailer.createTransport({ streamTransport: true, buffer: true })
-        const composed = await composer.sendMail({
-            from: fromAddress,
+        const dispatchResult = await dispatchOutreachMessage({
+            origin: 'manual',
+            organizationId,
+            emailAccountId: account.id,
+            idempotencyKey: `manual:${requestId}`,
             to,
             subject,
             html,
             text,
+        }, {
+            provider: createThreadedDispatchProvider({ account, fromName: account.displayName }),
         })
-        const rawBuffer = composed.message as Buffer
-        const messageId = composed.messageId as string
 
-        await relayMessage(from, [to], rawBuffer)
-
-        try {
-            await storeMessage(nativeMailbox.id, 'sent', {
-                messageId,
-                subject,
-                fromAddress: from,
-                fromName: account.displayName || null,
-                toAddresses: [{ address: to, name: null }],
-                ccAddresses: [],
-                bccAddresses: [],
-                plainBody: text,
-                htmlBody: html,
-                hasAttachments: false,
-                attachments: [],
-            }, true)
-        } catch (storeErr) {
-            // Filing the Sent-folder copy is best-effort — the message was already
-            // relayed successfully, so a filing failure should not fail the send.
-            console.warn('[Outreach:SendMessage] Failed to file Sent copy:', storeErr instanceof Error ? storeErr.message : storeErr)
+        if (dispatchResult.status === 'sent') {
+            await incrementAccountStats(account.id, 'totalSent')
+            return res.json({ success: true, messageId: dispatchResult.messageId, requestId })
         }
-
-        res.json({ success: true, messageId })
+        if (dispatchResult.status === 'duplicate') {
+            return res.json({ success: true, duplicate: true, requestId })
+        }
+        if (dispatchResult.status === 'deferred') {
+            return res.status(dispatchResult.code === 'organization_disabled' ? 423 : 409).json({
+                error: 'Outreach delivery is currently blocked',
+                code: dispatchResult.code,
+                retryAt: dispatchResult.retryAt,
+                requestId,
+            })
+        }
+        if (dispatchResult.status === 'failed' || dispatchResult.status === 'exhausted') {
+            return res.status(502).json({ error: 'Provider delivery failed', code: dispatchResult.status, requestId })
+        }
+        return res.status(409).json({
+            error: 'Delivery is not ready to repeat safely',
+            code: dispatchResult.status,
+            retryAt: dispatchResult.status === 'retry_scheduled' ? dispatchResult.nextAttemptAt : undefined,
+            requestId,
+        })
     } catch (error) {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: 'Validation error', details: error.errors })
         }
         console.error('Error sending transactional message:', error)
-        res.status(500).json({ error: 'Internal server error' })
+        return res.status(500).json({ error: 'Internal server error' })
     }
 })
 

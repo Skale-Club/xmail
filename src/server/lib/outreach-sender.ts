@@ -430,6 +430,8 @@ interface ThreadedReplyParams {
     replyTo?: string | null
     /** Message-ID this reply threads under (In-Reply-To + References). */
     inReplyTo?: string | null
+    /** Dispatcher-derived deterministic Message-ID for SMTP/native retries. */
+    stableMessageId?: string
 }
 
 /**
@@ -439,7 +441,7 @@ interface ThreadedReplyParams {
  * (Outlook path parity is deferred, matching sendOutreachEmail's known limitation).
  */
 export async function sendThreadedReply(params: ThreadedReplyParams): Promise<SendResult> {
-    const { account, to, subject, text, html, fromName, replyTo, inReplyTo } = params
+    const { account, to, subject, text, html, fromName, replyTo, inReplyTo, stableMessageId } = params
     try {
         const headers: Record<string, string> = {}
         if (inReplyTo) {
@@ -459,6 +461,7 @@ export async function sendThreadedReply(params: ThreadedReplyParams): Promise<Se
             html,
             replyTo: replyTo || undefined,
             headers,
+            messageId: stableMessageId,
         }
 
         if (account.provider === 'native') {
