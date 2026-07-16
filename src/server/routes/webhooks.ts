@@ -363,6 +363,10 @@ router.post('/:id/test', async (req: Request, res: Response) => {
                 body: JSON.stringify(testPayload),
                 // COR-01 — see audit H2. Bound the test call so an admin entering a broken URL can't hang the request.
                 signal: AbortSignal.timeout(10_000),
+                // SEC — the URL host is validated against private ranges on write (isPrivateHostWithDns),
+                // but a public host can still 3xx-redirect to an internal address. Do not follow it: a 3xx
+                // arrives here as a non-ok response instead of an SSRF request to the redirect target.
+                redirect: 'manual',
             })
 
             const responseBody = await response.text()

@@ -277,6 +277,10 @@ export async function fireWebhooks(
                             headers,
                             body: JSON.stringify(payload),
                             signal: AbortSignal.timeout(10_000),
+                            // SEC — host is validated against private ranges on write, but do not follow a
+                            // 3xx to an internal address (SSRF bypass). A 3xx lands as a non-ok response;
+                            // per the retry rule below (status < 500 → stop) it ends the attempt cleanly.
+                            redirect: 'manual',
                         })
 
                         const body = await response.text()
