@@ -229,16 +229,24 @@ app.get('/app-config.js', (_req, res) => {
     res.send(`window.__APP_CONFIG__ = ${JSON.stringify(publicConfig)};`)
 })
 
-const PUBLIC_PATHS = [
-    '/api/auth/login',
-    '/api/auth/register',
-    '/api/auth/reset-password',
-    '/api/auth/refresh',
-    '/api/system/branding',
-    '/api/system/mail-server-info',
+// SEC — each entry binds a METHOD to a path. The earlier version matched on path alone, so
+// any path public for reads was also public for writes. GET /api/system/branding is read by
+// the login page before auth, but the same string also whitelisted PATCH /api/system/branding:
+// that write skipped this middleware entirely, and since this middleware is the only thing that
+// overwrites the client-supplied x-user-id header with a token-verified one, the branding
+// handler's getRequestingUser(req) then trusted a forged x-user-id and its isAdmin gate was
+// bypassable by anyone who knew an admin's user id. Binding the method closes that.
+const PUBLIC_ROUTES: { method: string; path: string }[] = [
+    { method: 'POST', path: '/api/auth/login' },
+    { method: 'POST', path: '/api/auth/register' },
+    { method: 'POST', path: '/api/auth/reset-password' },
+    { method: 'POST', path: '/api/auth/refresh' },
+    { method: 'GET', path: '/api/system/branding' },
+    { method: 'GET', path: '/api/system/mail-server-info' },
 ]
 
-const PUBLIC_PATH_PREFIXES = [
+// GET-only autodiscover config (Apple .mobileconfig); a prefix because the path carries a query.
+const PUBLIC_GET_PREFIXES = [
     '/api/system/mail-config/',
 ]
 
@@ -256,10 +264,10 @@ function timingSafeEqual(a: string, b: string): boolean {
 app.use('/api', async (req, res, next) => {
     const path = req.originalUrl.split('?')[0]
 
-    if (PUBLIC_PATHS.some(p => path === p)) {
+    if (PUBLIC_ROUTES.some(r => r.method === req.method && r.path === path)) {
         return next()
     }
-    if (PUBLIC_PATH_PREFIXES.some(p => path.startsWith(p))) {
+    if (req.method === 'GET' && PUBLIC_GET_PREFIXES.some(p => path.startsWith(p))) {
         return next()
     }
 
