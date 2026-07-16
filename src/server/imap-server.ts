@@ -1237,6 +1237,46 @@ async function handleUidCommand(session: IMAPSession, tag: string, subCmd: strin
         return
     }
 
+    if (subCmd === 'EXPUNGE') {
+        // RFC 4315 (UIDPLUS): permanently remove messages that BOTH carry \Deleted AND have a
+        // UID in the given set. We advertise UIDPLUS in CAPABILITY, so clients (Thunderbird)
+        // prefer this over plain EXPUNGE to avoid expunging messages another session just
+        // flagged. Without this branch the command fell through to "BAD Unknown UID subcommand",
+        // which is the error the user saw and which left folders uncompactable over IMAP.
+        if (session.selectedReadOnly) { sendLine(socket, `${tag} NO Folder is read-only`); return }
+        const set = subArgs.trim()
+        if (!set) { sendLine(socket, `${tag} BAD UID EXPUNGE requires a UID set`); return }
+
+        // The default listing hides isDeleted rows, so load including deleted and size the
+        // sequence set's `*` against the largest UID actually present (deleted included).
+        const withDeleted = await loadFolderMessages(session.selectedFolderId!, { includeDeleted: true })
+        let maxUidAll = maxUid
+        for (const m of withDeleted) { if ((m.remoteUid ?? 0) > maxUidAll) maxUidAll = m.remoteUid ?? 0 }
+        const targetUids = new Set(parseSequenceSet(set, maxUidAll || 1))
+
+        let removed = 0
+        for (const msg of withDeleted) {
+            if (!msg.isDeleted) continue
+            if (msg.remoteUid == null || !targetUids.has(msg.remoteUid)) continue
+            await db.delete(mailMessages).where(eq(mailMessages.id, msg.id))
+            removed++
+        }
+
+        // Mirror plain EXPUNGE: this server drops \Deleted rows from the visible sequence space
+        // the moment they are flagged, so there is no stable seqnum to emit per removal; the
+        // client resyncs off the updated counts. Recompute + notify only when something changed.
+        if (removed > 0) {
+            await recomputeFolderCounts(session.selectedFolderId!)
+            emitFolderChange({
+                folderId: session.selectedFolderId!,
+                mailboxId: session.selectedMailboxId!,
+                kind: 'expunge',
+            })
+        }
+        sendLine(socket, `${tag} OK UID EXPUNGE completed`)
+        return
+    }
+
     sendLine(socket, `${tag} BAD Unknown UID subcommand: ${subCmd}`)
 }
 
