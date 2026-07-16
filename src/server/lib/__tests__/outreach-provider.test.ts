@@ -34,6 +34,7 @@ import {
     readMimeHeader,
     REQUIRED_OUTREACH_MIME_HEADERS,
     sendComposedOutreachMessage,
+    toDispatchResult,
     type ComposedOutreachMessage,
     type OutreachMimeInput,
 } from '../outreach-provider'
@@ -717,10 +718,10 @@ describe('dispatcher integration', () => {
             repository: repo as never,
             evaluatePolicy: async () => ({ allowed: false, code: 'organization_disabled' }),
             provider: {
-                send: async (input) => sendComposedOutreachMessage(
+                send: async (input) => toDispatchResult(await sendComposedOutreachMessage(
                     emailAccount({ provider: 'outlook', outlookMailboxId: MAILBOX_ID }),
                     { ...CAMPAIGN_MIME, messageId: input.stableMessageId },
-                ),
+                )),
             },
         })
 
@@ -736,11 +737,11 @@ describe('dispatcher integration', () => {
             repository: repo as never,
             evaluatePolicy: async () => allowed,
             provider: {
-                send: async (input) => sendComposedOutreachMessage(
+                send: async (input) => toDispatchResult(await sendComposedOutreachMessage(
                     emailAccount({ provider: 'outlook', outlookMailboxId: MAILBOX_ID }),
                     { ...CAMPAIGN_MIME, messageId: input.stableMessageId },
                     { sendOutlookMime: (async () => { throw new OutlookGraphError('throttled', 429) }) as never },
-                ),
+                )),
             },
         })
 
@@ -761,11 +762,11 @@ describe('dispatcher integration', () => {
             repository: repo as never,
             evaluatePolicy: async () => allowed,
             provider: {
-                send: async (input) => sendComposedOutreachMessage(
+                send: async (input) => toDispatchResult(await sendComposedOutreachMessage(
                     emailAccount({ provider: 'outlook', outlookMailboxId: MAILBOX_ID }),
                     { ...CAMPAIGN_MIME, messageId: input.stableMessageId },
                     { sendOutlookMime: (async () => ({ mailbox: outlookMailbox(), requestId: 'graph-1' })) as never },
-                ),
+                )),
             },
         })
 

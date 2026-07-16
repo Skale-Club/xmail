@@ -9,6 +9,29 @@ const OAUTH_BASE_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0'
 const STATE_TTL_MS = 10 * 60 * 1000
 const REFRESH_SKEW_MS = 2 * 60 * 1000
 
+/**
+ * Graph rejects a MIME `sendMail` body over 4 MB. Catching it here turns a wasted
+ * round-trip and an opaque Graph error into a local terminal classification.
+ */
+const GRAPH_MIME_MAX_BYTES = 4 * 1024 * 1024
+
+/**
+ * A Graph HTTP failure carrying its status code, so `normalizeProviderFailure`
+ * (outreach-dispatch.ts) can classify 429/5xx as transient-retryable and 4xx as
+ * terminal without string-matching the message.
+ */
+export class OutlookGraphError extends Error {
+    readonly statusCode: number
+    readonly requestId?: string
+
+    constructor(message: string, statusCode: number, requestId?: string) {
+        super(message)
+        this.name = 'OutlookGraphError'
+        this.statusCode = statusCode
+        this.requestId = requestId
+    }
+}
+
 export const OUTLOOK_SCOPES = [
     'offline_access',
     'openid',
@@ -71,6 +94,20 @@ export type OutlookSendInput = {
         content: string
         contentType: string
     }>
+}
+
+export type OutlookMimeSendInput = {
+    organizationId: string
+    mailboxId?: string
+    fromAddress: string
+    /** Fully composed RFC 5322 bytes. Sent verbatim — Graph does not rewrite headers. */
+    raw: Buffer
+}
+
+export type OutlookMimeSendResult = {
+    mailbox: SanitizedOutlookMailbox
+    /** Graph's own correlation id for the accepted request, when it returns one. */
+    requestId?: string
 }
 
 function getRequiredEnv(name: string): string {
@@ -296,16 +333,11 @@ async function refreshOutlookAccessToken(mailbox: OutlookMailbox) {
     }
 }
 
-export async function getValidOutlookAccessToken(mailbox: OutlookMailbox) {
-    const expiresAtMs = mailbox.tokenExpiresAt.getTime()
-
-    if (expiresAtMs - Date.now() > REFRESH_SKEW_MS) {
-        return {
-            mailbox,
-            accessToken: decryptSecret(mailbox.accessTokenEncrypted),
-        }
-    }
-
+/**
+ * Refresh, and mark the mailbox expired if the grant is gone. A failed refresh is not
+ * recoverable by retrying the send, so the row must stop advertising itself as active.
+ */
+async function refreshOrMarkExpired(mailbox: OutlookMailbox) {
     try {
         return await refreshOutlookAccessToken(mailbox)
     } catch (error) {
@@ -319,6 +351,115 @@ export async function getValidOutlookAccessToken(mailbox: OutlookMailbox) {
 
         throw error
     }
+}
+
+export async function getValidOutlookAccessToken(mailbox: OutlookMailbox) {
+    const expiresAtMs = mailbox.tokenExpiresAt.getTime()
+
+    if (expiresAtMs - Date.now() > REFRESH_SKEW_MS) {
+        return {
+            mailbox,
+            accessToken: decryptSecret(mailbox.accessTokenEncrypted),
+        }
+    }
+
+    return refreshOrMarkExpired(mailbox)
+}
+
+/** Pull a human-readable reason out of a Graph error body without echoing the request. */
+function describeGraphError(body: string, status: number): string {
+    if (!body.trim()) return `Outlook Graph request failed with status ${status}`
+
+    try {
+        const parsed = JSON.parse(body) as { error?: { message?: string; code?: string } }
+        const detail = parsed.error?.message || parsed.error?.code
+        if (detail) return detail.slice(0, 500)
+    } catch {
+        // Not JSON — fall through to the raw body.
+    }
+
+    return body.slice(0, 500)
+}
+
+async function markOutlookMailboxSent(mailboxId: string): Promise<void> {
+    await db
+        .update(outlookMailboxes)
+        .set({
+            lastSendAt: new Date(),
+            lastSyncedAt: new Date(),
+            status: 'active',
+            updatedAt: new Date(),
+        })
+        .where(eq(outlookMailboxes.id, mailboxId))
+}
+
+/**
+ * Send a precomposed MIME message through Graph.
+ *
+ * Why MIME and not the JSON `message` shape: Graph's JSON shape has no home for
+ * List-Unsubscribe / List-Unsubscribe-Post, drops the caller's Message-ID, and returns
+ * nothing to correlate on. Outreach sent through it silently lost bulk-sender compliance
+ * headers and reply/bounce matchability (see PROV-03). The documented MIME variant posts
+ * base64 RFC 5322 bytes with `Content-Type: text/plain` and preserves the headers as-is.
+ *
+ * The caller composes the bytes exactly once (outreach-provider.ts) so SMTP, native, and
+ * Outlook all ship the identical message.
+ */
+export async function sendMimeMessageWithOutlook(input: OutlookMimeSendInput): Promise<OutlookMimeSendResult> {
+    const mailbox = await resolveOutlookMailboxForServer(input.organizationId, input.mailboxId)
+
+    if (!mailbox) {
+        throw new Error('No active Outlook mailbox found for this organization')
+    }
+
+    if (input.fromAddress.toLowerCase() !== mailbox.email.toLowerCase()) {
+        throw new Error(`Outlook mailbox ${mailbox.email} can only send with its own address`)
+    }
+
+    if (input.raw.byteLength > GRAPH_MIME_MAX_BYTES) {
+        // 413 so the shared classifier reads it as terminal — a too-large message will not
+        // shrink on retry.
+        throw new OutlookGraphError(
+            `Composed message is ${input.raw.byteLength} bytes; Graph MIME sendMail accepts at most ${GRAPH_MIME_MAX_BYTES}`,
+            413,
+        )
+    }
+
+    const body = input.raw.toString('base64')
+    let { accessToken, mailbox: activeMailbox } = await getValidOutlookAccessToken(mailbox)
+
+    const post = (token: string) => fetch(`${GRAPH_BASE_URL}/me/sendMail`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'text/plain',
+        },
+        body,
+        signal: AbortSignal.timeout(20_000),
+    })
+
+    let response = await post(accessToken)
+
+    // Graph can reject a token we still believe is valid (revoked, rotated, or clock skew
+    // beyond REFRESH_SKEW_MS). Refresh and retry exactly once — a second 401 is a real
+    // authorization failure and must surface as terminal rather than loop.
+    if (response.status === 401) {
+        const refreshed = await refreshOrMarkExpired(activeMailbox)
+        accessToken = refreshed.accessToken
+        activeMailbox = refreshed.mailbox
+        response = await post(accessToken)
+    }
+
+    const requestId = response.headers.get('request-id') ?? undefined
+
+    if (!response.ok) {
+        const errorBody = await response.text()
+        throw new OutlookGraphError(describeGraphError(errorBody, response.status), response.status, requestId)
+    }
+
+    await markOutlookMailboxSent(activeMailbox.id)
+
+    return { mailbox: sanitizeOutlookMailbox(activeMailbox), requestId }
 }
 
 export async function sendMessageWithOutlook(input: OutlookSendInput) {
