@@ -10,7 +10,7 @@ import { MailboxProvider } from './hooks/useMailbox'
 import { useCompose } from './hooks/useCompose'
 import { useBranding } from './lib/branding'
 import AdminLayout from './components/admin/AdminLayout'
-import { OrganizationProvider } from './hooks/useOrganization'
+import { OrganizationProvider, useOrganization } from './hooks/useOrganization'
 import { ComposeProvider } from './hooks/useCompose'
 import { MailLayout } from './components/mail/MailLayout'
 import { AppErrorBoundary } from './components/AppErrorBoundary'
@@ -164,6 +164,56 @@ function MailCheck({ children }: { children: React.ReactNode }) {
     if (isAdmin === null) return <Spinner />
 
     return <>{children}</>
+}
+
+function NoOutreachAccess() {
+    const [, navigate] = useLocation()
+    return (
+        <div className="min-h-screen flex flex-col items-center justify-center gap-4 text-center p-8">
+            <p className="text-2xl font-semibold text-foreground">Outreach isn’t available for your account</p>
+            <p className="text-muted-foreground">You aren’t a member of an organization with outreach access. Ask an organization admin to add you, or head back to your inbox.</p>
+            <button
+                onClick={() => navigate('/mail/inbox')}
+                className="mt-2 inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+                Go to inbox
+            </button>
+        </div>
+    )
+}
+
+// Organization-access guard for /outreach/*. Unlike AdminCheck it does NOT require a platform
+// admin: any authenticated member of an organization (admin, member, or viewer) may enter, and
+// platform admins retain access. This guard only improves navigation — the backend
+// (src/server/lib/outreach-access.ts) stays authoritative for every read/write.
+function OutreachAccessGate({ children }: { children: React.ReactNode }) {
+    const { isAdmin } = useAuth()
+    const { organizations, isLoading } = useOrganization()
+
+    // Wait for both the admin flag and the organization list to resolve before deciding.
+    if (isAdmin === null || isLoading) return <Spinner />
+
+    const hasAccess = isAdmin === true || organizations.length > 0
+    if (!hasAccess) return <NoOutreachAccess />
+
+    return <>{children}</>
+}
+
+function OutreachCheck({ children }: { children: React.ReactNode }) {
+    const { user, isLoading } = useAuth()
+    const [, navigate] = useLocation()
+
+    React.useEffect(() => {
+        if (!isLoading && !user) navigate('/login')
+    }, [user, isLoading, navigate])
+
+    if (isLoading || !user) return <Spinner />
+
+    return (
+        <OrganizationProvider>
+            <OutreachAccessGate>{children}</OutreachAccessGate>
+        </OrganizationProvider>
+    )
 }
 
 function RootRedirect() {
@@ -462,88 +512,64 @@ function App() {
                                 </Route>
 
                                 <Route path="/outreach">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><OutreachDashboard /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><OutreachDashboard /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/campaigns/new">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><NewCampaignPage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><NewCampaignPage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/campaigns/:id/sequences/new">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><NewSequencePage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><NewSequencePage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/campaigns/:id">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><CampaignDetailPage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><CampaignDetailPage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/campaigns">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><CampaignsPage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><CampaignsPage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/leads">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><LeadsPage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><LeadsPage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/inboxes">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><InboxesPage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><InboxesPage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/inboxes/new">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><NewInboxPage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><NewInboxPage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/sequences/new">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><SequencesPage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><SequencesPage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/sequences">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><SequencesPage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><SequencesPage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/analytics">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><OutreachAnalyticsPage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><OutreachAnalyticsPage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/settings">
-                                    <AdminCheck>
-                                        <OrganizationProvider>
-                                            <PageSuspense><OutreachSettingsPage /></PageSuspense>
-                                        </OrganizationProvider>
-                                    </AdminCheck>
+                                    <OutreachCheck>
+                                        <PageSuspense><OutreachSettingsPage /></PageSuspense>
+                                    </OutreachCheck>
                                 </Route>
 
                                 <Route path="/">

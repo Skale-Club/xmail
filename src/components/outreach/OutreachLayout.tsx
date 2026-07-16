@@ -51,6 +51,9 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
     const { branding } = useBranding()
     const { organizations, currentOrganization, setCurrentOrganization, isLoading } = useOrganization()
     const [location, navigate] = useLocation()
+    const currentRole = currentOrganization?.role
+    const roleLabel = currentRole ? currentRole.charAt(0).toUpperCase() + currentRole.slice(1) : 'Member'
+    const isViewer = currentRole === 'viewer'
     const [sidebarOpen, setSidebarOpen] = React.useState(false)
     const [orgSelectorOpen, setOrgSelectorOpen] = React.useState(false)
 
@@ -178,7 +181,7 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                             </div>
                             <div className="flex-1 min-w-0">
                                 <p className="text-sm font-medium truncate">{user?.email}</p>
-                                <p className="text-xs text-muted-foreground">Administrator</p>
+                                <p className="text-xs text-muted-foreground capitalize">{roleLabel}</p>
                             </div>
                         </div>
                         <Button
@@ -206,6 +209,11 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                             <Menu className="w-6 h-6" />
                         </button>
                         <div className="flex-1" />
+                        {isViewer && (
+                            <span className="inline-flex items-center rounded-full border border-border bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
+                                Read-only access
+                            </span>
+                        )}
                         <div className="flex items-center gap-4">
                             <button
                                 onClick={() => navigate('/mail/inbox')}
