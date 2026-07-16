@@ -19,6 +19,8 @@ const OUTREACH_TEST_BASELINE_MIGRATIONS = [
     '018_add_mailbox_skip_tls_verify.sql',
     // mail_folders.uid_validity / uid_next — same reason, on the folder read.
     '025_add_folder_uid_tracking.sql',
+    // email_accounts.mailbox_provider / provider_ref — same reason, on the account read.
+    '033_email_accounts_provider_source.sql',
     '021_email_accounts_last_sent_at.sql',
     '022_outreach_emails_sent_at_status_idx.sql',
     '027_outreach_p0_fixes.sql',

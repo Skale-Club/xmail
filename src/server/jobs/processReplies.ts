@@ -30,6 +30,7 @@ import {
     type StoredProviderEvent,
 } from '../lib/outreach-inbound'
 import { ingestOutreachInbound } from '../lib/outreach-inbound-sources'
+import { sqlTimestamp } from '../lib/sql-timestamp'
 import {
     TERMINAL_CAMPAIGN_LEAD_STATUSES,
     UNDELIVERABLE_CAMPAIGN_LEAD_STATUSES,
@@ -441,7 +442,7 @@ export async function markAsReplied(
                         WHERE campaigns.id = ${campaignId}
                           AND campaigns.organization_id = ${organizationId}
                           AND campaigns.agentic_followup_enabled = TRUE
-                    ) THEN ${now.toISOString()}::timestamp
+                    ) THEN ${sqlTimestamp(now)}
                     ELSE NULL END`,
                 totalReplies: sql`${campaignLeads.totalReplies} + 1`,
             })

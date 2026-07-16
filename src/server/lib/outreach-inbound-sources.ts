@@ -23,6 +23,7 @@ import {
     type OutreachProviderAttachment,
 } from '../../db/schema'
 import { decryptSecret } from './crypto'
+import { sqlTimestamp } from './sql-timestamp'
 import { createLogger } from './logger'
 import { getNativeMailboxForOrganization } from './native-send'
 import {
@@ -542,13 +543,21 @@ export async function syncOutlookInboundOnce(input: {
  * nothing twice. Both jobs call it because either may be the first to run on a tick,
  * and neither may consume a classification that was never staged.
  */
-export async function ingestOutreachInbound(deps: {
-    store: InboundEventStore
-    pageSize?: number
-}): Promise<{ accounts: number; recorded: number; duplicates: number; errors: number }> {
-    const result = { accounts: 0, recorded: 0, duplicates: 0, errors: 0 }
-
-    const accounts = await db.query.emailAccounts.findMany({
+/**
+ * Verified accounts with an inbound source, minus any the provider told us to back off from.
+ *
+ * The retry_at predicate is W-5: recordCursorRetry persists Graph's Retry-After against the
+ * cursor row, but nothing read it, so a throttled account was re-hammered on the very next
+ * tick and the backoff was pure bookkeeping. Honouring it also shrinks the throttle window
+ * that W-1 turned into a bogus activation.
+ *
+ * Self-healing by construction: saveCursor clears retry_at on every success, so a stuck
+ * value can only ever delay one account until the timestamp it already carries.
+ *
+ * Exported for the DB test — the predicate is the whole behaviour, and it only exists in SQL.
+ */
+export async function loadIngestableAccounts(now = new Date()) {
+    return db.query.emailAccounts.findMany({
         where: and(
             eq(emailAccounts.status, 'verified'),
             or(
@@ -566,8 +575,26 @@ export async function ingestOutreachInbound(deps: {
                     isNotNull(emailAccounts.imapPassword),
                 ),
             ),
+            // Not scoped by provider: an account has exactly one, and any cursor of that
+            // account asking for a pause speaks for the account.
+            sql`NOT EXISTS (
+                SELECT 1 FROM outreach_provider_cursors cursor_row
+                WHERE cursor_row.email_account_id = ${emailAccounts.id}
+                  AND cursor_row.retry_at IS NOT NULL
+                  AND cursor_row.retry_at > ${sqlTimestamp(now)}
+            )`,
         ),
     })
+}
+
+export async function ingestOutreachInbound(deps: {
+    store: InboundEventStore
+    pageSize?: number
+    now?: () => Date
+}): Promise<{ accounts: number; recorded: number; duplicates: number; errors: number }> {
+    const result = { accounts: 0, recorded: 0, duplicates: 0, errors: 0 }
+
+    const accounts = await loadIngestableAccounts(deps.now?.() ?? new Date())
 
     for (const account of accounts) {
         try {
