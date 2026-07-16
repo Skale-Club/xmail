@@ -224,6 +224,16 @@ export function createSMTPServer() {
                     const parsed = await parseRawEmail(raw)
                     const senderEmail = user.email
 
+                    // SEC (587 submission): this path runs no SPF/DKIM/DMARC on the client-supplied
+                    // message, so its From address is not trustworthy for local storage or display.
+                    // Force the stored/delivered From to the authenticated sender (display name kept)
+                    // so an authenticated user cannot drop a message into another tenant's inbox that
+                    // appears to come from someone else. Legitimate sends already match, so this is a
+                    // no-op for them; it does not touch the raw bytes relayed externally.
+                    if (parsed.from.address?.toLowerCase() !== senderEmail.toLowerCase()) {
+                        parsed.from.address = senderEmail
+                    }
+
                     // Get sender's companion mailbox for Sent storage
                     const senderMailbox = await getCompanionMailbox(senderEmail, user.userId)
                     if (senderMailbox) {
