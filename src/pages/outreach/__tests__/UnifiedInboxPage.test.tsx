@@ -59,6 +59,8 @@ import type {
 } from '@/lib/unified-inbox-api'
 import { ConversationList, type ConversationListProps } from '@/components/outreach/inbox/ConversationList'
 import { ConversationThread } from '@/components/outreach/inbox/ConversationThread'
+import { BulkActionsBar, ConversationActions } from '@/components/outreach/inbox/ConversationActions'
+import type { InboxLabel } from '@/lib/unified-inbox-api'
 
 // Fixed, syntactically valid UUIDs for deterministic assertions.
 const ORG_A = '11111111-1111-4111-8111-111111111111'
@@ -778,5 +780,142 @@ describe('operator mutations: optimistic + rollback', () => {
         })
 
         expect(listConversations(queryClient, listKey).every((c) => c.unread === true)).toBe(true)
+    })
+})
+
+// ============================================================
+// Task 2 — accessible single actions + bounded bulk toolbar
+// ============================================================
+
+const LABEL_A: InboxLabel = { id: LABEL_1, name: 'Priority', color: null }
+const LABEL_B: InboxLabel = { id: LABEL_2, name: 'Follow up', color: '#00ff00' }
+
+function makeSummary(overrides: Partial<InboxConversationDetail['conversation']> = {}) {
+    return { ...makeDetail().conversation, ...overrides }
+}
+
+function renderActions(overrides: Partial<React.ComponentProps<typeof ConversationActions>> = {}) {
+    const props: React.ComponentProps<typeof ConversationActions> = {
+        conversation: makeSummary({ labels: [] }),
+        labels: [LABEL_A, LABEL_B],
+        onToggleRead: vi.fn(),
+        onToggleArchive: vi.fn(),
+        onSetStatus: vi.fn(),
+        onAttachLabel: vi.fn(),
+        onDetachLabel: vi.fn(),
+        onCreateReminder: vi.fn(),
+        ...overrides,
+    }
+    return { props, ...render(<ConversationActions {...props} />) }
+}
+
+describe('ConversationActions: single accessible actions', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    it('toggles read state using the current unread flag', () => {
+        const onToggleRead = vi.fn()
+        renderActions({ conversation: makeSummary({ unread: true, labels: [] }), onToggleRead })
+        fireEvent.click(screen.getByRole('button', { name: 'Mark read' }))
+        expect(onToggleRead).toHaveBeenCalledWith(true)
+    })
+
+    it('archives an unarchived conversation', () => {
+        const onToggleArchive = vi.fn()
+        renderActions({ conversation: makeSummary({ archived: false, labels: [] }), onToggleArchive })
+        fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+        expect(onToggleArchive).toHaveBeenCalledWith(true)
+    })
+
+    it('attaches a not-yet-applied label as a named checkbox control', () => {
+        const onAttachLabel = vi.fn()
+        renderActions({ conversation: makeSummary({ labels: [] }), onAttachLabel })
+        const control = screen.getByRole('menuitemcheckbox', { name: /Priority/ })
+        expect(control).toHaveAttribute('aria-checked', 'false')
+        fireEvent.click(control)
+        expect(onAttachLabel).toHaveBeenCalledWith(LABEL_A)
+    })
+
+    it('detaches an already-applied label', () => {
+        const onDetachLabel = vi.fn()
+        renderActions({ conversation: makeSummary({ labels: [LABEL_A] }), onDetachLabel })
+        const control = screen.getByRole('menuitemcheckbox', { name: /Priority/ })
+        expect(control).toHaveAttribute('aria-checked', 'true')
+        fireEvent.click(control)
+        expect(onDetachLabel).toHaveBeenCalledWith(LABEL_1)
+    })
+})
+
+function renderBulk(overrides: Partial<React.ComponentProps<typeof BulkActionsBar>> = {}) {
+    const props: React.ComponentProps<typeof BulkActionsBar> = {
+        selectedCount: 3,
+        limit: 100,
+        labels: [LABEL_A],
+        onBulkReadState: vi.fn(),
+        onBulkArchive: vi.fn(),
+        onBulkAddLabel: vi.fn(),
+        onSelectAllLoaded: vi.fn(),
+        onClear: vi.fn(),
+        onExit: vi.fn(),
+        ...overrides,
+    }
+    return { props, ...render(<BulkActionsBar {...props} />) }
+}
+
+describe('BulkActionsBar: bounded + honest selection', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    it('shows the REAL selected count, not a filter-wide claim', () => {
+        renderBulk({ selectedCount: 3 })
+        expect(screen.getByText('3 selected')).toBeInTheDocument()
+        // Never implies unseen filter-wide selection.
+        expect(screen.queryByText(/all .* matching/i)).not.toBeInTheDocument()
+    })
+
+    it('runs a bulk mark-read over the selected set', () => {
+        const onBulkReadState = vi.fn()
+        renderBulk({ onBulkReadState })
+        fireEvent.click(screen.getByRole('button', { name: 'Mark read' }))
+        expect(onBulkReadState).toHaveBeenCalledWith(true)
+    })
+
+    it('disables bulk actions when nothing is selected', () => {
+        renderBulk({ selectedCount: 0 })
+        expect(screen.getByRole('button', { name: 'Mark read' })).toBeDisabled()
+        expect(screen.getByRole('button', { name: 'Archive' })).toBeDisabled()
+    })
+
+    it('refuses to act and warns when the selection exceeds the server bulk ceiling', () => {
+        renderBulk({ selectedCount: 101, limit: 100 })
+        expect(screen.getByRole('alert')).toHaveTextContent('exceeds the 100-conversation limit')
+        expect(screen.getByRole('button', { name: 'Mark read' })).toBeDisabled()
+    })
+
+    it('selects only the currently loaded rows', () => {
+        const onSelectAllLoaded = vi.fn()
+        renderBulk({ onSelectAllLoaded })
+        fireEvent.click(screen.getByRole('button', { name: 'Select loaded' }))
+        expect(onSelectAllLoaded).toHaveBeenCalledOnce()
+    })
+})
+
+describe('UnifiedInboxPage: bulk selection is loaded-set bounded', () => {
+    useThreadTimerGuard()
+    afterEach(() => {
+        vi.clearAllMocks()
+        hooks.state.org = { id: '' }
+        hooks.state.search = ''
+        hooks.state.list = hooks.makeListReturn([])
+        hooks.state.detail = { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
+    })
+
+    it('enters bulk mode and reports the honest selected count as rows are checked', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.list = hooks.makeListReturn([makeConversation()])
+        render(<UnifiedInboxPage />)
+
+        fireEvent.click(screen.getByRole('button', { name: /Select conversations for bulk actions/ }))
+        const checkbox = screen.getByRole('checkbox', { name: /Select conversation with Lead Person/ })
+        fireEvent.click(checkbox)
+        expect(screen.getByText('1 selected')).toBeInTheDocument()
     })
 })

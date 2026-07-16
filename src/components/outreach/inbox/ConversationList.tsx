@@ -1,4 +1,5 @@
-import { AlertTriangle, Archive, CheckCircle2, Inbox as InboxIcon, Mail, Search, Target } from 'lucide-react'
+import { AlertTriangle, Archive, CheckCircle2, CheckSquare, Inbox as InboxIcon, Mail, Search, Target } from 'lucide-react'
+import type React from 'react'
 import { Button } from '../../ui/button'
 import { Skeleton } from '../../ui/Skeleton'
 import { cn, formatRelativeDate, truncate } from '../../../lib/utils'
@@ -24,6 +25,13 @@ export interface ConversationListProps {
     providerByAccount: Record<string, string>
     /** campaignId -> human name, from the campaign index. */
     campaignNameById: Record<string, string>
+    // --- Bulk selection (bounded to the loaded set) ---
+    bulkMode?: boolean
+    onEnterBulkMode?: () => void
+    selectedIds?: Set<string>
+    onToggleSelect?: (id: string) => void
+    /** The bounded bulk toolbar, composed by the page and rendered above the rows in bulk mode. */
+    bulkBar?: React.ReactNode
 }
 
 function ConversationRow({
@@ -32,12 +40,18 @@ function ConversationRow({
     onSelect,
     providerByAccount,
     campaignNameById,
+    bulkMode,
+    checked,
+    onToggleSelect,
 }: {
     conversation: InboxConversationListItem
     selected: boolean
     onSelect: (id: string) => void
     providerByAccount: Record<string, string>
     campaignNameById: Record<string, string>
+    bulkMode?: boolean
+    checked?: boolean
+    onToggleSelect?: (id: string) => void
 }) {
     const primary = conversation.participants.find((p) => p.role === 'from') ?? conversation.participants[0]
     const displayName = primary?.name || primary?.address || 'Unknown sender'
@@ -46,14 +60,24 @@ function ConversationRow({
     const exactTime = conversation.lastMessageAt ? new Date(conversation.lastMessageAt).toLocaleString() : undefined
 
     return (
-        <li>
+        <li className={cn(bulkMode && 'flex items-center gap-1 pl-2')}>
+            {bulkMode && (
+                <input
+                    type="checkbox"
+                    checked={Boolean(checked)}
+                    onChange={() => onToggleSelect?.(conversation.id)}
+                    // Checkbox labels name the conversation subject/lead — never "Select row".
+                    aria-label={`Select conversation with ${displayName}: ${conversation.subject || 'No subject'}`}
+                    className="h-5 w-5 shrink-0 rounded border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+            )}
             <button
                 type="button"
                 onClick={() => onSelect(conversation.id)}
                 aria-current={selected ? 'true' : undefined}
                 aria-label={`Conversation with ${displayName}: ${conversation.subject || 'No subject'}${conversation.unread ? ', unread' : ''}`}
                 className={cn(
-                    'flex min-h-[4.5rem] w-full flex-col gap-1 px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                    'flex min-h-[4.5rem] w-full min-w-0 flex-1 flex-col gap-1 px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                     selected ? 'bg-accent' : 'hover:bg-accent/50',
                 )}
             >
@@ -139,24 +163,43 @@ export function ConversationList(props: ConversationListProps) {
         onSearchChange,
         providerByAccount,
         campaignNameById,
+        bulkMode,
+        onEnterBulkMode,
+        selectedIds,
+        onToggleSelect,
+        bulkBar,
     } = props
 
     return (
         <div className="flex h-full flex-col">
-            {/* Sticky search */}
+            {/* Sticky search + bulk-mode entry */}
             <div className="border-b border-border p-3">
-                <div className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-                    <input
-                        type="search"
-                        value={searchValue}
-                        onChange={(event) => onSearchChange(event.target.value)}
-                        placeholder="Search conversations…"
-                        aria-label="Search conversations"
-                        className="w-full rounded-md border border-border bg-background py-2 pl-9 pr-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    />
+                <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                        <input
+                            type="search"
+                            value={searchValue}
+                            onChange={(event) => onSearchChange(event.target.value)}
+                            placeholder="Search conversations…"
+                            aria-label="Search conversations"
+                            className="w-full rounded-md border border-border bg-background py-2 pl-9 pr-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                    </div>
+                    {onEnterBulkMode && !bulkMode && (
+                        <button
+                            type="button"
+                            onClick={onEnterBulkMode}
+                            aria-label="Select conversations for bulk actions"
+                            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                            <CheckSquare className="h-4 w-4" aria-hidden="true" /> Select
+                        </button>
+                    )}
                 </div>
             </div>
+
+            {bulkMode && bulkBar}
 
             <div className="min-h-0 flex-1 overflow-y-auto">
                 <p className="sr-only" role="status" aria-live="polite">
@@ -212,6 +255,9 @@ export function ConversationList(props: ConversationListProps) {
                                     onSelect={onSelect}
                                     providerByAccount={providerByAccount}
                                     campaignNameById={campaignNameById}
+                                    bulkMode={bulkMode}
+                                    checked={selectedIds?.has(conversation.id)}
+                                    onToggleSelect={onToggleSelect}
                                 />
                             ))}
                         </ul>

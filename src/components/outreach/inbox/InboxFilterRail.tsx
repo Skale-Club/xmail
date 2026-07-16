@@ -1,4 +1,5 @@
-import { Archive, Clock, Inbox as InboxIcon, Reply, Tag, X } from 'lucide-react'
+import React from 'react'
+import { Archive, Clock, Inbox as InboxIcon, Plus, Reply, Tag, X } from 'lucide-react'
 import {
     activeFilterCount,
     activeQuickView,
@@ -28,6 +29,9 @@ interface InboxFilterRailProps {
     lastUpdatedAt: Date | null
     syncError?: boolean
     syncFetching?: boolean
+    /** Create a named label for this organization (labels are named operator controls). */
+    onCreateLabel?: (name: string) => void
+    creatingLabel?: boolean
     /** `overlay` is the tablet/mobile sheet variant; `rail` is the fixed desktop column. */
     variant?: 'rail' | 'overlay'
 }
@@ -59,10 +63,20 @@ export function InboxFilterRail({
     lastUpdatedAt,
     syncError,
     syncFetching,
+    onCreateLabel,
+    creatingLabel,
     variant = 'rail',
 }: InboxFilterRailProps) {
     const currentView = activeQuickView(state)
     const filterCount = activeFilterCount(state)
+    const [newLabel, setNewLabel] = React.useState('')
+
+    const submitNewLabel = () => {
+        const name = newLabel.trim()
+        if (!name || !onCreateLabel) return
+        onCreateLabel(name)
+        setNewLabel('')
+    }
 
     return (
         <nav
@@ -148,6 +162,30 @@ export function InboxFilterRail({
                     <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         <Tag className="h-3.5 w-3.5" aria-hidden="true" /> Labels
                     </p>
+                    {onCreateLabel && (
+                        <form
+                            className="mb-2 flex items-center gap-1"
+                            onSubmit={(event) => { event.preventDefault(); submitNewLabel() }}
+                        >
+                            <input
+                                type="text"
+                                value={newLabel}
+                                onChange={(event) => setNewLabel(event.target.value)}
+                                placeholder="New label"
+                                aria-label="New label name"
+                                maxLength={80}
+                                className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            />
+                            <button
+                                type="submit"
+                                aria-label="Create label"
+                                disabled={creatingLabel || newLabel.trim().length === 0}
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                            >
+                                <Plus className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                        </form>
+                    )}
                     {labelsLoading ? (
                         <p className="px-1 text-sm text-muted-foreground">Loading labels…</p>
                     ) : labels.length === 0 ? (

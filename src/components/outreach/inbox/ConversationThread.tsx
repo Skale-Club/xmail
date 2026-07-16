@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Download, Paperclip, X } from 'lucide-react'
 import { Button } from '../../ui/button'
 import { Skeleton } from '../../ui/Skeleton'
@@ -18,6 +18,8 @@ export interface ConversationThreadProps {
     onClose: () => void
     providerByAccount: Record<string, string>
     campaignNameById: Record<string, string>
+    /** Operator action toolbar (ConversationActions), rendered in the thread header. */
+    actions?: ReactNode
 }
 
 const NOT_LINKED = 'Not linked'
@@ -132,6 +134,7 @@ export function ConversationThread({
     onClose,
     providerByAccount,
     campaignNameById,
+    actions,
 }: ConversationThreadProps) {
     // Latest message always expands; the latest inbound also expands so a new reply is
     // readable immediately. Older messages collapse behind a keyboard-operable toggle.
@@ -192,6 +195,7 @@ export function ConversationThread({
                 labels={conversation.labels.map((l) => l.name)}
                 onBack={onBack}
                 onClose={onClose}
+                actions={actions}
             />
 
             {/* Attribution strip */}
@@ -250,6 +254,7 @@ function ThreadHeaderBar({
     labels,
     onBack,
     onClose,
+    actions,
 }: {
     title: string
     subtitle?: string
@@ -257,6 +262,7 @@ function ThreadHeaderBar({
     labels?: string[]
     onBack: () => void
     onClose: () => void
+    actions?: ReactNode
 }) {
     return (
         <div className="border-b border-border p-3">
@@ -291,6 +297,7 @@ function ThreadHeaderBar({
                     ))}
                 </div>
             )}
+            {actions && <div className="mt-2">{actions}</div>}
         </div>
     )
 }

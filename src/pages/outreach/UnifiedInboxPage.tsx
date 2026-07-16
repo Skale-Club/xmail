@@ -5,16 +5,28 @@ import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { InboxFilterRail } from '../../components/outreach/inbox/InboxFilterRail'
 import { ConversationList } from '../../components/outreach/inbox/ConversationList'
 import { ConversationThread } from '../../components/outreach/inbox/ConversationThread'
+import { BulkActionsBar, ConversationActions } from '../../components/outreach/inbox/ConversationActions'
 import { Button } from '../../components/ui/button'
 import { useOrganization } from '../../hooks/useOrganization'
 import {
+    useCreateInboxLabel,
     useInboxAccountOptions,
+    useInboxArchive,
+    useInboxBulkAction,
     useInboxCampaignOptions,
     useInboxConversation,
+    useInboxConversationReminders,
     useInboxConversations,
+    useInboxLabelAttach,
+    useInboxLabelDetach,
     useInboxLabels,
+    useInboxReadState,
+    useInboxReminderMutations,
+    useInboxStatus,
+    useInboxSuppression,
     useInboxUnreadCount,
 } from '../../hooks/useUnifiedInbox'
+import { INBOX_BULK_LIMIT, type InboxLabel } from '../../lib/unified-inbox-api'
 import {
     activeFilterCount,
     buildInboxSearch,
@@ -92,6 +104,33 @@ export function UnifiedInboxPage() {
     const accountsQuery = useInboxAccountOptions(organizationId)
     const unreadQuery = useInboxUnreadCount(organizationId)
     const detailQuery = useInboxConversation(organizationId, state.conversation)
+    const remindersQuery = useInboxConversationReminders(organizationId, state.conversation)
+
+    // --- Operator mutations (optimistic + rollback live inside the hooks) ---
+    const readState = useInboxReadState(organizationId)
+    const archive = useInboxArchive(organizationId)
+    const statusMutation = useInboxStatus(organizationId)
+    const labelAttach = useInboxLabelAttach(organizationId)
+    const labelDetach = useInboxLabelDetach(organizationId)
+    const createLabel = useCreateInboxLabel(organizationId)
+    const bulk = useInboxBulkAction(organizationId)
+    const reminderMutations = useInboxReminderMutations(organizationId, state.conversation)
+    const suppression = useInboxSuppression(organizationId)
+
+    // --- Bulk selection: BOUNDED to the currently loaded set (never a filter-wide selector) ---
+    const [bulkMode, setBulkMode] = React.useState(false)
+    const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set())
+
+    const toggleSelect = React.useCallback((id: string) => {
+        setSelectedIds((prev) => {
+            const next = new Set(prev)
+            if (next.has(id)) next.delete(id)
+            else if (next.size < INBOX_BULK_LIMIT) next.add(id)
+            return next
+        })
+    }, [])
+    const exitBulk = React.useCallback(() => { setBulkMode(false); setSelectedIds(new Set()) }, [])
+    const clearBulkSelection = React.useCallback(() => setSelectedIds(new Set()), [])
 
     const conversations = React.useMemo(
         () => listQuery.data?.pages.flatMap((page) => page.conversations) ?? [],
@@ -110,6 +149,61 @@ export function UnifiedInboxPage() {
         for (const campaign of campaignsQuery.data ?? []) map[campaign.id] = campaign.name
         return map
     }, [campaignsQuery.data])
+
+    // Select only the CURRENTLY LOADED rows, bounded to the server ceiling. There is no
+    // "select all N matching" — the copy and the request only ever cover loaded, chosen rows.
+    const selectAllLoaded = React.useCallback(() => {
+        setSelectedIds(new Set(conversations.slice(0, INBOX_BULK_LIMIT).map((c) => c.id)))
+    }, [conversations])
+
+    const runBulk = React.useCallback((action: 'read' | 'unread' | 'archive' | 'add_label', label?: InboxLabel) => {
+        const ids = Array.from(selectedIds)
+        if (ids.length === 0 || ids.length > INBOX_BULK_LIMIT) return
+        bulk.mutate(
+            { conversationIds: ids, action, labelId: label?.id, label },
+            { onSuccess: () => setSelectedIds(new Set()) },
+        )
+    }, [bulk, selectedIds])
+
+    const labels = labelsQuery.data ?? []
+    const detailConversation = detailQuery.data?.conversation
+    const counterpartyEmail = React.useMemo(() => {
+        const participants = detailQuery.data?.participants ?? []
+        const from = participants.find((p) => p.role === 'from') ?? participants[0]
+        return from?.address ?? null
+    }, [detailQuery.data])
+
+    const bulkBar = (
+        <BulkActionsBar
+            selectedCount={selectedIds.size}
+            limit={INBOX_BULK_LIMIT}
+            labels={labels}
+            onBulkReadState={(read) => runBulk(read ? 'read' : 'unread')}
+            onBulkArchive={() => runBulk('archive')}
+            onBulkAddLabel={(label) => runBulk('add_label', label)}
+            onSelectAllLoaded={selectAllLoaded}
+            onClear={clearBulkSelection}
+            onExit={exitBulk}
+            busy={bulk.isPending}
+        />
+    )
+
+    const conversationActions = detailConversation ? (
+        <ConversationActions
+            conversation={detailConversation}
+            labels={labels}
+            reminders={remindersQuery.data}
+            counterpartyEmail={counterpartyEmail}
+            suppression={suppression}
+            onToggleRead={(read) => readState.mutate({ conversationId: detailConversation.id, read })}
+            onToggleArchive={(archived) => archive.mutate({ conversationId: detailConversation.id, archived })}
+            onSetStatus={(status) => statusMutation.mutate({ conversationId: detailConversation.id, status })}
+            onAttachLabel={(label) => labelAttach.mutate({ conversationId: detailConversation.id, label })}
+            onDetachLabel={(labelId) => labelDetach.mutate({ conversationId: detailConversation.id, labelId })}
+            onCreateReminder={(remindAt, note) => reminderMutations.create.mutate({ remindAt, note })}
+            busy={readState.isPending || archive.isPending || statusMutation.isPending}
+        />
+    ) : null
 
     // --- Search box (debounced; the URL remains authoritative) ---
     const [searchInput, setSearchInput] = React.useState(state.q ?? '')
@@ -145,6 +239,8 @@ export function UnifiedInboxPage() {
         lastUpdatedAt,
         syncError: listQuery.isError,
         syncFetching: listQuery.isFetching,
+        onCreateLabel: (name: string) => createLabel.mutate({ name }),
+        creatingLabel: createLabel.isPending,
     }
 
     return (
@@ -196,6 +292,11 @@ export function UnifiedInboxPage() {
                             onSearchChange={setSearchInput}
                             providerByAccount={providerByAccount}
                             campaignNameById={campaignNameById}
+                            bulkMode={bulkMode}
+                            onEnterBulkMode={() => setBulkMode(true)}
+                            selectedIds={selectedIds}
+                            onToggleSelect={toggleSelect}
+                            bulkBar={bulkBar}
                         />
                     </section>
 
@@ -218,6 +319,7 @@ export function UnifiedInboxPage() {
                                 onClose={clearSelection}
                                 providerByAccount={providerByAccount}
                                 campaignNameById={campaignNameById}
+                                actions={conversationActions}
                             />
                         )}
                     </section>
