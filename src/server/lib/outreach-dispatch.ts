@@ -8,6 +8,20 @@ import {
     effectiveDailyLimit,
     type AccountPolicySnapshot,
 } from './outreach-delivery-policy'
+import { createLogger } from './logger'
+
+const dispatchLog = createLogger('outreach.dispatch')
+
+/**
+ * The SOLE live Unified Inbox outbound hook (Phase 21 UIF-05). It runs ONLY here, immediately
+ * after the send's sent-state has committed durably, and is BEST-EFFORT: the mail is already sent,
+ * so a materialization failure is swallowed (never fails the send, never resends) and is repaired
+ * by the bounded anti-join backfill. Lazily imported so this module stays importable without a DB.
+ */
+async function defaultOutboundMaterializeHook(outreachEmailId: string): Promise<void> {
+    const { materializeOutboundEmail } = await import('./unified-inbox/outbound')
+    await materializeOutboundEmail(outreachEmailId)
+}
 
 type ErrorRecord = Record<string, unknown>
 
@@ -186,6 +200,12 @@ export interface DispatchDependencies {
     evaluatePolicy?: (input: DeliveryPolicyInput) => Promise<DeliveryPolicyDecision>
     now?: () => Date
     leaseToken?: () => string
+    /**
+     * Best-effort Unified Inbox outbound materialization hook (UIF-05). Defaults to the live
+     * materializer; injectable for tests. It is invoked ONLY after a durable sent-state commit and
+     * its failure is always swallowed — it can neither fail nor resend the already-sent mail.
+     */
+    materializeOutbound?: (outreachEmailId: string) => Promise<void>
 }
 
 export type DispatchResult =
@@ -668,9 +688,23 @@ export async function dispatchOutreachMessage(
         const normalizedMessageId = providerResult.messageId?.replace(/[<>]/g, '').trim()
         const acceptedResult = { ...providerResult, messageId: normalizedMessageId }
         const finalized = await repository.finalizeSent(claim, acceptedResult, finalizeNow)
-        return finalized
-            ? { status: 'sent', rowId: claim.rowId, messageId: normalizedMessageId }
-            : { status: 'lost_lease', rowId: claim.rowId }
+        if (!finalized) return { status: 'lost_lease', rowId: claim.rowId }
+
+        // UIF-05: the send is now durable. Materialize the outbound conversation message here and
+        // only here — best-effort. Any failure is swallowed so it can never fail or delay the
+        // already-sent mail, and the bounded backfill repairs the crash window without resending.
+        const materializeOutbound = dependencies.materializeOutbound ?? defaultOutboundMaterializeHook
+        try {
+            await materializeOutbound(claim.rowId)
+        } catch (error) {
+            dispatchLog.warn({
+                action: 'outreach.dispatch.outbound_materialize_failed',
+                rowId: claim.rowId,
+                error: { message: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300) },
+            }, 'outbound Unified Inbox materialization failed post-send; backfill will repair')
+        }
+
+        return { status: 'sent', rowId: claim.rowId, messageId: normalizedMessageId }
     }
 
     if (providerResult.acceptance === 'unknown' || providerResult.failure.classification === 'ambiguous') {

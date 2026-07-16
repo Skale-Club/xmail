@@ -362,4 +362,47 @@ describe('dispatchOutreachMessage', () => {
             expect.objectContaining({ status: 'held', nextAttemptAt: null }),
         )
     })
+
+    it('materializes the outbound send once, after the durable finalize (UIF-05)', async () => {
+        const repo = repository()
+        const materializeOutbound = vi.fn().mockResolvedValue(undefined)
+        const deps = { ...dependencies(repo), materializeOutbound }
+
+        await expect(dispatchOutreachMessage(INPUT, deps)).resolves.toEqual({
+            status: 'sent',
+            rowId: claimed().rowId,
+            messageId: 'provider-id@example.com',
+        })
+        expect(materializeOutbound).toHaveBeenCalledTimes(1)
+        expect(materializeOutbound).toHaveBeenCalledWith(claimed().rowId)
+    })
+
+    it('is best-effort: an outbound materialization failure never fails or resends the send', async () => {
+        const repo = repository()
+        const materializeOutbound = vi.fn().mockRejectedValue(new Error('unified inbox unavailable'))
+        const deps = { ...dependencies(repo), materializeOutbound }
+
+        // The send still reports sent — the mail is already durable — and the provider is not
+        // called a second time (no resend).
+        await expect(dispatchOutreachMessage(INPUT, deps)).resolves.toEqual({
+            status: 'sent',
+            rowId: claimed().rowId,
+            messageId: 'provider-id@example.com',
+        })
+        expect(deps.provider.send).toHaveBeenCalledTimes(1)
+        expect(materializeOutbound).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not materialize an outbound message when the finalize lost the lease', async () => {
+        const repo = repository()
+        vi.mocked(repo.finalizeSent).mockResolvedValue(false)
+        const materializeOutbound = vi.fn().mockResolvedValue(undefined)
+        const deps = { ...dependencies(repo), materializeOutbound }
+
+        await expect(dispatchOutreachMessage(INPUT, deps)).resolves.toEqual({
+            status: 'lost_lease',
+            rowId: claimed().rowId,
+        })
+        expect(materializeOutbound).not.toHaveBeenCalled()
+    })
 })

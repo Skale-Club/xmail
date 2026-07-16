@@ -104,11 +104,11 @@ async function seedEmails(sql: postgres.Sql): Promise<void> {
             id, organization_id, origin, idempotency_key, to_address, subject, plain_body, html_body,
             campaign_id, campaign_lead_id, email_account_id, message_id, status, sent_at
         ) VALUES
-            (${OE_SENT}::uuid, ${ORG_A}::uuid, 'campaign', 'oe-sent', 'alice@lead.test', 'Intro', 'Hello Alice', '<p>Hello Alice</p>',
+            (${OE_SENT}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-sent', 'alice@lead.test', 'Intro', 'Hello Alice', '<p>Hello Alice</p>',
              ${CAMP_A}::uuid, ${CL_A}::uuid, ${ACCOUNT_A}::uuid, ${OE_SENT_MESSAGE_ID}, 'sent', ${NOW}),
-            (${OE_QUEUED}::uuid, ${ORG_A}::uuid, 'campaign', 'oe-queued', 'alice@lead.test', 'Queued', 'Body', null,
+            (${OE_QUEUED}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-queued', 'alice@lead.test', 'Queued', 'Body', null,
              ${CAMP_A}::uuid, ${CL_A}::uuid, ${ACCOUNT_A}::uuid, 'queued-root@mail.test', 'queued', null),
-            (${OE_FAILED}::uuid, ${ORG_A}::uuid, 'campaign', 'oe-failed', 'alice@lead.test', 'Failed', 'Body', null,
+            (${OE_FAILED}::uuid, ${ORG_A}::uuid, 'agentic', 'oe-failed', 'alice@lead.test', 'Failed', 'Body', null,
              ${CAMP_A}::uuid, ${CL_A}::uuid, ${ACCOUNT_A}::uuid, 'failed-root@mail.test', 'failed', null),
             (${OE_MANUAL}::uuid, ${ORG_A}::uuid, 'manual', 'oe-manual', 'manual@lead.test', 'Manual note', 'Manual body', null,
              null, null, ${ACCOUNT_A}::uuid, 'manual-root@mail.test', 'sent', ${NOW}),

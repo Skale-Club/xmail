@@ -68,11 +68,11 @@ async function seedSentEmails(sql: postgres.Sql): Promise<void> {
             id, organization_id, origin, idempotency_key, to_address, subject, plain_body,
             campaign_id, campaign_lead_id, email_account_id, message_id, status, sent_at
         ) VALUES
-            (${S1}::uuid, ${ORG_A}::uuid, 'campaign', 'bf-s1', 'alice@lead.test', 'S1', 'Body 1',
+            (${S1}::uuid, ${ORG_A}::uuid, 'agentic', 'bf-s1', 'alice@lead.test', 'S1', 'Body 1',
              ${CAMP_A}::uuid, ${CL_A}::uuid, ${ACCOUNT_A}::uuid, ${S1_MESSAGE_ID}, 'sent', ${new Date('2026-07-16T10:00:00Z')}),
-            (${S2}::uuid, ${ORG_A}::uuid, 'campaign', 'bf-s2', 'alice@lead.test', 'S2', 'Body 2',
+            (${S2}::uuid, ${ORG_A}::uuid, 'agentic', 'bf-s2', 'alice@lead.test', 'S2', 'Body 2',
              ${CAMP_A}::uuid, ${CL_A}::uuid, ${ACCOUNT_A}::uuid, 's2-root@mail.test', 'sent', ${new Date('2026-07-16T10:05:00Z')}),
-            (${S3}::uuid, ${ORG_A}::uuid, 'campaign', 'bf-s3', 'alice@lead.test', 'S3', 'Body 3',
+            (${S3}::uuid, ${ORG_A}::uuid, 'agentic', 'bf-s3', 'alice@lead.test', 'S3', 'Body 3',
              ${CAMP_A}::uuid, ${CL_A}::uuid, ${ACCOUNT_A}::uuid, 's3-root@mail.test', 'sent', ${new Date('2026-07-16T10:10:00Z')})
         ON CONFLICT (id) DO NOTHING
     `
@@ -224,12 +224,12 @@ describe('backfillUnifiedInbox', () => {
         try {
             await seedSentEmails(sql)
             const before = await sql<{ n: string; sum: string | null }[]>`
-                SELECT count(*)::text AS n, string_agg(status, ',' ORDER BY id)::text AS sum
+                SELECT count(*)::text AS n, string_agg(status::text, ',' ORDER BY id) AS sum
                 FROM outreach_emails WHERE organization_id = ${ORG_A}::uuid
             `
             await backfillUnifiedInbox(deps(sql))
             const after = await sql<{ n: string; sum: string | null }[]>`
-                SELECT count(*)::text AS n, string_agg(status, ',' ORDER BY id)::text AS sum
+                SELECT count(*)::text AS n, string_agg(status::text, ',' ORDER BY id) AS sum
                 FROM outreach_emails WHERE organization_id = ${ORG_A}::uuid
             `
             // No new outreach_emails, no status change (no resend).
