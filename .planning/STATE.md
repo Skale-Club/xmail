@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-stopped_at: Completed 20-02-PLAN.md
-last_updated: "2026-07-16T09:28:51.825Z"
+stopped_at: Completed 20-03-PLAN.md
+last_updated: "2026-07-16T10:08:33.432Z"
 progress:
   total_phases: 15
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 41
-  completed_plans: 27
+  completed_plans: 28
   percent: 60
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 20 (Outreach Product and API Consistency) — NEXT
-Plan: 2 of 3
+Plan: 3 of 3
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
@@ -129,8 +129,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T09:28:36.580Z
-Stopped at: Completed 20-02-PLAN.md
+Last session: 2026-07-16T10:08:33.428Z
+Stopped at: Completed 20-03-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -148,6 +148,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 19 P04 | 32min | 3 tasks | 8 files |
 | Phase 20 P01 | 34min | 3 tasks | 11 files |
 | Phase 20 P02 | 41min | 3 tasks | 19 files |
+| Phase 20 P03 | 24min | 3 tasks | 17 files |
 
 ## Decisions
 
@@ -171,3 +172,4 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 20]: Campaign sequences: one DB-enforced canonical sequence per campaign; transactional replace endpoint derives one-based step order from array position and returns 409 rather than orphaning referenced steps
 - [Phase 20]: (20-02) Settings are create-time defaults merged explicit ?? resolved; existing rows never rewritten. Notification toggles gate the Xphere reply/bounce/unsubscribe event transport (weekly_report removed as unsupported).
 - [Phase 20]: (20-02) Campaign metric denominators: contactedLeads = unique leads with >=1 sent email (excludes pre-send suppressed); sentEmails email-grain; one shared DTO across list/stats/detail/analytics. Lead list bounded to limit<=100 with escaped ILIKE search and id tie-break.
+- [Phase 20]: (20-03) Outreach uses one canonical JS access module (requireOutreachRead/Write); the service key binds identity+org server-side (overwrite x-user-id, reject/marker-enforce org scope), and a dedicated OutreachCheck guard lets org members enter outreach without platform admin.

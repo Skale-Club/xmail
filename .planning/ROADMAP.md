@@ -253,12 +253,12 @@ Plans:
 **Goal:** Reconcile sequence ownership, UI authorization, settings, metrics, search, service authentication, and database/API invariants into one coherent contract.
 **Requirements:** CONS-01, CONS-02, CONS-03, CONS-04, CONS-05, CONS-06, CONS-07
 **Depends on:** Phase 19
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
 
 - [x] 20-01-PLAN.md — Migration 040 + canonical campaign sequence contract
 - [x] 20-02-PLAN.md — Consumed settings, bounded lead search, and honest metrics
-- [ ] 20-03-PLAN.md — Outreach role guard + server-bound service principal
+- [x] 20-03-PLAN.md — Outreach role guard + server-bound service principal
 
 ### Phase 21: Unified Inbox Foundation
 
