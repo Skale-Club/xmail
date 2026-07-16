@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-stopped_at: Completed 23-02-PLAN.md
-last_updated: "2026-07-16T21:48:38.905Z"
+stopped_at: Completed 23-03-PLAN.md
+last_updated: "2026-07-16T22:24:18.428Z"
 progress:
   total_phases: 15
   completed_phases: 9
   total_plans: 41
-  completed_plans: 39
+  completed_plans: 40
   percent: 60
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 23 (AI Inbox Automation and Guardrails) — IN PROGRESS (FINAL phase of milestone v1.4)
-Plan: 2 of 4
+Plan: 3 of 4
 Phase 23 Plan 01 (AI foundation: settings/audit migration 043 + context builder + audit lib) — COMPLETE (AI-01/03/05; 44 new tests, 744/744 total; migration 043 written+tested, NOT applied to prod)
 Phase 22 (Unified Inbox Operator Experience) — COMPLETE + VERIFIED (UIX-01..06, 19/19 must-haves; 3-lens review 1 critical + 6 warnings all fixed and re-reviewed; 700/700 tests deterministic)
 Phase 21 (Unified Inbox Foundation) — COMPLETE + VERIFIED (UIF-01..05, 43/43 must-haves; 3-lens review 0 critical + 3 warnings all fixed and re-reviewed; 527/527 tests deterministic)
@@ -138,8 +138,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T21:48:19.199Z
-Stopped at: Completed 23-02-PLAN.md
+Last session: 2026-07-16T22:24:06.312Z
+Stopped at: Completed 23-03-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -169,6 +169,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 22 P05 | 16 | 3 tasks | 12 files |
 | Phase 23 P01 | 20min | 3 tasks | 6 files |
 | Phase 23 P02 | 27min | 3 tasks | 11 files |
+| Phase 23 P03 | 22min | 3 tasks | 9 files |
 
 ## Decisions
 
@@ -213,3 +214,4 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 22]: Near-real-time via ONE org-scoped authenticated-fetch SSE stream (never EventSource) carrying ids/counts only; disconnect falls back to bounded unread/list polling with visible stale state
 - [Phase 23]: Effective AI autonomy = intersection of org autonomous_enabled AND campaign ai_autonomous_enabled AND clear kill switch AND Phase 18 policy; both flags default OFF (migration 043)
 - [Phase 23]: 23-02: AI draft suggestion path is no-send-by-construction (imports no dispatcher); draft flows into the existing Phase 22 composer; disabled setting = clean not_enabled gate
+- [Phase 23]: Autonomous AI follow-up retires the direct-send path: every AI send is a durable Phase 22 command through the single executeInboxSendCommand executor + Phase 18 policy gate; effective autonomy = org+campaign+unpaused, rechecked at claim and before dispatch

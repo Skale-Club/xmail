@@ -51,8 +51,8 @@
 
 - [x] **AI-01** — AI context is built from persisted conversation messages; reply body context is never inferred from headers-only data.
 - [x] **AI-02** — The inbox offers on-demand draft suggestions with source context, editable output, failure fallback, and no implicit send.
-- [ ] **AI-03** — Autonomous follow-up is explicitly enabled per organization/campaign and exposes pause/kill controls.
-- [ ] **AI-04** — AI sends pass the same suppression, daily-limit, warm-up, spacing, account-health, and organization-enable checks as every other outreach send.
+- [x] **AI-03** — Autonomous follow-up is explicitly enabled per organization/campaign and exposes pause/kill controls.
+- [x] **AI-04** — AI sends pass the same suppression, daily-limit, warm-up, spacing, account-health, and organization-enable checks as every other outreach send.
 - [x] **AI-05** — Prompt/model/version/input references, decisions, approvals, sends, and failures are auditable; representative evaluations cover unsafe or incorrect actions.
 - [x] **AI-06** — API/UI expose automation status and history without leaking credentials, prompts, or cross-tenant message content.
 
