@@ -166,6 +166,61 @@ describe('describeSmtpSecurityMode', () => {
     })
 })
 
+// C-1 — credentials must never be submitted without a TLS guarantee.
+//
+// The concrete attack: on port 25 the old resolver returned requireTLS:false, so an
+// on-path attacker who strips `250-STARTTLS` from the EHLO response leaves nodemailer
+// with nothing to object to. It proceeds in cleartext and sends `AUTH LOGIN` with the
+// decrypted mailbox password. Every caller of buildSmtpTransportOptions is authenticated
+// submission — it attaches `auth` unconditionally — so no port may be opportunistic here.
+describe('TLS guarantee for authenticated submission', () => {
+    const base = {
+        host: 'smtp.example.com',
+        username: 'user@example.com',
+        password: 'super-secret-password',
+    }
+
+    it.each([25, 465, 587, 2525, null, undefined])(
+        'never attaches credentials to a cleartext-capable transport on port %s',
+        (port) => {
+            const { options } = buildSmtpTransportOptions({
+                ...base,
+                port: port as number | null | undefined,
+            })
+
+            expect(options.auth).toEqual({ user: base.username, pass: base.password })
+            // Implicit TLS, or STARTTLS that fails closed. Never "TLS if the peer offers it".
+            expect(
+                options.secure || options.requireTLS,
+                `port ${port} would submit AUTH over a connection an attacker can keep in cleartext`,
+            ).toBe(true)
+        },
+    )
+
+    it('requires STARTTLS on port 25 when the connection authenticates', () => {
+        // Authenticated submission on 25 is nonstandard but real. The module already
+        // treats an *unknown* port as required-STARTTLS ("the safe reading"); a known
+        // port carrying the same credentials cannot be weaker.
+        const r = resolveSmtpSecurity({ port: 25, authenticated: true })
+        expect(r.mode).toBe('starttls_required')
+        expect(r.secure).toBe(false)
+        expect(r.requireTLS).toBe(true)
+    })
+
+    it('keeps opportunistic STARTTLS for unauthenticated port 25 MX relay', () => {
+        // An MX peer that does not advertise STARTTLS must still receive mail — there are
+        // no credentials to expose. This is the only case opportunistic is defensible.
+        const r = resolveSmtpSecurity({ port: 25, authenticated: false })
+        expect(r.mode).toBe('starttls_opportunistic')
+        expect(r.secure).toBe(false)
+        expect(r.requireTLS).toBe(false)
+    })
+
+    it('defaults to the authenticated reading, since every caller stores submission creds', () => {
+        expect(resolveSmtpSecurity({ port: 25 })).toEqual(resolveSmtpSecurity({ port: 25, authenticated: true }))
+    })
+})
+
 describe('buildSmtpTransportOptions', () => {
     const base = {
         host: 'smtp.example.com',
