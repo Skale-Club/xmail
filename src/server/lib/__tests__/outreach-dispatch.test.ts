@@ -35,6 +35,7 @@ const ALLOWED: DeliveryPolicyDecision = {
     account: {
         id: INPUT.emailAccountId,
         organizationId: INPUT.organizationId,
+        email: 'seller@skale.club',
         status: 'verified',
         dailySendLimit: 50,
         currentDailySent: 0,
@@ -248,7 +249,7 @@ describe('dispatchOutreachMessage', () => {
             rowId: expect.any(String),
         })
         expect(deps.provider.send).toHaveBeenCalledWith(expect.objectContaining({
-            stableMessageId: createStableOutreachMessageId(INPUT.organizationId, INPUT.idempotencyKey),
+            stableMessageId: createStableOutreachMessageId(INPUT.organizationId, INPUT.idempotencyKey, 'seller@skale.club'),
         }))
         expect(repo.finalizeSent).toHaveBeenCalledWith(
             expect.objectContaining({ leaseToken: '00000000-0000-4000-8000-000000000011' }),

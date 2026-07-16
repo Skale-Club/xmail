@@ -92,7 +92,7 @@ const INPUT: DispatchOutreachInput = {
 }
 
 /** What goes on the wire: RFC 5322 requires the angle brackets. */
-const STABLE_MESSAGE_ID = createStableOutreachMessageId(ORGANIZATION_ID, INPUT.idempotencyKey)
+const STABLE_MESSAGE_ID = createStableOutreachMessageId(ORGANIZATION_ID, INPUT.idempotencyKey, 'seller@example.com')
 /**
  * What goes in the ledger: the dispatcher strips the brackets before persisting, because
  * reply matching compares LOWER(outreach_emails.message_id) against an inbound In-Reply-To
@@ -240,6 +240,7 @@ const ALLOWED_SNAPSHOT: DeliveryPolicySnapshot = {
     account: {
         id: ACCOUNT_ID,
         organizationId: ORGANIZATION_ID,
+        email: 'seller@example.com',
         status: 'verified',
         dailySendLimit: 50,
         currentDailySent: 0,
@@ -491,7 +492,7 @@ describe('every provider writes the same durable history', () => {
     it.each(PROVIDER_KINDS)('%s mints the same stable id for the same idempotency key', (kind) => {
         // A retry must reuse the id already on the wire, or the reply threads against a
         // message id we never sent.
-        expect(createStableOutreachMessageId(ORGANIZATION_ID, INPUT.idempotencyKey)).toBe(STABLE_MESSAGE_ID)
+        expect(createStableOutreachMessageId(ORGANIZATION_ID, INPUT.idempotencyKey, 'seller@example.com')).toBe(STABLE_MESSAGE_ID)
         expect(kind).toBeTruthy()
     })
 })

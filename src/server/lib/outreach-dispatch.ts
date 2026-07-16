@@ -229,14 +229,43 @@ export function calculateDispatchBackoff(attemptCount: number, now: Date): Date 
     return new Date(now.getTime() + delay)
 }
 
-export function createStableOutreachMessageId(organizationId: string, idempotencyKey: string): string {
+/** A domain we would be willing to see in a Received chain: labelled, dotted, no scheme. */
+const MESSAGE_ID_DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
+
+/**
+ * The Message-ID every provider ships for one logical send.
+ *
+ * Identity lives in the LOCAL PART: the digest is derived from (organizationId,
+ * idempotencyKey), so a retry recomputes the same id and Phase 18's idempotency and the
+ * reply/bounce matchers are unaffected by which domain it is published under.
+ *
+ * The domain is the sender's own (W-4). It used to be `outreach.local`, which is reserved
+ * for mDNS (RFC 6762): it resolves nowhere and matches no From header, and receivers score
+ * both Message-ID domain validity and From-domain correspondence on bulk mail. `From` is
+ * always the account address, so deriving from it keeps the two aligned by construction.
+ *
+ * Throws rather than falling back for an unusable address: a bogus Message-ID is not a
+ * better outcome than a failed dispatch, and the caller turns this into a normalized
+ * provider failure.
+ */
+export function createStableOutreachMessageId(
+    organizationId: string,
+    idempotencyKey: string,
+    fromAddress: string,
+): string {
     const digest = createHash('sha256')
         .update(organizationId)
         .update('\0')
         .update(idempotencyKey)
         .digest('hex')
         .slice(0, 40)
-    return `<xmail-${digest}@outreach.local>`
+
+    const domain = (fromAddress.split('@')[1] ?? '').trim().toLowerCase()
+    if (!MESSAGE_ID_DOMAIN_RE.test(domain)) {
+        throw new Error(`Cannot mint a Message-ID: sender address has no usable domain (${fromAddress.slice(0, 80)})`)
+    }
+
+    return `<xmail-${digest}@${domain}>`
 }
 
 function validateDispatchInput(input: DispatchOutreachInput): void {
@@ -617,10 +646,17 @@ export async function dispatchOutreachMessage(
         return { status: 'lost_lease', rowId: claim.rowId }
     }
 
-    const stableMessageId = createStableOutreachMessageId(input.organizationId, input.idempotencyKey)
     const providerInput: DispatchOutreachInput = { ...input, ...claim.payload }
     let providerResult: ProviderDispatchResult
     try {
+        // Inside the try: minting is now fallible (an account with no usable domain), and a
+        // throw here must become a normalized failure that releases the lease like any
+        // other, rather than escaping and stranding the claim.
+        const stableMessageId = createStableOutreachMessageId(
+            input.organizationId,
+            input.idempotencyKey,
+            beforeProvider.account.email,
+        )
         providerResult = await dependencies.provider.send({ ...providerInput, stableMessageId })
     } catch (error) {
         const normalized = normalizeProviderFailure(error)

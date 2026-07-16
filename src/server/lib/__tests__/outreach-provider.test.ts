@@ -740,6 +740,7 @@ describe('dispatcher integration', () => {
         account: {
             id: ACCOUNT_ID,
             organizationId: ORGANIZATION_ID,
+            email: 'seller@example.com',
             status: 'verified' as const,
             dailySendLimit: 50,
             currentDailySent: 0,
@@ -815,7 +816,7 @@ describe('dispatcher integration', () => {
         // The id is derived from (organizationId, idempotencyKey) before the provider is
         // called, and the dispatcher strips the angle brackets before persisting — so a
         // retry of the same claim reuses it and the recipient never sees a duplicate id.
-        const expected = createStableOutreachMessageId(ORGANIZATION_ID, dispatchInput.idempotencyKey)
+        const expected = createStableOutreachMessageId(ORGANIZATION_ID, dispatchInput.idempotencyKey, 'seller@example.com')
         expect(result).toMatchObject({
             status: 'sent',
             messageId: expected.replace(/[<>]/g, ''),

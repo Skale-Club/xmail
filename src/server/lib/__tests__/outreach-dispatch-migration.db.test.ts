@@ -225,6 +225,7 @@ describe('outreach dispatch migration 038', () => {
                 account: {
                     id: accountId,
                     organizationId,
+                    email: 'dispatch@example.test',
                     status: 'verified',
                     dailySendLimit: 50,
                     currentDailySent: 0,
@@ -300,7 +301,7 @@ describe('outreach dispatch migration 038', () => {
             expect(claimedRows).toHaveLength(2)
             const capacity = {
                 account: {
-                    id: accountId, organizationId, status: 'verified' as const,
+                    id: accountId, organizationId, email: 'dispatch@example.test', status: 'verified' as const,
                     dailySendLimit: 1, currentDailySent: 0, warmupEnabled: false,
                     warmupDays: 14, warmupCurrentDay: 14,
                     minMinutesBetweenEmails: 0, lastSentAt: null,

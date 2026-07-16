@@ -13,6 +13,7 @@ function snapshot(overrides: Partial<DeliveryPolicySnapshot> = {}): DeliveryPoli
         account: {
             id: 'account-1',
             organizationId: 'org-1',
+            email: 'sender@example.test',
             status: 'verified',
             dailySendLimit: 50,
             currentDailySent: 0,

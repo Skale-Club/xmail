@@ -41,6 +41,9 @@ export type AccountPolicySnapshot = Pick<
     typeof emailAccounts.$inferSelect,
     | 'id'
     | 'organizationId'
+    // The sending identity: `From` and the Message-ID domain are both derived from it, so
+    // the dispatcher needs it from the same snapshot the policy already loaded.
+    | 'email'
     | 'status'
     | 'dailySendLimit'
     | 'currentDailySent'
@@ -280,6 +283,7 @@ export async function loadOutreachDeliverySnapshot(
             columns: {
                 id: true,
                 organizationId: true,
+                email: true,
                 status: true,
                 dailySendLimit: true,
                 currentDailySent: true,
