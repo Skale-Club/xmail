@@ -7,12 +7,15 @@ import {
     campaigns,
     emailAccounts,
     leads,
+    organizations,
     outreachAiRuns,
     outreachAiSettings,
     outreachConversationMessages,
     outreachConversations,
 } from '../../../db/schema'
 import { requireOutreachRead, requireOutreachWrite, type OutreachMembership } from '../../lib/outreach-access'
+import { evaluateEffectiveAutonomy, type AutonomyDenyReason } from '../../lib/inbox-ai-automation'
+import { createLogger } from '../../lib/logger'
 import {
     type BuildInboxAiContextInput,
     type InboxAiContextMessage,
@@ -996,24 +999,28 @@ async function loadInboxAiContextInput(args: {
     }
 }
 
-/** Cursor-bounded, org+conversation-scoped AI-run history (raw rows; caller projects to the DTO). */
-async function listConversationAiRuns(
-    organizationId: string,
-    conversationId: string,
-    limit: number,
-    cursor: string | null,
-): Promise<AiRunRecord[]> {
-    const conditions = [
-        eq(outreachAiRuns.organizationId, organizationId),
-        eq(outreachAiRuns.conversationId, conversationId),
-    ]
-    if (cursor) conditions.push(lt(outreachAiRuns.createdAt, new Date(cursor)))
+/**
+ * Cursor-bounded, org-scoped AI-run history (raw rows; caller projects to the redacted DTO). Optional
+ * conversation/campaign predicates narrow the scope. Every query carries the verified organization id,
+ * so a foreign conversation/campaign id simply yields an empty page (never another tenant's runs).
+ */
+async function listAiRuns(filters: {
+    organizationId: string
+    conversationId?: string
+    campaignId?: string
+    limit: number
+    cursor: string | null
+}): Promise<AiRunRecord[]> {
+    const conditions = [eq(outreachAiRuns.organizationId, filters.organizationId)]
+    if (filters.conversationId) conditions.push(eq(outreachAiRuns.conversationId, filters.conversationId))
+    if (filters.campaignId) conditions.push(eq(outreachAiRuns.campaignId, filters.campaignId))
+    if (filters.cursor) conditions.push(lt(outreachAiRuns.createdAt, new Date(filters.cursor)))
     return db
         .select()
         .from(outreachAiRuns)
         .where(and(...conditions))
         .orderBy(desc(outreachAiRuns.createdAt), desc(outreachAiRuns.id))
-        .limit(limit)
+        .limit(filters.limit)
 }
 
 // GET /ai-settings — the single safe flag the composer needs (never the kill switch / model profile).
@@ -1077,18 +1084,50 @@ router.post('/conversations/:id/ai-suggestions', async (req: Request, res: Respo
     }
 })
 
-// GET /conversations/:id/ai-runs — redacted, cursor-bounded suggestion history for a conversation.
+/** Shared response shaper for a redacted, cursor-bounded AI-run page. */
+function aiRunPage(runs: AiRunRecord[], limit: number): { runs: ReturnType<typeof toPublicAiRun>[]; nextCursor: string | null } {
+    const nextCursor = runs.length === limit ? runs[runs.length - 1].createdAt.toISOString() : null
+    return { runs: runs.map(toPublicAiRun), nextCursor }
+}
+
+// GET /conversations/:id/ai-runs — redacted, cursor-bounded causal history for a conversation.
 router.get('/conversations/:id/ai-runs', async (req: Request, res: Response) => {
     try {
         const organizationId = await authorizeOrganization(req, res)
         if (!organizationId) return
         if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'conversation_not_found' })
         const { limit, cursor } = aiRunsQuerySchema.parse(req.query)
-        const runs = await listConversationAiRuns(organizationId, req.params.id, limit, cursor ?? null)
-        const nextCursor = runs.length === limit ? runs[runs.length - 1].createdAt.toISOString() : null
-        res.json({ runs: runs.map(toPublicAiRun), nextCursor })
+        const runs = await listAiRuns({ organizationId, conversationId: req.params.id, limit, cursor: cursor ?? null })
+        res.json(aiRunPage(runs, limit))
     } catch (error) {
-        handleOperatorError(error, res, 'listing ai runs')
+        handleOperatorError(error, res, 'listing conversation ai runs')
+    }
+})
+
+// GET /ai-runs — redacted, cursor-bounded ORG-WIDE causal history (the transparency ledger).
+router.get('/ai-runs', async (req: Request, res: Response) => {
+    try {
+        const organizationId = await authorizeOrganization(req, res)
+        if (!organizationId) return
+        const { limit, cursor } = aiRunsQuerySchema.parse(req.query)
+        const runs = await listAiRuns({ organizationId, limit, cursor: cursor ?? null })
+        res.json(aiRunPage(runs, limit))
+    } catch (error) {
+        handleOperatorError(error, res, 'listing org ai runs')
+    }
+})
+
+// GET /campaigns/:id/ai-runs — redacted, cursor-bounded campaign-scoped causal history.
+router.get('/campaigns/:id/ai-runs', async (req: Request, res: Response) => {
+    try {
+        const organizationId = await authorizeOrganization(req, res)
+        if (!organizationId) return
+        if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'campaign_not_found' })
+        const { limit, cursor } = aiRunsQuerySchema.parse(req.query)
+        const runs = await listAiRuns({ organizationId, campaignId: req.params.id, limit, cursor: cursor ?? null })
+        res.json(aiRunPage(runs, limit))
+    } catch (error) {
+        handleOperatorError(error, res, 'listing campaign ai runs')
     }
 })
 
@@ -1126,6 +1165,290 @@ router.post('/ai-runs/:id/accept', async (req: Request, res: Response) => {
             return res.status(409).json({ error: error.code })
         }
         handleOperatorError(error, res, 'accepting ai suggestion')
+    }
+})
+
+// ============================================================
+// AI automation controls — transparent, default-off, confirmed, pausable (Phase 23 AI-03 / AI-06)
+// ============================================================
+// The organization AND campaign autonomy controls. Both flags default OFF; enabling autonomy is a
+// deliberate client-confirmed action; the org kill switch pauses IMMEDIATELY; and every view reports
+// the EFFECTIVE scope (org on AND campaign on AND unpaused AND outreach enabled — the intersection the
+// autonomous processor re-evaluates at claim + dispatch). Reads use requireOutreachRead; mutations use
+// requireOutreachWrite; every query carries the verified organization id. Enabling a stored bit never
+// alone authorizes a send — the executor re-runs the full Phase 18 policy before any provider call.
+//
+// Audit actor: each control change emits a structured audit log line carrying the actor + organization
+// (never message content or a secret), so an enable/disable/pause/resume is attributable without a
+// schema change.
+
+const aiControlsLog = createLogger('outreach.aiControls')
+
+const orgAiSettingsPatchSchema = z.object({
+    draftAssistanceEnabled: z.boolean().optional(),
+    autonomousEnabled: z.boolean().optional(),
+    // Optimistic-concurrency token from the last read; a stale value is a 409 conflict.
+    expectedUpdatedAt: z.string().datetime().nullish(),
+}).refine((b) => b.draftAssistanceEnabled !== undefined || b.autonomousEnabled !== undefined, {
+    message: 'at least one flag is required',
+})
+const pauseBodySchema = z.object({ reason: z.string().trim().max(500).nullish() })
+const campaignAiPatchSchema = z.object({
+    aiAutonomousEnabled: z.boolean(),
+    expectedUpdatedAt: z.string().datetime().nullish(),
+})
+
+interface OrgAiAutomationView {
+    draftAssistanceEnabled: boolean
+    autonomousEnabled: boolean
+    autonomyPaused: boolean
+    autonomyPausedAt: string | null
+    autonomyPausedReason: string | null
+    maxAutonomousFollowUps: number
+    outreachEnabled: boolean
+    autonomyEffective: boolean
+    updatedAt: string | null
+}
+
+/** Load the org control view: both default-off flags, the immediate kill switch, and the effective scope. */
+async function loadOrgAiAutomationView(organizationId: string): Promise<OrgAiAutomationView> {
+    const [settings] = await db
+        .select({
+            draftAssistanceEnabled: outreachAiSettings.draftAssistanceEnabled,
+            autonomousEnabled: outreachAiSettings.autonomousEnabled,
+            autonomyPausedAt: outreachAiSettings.autonomyPausedAt,
+            autonomyPausedReason: outreachAiSettings.autonomyPausedReason,
+            maxAutonomousFollowUps: outreachAiSettings.maxAutonomousFollowUps,
+            updatedAt: outreachAiSettings.updatedAt,
+        })
+        .from(outreachAiSettings)
+        .where(eq(outreachAiSettings.organizationId, organizationId))
+        .limit(1)
+    const [org] = await db
+        .select({ outreachEnabled: organizations.outreachEnabled })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1)
+
+    const outreachEnabled = org?.outreachEnabled ?? false
+    const autonomousEnabled = settings?.autonomousEnabled ?? false
+    const autonomyPausedAt = settings?.autonomyPausedAt ?? null
+    const autonomyPaused = autonomyPausedAt != null
+    return {
+        draftAssistanceEnabled: settings?.draftAssistanceEnabled ?? false,
+        autonomousEnabled,
+        autonomyPaused,
+        autonomyPausedAt: autonomyPausedAt ? autonomyPausedAt.toISOString() : null,
+        autonomyPausedReason: settings?.autonomyPausedReason ?? null,
+        maxAutonomousFollowUps: settings?.maxAutonomousFollowUps ?? 2,
+        outreachEnabled,
+        // Effective org scope: the org is "armed" only when autonomy is on, unpaused, AND outreach is
+        // enabled. A campaign must ALSO opt in for a send to actually happen (see the campaign view).
+        autonomyEffective: autonomousEnabled && !autonomyPaused && outreachEnabled,
+        updatedAt: settings?.updatedAt ? settings.updatedAt.toISOString() : null,
+    }
+}
+
+/** Column-name error for a detected optimistic-concurrency conflict. */
+class AiSettingsConflict extends Error {}
+
+/**
+ * Upsert the org AI-settings row. When `expectedUpdatedAt` is provided AND a row exists, a mismatch is
+ * a conflict (a concurrent edit). Pause/resume pass no expectation so the kill switch always applies.
+ */
+async function upsertOrgAiSettings(
+    organizationId: string,
+    patch: Partial<{ draftAssistanceEnabled: boolean; autonomousEnabled: boolean; autonomyPausedAt: Date | null; autonomyPausedReason: string | null }>,
+    expectedUpdatedAt?: string | null,
+): Promise<void> {
+    const [existing] = await db
+        .select({ updatedAt: outreachAiSettings.updatedAt })
+        .from(outreachAiSettings)
+        .where(eq(outreachAiSettings.organizationId, organizationId))
+        .limit(1)
+    if (existing && expectedUpdatedAt != null && existing.updatedAt.toISOString() !== expectedUpdatedAt) {
+        throw new AiSettingsConflict('ai_settings_conflict')
+    }
+    const now = new Date()
+    if (existing) {
+        await db.update(outreachAiSettings).set({ ...patch, updatedAt: now }).where(eq(outreachAiSettings.organizationId, organizationId))
+    } else {
+        await db
+            .insert(outreachAiSettings)
+            .values({ organizationId, ...patch, updatedAt: now })
+            .onConflictDoUpdate({ target: outreachAiSettings.organizationId, set: { ...patch, updatedAt: now } })
+    }
+}
+
+// GET /ai-automation-settings — the full org control view (viewers may read; mutations need write).
+router.get('/ai-automation-settings', async (req: Request, res: Response) => {
+    try {
+        const organizationId = await authorizeOrganization(req, res)
+        if (!organizationId) return
+        res.json(await loadOrgAiAutomationView(organizationId))
+    } catch (error) {
+        handleOperatorError(error, res, 'loading ai automation settings')
+    }
+})
+
+// PATCH /ai-automation-settings — set the draft/autonomous flags (optimistic-concurrency guarded).
+router.patch('/ai-automation-settings', async (req: Request, res: Response) => {
+    try {
+        const ctx = await authorizeWrite(req, res)
+        if (!ctx) return
+        const body = orgAiSettingsPatchSchema.parse(req.body ?? {})
+        const patch: Parameters<typeof upsertOrgAiSettings>[1] = {}
+        if (body.draftAssistanceEnabled !== undefined) patch.draftAssistanceEnabled = body.draftAssistanceEnabled
+        if (body.autonomousEnabled !== undefined) patch.autonomousEnabled = body.autonomousEnabled
+        await upsertOrgAiSettings(ctx.organizationId, patch, body.expectedUpdatedAt ?? undefined)
+        aiControlsLog.info({
+            action: 'outreach.aiControls.org_settings_updated',
+            organizationId: ctx.organizationId,
+            actorUserId: ctx.userId,
+            draftAssistanceEnabled: body.draftAssistanceEnabled ?? null,
+            autonomousEnabled: body.autonomousEnabled ?? null,
+        }, 'org AI automation flags updated')
+        res.json(await loadOrgAiAutomationView(ctx.organizationId))
+    } catch (error) {
+        if (error instanceof AiSettingsConflict) return res.status(409).json({ error: 'ai_settings_conflict' })
+        handleOperatorError(error, res, 'updating ai automation settings')
+    }
+})
+
+// POST /ai-automation-settings/pause — IMMEDIATE org kill switch (always applies; no version check).
+router.post('/ai-automation-settings/pause', async (req: Request, res: Response) => {
+    try {
+        const ctx = await authorizeWrite(req, res)
+        if (!ctx) return
+        const body = pauseBodySchema.parse(req.body ?? {})
+        await upsertOrgAiSettings(ctx.organizationId, { autonomyPausedAt: new Date(), autonomyPausedReason: body.reason ?? null })
+        aiControlsLog.warn({
+            action: 'outreach.aiControls.org_paused',
+            organizationId: ctx.organizationId,
+            actorUserId: ctx.userId,
+            hasReason: Boolean(body.reason),
+        }, 'org AI automation paused (kill switch)')
+        res.json(await loadOrgAiAutomationView(ctx.organizationId))
+    } catch (error) {
+        handleOperatorError(error, res, 'pausing ai automation')
+    }
+})
+
+// POST /ai-automation-settings/resume — clear the org kill switch.
+router.post('/ai-automation-settings/resume', async (req: Request, res: Response) => {
+    try {
+        const ctx = await authorizeWrite(req, res)
+        if (!ctx) return
+        await upsertOrgAiSettings(ctx.organizationId, { autonomyPausedAt: null, autonomyPausedReason: null })
+        aiControlsLog.info({
+            action: 'outreach.aiControls.org_resumed',
+            organizationId: ctx.organizationId,
+            actorUserId: ctx.userId,
+        }, 'org AI automation resumed')
+        res.json(await loadOrgAiAutomationView(ctx.organizationId))
+    } catch (error) {
+        handleOperatorError(error, res, 'resuming ai automation')
+    }
+})
+
+interface CampaignAiAutomationView {
+    campaignId: string
+    campaignAiAutonomousEnabled: boolean
+    campaignStatus: string
+    campaignActive: boolean
+    orgAutonomousEnabled: boolean
+    orgAutonomyPaused: boolean
+    outreachEnabled: boolean
+    effective: { enabled: boolean; reason: AutonomyDenyReason | null }
+    updatedAt: string | null
+}
+
+/** Load the campaign control view + the computed EFFECTIVE autonomy (the full intersection). null → 404. */
+async function loadCampaignAiAutomationView(organizationId: string, campaignId: string): Promise<CampaignAiAutomationView | null> {
+    const [campaign] = await db
+        .select({ id: campaigns.id, status: campaigns.status, aiAutonomousEnabled: campaigns.aiAutonomousEnabled, updatedAt: campaigns.updatedAt })
+        .from(campaigns)
+        .where(and(eq(campaigns.organizationId, organizationId), eq(campaigns.id, campaignId)))
+        .limit(1)
+    if (!campaign) return null
+
+    const [settings] = await db
+        .select({ autonomousEnabled: outreachAiSettings.autonomousEnabled, autonomyPausedAt: outreachAiSettings.autonomyPausedAt })
+        .from(outreachAiSettings)
+        .where(eq(outreachAiSettings.organizationId, organizationId))
+        .limit(1)
+    const [org] = await db
+        .select({ outreachEnabled: organizations.outreachEnabled })
+        .from(organizations)
+        .where(eq(organizations.id, organizationId))
+        .limit(1)
+
+    const inputs = {
+        orgAutonomousEnabled: settings?.autonomousEnabled ?? false,
+        orgAutonomyPausedAt: settings?.autonomyPausedAt ?? null,
+        campaignAiAutonomousEnabled: campaign.aiAutonomousEnabled,
+        campaignActive: campaign.status === 'active',
+        outreachEnabled: org?.outreachEnabled ?? false,
+    }
+    return {
+        campaignId: campaign.id,
+        campaignAiAutonomousEnabled: campaign.aiAutonomousEnabled,
+        campaignStatus: campaign.status,
+        campaignActive: inputs.campaignActive,
+        orgAutonomousEnabled: inputs.orgAutonomousEnabled,
+        orgAutonomyPaused: inputs.orgAutonomyPausedAt != null,
+        outreachEnabled: inputs.outreachEnabled,
+        // The intersection: a campaign flag can never override org-off / org-paused / outreach-off.
+        effective: evaluateEffectiveAutonomy(inputs),
+        updatedAt: campaign.updatedAt ? campaign.updatedAt.toISOString() : null,
+    }
+}
+
+// GET /campaigns/:id/ai-automation — the campaign control view + effective scope.
+router.get('/campaigns/:id/ai-automation', async (req: Request, res: Response) => {
+    try {
+        const organizationId = await authorizeOrganization(req, res)
+        if (!organizationId) return
+        if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'campaign_not_found' })
+        const view = await loadCampaignAiAutomationView(organizationId, req.params.id)
+        if (!view) return res.status(404).json({ error: 'campaign_not_found' })
+        res.json(view)
+    } catch (error) {
+        handleOperatorError(error, res, 'loading campaign ai automation')
+    }
+})
+
+// PATCH /campaigns/:id/ai-automation — set the campaign autonomy opt-in (optimistic-concurrency guarded).
+router.patch('/campaigns/:id/ai-automation', async (req: Request, res: Response) => {
+    try {
+        const ctx = await authorizeWrite(req, res)
+        if (!ctx) return
+        if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'campaign_not_found' })
+        const body = campaignAiPatchSchema.parse(req.body ?? {})
+        const [campaign] = await db
+            .select({ id: campaigns.id, updatedAt: campaigns.updatedAt })
+            .from(campaigns)
+            .where(and(eq(campaigns.organizationId, ctx.organizationId), eq(campaigns.id, req.params.id)))
+            .limit(1)
+        if (!campaign) return res.status(404).json({ error: 'campaign_not_found' })
+        if (body.expectedUpdatedAt != null && campaign.updatedAt && campaign.updatedAt.toISOString() !== body.expectedUpdatedAt) {
+            return res.status(409).json({ error: 'campaign_ai_conflict' })
+        }
+        await db
+            .update(campaigns)
+            .set({ aiAutonomousEnabled: body.aiAutonomousEnabled, updatedAt: new Date() })
+            .where(and(eq(campaigns.organizationId, ctx.organizationId), eq(campaigns.id, req.params.id)))
+        aiControlsLog.info({
+            action: 'outreach.aiControls.campaign_autonomy_updated',
+            organizationId: ctx.organizationId,
+            campaignId: req.params.id,
+            actorUserId: ctx.userId,
+            aiAutonomousEnabled: body.aiAutonomousEnabled,
+        }, 'campaign AI autonomy updated')
+        const view = await loadCampaignAiAutomationView(ctx.organizationId, req.params.id)
+        res.json(view)
+    } catch (error) {
+        handleOperatorError(error, res, 'updating campaign ai automation')
     }
 })
 

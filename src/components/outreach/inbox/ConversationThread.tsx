@@ -22,6 +22,8 @@ export interface ConversationThreadProps {
     actions?: ReactNode
     /** Reply/forward composer (ConversationComposer), rendered as a sticky thread footer. */
     composer?: ReactNode
+    /** Redacted AI automation history (AiAutomationHistory), rendered below the thread messages. */
+    aiHistory?: ReactNode
 }
 
 const NOT_LINKED = 'Not linked'
@@ -138,6 +140,7 @@ export function ConversationThread({
     campaignNameById,
     actions,
     composer,
+    aiHistory,
 }: ConversationThreadProps) {
     // Latest message always expands; the latest inbound also expands so a new reply is
     // readable immediately. Older messages collapse behind a keyboard-operable toggle.
@@ -270,6 +273,8 @@ export function ConversationThread({
                         />
                     ))
                 )}
+
+                {aiHistory && <div className="border-t border-border pt-3">{aiHistory}</div>}
             </div>
 
             {composer && <div className="shrink-0">{composer}</div>}

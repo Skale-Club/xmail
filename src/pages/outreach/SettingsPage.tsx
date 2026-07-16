@@ -11,7 +11,15 @@ import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
+import { OrgAiAutomationControl } from '../../components/outreach/inbox/AiAutonomyControls'
 import { apiFetch, apiRequest } from '../../lib/api-client'
+import {
+    getOrgAiAutomationSettings,
+    pauseOrgAiAutomation,
+    resumeOrgAiAutomation,
+    updateOrgAiAutomationSettings,
+    type OrgAiAutomationSettings,
+} from '../../lib/unified-inbox-api'
 import { useOrganization } from '../../hooks/useOrganization'
 
 interface OutreachSettings {
@@ -63,6 +71,42 @@ export function SettingsPage() {
             queryClient.invalidateQueries({ queryKey: ['outreach-settings'] })
         }
     })
+
+    // --- AI Assistant & Automation controls (Phase 23 AI-03/AI-06) ---
+    const canManage = currentOrganization?.role === 'admin' || currentOrganization?.role === 'member'
+    const aiSettingsKey = ['outreach-ai-automation-settings', currentOrganization?.id]
+    const aiSettingsQuery = useQuery({
+        queryKey: aiSettingsKey,
+        queryFn: () => getOrgAiAutomationSettings(currentOrganization!.id),
+        enabled: !!currentOrganization,
+    })
+    const [aiError, setAiError] = React.useState<string | null>(null)
+    const onAiSuccess = (data: OrgAiAutomationSettings) => {
+        setAiError(null)
+        queryClient.setQueryData(aiSettingsKey, data)
+    }
+    const onAiError = (err: unknown) => {
+        // Optimistic-concurrency conflict or a denied write: refetch server truth and surface the reason.
+        setAiError(err instanceof Error ? err.message : 'Could not update AI automation controls.')
+        aiSettingsQuery.refetch()
+    }
+    const aiFlagsMutation = useMutation({
+        mutationFn: (input: { draftAssistanceEnabled?: boolean; autonomousEnabled?: boolean }) =>
+            updateOrgAiAutomationSettings(currentOrganization!.id, { ...input, expectedUpdatedAt: aiSettingsQuery.data?.updatedAt ?? null }),
+        onSuccess: onAiSuccess,
+        onError: onAiError,
+    })
+    const aiPauseMutation = useMutation({
+        mutationFn: (reason: string) => pauseOrgAiAutomation(currentOrganization!.id, reason || null),
+        onSuccess: onAiSuccess,
+        onError: onAiError,
+    })
+    const aiResumeMutation = useMutation({
+        mutationFn: () => resumeOrgAiAutomation(currentOrganization!.id),
+        onSuccess: onAiSuccess,
+        onError: onAiError,
+    })
+    const aiPending = aiFlagsMutation.isPending || aiPauseMutation.isPending || aiResumeMutation.isPending
 
     const [formData, setFormData] = React.useState<Partial<OutreachSettings>>({})
 
@@ -320,6 +364,19 @@ export function SettingsPage() {
                         </label>
                     </div>
                 </div>
+
+                {/* AI Assistant & Automation (default-off, confirmed, immediately pausable, effective scope) */}
+                <OrgAiAutomationControl
+                    settings={aiSettingsQuery.data}
+                    isLoading={aiSettingsQuery.isLoading}
+                    canManage={canManage}
+                    pending={aiPending}
+                    error={aiError}
+                    onSetDraftAssistance={(enabled) => aiFlagsMutation.mutate({ draftAssistanceEnabled: enabled })}
+                    onSetAutonomous={(enabled) => aiFlagsMutation.mutate({ autonomousEnabled: enabled })}
+                    onPause={(reason) => aiPauseMutation.mutate(reason)}
+                    onResume={() => aiResumeMutation.mutate()}
+                />
 
                 {/*
                   * No "API Access" card: this product has no self-serve API-key credential

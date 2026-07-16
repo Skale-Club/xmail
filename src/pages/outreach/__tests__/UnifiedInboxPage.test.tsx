@@ -75,16 +75,20 @@ import { ConversationThread } from '@/components/outreach/inbox/ConversationThre
 import { BulkActionsBar, ConversationActions } from '@/components/outreach/inbox/ConversationActions'
 import { ConversationComposer } from '@/components/outreach/inbox/ConversationComposer'
 import { AiDraftAssistant } from '@/components/outreach/inbox/AiDraftAssistant'
+import { AiAutomationHistory } from '@/components/outreach/inbox/AiAutomationHistory'
+import { CampaignAiAutomationControl, OrgAiAutomationControl } from '@/components/outreach/inbox/AiAutonomyControls'
 import { InboxSyncStatus } from '@/components/outreach/inbox/InboxSyncStatus'
 import type {
     AiRunPublicDto,
     AiSuggestionResponse,
+    CampaignAiAutomation,
     CreateSendCommandInput,
     InboxAccountOption,
     InboxLabel,
     InboxSendCommand,
     InboxSnippet,
     InboxUploadedAttachment,
+    OrgAiAutomationSettings,
     SuppressionPreview,
     SuppressionResult,
     SuppressionScope,
@@ -1430,6 +1434,7 @@ function makeAiRun(overrides: Partial<AiRunPublicDto> = {}): AiRunPublicDto {
         id: 'run-1',
         conversationId: CONV_1,
         campaignId: CAMPAIGN_1,
+        triggerMessageId: null,
         runKind: 'draft',
         status: 'awaiting_approval',
         action: 'draft',
@@ -1606,6 +1611,230 @@ describe('ConversationComposer + AiDraftAssistant: draft flows into the editable
         fireEvent.click(await screen.findByRole('button', { name: 'Insert into reply' }))
         fireEvent.click(screen.getByRole('button', { name: 'Replace' }))
         expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('AI-written reply body')
+    })
+})
+
+// ============================================================
+// Phase 23 AI-05/AI-06 — redacted AI automation causal history
+// ============================================================
+// The history renders ONLY the redacted public DTO: kind/status, prompt version + model label, the
+// trigger message REFERENCE + time, the decision, approval actor/time, policy code, and the
+// command/send outcome or failure — never a secret, hidden prompt, model parameter, or raw body.
+
+describe('AiAutomationHistory: redacted causal history', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    it('renders trigger, decision, approval, policy, and a confirmed send outcome for a run', () => {
+        const run = makeAiRun({
+            runKind: 'autonomous',
+            status: 'completed',
+            action: 'draft',
+            outputOutcome: 'interested',
+            triggerMessageId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+            sendCommandId: 'cmd-77',
+            outreachEmailId: 'email-77',
+            approvedByUserId: 'user-1234',
+            approvedAt: '2026-07-16T10:05:00.000Z',
+        })
+        render(<AiAutomationHistory runs={[run]} />)
+        expect(screen.getByText('Autonomous')).toBeInTheDocument()
+        expect(screen.getByText('Completed')).toBeInTheDocument()
+        expect(screen.getByText(/Drafted a reply/)).toBeInTheDocument()
+        expect(screen.getByText(/Sent through the policy gate/)).toBeInTheDocument()
+        expect(screen.getByText(/trigger #aaaaaaaa/)).toBeInTheDocument()
+        expect(screen.getByText(/Approved by user-123/)).toBeInTheDocument()
+    })
+
+    it('shows a policy code and a failure code without leaking any secret', () => {
+        const run = makeAiRun({
+            runKind: 'autonomous',
+            status: 'failed',
+            action: null,
+            outputBody: null,
+            errorCode: 'decider_timeout',
+            policyCode: 'recipient_suppressed',
+        })
+        render(<AiAutomationHistory runs={[run]} />)
+        expect(screen.getByText('Failed')).toBeInTheDocument()
+        expect(screen.getByText(/decider_timeout/)).toBeInTheDocument()
+        // The DTO carries no secret/hidden-prompt/model-parameter surface to leak.
+        expect(run).not.toHaveProperty('modelParameters')
+        expect(run).not.toHaveProperty('leaseToken')
+        expect(run).not.toHaveProperty('errorDetail')
+        expect(run).not.toHaveProperty('idempotencyKey')
+        expect(screen.queryByText(/system prompt/i)).not.toBeInTheDocument()
+        expect(screen.queryByText(/bearer/i)).not.toBeInTheDocument()
+        expect(screen.queryByText(/api[_-]?key/i)).not.toBeInTheDocument()
+    })
+
+    it('renders an empty state with no runs', () => {
+        render(<AiAutomationHistory runs={[]} />)
+        expect(screen.getByText('No AI activity on this conversation yet.')).toBeInTheDocument()
+    })
+})
+
+// ============================================================
+// Phase 23 AI-03/AI-06 — organization autonomy control (default-off / confirm / immediate pause / effective scope)
+// ============================================================
+
+function makeOrgSettings(overrides: Partial<OrgAiAutomationSettings> = {}): OrgAiAutomationSettings {
+    return {
+        draftAssistanceEnabled: false,
+        autonomousEnabled: false,
+        autonomyPaused: false,
+        autonomyPausedAt: null,
+        autonomyPausedReason: null,
+        maxAutonomousFollowUps: 2,
+        outreachEnabled: true,
+        autonomyEffective: false,
+        updatedAt: '2026-07-16T09:00:00.000Z',
+        ...overrides,
+    }
+}
+
+function renderOrgControl(overrides: Partial<React.ComponentProps<typeof OrgAiAutomationControl>> = {}) {
+    const props: React.ComponentProps<typeof OrgAiAutomationControl> = {
+        settings: makeOrgSettings(),
+        canManage: true,
+        onSetDraftAssistance: vi.fn(),
+        onSetAutonomous: vi.fn(),
+        onPause: vi.fn(),
+        onResume: vi.fn(),
+        ...overrides,
+    }
+    return { props, ...render(<OrgAiAutomationControl {...props} />) }
+}
+
+describe('OrgAiAutomationControl: default-off, confirm, immediate pause, effective scope', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    it('defaults both controls OFF', () => {
+        renderOrgControl()
+        expect(screen.getByRole('switch', { name: 'Draft assistance' })).toHaveAttribute('aria-checked', 'false')
+        expect(screen.getByRole('switch', { name: 'Autonomous sending' })).toHaveAttribute('aria-checked', 'false')
+        expect(screen.getByText(/Autonomous sending is OFF/)).toBeInTheDocument()
+    })
+
+    it('enables draft assistance as a direct toggle (no confirmation)', () => {
+        const onSetDraftAssistance = vi.fn()
+        renderOrgControl({ onSetDraftAssistance })
+        fireEvent.click(screen.getByRole('switch', { name: 'Draft assistance' }))
+        expect(onSetDraftAssistance).toHaveBeenCalledWith(true)
+    })
+
+    it('requires an explicit confirmation to ENABLE autonomous sending', () => {
+        const onSetAutonomous = vi.fn()
+        renderOrgControl({ onSetAutonomous })
+        fireEvent.click(screen.getByRole('switch', { name: 'Autonomous sending' }))
+        // Not enabled yet — a confirmation dialog is shown first.
+        expect(onSetAutonomous).not.toHaveBeenCalled()
+        expect(screen.getByRole('dialog')).toHaveTextContent('Enable autonomous sending?')
+        fireEvent.click(screen.getByRole('button', { name: 'Enable autonomous sending' }))
+        expect(onSetAutonomous).toHaveBeenCalledWith(true)
+    })
+
+    it('disables autonomous sending immediately (no confirmation)', () => {
+        const onSetAutonomous = vi.fn()
+        renderOrgControl({ settings: makeOrgSettings({ autonomousEnabled: true, autonomyEffective: true }), onSetAutonomous })
+        fireEvent.click(screen.getByRole('switch', { name: 'Autonomous sending' }))
+        expect(onSetAutonomous).toHaveBeenCalledWith(false)
+    })
+
+    it('pauses IMMEDIATELY with a single click (no confirmation)', () => {
+        const onPause = vi.fn()
+        renderOrgControl({ settings: makeOrgSettings({ autonomousEnabled: true, autonomyEffective: true }), onPause })
+        fireEvent.click(screen.getByRole('button', { name: /Pause automation/ }))
+        expect(onPause).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows Resume when paused and calls onResume', () => {
+        const onResume = vi.fn()
+        renderOrgControl({ settings: makeOrgSettings({ autonomousEnabled: true, autonomyPaused: true, autonomyPausedAt: '2026-07-16T10:00:00.000Z' }), onResume })
+        expect(screen.getByText(/Autonomous sending is PAUSED/)).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: /Resume automation/ }))
+        expect(onResume).toHaveBeenCalledTimes(1)
+    })
+
+    it('displays the ACTIVE effective scope when on, unpaused, and outreach enabled', () => {
+        renderOrgControl({ settings: makeOrgSettings({ autonomousEnabled: true, outreachEnabled: true, autonomyEffective: true }) })
+        expect(screen.getByText(/Autonomous sending is ACTIVE/)).toBeInTheDocument()
+    })
+
+    it('displays a BLOCKED effective scope when outreach sending is disabled', () => {
+        renderOrgControl({ settings: makeOrgSettings({ autonomousEnabled: true, outreachEnabled: false, autonomyEffective: false }) })
+        expect(screen.getByText(/BLOCKED/)).toBeInTheDocument()
+    })
+
+    it('locks the controls for a viewer (canManage false)', () => {
+        renderOrgControl({ canManage: false })
+        expect(screen.getByRole('switch', { name: 'Autonomous sending' })).toBeDisabled()
+        expect(screen.getByText(/read-only access/)).toBeInTheDocument()
+    })
+})
+
+// ============================================================
+// Phase 23 AI-03/AI-06 — campaign autonomy control (opt-in cannot override org; shows effective reason)
+// ============================================================
+
+function makeCampaignAutomation(overrides: Partial<CampaignAiAutomation> = {}): CampaignAiAutomation {
+    return {
+        campaignId: CAMPAIGN_1,
+        campaignAiAutonomousEnabled: false,
+        campaignStatus: 'active',
+        campaignActive: true,
+        orgAutonomousEnabled: true,
+        orgAutonomyPaused: false,
+        outreachEnabled: true,
+        effective: { enabled: false, reason: 'campaign_disabled' },
+        updatedAt: '2026-07-16T09:00:00.000Z',
+        ...overrides,
+    }
+}
+
+function renderCampaignControl(overrides: Partial<React.ComponentProps<typeof CampaignAiAutomationControl>> = {}) {
+    const props: React.ComponentProps<typeof CampaignAiAutomationControl> = {
+        automation: makeCampaignAutomation(),
+        canManage: true,
+        onSetEnabled: vi.fn(),
+        ...overrides,
+    }
+    return { props, ...render(<CampaignAiAutomationControl {...props} />) }
+}
+
+describe('CampaignAiAutomationControl: opt-in cannot override org; shows effective reason', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    it('defaults the campaign opt-in OFF', () => {
+        renderCampaignControl()
+        expect(screen.getByRole('switch', { name: /Autonomous AI replies for this campaign/ })).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('requires confirmation to enable the campaign opt-in', () => {
+        const onSetEnabled = vi.fn()
+        renderCampaignControl({ onSetEnabled })
+        fireEvent.click(screen.getByRole('switch', { name: /Autonomous AI replies for this campaign/ }))
+        expect(onSetEnabled).not.toHaveBeenCalled()
+        expect(screen.getByRole('dialog')).toHaveTextContent('Enable autonomous replies for this campaign?')
+        fireEvent.click(screen.getByRole('button', { name: 'Enable for this campaign' }))
+        expect(onSetEnabled).toHaveBeenCalledWith(true)
+    })
+
+    it('shows ACTIVE effective scope when the intersection is enabled', () => {
+        renderCampaignControl({ automation: makeCampaignAutomation({ campaignAiAutonomousEnabled: true, effective: { enabled: true, reason: null } }) })
+        expect(screen.getByText(/Autonomous replies are ACTIVE for this campaign/)).toBeInTheDocument()
+    })
+
+    it('cannot override org-off: shows the organization reason even when the campaign toggle is on', () => {
+        renderCampaignControl({ automation: makeCampaignAutomation({ campaignAiAutonomousEnabled: true, orgAutonomousEnabled: false, effective: { enabled: false, reason: 'org_disabled' } }) })
+        // The campaign flag is on, but effective is disabled BECAUSE the org is off.
+        expect(screen.getByRole('switch', { name: /Autonomous AI replies for this campaign/ })).toHaveAttribute('aria-checked', 'true')
+        expect(screen.getByText(/Organization-level autonomous sending is off/)).toBeInTheDocument()
+        expect(screen.queryByText(/ACTIVE for this campaign/)).not.toBeInTheDocument()
+    })
+
+    it('shows the org-paused reason when the org kill switch is active', () => {
+        renderCampaignControl({ automation: makeCampaignAutomation({ campaignAiAutonomousEnabled: true, orgAutonomyPaused: true, effective: { enabled: false, reason: 'org_paused' } }) })
+        expect(screen.getByText(/Organization automation is paused/)).toBeInTheDocument()
     })
 })
 

@@ -1,5 +1,13 @@
-import { useQuery } from '@tanstack/react-query'
+import React from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../../../../lib/api-client'
+import { CampaignAiAutomationControl } from '../../../../components/outreach/inbox/AiAutonomyControls'
+import {
+    getCampaignAiAutomation,
+    updateCampaignAiAutomation,
+    type CampaignAiAutomation,
+} from '../../../../lib/unified-inbox-api'
+import { useOrganization } from '../../../../hooks/useOrganization'
 
 interface Campaign {
     id: string
@@ -43,12 +51,37 @@ interface OverviewTabProps {
 }
 
 export default function OverviewTab({ campaign, organizationId }: OverviewTabProps) {
+    const queryClient = useQueryClient()
+    const { currentOrganization } = useOrganization()
+    const canManage = currentOrganization?.role === 'admin' || currentOrganization?.role === 'member'
+
     const { data, isLoading } = useQuery({
         queryKey: ['campaign-stats', organizationId, campaign.id],
         queryFn: () => apiFetch<CampaignStatsResponse>(
             `/api/outreach/campaigns/${campaign.id}/stats?organizationId=${organizationId}`
         ),
         enabled: !!organizationId && !!campaign.id,
+    })
+
+    // --- Autonomous AI replies control (Phase 23 AI-03/AI-06) ---
+    const aiKey = ['campaign-ai-automation', organizationId, campaign.id]
+    const aiQuery = useQuery({
+        queryKey: aiKey,
+        queryFn: () => getCampaignAiAutomation(organizationId, campaign.id),
+        enabled: !!organizationId && !!campaign.id,
+    })
+    const [aiError, setAiError] = React.useState<string | null>(null)
+    const aiMutation = useMutation({
+        mutationFn: (enabled: boolean) =>
+            updateCampaignAiAutomation(organizationId, campaign.id, { aiAutonomousEnabled: enabled, expectedUpdatedAt: aiQuery.data?.updatedAt ?? null }),
+        onSuccess: (updated: CampaignAiAutomation) => {
+            setAiError(null)
+            queryClient.setQueryData(aiKey, updated)
+        },
+        onError: (err: unknown) => {
+            setAiError(err instanceof Error ? err.message : 'Could not update autonomous replies.')
+            aiQuery.refetch()
+        },
     })
 
     const stats = data?.stats
@@ -103,6 +136,16 @@ export default function OverviewTab({ campaign, organizationId }: OverviewTabPro
                     <span className="text-foreground">{new Date(campaign.createdAt).toLocaleString()}</span>
                 </div>
             </div>
+
+            {/* Autonomous AI replies (default-off, confirmed, effective scope shows the org intersection) */}
+            <CampaignAiAutomationControl
+                automation={aiQuery.data}
+                isLoading={aiQuery.isLoading}
+                canManage={canManage}
+                pending={aiMutation.isPending}
+                error={aiError}
+                onSetEnabled={(enabled) => aiMutation.mutate(enabled)}
+            />
         </div>
     )
 }

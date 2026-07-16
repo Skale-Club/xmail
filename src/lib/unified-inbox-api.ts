@@ -644,6 +644,8 @@ export interface AiRunPublicDto {
     id: string
     conversationId: string | null
     campaignId: string | null
+    /** A stable REFERENCE to the persisted inbound message that triggered the run (never its body). */
+    triggerMessageId: string | null
     runKind: AiRunKind
     status: AiRunStatus
     action: AiRunAction | null
@@ -723,4 +725,104 @@ export async function acceptInboxAiRun(organizationId: string, runId: string): P
         jsonBody('POST'),
     )
     return data.run
+}
+
+// ------------------------------------------------------------
+// AI automation controls + causal history (Phase 23 AI-03 / AI-05 / AI-06)
+// ------------------------------------------------------------
+// The transparent opt-in surface. Every control is DEFAULT-OFF, enabling autonomy is a deliberate,
+// confirmed action, the pause kill switch is immediate, and every view reports the EFFECTIVE scope
+// (org on AND campaign on AND unpaused AND outreach enabled). All endpoints extend only the
+// unified-inbox route; reads use requireOutreachRead, mutations requireOutreachWrite (server-side).
+
+/** The reasons effective autonomy can be disabled (mirrors the server's AutonomyDenyReason). */
+export type AutonomyDenyReason =
+    | 'org_disabled'
+    | 'org_paused'
+    | 'campaign_disabled'
+    | 'campaign_inactive'
+    | 'outreach_disabled'
+
+/** Organization-level AI automation control view (both default-off flags + immediate kill switch). */
+export interface OrgAiAutomationSettings {
+    draftAssistanceEnabled: boolean
+    autonomousEnabled: boolean
+    autonomyPaused: boolean
+    autonomyPausedAt: string | null
+    autonomyPausedReason: string | null
+    maxAutonomousFollowUps: number
+    /** The org-wide outreach kill switch — autonomy can never be effective while this is off. */
+    outreachEnabled: boolean
+    /** EFFECTIVE org scope: autonomous on AND not paused AND outreach enabled (still needs a campaign). */
+    autonomyEffective: boolean
+    /** Optimistic-concurrency token; echoed back on a mutation to detect a conflicting edit. */
+    updatedAt: string | null
+}
+
+/** Per-campaign autonomy control view with the computed effective scope (the intersection). */
+export interface CampaignAiAutomation {
+    campaignId: string
+    campaignAiAutonomousEnabled: boolean
+    campaignStatus: string
+    campaignActive: boolean
+    orgAutonomousEnabled: boolean
+    orgAutonomyPaused: boolean
+    outreachEnabled: boolean
+    /** The intersection: whether autonomous replies would actually run for this campaign right now. */
+    effective: { enabled: boolean; reason: AutonomyDenyReason | null }
+    updatedAt: string | null
+}
+
+export async function getOrgAiAutomationSettings(organizationId: string): Promise<OrgAiAutomationSettings> {
+    return apiFetch<OrgAiAutomationSettings>(withOrg('/ai-automation-settings', organizationId))
+}
+
+/** Update the org draft/autonomous flags with optimistic-concurrency detection (409 on a stale edit). */
+export async function updateOrgAiAutomationSettings(
+    organizationId: string,
+    input: { draftAssistanceEnabled?: boolean; autonomousEnabled?: boolean; expectedUpdatedAt?: string | null },
+): Promise<OrgAiAutomationSettings> {
+    return apiFetch<OrgAiAutomationSettings>(withOrg('/ai-automation-settings', organizationId), jsonBody('PATCH', input))
+}
+
+/** IMMEDIATE org kill switch — pauses all autonomous sending at once (no version check). */
+export async function pauseOrgAiAutomation(organizationId: string, reason?: string | null): Promise<OrgAiAutomationSettings> {
+    return apiFetch<OrgAiAutomationSettings>(withOrg('/ai-automation-settings/pause', organizationId), jsonBody('POST', { reason: reason ?? null }))
+}
+
+export async function resumeOrgAiAutomation(organizationId: string): Promise<OrgAiAutomationSettings> {
+    return apiFetch<OrgAiAutomationSettings>(withOrg('/ai-automation-settings/resume', organizationId), jsonBody('POST'))
+}
+
+export async function getCampaignAiAutomation(organizationId: string, campaignId: string): Promise<CampaignAiAutomation> {
+    return apiFetch<CampaignAiAutomation>(withOrg(`/campaigns/${campaignId}/ai-automation`, organizationId))
+}
+
+export async function updateCampaignAiAutomation(
+    organizationId: string,
+    campaignId: string,
+    input: { aiAutonomousEnabled: boolean; expectedUpdatedAt?: string | null },
+): Promise<CampaignAiAutomation> {
+    return apiFetch<CampaignAiAutomation>(withOrg(`/campaigns/${campaignId}/ai-automation`, organizationId), jsonBody('PATCH', input))
+}
+
+/** Org-wide redacted AI-run history (cursor-bounded, most-recent first). */
+export async function listOrgAiRuns(
+    organizationId: string,
+    cursor?: string | null,
+): Promise<{ runs: AiRunPublicDto[]; nextCursor: string | null }> {
+    const suffix = cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+    return apiFetch<{ runs: AiRunPublicDto[]; nextCursor: string | null }>(`${withOrg('/ai-runs', organizationId)}${suffix}`)
+}
+
+/** Campaign-scoped redacted AI-run history (cursor-bounded, most-recent first). */
+export async function listCampaignAiRuns(
+    organizationId: string,
+    campaignId: string,
+    cursor?: string | null,
+): Promise<{ runs: AiRunPublicDto[]; nextCursor: string | null }> {
+    const suffix = cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+    return apiFetch<{ runs: AiRunPublicDto[]; nextCursor: string | null }>(
+        `${withOrg(`/campaigns/${campaignId}/ai-runs`, organizationId)}${suffix}`,
+    )
 }

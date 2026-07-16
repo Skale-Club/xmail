@@ -8,6 +8,7 @@ import { ConversationThread } from '../../components/outreach/inbox/Conversation
 import { ConversationComposer } from '../../components/outreach/inbox/ConversationComposer'
 import { BulkActionsBar, ConversationActions } from '../../components/outreach/inbox/ConversationActions'
 import { AiDraftAssistant } from '../../components/outreach/inbox/AiDraftAssistant'
+import { AiAutomationHistory } from '../../components/outreach/inbox/AiAutomationHistory'
 import { Button } from '../../components/ui/button'
 import { useOrganization } from '../../hooks/useOrganization'
 import {
@@ -409,6 +410,11 @@ export function UnifiedInboxPage() {
                                 campaignNameById={campaignNameById}
                                 actions={conversationActions}
                                 composer={conversationComposer}
+                                aiHistory={
+                                    (aiRunsQuery.data?.length ?? 0) > 0
+                                        ? <AiAutomationHistory runs={aiRunsQuery.data} />
+                                        : undefined
+                                }
                             />
                         )}
                     </section>

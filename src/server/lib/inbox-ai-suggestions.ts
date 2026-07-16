@@ -275,6 +275,8 @@ export interface PublicAiRunDto {
     id: string
     conversationId: string | null
     campaignId: string | null
+    /** A stable REFERENCE to the persisted inbound message that triggered the run (never its body). */
+    triggerMessageId: string | null
     runKind: AiRunRecord['runKind']
     status: AiRunRecord['status']
     action: AiRunRecord['action']
@@ -311,6 +313,7 @@ export function toPublicAiRun(run: AiRunRecord): PublicAiRunDto {
         id: run.id,
         conversationId: run.conversationId,
         campaignId: run.campaignId,
+        triggerMessageId: run.triggerMessageId,
         runKind: run.runKind,
         status: run.status,
         action: run.action,
