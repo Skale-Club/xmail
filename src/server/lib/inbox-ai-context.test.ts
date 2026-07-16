@@ -6,6 +6,20 @@ import {
     DEFAULT_INBOX_AI_CONTEXT_BUDGET,
     type InboxAiContextMessage,
 } from './inbox-ai-context'
+import {
+    createAiRun,
+    claimAiRun,
+    completeAiRun,
+    failAiRun,
+    deferAiRun,
+    approveAiRun,
+    linkAiRunCommand,
+    sanitizeModelParameters,
+    AI_RUN_MAX_ERROR_DETAIL,
+    REDACTED_PLACEHOLDER,
+    type AiRunStore,
+    type AiRunRecord,
+} from './inbox-ai-audit'
 
 const ORG = '00000000-0000-4000-8000-000000000001'
 const ORG_OTHER = '00000000-0000-4000-8000-0000000000ff'
@@ -227,3 +241,276 @@ describe('buildInboxAiContext — campaign/lead facts (never lastReplyText)', ()
         expect(ctx.serialized).toContain('Real persisted body.')
     })
 })
+
+// ============================================================
+// inbox-ai-audit — redacted AI-run lifecycle
+// ============================================================
+// An in-memory store lets the lifecycle logic (transitions, lease recovery, idempotency,
+// redaction, approval, tenant isolation) be exercised without a database. Production uses the
+// Drizzle-backed store, whose org-scoped queries enforce the same tenant boundary.
+
+class FakeAiRunStore implements AiRunStore {
+    private rows = new Map<string, AiRunRecord>()
+    private key(organizationId: string, runId: string): string {
+        return `${organizationId}:${runId}`
+    }
+    async findByIdempotencyKey(organizationId: string, idempotencyKey: string): Promise<AiRunRecord | null> {
+        for (const row of this.rows.values()) {
+            if (row.organizationId === organizationId && row.idempotencyKey === idempotencyKey) return { ...row }
+        }
+        return null
+    }
+    async insert(row: AiRunRecord): Promise<AiRunRecord> {
+        // Enforce (organization_id, idempotency_key) uniqueness like the DB unique index.
+        const existing = await this.findByIdempotencyKey(row.organizationId, row.idempotencyKey)
+        if (existing) throw new Error('duplicate key value violates unique constraint')
+        this.rows.set(this.key(row.organizationId, row.id), { ...row })
+        return { ...row }
+    }
+    async findById(organizationId: string, runId: string): Promise<AiRunRecord | null> {
+        const row = this.rows.get(this.key(organizationId, runId))
+        return row ? { ...row } : null
+    }
+    async update(
+        organizationId: string,
+        runId: string,
+        patch: Partial<AiRunRecord>,
+        opts?: { expectedLeaseToken?: string | null },
+    ): Promise<AiRunRecord | null> {
+        const row = this.rows.get(this.key(organizationId, runId))
+        if (!row) return null
+        if (opts && 'expectedLeaseToken' in opts && row.leaseToken !== opts.expectedLeaseToken) return null
+        const next = { ...row, ...patch, updatedAt: new Date() }
+        this.rows.set(this.key(organizationId, runId), next)
+        return { ...next }
+    }
+}
+
+const A_ORG = '00000000-0000-4000-8000-0000000000a1'
+const B_ORG = '00000000-0000-4000-8000-0000000000b1'
+const A_USER = '00000000-0000-4000-8000-0000000000a2'
+const A_APPROVER = '00000000-0000-4000-8000-0000000000a3'
+
+function baseCreate() {
+    return {
+        organizationId: A_ORG,
+        runKind: 'draft' as const,
+        idempotencyKey: 'run-key-1',
+        conversationId: CONV,
+        contextHash: 'abc123',
+        inputMessageIds: ['m1', 'm2'],
+        promptVersion: 'inbox-draft@1',
+        provider: 'xphere',
+        model: 'kimi',
+        actorUserId: A_USER,
+    }
+}
+
+describe('inbox-ai-audit — creation, idempotency, and redaction', () => {
+    it('creates a pending run and is idempotent on (organization, idempotency_key)', async () => {
+        const store = new FakeAiRunStore()
+        const first = await createAiRun(store, baseCreate())
+        expect(first.created).toBe(true)
+        expect(first.run.status).toBe('pending')
+        expect(first.run.attempts).toBe(0)
+        const second = await createAiRun(store, baseCreate())
+        expect(second.created).toBe(false)
+        expect(second.run.id).toBe(first.run.id)
+    })
+
+    it('redacts secret-bearing model parameters and never stores credentials', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, {
+            ...baseCreate(),
+            modelParameters: {
+                temperature: 0.2,
+                Authorization: 'Bearer sk-super-secret',
+                api_key: 'sk-live-123',
+                nested: { access_token: 'tok-abc', maxTokens: 512 },
+            },
+        })
+        expect(run.modelParameters.temperature).toBe(0.2)
+        expect(run.modelParameters.Authorization).toBe(REDACTED_PLACEHOLDER)
+        expect(run.modelParameters.api_key).toBe(REDACTED_PLACEHOLDER)
+        const nested = run.modelParameters.nested as Record<string, unknown>
+        expect(nested.access_token).toBe(REDACTED_PLACEHOLDER)
+        expect(nested.maxTokens).toBe(512)
+        // No serialized value anywhere contains the raw secret.
+        expect(JSON.stringify(run.modelParameters)).not.toContain('super-secret')
+        expect(JSON.stringify(run.modelParameters)).not.toContain('sk-live-123')
+    })
+
+    it('sanitizeModelParameters redacts common secret key shapes', () => {
+        const out = sanitizeModelParameters({
+            apiKey: 'x',
+            'api-key': 'x',
+            secret: 'x',
+            bearerToken: 'x',
+            password: 'x',
+            credential: 'x',
+            temperature: 0.7,
+        })
+        expect(out.temperature).toBe(0.7)
+        for (const k of ['apiKey', 'api-key', 'secret', 'bearerToken', 'password', 'credential']) {
+            expect(out[k], k).toBe(REDACTED_PLACEHOLDER)
+        }
+    })
+})
+
+describe('inbox-ai-audit — claim, lease recovery, and bounded attempts', () => {
+    it('claims a pending run into running with a lease and one attempt', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, baseCreate())
+        const claimed = await claimAiRun(store, { organizationId: A_ORG, runId: run.id, leaseMs: 60_000, now: new Date('2026-07-10T10:00:00Z') })
+        expect(claimed.status).toBe('running')
+        expect(claimed.leaseToken).toBeTruthy()
+        expect(claimed.attempts).toBe(1)
+    })
+
+    it('refuses to claim a run whose lease is still held', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, baseCreate())
+        await claimAiRun(store, { organizationId: A_ORG, runId: run.id, leaseMs: 60_000, now: new Date('2026-07-10T10:00:00Z') })
+        await expect(claimAiRun(store, {
+            organizationId: A_ORG, runId: run.id, leaseMs: 60_000, now: new Date('2026-07-10T10:00:30Z'),
+        })).rejects.toMatchObject({ code: 'lease_held' })
+    })
+
+    it('reclaims a run whose lease has expired (recovery after a crash)', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, baseCreate())
+        await claimAiRun(store, { organizationId: A_ORG, runId: run.id, leaseMs: 60_000, now: new Date('2026-07-10T10:00:00Z') })
+        const reclaimed = await claimAiRun(store, {
+            organizationId: A_ORG, runId: run.id, leaseMs: 60_000, now: new Date('2026-07-10T10:05:00Z'),
+        })
+        expect(reclaimed.status).toBe('running')
+        expect(reclaimed.attempts).toBe(2)
+    })
+
+    it('fails closed when attempts would exceed the bound (no hidden retry loop)', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, { ...baseCreate(), maxAttempts: 1 })
+        await claimAiRun(store, { organizationId: A_ORG, runId: run.id, leaseMs: 60_000, now: new Date('2026-07-10T10:00:00Z') })
+        await expect(claimAiRun(store, {
+            organizationId: A_ORG, runId: run.id, leaseMs: 60_000, now: new Date('2026-07-10T10:05:00Z'),
+        })).rejects.toMatchObject({ code: 'exhausted' })
+        const after = await store.findById(A_ORG, run.id)
+        expect(after?.status).toBe('failed')
+    })
+
+    it('refuses to claim a terminal run', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, baseCreate())
+        const claimed = await claimAiRun(store, { organizationId: A_ORG, runId: run.id, now: new Date('2026-07-10T10:00:00Z') })
+        await completeAiRun(store, { organizationId: A_ORG, runId: run.id, leaseToken: claimed.leaseToken!, action: 'draft', outputBody: 'hi' })
+        await expect(claimAiRun(store, { organizationId: A_ORG, runId: run.id })).rejects.toMatchObject({ code: 'invalid_transition' })
+    })
+})
+
+describe('inbox-ai-audit — completion/fail/defer with lease guard and bounded errors', () => {
+    it('completes only with the matching lease token and clears the lease', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, baseCreate())
+        const claimed = await claimAiRun(store, { organizationId: A_ORG, runId: run.id })
+        await expect(completeAiRun(store, {
+            organizationId: A_ORG, runId: run.id, leaseToken: 'wrong-token', action: 'draft', outputBody: 'x',
+        })).rejects.toMatchObject({ code: 'lease_mismatch' })
+        const done = await completeAiRun(store, {
+            organizationId: A_ORG, runId: run.id, leaseToken: claimed.leaseToken!, action: 'draft',
+            outputSubject: 'Re: quote', outputBody: 'Here is more info.', policyCode: 'allowed',
+        })
+        expect(done.status).toBe('completed')
+        expect(done.action).toBe('draft')
+        expect(done.leaseToken).toBeNull()
+        expect(done.outputBody).toBe('Here is more info.')
+    })
+
+    it('rejects an invalid transition (completing a pending run)', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, baseCreate())
+        await expect(completeAiRun(store, {
+            organizationId: A_ORG, runId: run.id, leaseToken: null, action: 'draft', outputBody: 'x',
+        })).rejects.toMatchObject({ code: 'invalid_transition' })
+    })
+
+    it('bounds stored error detail length', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, baseCreate())
+        const claimed = await claimAiRun(store, { organizationId: A_ORG, runId: run.id })
+        const failed = await failAiRun(store, {
+            organizationId: A_ORG, runId: run.id, leaseToken: claimed.leaseToken!,
+            errorCode: 'provider_error', errorDetail: 'e'.repeat(AI_RUN_MAX_ERROR_DETAIL + 500),
+        })
+        expect(failed.status).toBe('failed')
+        expect((failed.errorDetail ?? '').length).toBeLessThanOrEqual(AI_RUN_MAX_ERROR_DETAIL)
+    })
+
+    it('defers a run with a policy retry time and re-arms it', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, baseCreate())
+        const claimed = await claimAiRun(store, { organizationId: A_ORG, runId: run.id })
+        const retryAt = new Date('2026-07-10T12:00:00Z')
+        const deferred = await deferAiRun(store, {
+            organizationId: A_ORG, runId: run.id, leaseToken: claimed.leaseToken!, policyCode: 'send_window', policyRetryAt: retryAt,
+        })
+        expect(deferred.status).toBe('deferred')
+        expect(deferred.policyCode).toBe('send_window')
+        expect(deferred.policyRetryAt?.toISOString()).toBe(retryAt.toISOString())
+        expect(deferred.leaseToken).toBeNull()
+        // A deferred run can be claimed again.
+        const reclaimed = await claimAiRun(store, { organizationId: A_ORG, runId: run.id })
+        expect(reclaimed.status).toBe('running')
+    })
+})
+
+describe('inbox-ai-audit — approval and command linkage', () => {
+    it('records approval as an atomic (approver, time) pair only from awaiting_approval', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, { ...baseCreate(), runKind: 'autonomous' })
+        const claimed = await claimAiRun(store, { organizationId: A_ORG, runId: run.id })
+        // Approving before the run is awaiting approval is rejected.
+        await expect(approveAiRun(store, { organizationId: A_ORG, runId: run.id, approverUserId: A_APPROVER })).rejects.toMatchObject({ code: 'invalid_transition' })
+        // Move to awaiting_approval.
+        await completeAiRunToAwaiting(store, run.id, claimed.leaseToken!)
+        // Empty approver rejected.
+        await expect(approveAiRun(store, { organizationId: A_ORG, runId: run.id, approverUserId: '' })).rejects.toMatchObject({ code: 'approver_required' })
+        const approved = await approveAiRun(store, { organizationId: A_ORG, runId: run.id, approverUserId: A_APPROVER })
+        expect(approved.approvedByUserId).toBe(A_APPROVER)
+        expect(approved.approvedAt).toBeInstanceOf(Date)
+    })
+
+    it('links the durable send command / outreach email to the run', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, baseCreate())
+        const linked = await linkAiRunCommand(store, {
+            organizationId: A_ORG, runId: run.id, sendCommandId: 'cmd-1', outreachEmailId: 'email-1',
+        })
+        expect(linked.sendCommandId).toBe('cmd-1')
+        expect(linked.outreachEmailId).toBe('email-1')
+    })
+})
+
+describe('inbox-ai-audit — tenant isolation', () => {
+    it('refuses lifecycle operations under a different organization', async () => {
+        const store = new FakeAiRunStore()
+        const { run } = await createAiRun(store, baseCreate())
+        await expect(claimAiRun(store, { organizationId: B_ORG, runId: run.id })).rejects.toMatchObject({ code: 'not_found' })
+        await expect(approveAiRun(store, { organizationId: B_ORG, runId: run.id, approverUserId: A_APPROVER })).rejects.toMatchObject({ code: 'not_found' })
+        await expect(linkAiRunCommand(store, { organizationId: B_ORG, runId: run.id, sendCommandId: 'x' })).rejects.toMatchObject({ code: 'not_found' })
+    })
+
+    it('lets two organizations reuse the same idempotency key', async () => {
+        const store = new FakeAiRunStore()
+        const a = await createAiRun(store, baseCreate())
+        const b = await createAiRun(store, { ...baseCreate(), organizationId: B_ORG })
+        expect(a.run.id).not.toBe(b.run.id)
+        expect(b.created).toBe(true)
+    })
+})
+
+/** Test helper: drive a claimed run into awaiting_approval via completeAiRun's awaiting option. */
+async function completeAiRunToAwaiting(store: AiRunStore, runId: string, leaseToken: string): Promise<void> {
+    await completeAiRun(store, {
+        organizationId: A_ORG, runId, leaseToken, action: 'draft', outputBody: 'proposed reply', awaitingApproval: true,
+    })
+}
