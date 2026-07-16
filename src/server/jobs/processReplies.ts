@@ -30,8 +30,24 @@ import {
     type StoredProviderEvent,
 } from '../lib/outreach-inbound'
 import { ingestOutreachInbound } from '../lib/outreach-inbound-sources'
+import {
+    TERMINAL_CAMPAIGN_LEAD_STATUSES,
+    UNDELIVERABLE_CAMPAIGN_LEAD_STATUSES,
+} from '../lib/outreach-sequence-state'
 
 const log = createLogger('outreach.replies')
+
+/**
+ * The status guards are built from the exhaustive map in outreach-sequence-state.ts rather
+ * than from a literal list, so a status added there cannot be silently forgotten here.
+ */
+function terminalStatusList() {
+    return sql.join(TERMINAL_CAMPAIGN_LEAD_STATUSES.map((status) => sql`${status}`), sql`, `)
+}
+
+function undeliverableStatusList() {
+    return sql.join(UNDELIVERABLE_CAMPAIGN_LEAD_STATUSES.map((status) => sql`${status}`), sql`, `)
+}
 
 interface ProcessRepliesResult {
     /** Reply-classified events claimed this tick. */
@@ -385,7 +401,13 @@ export async function markAsReplied(
     inbound: { messageId: string; text: string },
 ): Promise<void> {
     const now = new Date()
+    const terminalStatuses = terminalStatusList()
+    const undeliverableStatuses = undeliverableStatusList()
 
+    // W-2: this job and processBounces hold *different* advisory locks and run on the same
+    // tick, so these writes interleave with markAsBounced's in nondeterministic order.
+    // Everything below is therefore expressed as a guarded CASE evaluated by the database
+    // against the current row, never as a read-then-write.
     await Promise.all([
         db.update(outreachEmails).set({ repliedAt: now }).where(and(
             eq(outreachEmails.id, outreachEmailId),
@@ -396,18 +418,31 @@ export async function markAsReplied(
         db
             .update(campaignLeads)
             .set({
-                status: 'replied',
+                // A terminal status is never reverted (Phase 18). 'replied' is itself
+                // terminal, so a second reply is a no-op here while still counted below;
+                // 'bounced' stays bounced no matter which write lands last.
+                status: sql`CASE WHEN ${campaignLeads.status} IN (${terminalStatuses}) THEN ${campaignLeads.status} ELSE 'replied' END`,
                 nextScheduledAt: null,
                 lastRepliedAt: now,
                 lastReplyAt: now,
                 lastReplyMessageId: inbound.messageId,
                 lastReplyText: inbound.text,
-                nextFollowUpAt: sql`CASE WHEN EXISTS (
-                    SELECT 1 FROM campaigns
-                    WHERE campaigns.id = ${campaignId}
-                      AND campaigns.organization_id = ${organizationId}
-                      AND campaigns.agentic_followup_enabled = TRUE
-                ) THEN ${now} ELSE NULL END`,
+                // Arming a follow-up for an undeliverable lead is how a bounced address
+                // kept getting mailed: processFollowUps selects on next_follow_up_at alone.
+                // NOTE: `now` is bound as an ISO string with an explicit cast. A raw Date
+                // inside a sql template reaches postgres-js as an untyped parameter and
+                // throws "must be of type string ... Received an instance of Date" —
+                // drizzle only converts Date->string for direct column assignments. This
+                // threw on every matched reply; no test caught it because they all mock db.
+                nextFollowUpAt: sql`CASE
+                    WHEN ${campaignLeads.status} IN (${undeliverableStatuses}) THEN ${campaignLeads.nextFollowUpAt}
+                    WHEN EXISTS (
+                        SELECT 1 FROM campaigns
+                        WHERE campaigns.id = ${campaignId}
+                          AND campaigns.organization_id = ${organizationId}
+                          AND campaigns.agentic_followup_enabled = TRUE
+                    ) THEN ${now.toISOString()}::timestamp
+                    ELSE NULL END`,
                 totalReplies: sql`${campaignLeads.totalReplies} + 1`,
             })
             .where(and(eq(campaignLeads.id, campaignLeadId), eq(campaignLeads.campaignId, campaignId))),
@@ -415,7 +450,10 @@ export async function markAsReplied(
         db
             .update(leads)
             .set({
-                status: sql`CASE WHEN ${leads.status} IN ('replied', 'interested', 'not_interested') THEN ${leads.status} ELSE 'replied' END`,
+                // Was ('replied','interested','not_interested') — bounced and unsubscribed
+                // were missing, so a reply revived a dead lead. Derived from the exhaustive
+                // map now, so a new status cannot be forgotten here.
+                status: sql`CASE WHEN ${leads.status} IN (${terminalStatuses}) THEN ${leads.status} ELSE 'replied' END`,
                 lastRepliedAt: now,
                 totalReplies: sql`${leads.totalReplies} + 1`,
             })

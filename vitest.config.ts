@@ -39,6 +39,14 @@ export default defineConfig({
                     include: ['src/**/*.db.{test,spec}.ts'],
                     globalSetup: ['./src/test/postgres-global-setup.ts'],
                     restoreMocks: true,
+                    // Every .db suite shares one disposable database, and several drive
+                    // jobs that are global by design: processFollowUps selects every due
+                    // campaign_lead, and the inbound claim selects across organizations
+                    // (deliberately — the queues are org-wide, scoping happens per handler).
+                    // Run one file at a time. In parallel they interleave migration DDL and
+                    // consume rows another suite queued, producing failures that say
+                    // nothing about the code under test.
+                    fileParallelism: false,
                 },
             },
         ],

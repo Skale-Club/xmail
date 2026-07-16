@@ -21,7 +21,7 @@
 import { simpleParser } from 'mailparser'
 import { db } from '../../db'
 import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, suppressions } from '../../db/schema'
-import { eq, and, sql, desc } from 'drizzle-orm'
+import { eq, and, ne, sql, desc } from 'drizzle-orm'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { runWithLock } from '../lib/cron-lock'
@@ -31,6 +31,7 @@ import {
     type StoredProviderEvent,
 } from '../lib/outreach-inbound'
 import { ingestOutreachInbound } from '../lib/outreach-inbound-sources'
+import { TERMINAL_CAMPAIGN_LEAD_STATUSES } from '../lib/outreach-sequence-state'
 
 const log = createLogger('outreach.bounce')
 
@@ -209,6 +210,14 @@ export async function findBouncedOutreachEmailByMessageId(
     return result || null
 }
 
+/**
+ * Applies a bounce to one lead. Returns whether this call was the one that transitioned it
+ * — false means another DSN got there first and every counter below was already applied.
+ *
+ * W-2: the caller used to decide that by reading campaign_leads.status and then writing,
+ * with nothing between the two. processReplies holds a *different* advisory lock and runs
+ * on the same tick, so the CAS in the campaign_leads UPDATE is the only honest gate.
+ */
 export async function markAsBounced(
     outreachEmailId: string,
     campaignLeadId: string,
@@ -217,8 +226,36 @@ export async function markAsBounced(
     accountId: string,
     organizationId: string,
     reason: string
-): Promise<void> {
+): Promise<boolean> {
     const now = new Date()
+    const terminalStatuses = sql.join(
+        TERMINAL_CAMPAIGN_LEAD_STATUSES.map((status) => sql`${status}`),
+        sql`, `,
+    )
+
+    // The gate, first: `status <> 'bounced'` is the compare-and-set. A second DSN for the
+    // same lead blocks on the row lock, re-evaluates against the committed row, matches
+    // nothing, and returns without double-counting anything.
+    const transitioned = await db.update(campaignLeads)
+        .set({
+            // A terminal status is never reverted (Phase 18), so a lead that already
+            // replied stays replied — the bounce is still recorded as bookkeeping below.
+            status: sql`CASE WHEN ${campaignLeads.status} IN (${terminalStatuses}) THEN ${campaignLeads.status} ELSE 'bounced' END`,
+            nextScheduledAt: null,
+            // Both queues, not just the sequence. processFollowUps selects on
+            // next_follow_up_at alone, so leaving it set mails the address that just
+            // bounced — and a soft bounce writes no suppression row to catch it.
+            nextFollowUpAt: null,
+            updatedAt: now
+        })
+        .where(and(
+            eq(campaignLeads.id, campaignLeadId),
+            eq(campaignLeads.campaignId, campaignId),
+            ne(campaignLeads.status, 'bounced'),
+        ))
+        .returning({ id: campaignLeads.id })
+
+    if (transitioned.length === 0) return false
 
     await db.update(outreachEmails)
         .set({
@@ -233,17 +270,9 @@ export async function markAsBounced(
             eq(outreachEmails.organizationId, organizationId),
         ))
 
-    await db.update(campaignLeads)
-        .set({
-            status: 'bounced',
-            nextScheduledAt: null,
-            updatedAt: now
-        })
-        .where(and(eq(campaignLeads.id, campaignLeadId), eq(campaignLeads.campaignId, campaignId)))
-
     await db.update(leads)
         .set({
-            status: 'bounced',
+            status: sql`CASE WHEN ${leads.status} IN (${terminalStatuses}) THEN ${leads.status} ELSE 'bounced' END`,
             updatedAt: now
         })
         .where(eq(leads.id, leadId))
@@ -301,6 +330,8 @@ export async function markAsBounced(
         organizationId,
         reason: reason.slice(0, 200),
     }, 'marked as bounced')
+
+    return true
 }
 
 // P0-06 / audit-2026-07 — advisory lock prevents concurrent runs across Node instances.
@@ -410,17 +441,14 @@ async function handleBounceEvent(event: StoredProviderEvent): Promise<boolean> {
         return false
     }
 
-    // Still idempotent at the side-effect layer, on top of the event claim: a lead
-    // already bounced by an earlier DSN must not double-count stats.
-    if (campaignLead.status === 'bounced') {
-        return false
-    }
-
     const fullReason = bounceInfo.diagnosticCode
         ? `${bounceInfo.reason} (${bounceInfo.diagnosticCode})`
         : bounceInfo.reason
 
-    await markAsBounced(
+    // Idempotence is markAsBounced's CAS, not a status read here: this function and
+    // processReplies run concurrently, so a check at this distance from the write decides
+    // nothing. Returns false when an earlier DSN already bounced the lead.
+    return markAsBounced(
         outreachEmail.id,
         campaignLead.id,
         campaignLead.lead.id,
@@ -429,8 +457,6 @@ async function handleBounceEvent(event: StoredProviderEvent): Promise<boolean> {
         outreachEmail.organizationId,
         fullReason,
     )
-
-    return true
 }
 
 export async function processBounceFromWebhook(data: {
@@ -484,12 +510,9 @@ export async function processBounceFromWebhook(data: {
         return
     }
 
-    if (campaignLead.status === 'bounced') {
-        return
-    }
-
     const fullReason = `${bounceType.toUpperCase()}: ${reason}`
 
+    // Same reasoning as the event path: the CAS inside markAsBounced is the gate.
     await markAsBounced(
         outreachEmail.id,
         campaignLead.id,

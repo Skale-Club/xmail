@@ -1,21 +1,40 @@
 import type { CampaignLead, Lead, SequenceStep } from '../../db/schema'
 
+/**
+ * The exhaustive lead-status contract.
+ *
+ * `terminal` — the sequence is over for this lead; a terminal status is never reverted,
+ * so whichever outcome lands first wins and later facts are recorded as bookkeeping only.
+ *
+ * `deliverable` — may we still put mail in front of this person at all? Distinct from
+ * `terminal`: 'replied' ends the sequence but an agentic follow-up to a live human is the
+ * whole point, whereas 'bounced'/'unsubscribed' mean the address must never be mailed
+ * again. Suppression covers hard bounces org-wide, but a soft bounce writes no suppression
+ * row and outreach-delivery-policy.ts does not consult campaign_leads.status — so without
+ * this, processFollowUps would ship to a lead whose own row says bounced (W-2).
+ */
 export const CAMPAIGN_LEAD_PROGRESS = {
-    new: { terminal: false },
-    contacted: { terminal: false },
-    replied: { terminal: true },
-    interested: { terminal: true },
-    not_interested: { terminal: true },
-    bounced: { terminal: true },
-    unsubscribed: { terminal: true },
-} as const satisfies Record<Lead['status'], { terminal: boolean }>
+    new: { terminal: false, deliverable: true },
+    contacted: { terminal: false, deliverable: true },
+    replied: { terminal: true, deliverable: true },
+    interested: { terminal: true, deliverable: true },
+    not_interested: { terminal: true, deliverable: true },
+    bounced: { terminal: true, deliverable: false },
+    unsubscribed: { terminal: true, deliverable: false },
+} as const satisfies Record<Lead['status'], { terminal: boolean; deliverable: boolean }>
+
+type ProgressEntries = Array<[Lead['status'], (typeof CAMPAIGN_LEAD_PROGRESS)[Lead['status']]]>
 
 export const TERMINAL_CAMPAIGN_LEAD_STATUSES = Object.freeze(
-    (Object.entries(CAMPAIGN_LEAD_PROGRESS) as Array<[
-        Lead['status'],
-        (typeof CAMPAIGN_LEAD_PROGRESS)[Lead['status']],
-    ]>)
+    (Object.entries(CAMPAIGN_LEAD_PROGRESS) as ProgressEntries)
         .filter(([, progress]) => progress.terminal)
+        .map(([status]) => status),
+)
+
+/** Statuses that forbid any further outbound mail to the lead. */
+export const UNDELIVERABLE_CAMPAIGN_LEAD_STATUSES = Object.freeze(
+    (Object.entries(CAMPAIGN_LEAD_PROGRESS) as ProgressEntries)
+        .filter(([, progress]) => !progress.deliverable)
         .map(([status]) => status),
 )
 
@@ -32,6 +51,12 @@ const terminalCampaignLeadStatuses = new Set<Lead['status']>(TERMINAL_CAMPAIGN_L
 
 export function isTerminalCampaignLeadStatus(status: Lead['status']): boolean {
     return terminalCampaignLeadStatuses.has(status)
+}
+
+const undeliverableCampaignLeadStatuses = new Set<Lead['status']>(UNDELIVERABLE_CAMPAIGN_LEAD_STATUSES)
+
+export function isDeliverableCampaignLeadStatus(status: Lead['status']): boolean {
+    return !undeliverableCampaignLeadStatuses.has(status)
 }
 
 export function isCampaignProgressComplete(
