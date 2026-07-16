@@ -167,7 +167,13 @@ export function ConversationThread({
         )
     }
 
-    if (isError || !detail) {
+    // Only show the full-screen error card when there is NO cached data to fall back to. React
+    // Query v5 RETAINS `detail` after a FAILED background refetch (status flips to 'error' but the
+    // last-good thread is kept) — an SSE `conversation.updated` fires such a refetch on the open
+    // thread. Blanking here would unmount the composer and destroy the operator's in-progress reply
+    // (UIX-06). When cached data exists we keep rendering the thread + composer and surface a small,
+    // non-destructive "couldn't refresh" indicator instead.
+    if (!detail) {
         return (
             <div className="flex h-full flex-col">
                 <ThreadHeaderBar title="Conversation" onBack={onBack} onClose={onClose} />
@@ -200,6 +206,25 @@ export function ConversationThread({
                 onClose={onClose}
                 actions={actions}
             />
+
+            {/* Non-destructive background-refresh failure indicator: the last-good thread stays
+                readable and the composer stays mounted; the operator can retry when ready. */}
+            {isError && (
+                <div
+                    role="status"
+                    className="flex items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-700 dark:text-amber-300"
+                >
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span className="flex-1">Couldn’t refresh — showing the last loaded version.</span>
+                    <button
+                        type="button"
+                        onClick={onRetry}
+                        className="shrink-0 font-medium underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                        Retry
+                    </button>
+                </div>
+            )}
 
             {/* Attribution strip */}
             <dl className="flex flex-wrap gap-x-6 gap-y-1 border-b border-border bg-muted/30 px-4 py-2 text-xs">

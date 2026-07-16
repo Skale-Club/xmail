@@ -509,6 +509,57 @@ describe('ConversationThread: async states + safety', () => {
     })
 })
 
+describe('ConversationThread: background refetch failure does not blank or destroy the composer (C-1)', () => {
+    useThreadTimerGuard()
+    afterEach(() => vi.clearAllMocks())
+
+    it('keeps the thread + composer (and its typed draft) when a background detail refetch fails but cached data is retained', () => {
+        const detail = makeDetail()
+        // A REAL composer rendered as the thread footer — the same wiring the page uses. If the
+        // parent unmounts on a background error, this composer (and its draft) is destroyed.
+        const composerNode = (
+            <ConversationComposer
+                accounts={ACCOUNTS}
+                defaultAccountId={ACCOUNT_1}
+                replyToPreview={['lead@acme.example']}
+                replyAllCcPreview={[]}
+                subjectPreview="Re: Demo request"
+                snippets={SNIPPETS}
+                onSend={vi.fn(async () => makeCommand())}
+                onUploadAttachment={vi.fn()}
+                polledCommand={null}
+            />
+        )
+        const baseProps = {
+            detail,
+            isLoading: false,
+            isError: false,
+            onRetry: vi.fn(),
+            onBack: vi.fn(),
+            onClose: vi.fn(),
+            providerByAccount: { [ACCOUNT_1]: 'native' },
+            campaignNameById: { [CAMPAIGN_1]: 'Q3 Outbound' },
+            composer: composerNode,
+        }
+        const { rerender } = render(<ConversationThread {...baseProps} />)
+
+        // Operator opens the composer and starts typing a reply.
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'half-written reply' } })
+
+        // An SSE-triggered background detail refetch fails: React Query flips status to 'error' but
+        // RETAINS the cached detail. The thread must NOT blank + unmount the composer.
+        rerender(<ConversationThread {...baseProps} isError />)
+
+        // The thread still renders from cached data and the draft survives (composer stayed mounted).
+        expect(screen.getByRole('heading', { name: 'Re: Demo request' })).toBeInTheDocument()
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('half-written reply')
+        // A NON-destructive refresh-failed indicator is shown — never the full-screen error card.
+        expect(screen.getByText(/Couldn’t refresh/)).toBeInTheDocument()
+        expect(screen.queryByText(/Couldn’t load this conversation/)).not.toBeInTheDocument()
+    })
+})
+
 describe('ConversationThread: expansion', () => {
     useThreadTimerGuard()
     afterEach(() => vi.clearAllMocks())
