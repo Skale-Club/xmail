@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-stopped_at: Completed 19-03-PLAN.md
-last_updated: "2026-07-16T05:29:17.421Z"
+stopped_at: Completed 19-04-PLAN.md
+last_updated: "2026-07-16T06:07:06.000Z"
 progress:
   total_phases: 15
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 41
-  completed_plans: 24
+  completed_plans: 25
   percent: 60
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 19 (Provider Parity and Deliverability) — IN PROGRESS
-Plan: 3 of 4 complete (19-01 SMTP TLS parity, 19-02 provider MIME parity, 19-03 provider-neutral inbound staging)
+Plan: 4 of 4 complete (19-01 SMTP TLS parity, 19-02 provider MIME parity, 19-03 provider-neutral inbound staging)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
@@ -123,8 +123,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T05:28:26.668Z
-Stopped at: Completed 19-03-PLAN.md
+Last session: 2026-07-16T06:07:05.996Z
+Stopped at: Completed 19-04-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -139,6 +139,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 19 P01 | 12min | 2 tasks | 7 files |
 | Phase 19 P02 | 18min | 2 tasks | 7 files |
 | Phase 19 P03 | 22min | 2 tasks | 10 files |
+| Phase 19 P04 | 32min | 3 tasks | 8 files |
 
 ## Decisions
 
@@ -157,3 +158,5 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 19]: (19-03) Inbound classification happens ONCE at ingestion, DSN/bounce before auto-reply before human reply; reply and bounce jobs consume disjoint durable classifications from outreach_provider_events and can no longer race by marking a DSN read first.
 - [Phase 19]: (19-03) Ingestion progress lives in outreach_provider_cursors (Graph delta / IMAP uidvalidity+uid / native received-at+id), never in user read state; the event-store port has no read-flag surface so isRead/\Seen cannot be reintroduced as a cursor.
 - [Phase 19]: (19-03) IMAP provider_message_id prefers the internet Message-ID over uid coordinates, because uid:<validity>:<uid> is not stable across a UIDVALIDITY reset and would re-ingest the whole mailbox as new events.
+- [Phase 19]: Outlook fresh-chain state is carried on the delta cursor itself; it cannot be inferred from a null cursor or the link shape
+- [Phase 19]: Outlook send capability is asserted from the granted Mail.Send scope: Graph has no zero-send probe, and the gate is stated in the verify response
