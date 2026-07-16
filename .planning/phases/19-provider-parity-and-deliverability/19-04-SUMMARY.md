@@ -110,11 +110,29 @@ Graph events key on the internet Message-ID (`mid:`), not the Graph id — a Gra
 
 ### Task 2 — the activation gate
 
+> **Correction (GAP-1, 19-REVIEW).** This plan's declared truth read *"a verified Outlook
+> outreach account has proven read, write, and send capability"*. That over-claims. Only
+> **read** is proven — by a real bounded sync that must succeed. **Write and send are
+> asserted from the granted OAuth scopes** and are never exercised, because Graph has no
+> zero-send probe (this plan pre-authorised that fallback). The code was always honest —
+> `OUTLOOK_CAPABILITY_GATE` says exactly this and is returned to the API caller as `gate` —
+> so the defect was in the wording, not the behaviour. The safety property that actually
+> matters is unchanged and IS proven: **an account is never verified send-only.** The plan's
+> `must_haves` truth has been corrected to match.
+
 `evaluateOutlookOutreachCapability` (db/HTTP-free, so the decision table is unit-testable) now requires, in order: a linked mailbox that resolves **inside the account's own organization**, a mailbox that owns the account address, an active grant, `Mail.Read` + `Mail.ReadWrite` + `Mail.Send` actually granted, and a real bounded inbox sync that leaves a durable cursor behind.
 
 **On send capability**, the plan's fallback applies and is stated rather than papered over: Graph offers no zero-send probe. Creating a draft exercises `Mail.ReadWrite`, not `Mail.Send`, and the only call that proves `Mail.Send` delivers real mail to a real recipient — sending a live "test" email from an outreach inbox during verification is the behaviour this phase exists to prevent. So send capability is asserted from the granted scope, read capability is proven by a real sync, and the response carries the gate text so nobody reads `verified` as "we sent a test email".
 
 A throttled sync leaves the account **pending** (retryable without re-consenting); a rejected grant **fails** it. Neither path can produce a send-only verified account. Stored errors are sanitized codes (`outlook_missing_scopes`, …), never raw Graph text, which can carry mailbox names and tenant ids.
+
+> **Correction (W-1, 19-REVIEW).** The throttle sentence above was aspirational when written.
+> The gate treated "the probe did not throw" as proof of a read, but `fetchOutlookInboxDelta`
+> deliberately *returns* on a 429/503 rather than throwing, so a first-page throttle produced
+> `pagesFetched === 0`, an ordinary-looking empty ingest, and `verified: true` — while
+> advertising a sync that never happened. The probe now reports `pagesFetched`/`retryAfter`
+> (both were already available at the call site and discarded), and the gate refuses to
+> verify without evidence of a real read. The sentence is now true.
 
 ### Task 3 — parity, asserted on the real adapters (TDD)
 
@@ -140,6 +158,15 @@ New tests: **38** in `outlook-inbound.test.ts` (RED at `2ade047`, GREEN at `7b60
 No migration was written or applied: 039 already created every column this plan writes (`delta_cursor`, `last_error`, `retry_at`). Production was never touched.
 
 **The manual Outlook sandbox gate in the plan was NOT executed** — it needs a real Microsoft tenant and mailbox, which this environment does not have. Every Graph interaction is covered by mocked-transport tests against the real reader; first contact with live Graph remains unproven. See "Notes for Later Plans".
+
+> **OPERATOR PREREQUISITE — OUTSTANDING (GAP-1, 19-REVIEW).** This is not a nice-to-have
+> that automated coverage can retire. Plan 19-04's own `<verification>` block mandates it,
+> and the **entire Graph surface — delta reader, 410 resync, throttle handling, MIME send,
+> capability gate — is verified against mocked `fetch` only.** No real Microsoft tenant has
+> ever been contacted by this code. A mock cannot tell us that Graph accepts our MIME, that
+> the scopes we request are the scopes Microsoft grants, or that a real DSN arrives shaped
+> the way the classifier expects. **Run the sandbox gate before activating any Outlook
+> outreach account in production.** The checklist is in "Notes for Later Plans".
 
 ## Success Criteria
 
