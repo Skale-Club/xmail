@@ -272,6 +272,7 @@ router.get('/', async (req: Request, res: Response) => {
                 .groupBy(outreachEmails.campaignId)
 
             for (const row of agg) {
+                if (!row.campaignId) continue
                 const sent = Number(row.sent) || 0
                 const rate = (n: number) => (sent > 0 ? Math.round((Number(n) / sent) * 1000) / 10 : 0)
                 metricsByCampaign.set(row.campaignId, {

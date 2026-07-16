@@ -892,14 +892,17 @@ export const campaignLeads = pgTable('campaign_leads', {
 export const outreachEmails = pgTable('outreach_emails', {
     id: uuid('id').primaryKey().defaultRandom(),
     organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
-    campaignId: uuid('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }).notNull(),
-    campaignLeadId: uuid('campaign_lead_id').references(() => campaignLeads.id, { onDelete: 'cascade' }).notNull(),
-    sequenceStepId: uuid('sequence_step_id').references(() => sequenceSteps.id, { onDelete: 'cascade' }).notNull(),
+    origin: text('origin').default('campaign').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    toAddress: text('to_address').notNull(),
+    campaignId: uuid('campaign_id').references(() => campaigns.id, { onDelete: 'cascade' }),
+    campaignLeadId: uuid('campaign_lead_id').references(() => campaignLeads.id, { onDelete: 'cascade' }),
+    sequenceStepId: uuid('sequence_step_id').references(() => sequenceSteps.id, { onDelete: 'cascade' }),
     emailAccountId: uuid('email_account_id').references(() => emailAccounts.id).notNull(),
     // Message details
     messageId: text('message_id'), // RFC 2822 Message-ID
     // Stateless HMAC-signed tracking token (see src/server/lib/outreach-tokens.ts in Plan 14-05)
-    trackingToken: text('tracking_token').notNull(),
+    trackingToken: text('tracking_token'),
     // Content sent
     subject: text('subject').notNull(),
     plainBody: text('plain_body'),
@@ -919,10 +922,19 @@ export const outreachEmails = pgTable('outreach_emails', {
     unsubscribedAt: timestamp('unsubscribed_at'),
     // Status
     status: messageStatusEnum('status').default('pending').notNull(),
+    attemptCount: integer('attempt_count').default(0).notNull(),
+    maxAttempts: integer('max_attempts').default(3).notNull(),
+    nextAttemptAt: timestamp('next_attempt_at'),
+    leaseToken: uuid('lease_token'),
+    leaseExpiresAt: timestamp('lease_expires_at'),
+    dispatchStartedAt: timestamp('dispatch_started_at'),
+    lastAttemptAt: timestamp('last_attempt_at'),
+    lastErrorCode: text('last_error_code'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
     campaignLeadStepUnique: uniqueIndex('outreach_emails_campaign_lead_step_unique').on(table.campaignLeadId, table.sequenceStepId),
+    organizationIdempotencyUnique: uniqueIndex('outreach_emails_org_idempotency_unique').on(table.organizationId, table.idempotencyKey),
     trackingTokenUnique: uniqueIndex('outreach_emails_tracking_token_unique').on(table.trackingToken),
     idxOutreachEmailsOrganizationId: index('idx_outreach_emails_organization_id').on(table.organizationId),
     idxOutreachEmailsCampaignId: index('idx_outreach_emails_campaign_id').on(table.campaignId),
@@ -935,6 +947,29 @@ export const outreachEmails = pgTable('outreach_emails', {
     // (sent_at >= window AND status = ?). Composite index makes those scans
     // index-only for the common 1h/24h/7d rolling windows.
     idxOutreachEmailsSentAtStatus: index('idx_outreach_emails_sent_at_status').on(table.sentAt, table.status),
+    idxOutreachEmailsDispatchEligibility: index('idx_outreach_emails_dispatch_eligibility')
+        .on(table.status, table.nextAttemptAt, table.leaseExpiresAt, table.createdAt)
+        .where(sql`${table.status} IN ('queued', 'failed')`),
+    outreachEmailsOriginCheck: check(
+        'outreach_emails_origin_check',
+        sql`${table.origin} IN ('campaign', 'manual', 'agentic', 'unified_inbox')`,
+    ),
+    outreachEmailsAttemptsCheck: check(
+        'outreach_emails_attempts_check',
+        sql`${table.attemptCount} >= 0 AND ${table.maxAttempts} >= 1 AND ${table.attemptCount} <= ${table.maxAttempts}`,
+    ),
+    outreachEmailsRecipientKeyCheck: check(
+        'outreach_emails_recipient_key_check',
+        sql`length(btrim(${table.toAddress})) > 0 AND length(btrim(${table.idempotencyKey})) > 0`,
+    ),
+    outreachEmailsOriginShapeCheck: check(
+        'outreach_emails_origin_shape_check',
+        sql`(
+            (${table.origin} = 'campaign' AND ${table.campaignId} IS NOT NULL AND ${table.campaignLeadId} IS NOT NULL AND ${table.sequenceStepId} IS NOT NULL AND ${table.trackingToken} IS NOT NULL)
+            OR (${table.origin} = 'agentic' AND ${table.campaignId} IS NOT NULL AND ${table.campaignLeadId} IS NOT NULL AND ${table.sequenceStepId} IS NULL)
+            OR (${table.origin} IN ('manual', 'unified_inbox') AND ${table.campaignId} IS NULL AND ${table.campaignLeadId} IS NULL AND ${table.sequenceStepId} IS NULL)
+        )`,
+    ),
 }))
 
 // Outreach Settings (per-org defaults for campaigns)

@@ -530,7 +530,10 @@ export async function matchReplyToOutreach(
             .limit(1)
 
         if (rows[0]) {
-            return { outreachEmail: rows[0], strategy: 'from_address' }
+            const row = rows[0]
+            if (row.campaignLeadId && row.campaignId) {
+                return { outreachEmail: { ...row, campaignLeadId: row.campaignLeadId, campaignId: row.campaignId }, strategy: 'from_address' }
+            }
         }
     }
 
@@ -584,7 +587,9 @@ export async function findOutreachEmailByMessageId(messageId: string): Promise<O
         .where(eq(outreachEmails.messageId, cleanMessageId))
         .limit(1)
 
-    return result[0] || null
+    const row = result[0]
+    if (!row?.campaignLeadId || !row.campaignId) return null
+    return { ...row, campaignLeadId: row.campaignLeadId, campaignId: row.campaignId }
 }
 
 export async function markAsReplied(

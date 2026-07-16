@@ -437,6 +437,15 @@ export async function processBounces(): Promise<{ processed: number; bounces: nu
                             continue
                         }
 
+                        if (!outreachEmail.campaignLeadId || !outreachEmail.campaignId) {
+                            log.warn({
+                                action: 'outreach.bounce.non_campaign_match',
+                                outreachEmailId: outreachEmail.id,
+                                origin: outreachEmail.origin,
+                            }, 'bounce target has no campaign linkage')
+                            continue
+                        }
+
                         const campaignLead = await db.query.campaignLeads.findFirst({
                             where: eq(campaignLeads.id, outreachEmail.campaignLeadId),
                             with: { lead: true }
@@ -616,6 +625,16 @@ async function processAccountBouncesNative(
                 continue
             }
 
+            if (!outreachEmail.campaignLeadId || !outreachEmail.campaignId) {
+                log.warn({
+                    action: 'outreach.bounce.native_non_campaign_match',
+                    outreachEmailId: outreachEmail.id,
+                    origin: outreachEmail.origin,
+                }, 'native bounce target has no campaign linkage')
+                await db.update(mailMessages).set({ isRead: true }).where(eq(mailMessages.id, msg.id))
+                continue
+            }
+
             const campaignLead = await db.query.campaignLeads.findFirst({
                 where: eq(campaignLeads.id, outreachEmail.campaignLeadId),
                 with: { lead: true }
@@ -703,6 +722,15 @@ export async function processBounceFromWebhook(data: {
             action: 'outreach.bounce.webhook_unmatched',
             recipientEmail,
         }, 'no outreach email matched webhook bounce')
+        return
+    }
+
+    if (!outreachEmail.campaignLeadId || !outreachEmail.campaignId) {
+        log.warn({
+            action: 'outreach.bounce.webhook_non_campaign_match',
+            outreachEmailId: outreachEmail.id,
+            origin: outreachEmail.origin,
+        }, 'webhook bounce target has no campaign linkage')
         return
     }
 

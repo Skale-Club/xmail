@@ -374,6 +374,9 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
             // so we map sending→queued semantically).
             const claim = await db.insert(outreachEmails).values({
                 organizationId: campaign.organizationId,
+                origin: 'campaign',
+                idempotencyKey: `campaign:${campaignLead.id}:step:${emailStep.id}`,
+                toAddress: lead.email,
                 campaignId: campaign.id,
                 campaignLeadId: campaignLead.id,
                 sequenceStepId: emailStep.id,

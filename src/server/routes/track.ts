@@ -74,11 +74,16 @@ router.get('/open/:token', async (req: Request, res: Response) => {
                 })
                 .where(eq(outreachEmails.id, outreachEmail.id))
 
-            await Promise.allSettled([
-                db.update(campaignLeads).set({ totalOpens: sql`${campaignLeads.totalOpens} + 1`, updatedAt: now }).where(eq(campaignLeads.id, outreachEmail.campaignLeadId)),
-                db.update(campaigns).set({ totalOpens: sql`${campaigns.totalOpens} + 1`, updatedAt: now }).where(eq(campaigns.id, outreachEmail.campaignId)),
+            const relatedUpdates: PromiseLike<unknown>[] = [
                 db.update(emailAccounts).set({ totalOpens: sql`${emailAccounts.totalOpens} + 1`, updatedAt: now }).where(eq(emailAccounts.id, outreachEmail.emailAccountId)),
-            ])
+            ]
+            if (outreachEmail.campaignLeadId) {
+                relatedUpdates.push(db.update(campaignLeads).set({ totalOpens: sql`${campaignLeads.totalOpens} + 1`, updatedAt: now }).where(eq(campaignLeads.id, outreachEmail.campaignLeadId)))
+            }
+            if (outreachEmail.campaignId) {
+                relatedUpdates.push(db.update(campaigns).set({ totalOpens: sql`${campaigns.totalOpens} + 1`, updatedAt: now }).where(eq(campaigns.id, outreachEmail.campaignId)))
+            }
+            await Promise.allSettled(relatedUpdates)
             log.debug({
                 action: 'outreach.track.open',
                 outreachEmailId: outreachEmail.id,
@@ -86,7 +91,9 @@ router.get('/open/:token', async (req: Request, res: Response) => {
                 campaignLeadId: outreachEmail.campaignLeadId,
                 emailAccountId: outreachEmail.emailAccountId,
             }, 'open recorded')
-            void notifyXphereOfOutreachEvent('opened', outreachEmail.campaignId, outreachEmail.campaignLeadId)
+            if (outreachEmail.campaignId && outreachEmail.campaignLeadId) {
+                void notifyXphereOfOutreachEvent('opened', outreachEmail.campaignId, outreachEmail.campaignLeadId)
+            }
             return
         }
 
@@ -188,11 +195,16 @@ router.get('/click/:token', async (req: Request, res: Response) => {
                 })
                 .where(eq(outreachEmails.id, outreachEmail.id))
 
-            await Promise.allSettled([
-                db.update(campaignLeads).set({ totalClicks: sql`${campaignLeads.totalClicks} + 1`, updatedAt: now }).where(eq(campaignLeads.id, outreachEmail.campaignLeadId)),
-                db.update(campaigns).set({ totalClicks: sql`${campaigns.totalClicks} + 1`, updatedAt: now }).where(eq(campaigns.id, outreachEmail.campaignId)),
+            const relatedUpdates: PromiseLike<unknown>[] = [
                 db.update(emailAccounts).set({ totalClicks: sql`${emailAccounts.totalClicks} + 1`, updatedAt: now }).where(eq(emailAccounts.id, outreachEmail.emailAccountId)),
-            ])
+            ]
+            if (outreachEmail.campaignLeadId) {
+                relatedUpdates.push(db.update(campaignLeads).set({ totalClicks: sql`${campaignLeads.totalClicks} + 1`, updatedAt: now }).where(eq(campaignLeads.id, outreachEmail.campaignLeadId)))
+            }
+            if (outreachEmail.campaignId) {
+                relatedUpdates.push(db.update(campaigns).set({ totalClicks: sql`${campaigns.totalClicks} + 1`, updatedAt: now }).where(eq(campaigns.id, outreachEmail.campaignId)))
+            }
+            await Promise.allSettled(relatedUpdates)
             log.debug({
                 action: 'outreach.track.click',
                 outreachEmailId: outreachEmail.id,
@@ -201,7 +213,9 @@ router.get('/click/:token', async (req: Request, res: Response) => {
                 emailAccountId: outreachEmail.emailAccountId,
                 targetUrl,
             }, 'click recorded')
-            void notifyXphereOfOutreachEvent('clicked', outreachEmail.campaignId, outreachEmail.campaignLeadId)
+            if (outreachEmail.campaignId && outreachEmail.campaignLeadId) {
+                void notifyXphereOfOutreachEvent('clicked', outreachEmail.campaignId, outreachEmail.campaignLeadId)
+            }
             return
         }
 
