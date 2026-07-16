@@ -39,6 +39,7 @@ import {
     fetchOutlookInboxDelta,
     findMissingOutlookScopes,
     type OutlookGraphMessage,
+    type OutlookInboundProbe,
 } from '../outlook'
 import {
     graphProviderMessageId,
@@ -727,17 +728,18 @@ describe('evaluateOutlookOutreachCapability', () => {
     function evaluate(overrides: {
         account?: typeof account
         mailbox?: unknown
-        probeInbound?: () => Promise<void>
+        probeInbound?: () => Promise<OutlookInboundProbe>
     } = {}) {
         return evaluateOutlookOutreachCapability({
             account: overrides.account ?? account,
             loadMailbox: async () => (overrides.mailbox === undefined ? outlookMailbox() : overrides.mailbox) as never,
-            probeInbound: overrides.probeInbound ?? (async () => {}),
+            // Default: a page was actually read. The probe reports evidence, not silence.
+            probeInbound: overrides.probeInbound ?? (async () => ({ pagesFetched: 1, retryAfter: null })),
         })
     }
 
     it('activates only when scopes and a real inbound sync both succeed', async () => {
-        const probeInbound = vi.fn(async () => {})
+        const probeInbound = vi.fn(async () => ({ pagesFetched: 1, retryAfter: null }))
         const result = await evaluate({ probeInbound })
 
         expect(result).toMatchObject({ verified: true })
@@ -782,12 +784,43 @@ describe('evaluateOutlookOutreachCapability', () => {
     })
 
     it('keeps the account pending when the initial sync is only throttled', async () => {
-        // Retryable: a throttle is not a reason to make someone re-consent.
+        // W-1: the real collaborator does NOT throw on 429 — fetchOutlookInboxDelta
+        // deliberately RETURNS `paused(link, retryAfter)`, which with pagesFetched === 0
+        // degrades to `unchanged(retryAfter)`. The previous version of this test stubbed a
+        // throw, which no production path can produce, and so asserted nothing about the
+        // wiring it claimed to cover. Model what actually happens: the probe resolves.
         const result = await evaluate({
-            probeInbound: async () => { throw new OutlookGraphError('throttled', 429) },
+            probeInbound: async () => ({
+                pagesFetched: 0,
+                retryAfter: new Date('2026-07-16T10:30:00.000Z'),
+            }),
+        })
+
+        // Retryable: a throttle is not a reason to make someone re-consent.
+        expect(result).toMatchObject({ verified: false, status: 'pending', code: 'outlook_inbound_sync_failed' })
+    })
+
+    it('keeps the account pending when Graph is down and returns no page at all', async () => {
+        // isThrottled covers 503, and a 503 need not carry Retry-After. With no retryAfter
+        // and no pages, "the probe did not throw" is the only evidence there is — and it is
+        // evidence of nothing. Read capability is unproven, so the account stays pending.
+        const result = await evaluate({
+            probeInbound: async () => ({ pagesFetched: 0, retryAfter: null }),
         })
 
         expect(result).toMatchObject({ verified: false, status: 'pending', code: 'outlook_inbound_sync_failed' })
+    })
+
+    it('activates on a real page even when the provider also asked us to back off', async () => {
+        // A throttle that arrives after a page was genuinely read still proves the read.
+        const result = await evaluate({
+            probeInbound: async () => ({
+                pagesFetched: 1,
+                retryAfter: new Date('2026-07-16T10:30:00.000Z'),
+            }),
+        })
+
+        expect(result).toMatchObject({ verified: true })
     })
 
     it('fails the account when Microsoft rejects the credentials', async () => {
