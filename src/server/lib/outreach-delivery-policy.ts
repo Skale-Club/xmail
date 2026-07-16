@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, or, sql } from 'drizzle-orm'
 import {
     campaigns,
     emailAccounts,
@@ -322,11 +322,17 @@ export async function loadOutreachDeliverySnapshot(
     ])
 
     const recipientEmail = (input.recipientEmail || lead?.email)?.trim().toLowerCase()
+    // Match an exact-address suppression OR a domain-scope block stored as an `@domain` sentinel
+    // (Phase 22 UIX-04): a domain block suppresses every current + future address at that domain.
+    const recipientDomain = recipientEmail?.split('@')[1]
     const suppression = recipientEmail
         ? await db.query.suppressions.findFirst({
             where: and(
                 eq(suppressions.organizationId, input.organizationId),
-                sql`lower(${suppressions.emailAddress}) = ${recipientEmail}`,
+                or(
+                    sql`lower(${suppressions.emailAddress}) = ${recipientEmail}`,
+                    recipientDomain ? sql`lower(${suppressions.emailAddress}) = ${'@' + recipientDomain}` : sql`false`,
+                ),
             ),
             columns: { id: true },
         })

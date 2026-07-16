@@ -36,6 +36,11 @@ import {
     updateInboxSnippet,
     type BulkConversationAction,
 } from '../../lib/inbox-operator'
+import {
+    applySuppression,
+    previewSuppression,
+    type SuppressionScope,
+} from '../../lib/inbox-suppression'
 
 // ============================================================
 // Unified Inbox read API (Phase 21 UIF-04 / UIF-05)
@@ -303,6 +308,10 @@ const snippetUpdateSchema = z.object({
     name: z.string().trim().min(1).max(120).optional(),
     body: z.string().max(20000).optional(),
     shortcut: z.string().trim().max(64).nullish(),
+})
+const suppressionSchema = z.object({
+    email: z.string().trim().email().max(320),
+    scope: z.enum(['sender', 'domain']),
 })
 const sendCommandSchema = z.object({
     emailAccountId: z.string().uuid(),
@@ -632,6 +641,34 @@ router.post('/send-commands/:id/cancel', async (req: Request, res: Response) => 
         res.json({ command })
     } catch (error) {
         handleOperatorError(error, res, 'cancelling send command')
+    }
+})
+
+// --- Sender / domain suppression (destructive; server-authoritative — locked #8) ---
+// The server classifies the target (public/free-mail domain, already-suppressed) and executes
+// the block org-scoped. A domain block on a public/free-mail provider is refused (400).
+
+router.post('/suppressions/preview', async (req: Request, res: Response) => {
+    try {
+        const ctx = await authorizeWrite(req, res)
+        if (!ctx) return
+        const body = suppressionSchema.parse(req.body)
+        const preview = await previewSuppression(ctx.organizationId, body.email, body.scope as SuppressionScope)
+        res.json(preview)
+    } catch (error) {
+        handleOperatorError(error, res, 'previewing suppression')
+    }
+})
+
+router.post('/suppressions', async (req: Request, res: Response) => {
+    try {
+        const ctx = await authorizeWrite(req, res)
+        if (!ctx) return
+        const body = suppressionSchema.parse(req.body)
+        const result = await applySuppression(ctx.organizationId, body.email, body.scope as SuppressionScope)
+        res.json(result)
+    } catch (error) {
+        handleOperatorError(error, res, 'applying suppression')
     }
 })
 

@@ -102,6 +102,14 @@ beforeAll(async () => {
     process.env.JWT_SECRET ||= 'test'
     sql = postgres(testDatabaseUrl as string, { max: 4, prepare: false })
 
+    // The disposable baseline bootstraps `suppressions` from the pre-outreach Drizzle snapshot
+    // (server_id-scoped). Production long ago moved it to organization_id (see the RLS policies in
+    // 016_fix_rls_org_scoped.sql and the (organization_id, email_address) unique in 037). Reconcile
+    // the disposable DB to that production shape so the suppression service is tested faithfully.
+    await sql`ALTER TABLE suppressions ADD COLUMN IF NOT EXISTS organization_id uuid`
+    await sql`ALTER TABLE suppressions ALTER COLUMN server_id DROP NOT NULL`
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS suppression_org_email_unique ON suppressions (organization_id, email_address)`
+
     await sql`INSERT INTO users (id, email) VALUES
         (${OWNER_A}::uuid, 'op-owner-a@example.test'),
         (${MEMBER_A}::uuid, 'op-member-a@example.test'),
@@ -156,6 +164,7 @@ afterAll(async () => {
     await sql`DELETE FROM inbox_snippets WHERE organization_id IN (${ORG_A}::uuid, ${ORG_B}::uuid)`
     await sql`DELETE FROM inbox_conversation_labels WHERE organization_id IN (${ORG_A}::uuid, ${ORG_B}::uuid)`
     await sql`DELETE FROM inbox_labels WHERE organization_id IN (${ORG_A}::uuid, ${ORG_B}::uuid)`
+    await sql`DELETE FROM suppressions WHERE organization_id IN (${ORG_A}::uuid, ${ORG_B}::uuid)`
     await sql`DELETE FROM outreach_emails WHERE organization_id IN (${ORG_A}::uuid, ${ORG_B}::uuid)`
     await sql`DELETE FROM user_notifications WHERE user_id IN (${OWNER_A}::uuid, ${MEMBER_A}::uuid, ${VIEWER_A}::uuid, ${ADMIN_B}::uuid)`
     await sql`DELETE FROM outreach_conversation_messages WHERE organization_id IN (${ORG_A}::uuid, ${ORG_B}::uuid)`
@@ -612,5 +621,81 @@ describe('operator — durable send-command creation', () => {
         const cancelled = await call(`/send-commands/${created.body.command.id}/cancel?organizationId=${ORG_A}`, { method: 'POST' })
         expect(cancelled.status).toBe(200)
         expect(cancelled.body.command.status).toBe('cancelled')
+    })
+})
+
+describe('operator — sender/domain suppression (destructive, server-authoritative)', () => {
+    it('previews then blocks a sender idempotently and enforces it in the delivery policy', async () => {
+        const preview = await call(`/suppressions/preview?organizationId=${ORG_A}`, {
+            method: 'POST', body: { email: 'Blocked.Lead@Acme.example', scope: 'sender' },
+        })
+        expect(preview.status).toBe(200)
+        expect(preview.body).toMatchObject({ email: 'blocked.lead@acme.example', domain: 'acme.example', isPublicDomain: false, alreadySuppressed: false })
+
+        const applied = await call(`/suppressions?organizationId=${ORG_A}`, {
+            method: 'POST', body: { email: 'blocked.lead@acme.example', scope: 'sender' },
+        })
+        expect(applied.status).toBe(200)
+        expect(applied.body).toMatchObject({ suppressed: true, scope: 'sender', alreadySuppressed: false })
+
+        // Idempotent: a second block is a no-op that reports already-suppressed, one row only.
+        const again = await call(`/suppressions?organizationId=${ORG_A}`, {
+            method: 'POST', body: { email: 'blocked.lead@acme.example', scope: 'sender' },
+        })
+        expect(again.body.alreadySuppressed).toBe(true)
+        const rows = await sql<{ n: string }[]>`SELECT count(*)::text AS n FROM suppressions WHERE organization_id = ${ORG_A}::uuid AND lower(email_address) = 'blocked.lead@acme.example'`
+        expect(Number(rows[0].n)).toBe(1)
+
+        // End-to-end: the delivery policy now denies this recipient.
+        const { evaluateOutreachDeliveryPolicy } = await import('../../../lib/outreach-delivery-policy')
+        const decision = await evaluateOutreachDeliveryPolicy({
+            origin: 'manual', organizationId: ORG_A, emailAccountId: ACCOUNT_A, recipientEmail: 'blocked.lead@acme.example',
+        })
+        expect(decision).toEqual({ allowed: false, code: 'recipient_suppressed' })
+    })
+
+    it('refuses a domain block on a public/free-mail provider', async () => {
+        const preview = await call(`/suppressions/preview?organizationId=${ORG_A}`, {
+            method: 'POST', body: { email: 'someone@gmail.com', scope: 'domain' },
+        })
+        expect(preview.status).toBe(200)
+        expect(preview.body.isPublicDomain).toBe(true)
+
+        const applied = await call(`/suppressions?organizationId=${ORG_A}`, {
+            method: 'POST', body: { email: 'someone@gmail.com', scope: 'domain' },
+        })
+        expect(applied.status).toBe(400)
+        expect(applied.body.error).toBe('suppression_public_domain')
+        const rows = await sql<{ n: string }[]>`SELECT count(*)::text AS n FROM suppressions WHERE organization_id = ${ORG_A}::uuid AND email_address = '@gmail.com'`
+        expect(Number(rows[0].n)).toBe(0)
+    })
+
+    it('blocks a safe domain (sentinel) and the policy denies every address at it', async () => {
+        const applied = await call(`/suppressions?organizationId=${ORG_A}`, {
+            method: 'POST', body: { email: 'anyone@blockme.example', scope: 'domain' },
+        })
+        expect(applied.status).toBe(200)
+        expect(applied.body).toMatchObject({ suppressed: true, scope: 'domain', domain: 'blockme.example' })
+        const rows = await sql<{ n: string }[]>`SELECT count(*)::text AS n FROM suppressions WHERE organization_id = ${ORG_A}::uuid AND email_address = '@blockme.example'`
+        expect(Number(rows[0].n)).toBe(1)
+
+        const { evaluateOutreachDeliveryPolicy } = await import('../../../lib/outreach-delivery-policy')
+        // A DIFFERENT address at the blocked domain is denied by the domain sentinel.
+        const decision = await evaluateOutreachDeliveryPolicy({
+            origin: 'manual', organizationId: ORG_A, emailAccountId: ACCOUNT_A, recipientEmail: 'fresh.contact@blockme.example',
+        })
+        expect(decision).toEqual({ allowed: false, code: 'recipient_suppressed' })
+    })
+
+    it('keeps suppression organization-scoped and viewer/non-member out', async () => {
+        // Org B never sees org A's block, and its own block is isolated.
+        const previewB = await call(`/suppressions/preview?organizationId=${ORG_B}`, {
+            userId: ADMIN_B, method: 'POST', body: { email: 'blocked.lead@acme.example', scope: 'sender' },
+        })
+        expect(previewB.body.alreadySuppressed).toBe(false)
+
+        // Viewer cannot suppress; non-member is refused.
+        expect((await call(`/suppressions?organizationId=${ORG_A}`, { userId: VIEWER_A, method: 'POST', body: { email: 'x@acme.example', scope: 'sender' } })).status).toBe(403)
+        expect((await call(`/suppressions?organizationId=${ORG_A}`, { userId: OUTSIDER, method: 'POST', body: { email: 'x@acme.example', scope: 'sender' } })).status).toBe(403)
     })
 })

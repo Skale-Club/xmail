@@ -60,7 +60,7 @@ import type {
 import { ConversationList, type ConversationListProps } from '@/components/outreach/inbox/ConversationList'
 import { ConversationThread } from '@/components/outreach/inbox/ConversationThread'
 import { BulkActionsBar, ConversationActions } from '@/components/outreach/inbox/ConversationActions'
-import type { InboxLabel } from '@/lib/unified-inbox-api'
+import type { InboxLabel, SuppressionPreview, SuppressionResult, SuppressionScope } from '@/lib/unified-inbox-api'
 
 // Fixed, syntactically valid UUIDs for deterministic assertions.
 const ORG_A = '11111111-1111-4111-8111-111111111111'
@@ -917,5 +917,122 @@ describe('UnifiedInboxPage: bulk selection is loaded-set bounded', () => {
         const checkbox = screen.getByRole('checkbox', { name: /Select conversation with Lead Person/ })
         fireEvent.click(checkbox)
         expect(screen.getByText('1 selected')).toBeInTheDocument()
+    })
+})
+
+// ============================================================
+// Task 3 — destructive suppression: server-authoritative confirmation gating
+// ============================================================
+// The block flow ALWAYS previews server-side, ALWAYS confirms, needs a SECOND confirm for a
+// domain block, and refuses public/free-mail domains per the server response. Cancelling makes
+// no apply call; a rejected apply keeps the dialog open with the selection intact.
+
+const SENDER = 'lead@acme.example'
+
+function makeSuppression(overrides: Partial<{
+    preview: (email: string, scope: SuppressionScope) => Promise<SuppressionPreview>
+    apply: (email: string, scope: SuppressionScope) => Promise<SuppressionResult>
+}> = {}) {
+    return {
+        preview: vi.fn((email: string, scope: SuppressionScope): Promise<SuppressionPreview> =>
+            Promise.resolve({ email, domain: email.split('@')[1], scope, isPublicDomain: false, alreadySuppressed: false, warnings: [] })),
+        apply: vi.fn((email: string, scope: SuppressionScope): Promise<SuppressionResult> =>
+            Promise.resolve({ suppressed: true, scope, email, domain: email.split('@')[1], alreadySuppressed: false })),
+        ...overrides,
+    }
+}
+
+function renderActionsWithBlock(
+    suppression: ReturnType<typeof makeSuppression>,
+    counterpartyEmail = SENDER,
+) {
+    return render(
+        <ConversationActions
+            conversation={makeSummary({ labels: [] })}
+            labels={[LABEL_A]}
+            counterpartyEmail={counterpartyEmail}
+            suppression={suppression}
+            onToggleRead={vi.fn()}
+            onToggleArchive={vi.fn()}
+            onAttachLabel={vi.fn()}
+            onDetachLabel={vi.fn()}
+        />,
+    )
+}
+
+describe('ConversationActions: suppression confirmation gating', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    it('cancelling the block makes NO apply call', async () => {
+        const suppression = makeSuppression()
+        renderActionsWithBlock(suppression)
+        fireEvent.click(screen.getByRole('button', { name: /Block sender \(/ }))
+        // Confirm dialog appears only after the server preview resolves.
+        await screen.findByRole('button', { name: 'Block sender' })
+        expect(suppression.preview).toHaveBeenCalledWith(SENDER, 'sender')
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+        expect(suppression.apply).not.toHaveBeenCalled()
+    })
+
+    it('blocks a sender on explicit confirm (email scope)', async () => {
+        const suppression = makeSuppression()
+        renderActionsWithBlock(suppression)
+        fireEvent.click(screen.getByRole('button', { name: /Block sender \(/ }))
+        const confirm = await screen.findByRole('button', { name: 'Block sender' })
+        fireEvent.click(confirm)
+        await waitFor(() => expect(suppression.apply).toHaveBeenCalledWith(SENDER, 'sender'))
+    })
+
+    it('requires TWO confirms for a safe domain block', async () => {
+        const suppression = makeSuppression()
+        renderActionsWithBlock(suppression)
+        fireEvent.click(screen.getByRole('button', { name: /Block domain \(acme.example\)/ }))
+        // First confirm.
+        const cont = await screen.findByRole('button', { name: 'Continue' })
+        expect(suppression.apply).not.toHaveBeenCalled()
+        fireEvent.click(cont)
+        // Second, final confirm.
+        const final = await screen.findByRole('button', { name: 'Block domain' })
+        fireEvent.click(final)
+        await waitFor(() => expect(suppression.apply).toHaveBeenCalledWith(SENDER, 'domain'))
+    })
+
+    it('refuses a domain block on a public/free-mail domain and never calls apply for it', async () => {
+        const suppression = makeSuppression({
+            preview: vi.fn((email: string, scope: SuppressionScope) =>
+                Promise.resolve({ email, domain: 'gmail.com', scope, isPublicDomain: true, alreadySuppressed: false, warnings: [] })),
+        })
+        renderActionsWithBlock(suppression, 'someone@gmail.com')
+        fireEvent.click(screen.getByRole('button', { name: /Block domain \(gmail.com\)/ }))
+        await screen.findByText(/Domain block not allowed/)
+        // Domain apply is never offered; only the safe sender scope.
+        expect(screen.queryByRole('button', { name: 'Block domain' })).not.toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Block this sender only' }))
+        await waitFor(() => expect(suppression.apply).toHaveBeenCalledWith('someone@gmail.com', 'sender'))
+        expect(suppression.apply).not.toHaveBeenCalledWith('someone@gmail.com', 'domain')
+    })
+
+    it('keeps the dialog open with the reason when the server denies the block (tenant/denial)', async () => {
+        const suppression = makeSuppression({
+            apply: vi.fn(() => Promise.reject(new apiClientMocks.ApiClientError('denied', { status: 403, details: { error: 'Write access denied' } }))),
+        })
+        renderActionsWithBlock(suppression)
+        fireEvent.click(screen.getByRole('button', { name: /Block sender \(/ }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Block sender' }))
+        await screen.findByText(/Could not block/)
+        expect(suppression.apply).toHaveBeenCalledTimes(1)
+        // A retry affordance remains; selection is untouched (no success notice).
+        expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    })
+
+    it('treats a duplicate block as idempotent success', async () => {
+        const suppression = makeSuppression({
+            apply: vi.fn((email: string, scope: SuppressionScope) =>
+                Promise.resolve({ suppressed: true, scope, email, domain: email.split('@')[1], alreadySuppressed: true })),
+        })
+        renderActionsWithBlock(suppression)
+        fireEvent.click(screen.getByRole('button', { name: /Block sender \(/ }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Block sender' }))
+        expect(await screen.findByText(/was already blocked/)).toBeInTheDocument()
     })
 })
