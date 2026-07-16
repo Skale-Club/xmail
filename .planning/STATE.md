@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-stopped_at: Completed 19-02-PLAN.md
-last_updated: "2026-07-16T04:57:42.646Z"
+stopped_at: Completed 19-03-PLAN.md
+last_updated: "2026-07-16T05:29:17.421Z"
 progress:
-  total_phases: 14
-  completed_phases: 6
-  total_plans: 45
-  completed_plans: 27
+  total_phases: 15
+  completed_phases: 5
+  total_plans: 41
+  completed_plans: 24
   percent: 60
 ---
 
@@ -28,13 +28,20 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 19 (Provider Parity and Deliverability) — IN PROGRESS
-Plan: 2 of 4 complete (19-01 SMTP TLS parity, 19-02 provider MIME parity)
+Plan: 3 of 4 complete (19-01 SMTP TLS parity, 19-02 provider MIME parity, 19-03 provider-neutral inbound staging)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
 Status: Ready to execute
 
-**Resume point:** Execute 19-03-PLAN.md. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
+**Resume point:** Execute 19-04-PLAN.md (Outlook Graph inbound + activation gate). Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
+
+> **Progress counters:** the `state` tool derives these from ROADMAP-registered phases
+> only (05-09 + 14-23 = 15 phases, 41 plans, 24 summaries). Phases 10-13 exist under
+> `.planning/phases/` and are code-merged, but have no ROADMAP section and no SUMMARY
+> files, so they are excluded — which is why the counters read lower than the
+> hand-maintained 45/28 series used before 2026-07-16. The tool's numbers are
+> self-consistent and regenerated on every write; do not hand-edit them.
 
 Progress: [██████░░░░] 60%
 
@@ -116,10 +123,10 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T04:55:42.772Z
-Stopped at: Completed 19-02-PLAN.md
+Last session: 2026-07-16T05:28:26.668Z
+Stopped at: Completed 19-03-PLAN.md
 Resume file: None
-Next action: execute Phase 19 Plan 02 (Outlook Graph MIME send parity).
+Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
 ## Performance Metrics
 
@@ -131,6 +138,7 @@ Next action: execute Phase 19 Plan 02 (Outlook Graph MIME send parity).
 | Phase 18 P04 | 16 min | 3 tasks | 11 files |
 | Phase 19 P01 | 12min | 2 tasks | 7 files |
 | Phase 19 P02 | 18min | 2 tasks | 7 files |
+| Phase 19 P03 | 22min | 2 tasks | 10 files |
 
 ## Decisions
 
@@ -146,3 +154,6 @@ Next action: execute Phase 19 Plan 02 (Outlook Graph MIME send parity).
 - [Phase 19]: Legacy smtp_secure/port contradictions normalize with a warning rather than failing; only explicit contradictory writes get 422 smtp_tls_mode_mismatch
 - [Phase 19]: Outlook outreach uses Graph MIME sendMail; the JSON message shape cannot carry List-Unsubscribe and returns no Message-ID
 - [Phase 19]: Outreach MIME is composed once and transmitted byte-identically by SMTP, native, and Outlook; the precomposed Message-ID always wins over a transport-invented one
+- [Phase 19]: (19-03) Inbound classification happens ONCE at ingestion, DSN/bounce before auto-reply before human reply; reply and bounce jobs consume disjoint durable classifications from outreach_provider_events and can no longer race by marking a DSN read first.
+- [Phase 19]: (19-03) Ingestion progress lives in outreach_provider_cursors (Graph delta / IMAP uidvalidity+uid / native received-at+id), never in user read state; the event-store port has no read-flag surface so isRead/\Seen cannot be reintroduced as a cursor.
+- [Phase 19]: (19-03) IMAP provider_message_id prefers the internet Message-ID over uid coordinates, because uid:<validity>:<uid> is not stable across a UIDVALIDITY reset and would re-ingest the whole mailbox as new events.

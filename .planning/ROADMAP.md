@@ -155,7 +155,15 @@ Plans:
 
 **Coverage: 19/19 requirements mapped ✓**
 
-### Phase 14: Outreach P0 fixes [v1.3 Outreach Hardening]
+### Phase 14: Outreach P0 fixes
+
+**Milestone:** v1.3 — Outreach Hardening
+<!-- Do NOT put a version token in this heading. The state tool scrapes ROADMAP
+     headings for a milestone declaration and rewrote STATE.md's milestone on every
+     write — first from the parenthetical form, then from the bracketed form (which
+     also leaked a stray ']' into milestone_name). Body lines like the one above are
+     not scraped; the v1.1 declaration at the top of this file has never corrupted
+     STATE.md. Keep milestone labels out of headings. -->
 
 **Goal:** Make the outreach module functional end-to-end and compliant with bulk-sender requirements (Gmail/Yahoo, CAN-SPAM, GDPR). Close the 11 P0 findings from `.planning/debug/outreach-system-deep-audit.md` (2026-05-16, including the user-reported P0-11 "tela preta" bug appended on the same day).
 **Requirements:** P0-01, P0-02, P0-03, P0-04, P0-05, P0-06, P0-07, P0-08, P0-09, P0-10, P0-11 (treated as requirement IDs since REQUIREMENTS.md predates this phase)
@@ -232,12 +240,12 @@ Plans:
 **Goal:** Give SMTP, native, and Outlook accounts equivalent send/reply/bounce behavior and route every follow-up through the same deliverability controls.
 **Requirements:** PROV-01, PROV-02, PROV-03, PROV-04, PROV-05
 **Depends on:** Phase 18
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 Plans:
 
 - [x] 19-01-PLAN.md — Correct SMTP implicit TLS/STARTTLS configuration
 - [x] 19-02-PLAN.md — Provider-neutral MIME and equivalent outbound adapters
-- [ ] 19-03-PLAN.md — Migration 039 + bounded provider event/cursor staging
+- [x] 19-03-PLAN.md — Migration 039 + bounded provider event/cursor staging
 - [ ] 19-04-PLAN.md — Outlook Graph delta parity and real reply context
 
 ### Phase 20: Outreach Product and API Consistency
