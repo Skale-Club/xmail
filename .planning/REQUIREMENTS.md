@@ -24,9 +24,9 @@
 
 - [x] **CONS-01** — Each campaign has an unambiguous canonical sequence; editing replaces/upserts ordered steps transactionally instead of appending duplicates.
 - [ ] **CONS-02** — Organization admins/members authorized by the backend can access outreach UI routes; platform-only administration remains separate.
-- [ ] **CONS-03** — Outreach settings are either consumed as documented defaults/notification policy or removed from the public contract.
-- [ ] **CONS-04** — Lead search, pagination, sort, and filters have matching UI/API contracts and bounded queries.
-- [ ] **CONS-05** — Campaign metrics use explicit eligible/sent denominators and exclude pre-send suppressions/unsubscribes where appropriate.
+- [x] **CONS-03** — Outreach settings are either consumed as documented defaults/notification policy or removed from the public contract.
+- [x] **CONS-04** — Lead search, pagination, sort, and filters have matching UI/API contracts and bounded queries.
+- [x] **CONS-05** — Campaign metrics use explicit eligible/sent denominators and exclude pre-send suppressions/unsubscribes where appropriate.
 - [ ] **CONS-06** — Service authentication binds identity and tenant scope server-side and never trusts a caller-selected user header.
 - [x] **CONS-07** — API validation, Drizzle schema declarations, and hand-written SQL migrations enforce the same sequence/account invariants.
 
