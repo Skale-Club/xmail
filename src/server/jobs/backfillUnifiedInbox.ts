@@ -20,11 +20,18 @@
 import { createLogger } from '../lib/logger'
 import { materializeProviderEvent, type UnifiedInboxSql } from '../lib/unified-inbox/ingest'
 import { materializeOutboundEmail } from '../lib/unified-inbox/outbound'
+import { MATERIALIZE_LOCK_NAME } from './materializeUnifiedInbox'
 
 const log = createLogger('outreach.unifiedInbox.backfill')
 
-// Stable advisory-lock name so an operator run and a future scheduled run cannot overlap.
-export const BACKFILL_LOCK_NAME = 'outreach-unified-inbox-backfill'
+// W-2: the backfill deliberately shares the CRON MATERIALIZER's advisory lock rather than holding a
+// distinct one, so an operator backfill and the scheduled materializer are MUTUALLY EXCLUSIVE — only
+// one of {cron, backfill} ever processes events at a time. Both jobs reuse the same READ COMMITTED
+// materializers; running them concurrently could split one header-less-root thread into two
+// conversations (a job's reply can't see the other job's uncommitted root). Sharing ONE lock (not
+// acquiring two) also keeps this deadlock-free, and still serializes two operator backfills against
+// each other. Two peer materializer ticks already no-op on this same lock.
+export const BACKFILL_LOCK_NAME = MATERIALIZE_LOCK_NAME
 
 export const DEFAULT_BACKFILL_LOOKBACK_DAYS = 30
 export const DEFAULT_BACKFILL_BATCH_SIZE = 200
@@ -227,8 +234,10 @@ export async function backfillUnifiedInbox(deps: BackfillUnifiedInboxDeps = {}):
 }
 
 /**
- * Operator entrypoint: runs the backfill behind a named advisory lock so a scheduled materializer
- * or a second operator run cannot overlap it. `cron-lock` is imported lazily so this module stays
+ * Operator entrypoint: runs the backfill behind the CRON MATERIALIZER's advisory lock (see
+ * BACKFILL_LOCK_NAME) so the scheduled materializer or a second operator run cannot overlap it. If
+ * the lock is already held (cron tick in flight), the try-acquire fails and this returns null
+ * without running — the operator can retry. `cron-lock` is imported lazily so this module stays
  * importable (e.g. in .db tests) without DATABASE_URL.
  */
 export async function runBackfillUnifiedInboxWithLock(deps: BackfillUnifiedInboxDeps = {}): Promise<BackfillResult | null> {
