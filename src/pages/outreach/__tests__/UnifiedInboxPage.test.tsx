@@ -728,6 +728,33 @@ describe('UnifiedInboxPage: tenant isolation + selection', () => {
         expect(hooks.navigate).toHaveBeenCalledWith('/outreach/unified-inbox')
     })
 
+    // W-5: on organization change the effect cleared only conversation + cursor, leaving the bulk
+    // selection (org-A ids) and the campaign/account/label filter UUIDs (URL) intact — a stale
+    // count and org-A ids POSTed under org B. The org switch must clear the bulk selection and drop
+    // the previous org's filter UUIDs.
+    it('clears bulk selection and drops the previous org filter UUIDs on organization change', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `campaign=${CAMPAIGN_1}`
+        hooks.state.list = hooks.makeListReturn([makeConversation()])
+        const view = render(<UnifiedInboxPage />)
+
+        // Enter bulk mode and select a row under org A.
+        fireEvent.click(screen.getByRole('button', { name: /Select conversations for bulk actions/ }))
+        fireEvent.click(screen.getByRole('checkbox', { name: /Select conversation with Lead Person/ }))
+        expect(screen.getByText('1 selected')).toBeInTheDocument()
+
+        // Switch organizations.
+        hooks.navigate.mockClear()
+        hooks.state.org = { id: ORG_B }
+        view.rerender(<UnifiedInboxPage />)
+
+        // The previous org's campaign filter UUID is dropped from the URL...
+        expect(hooks.navigate).toHaveBeenCalledWith('/outreach/unified-inbox', { replace: true })
+        // ...and the org-A bulk selection is cleared (no stale count / org-A ids in a new-org POST).
+        expect(screen.queryByText('1 selected')).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Select conversations for bulk actions/ })).toBeInTheDocument()
+    })
+
     // W-4: label attach/detach were NOT in the shared `busy` gate, so an operator could fire a
     // label op concurrently with archive/read/status — and a failed label rollback (org-wide list
     // snapshot) could revert the other in-flight mutation's optimistic patch. Gating label ops with

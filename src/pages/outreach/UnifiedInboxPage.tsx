@@ -69,15 +69,27 @@ export function UnifiedInboxPage() {
     }, [search, cleaned, navigate])
 
     // --- Organization change: never render another tenant's selection/cursor. Query keys
-    // are org-scoped so caches never bleed; we also drop the selected conversation + cursor
-    // (they belong to the previous tenant). A ref avoids clearing a valid deep link on mount.
+    // are org-scoped so caches never bleed; we also drop the selected conversation + cursor AND
+    // the campaign/account/label filter UUIDs (all belong to the previous tenant — querying org B
+    // with org-A ids yields empty/400 results), plus the bulk selection (org-A conversation ids).
+    // A ref avoids clearing a valid deep link on mount.
     const prevOrgRef = React.useRef<string | undefined>(organizationId)
     React.useEffect(() => {
         if (prevOrgRef.current !== undefined && prevOrgRef.current !== organizationId) {
             const current = stateRef.current
-            if (current.conversation || current.cursor) {
-                navigate(toUrl(mergeInboxState(current, { conversation: undefined, cursor: undefined })), { replace: true })
+            if (current.conversation || current.cursor || current.campaign || current.account || current.labels.length > 0) {
+                navigate(toUrl(mergeInboxState(current, {
+                    conversation: undefined,
+                    cursor: undefined,
+                    campaign: undefined,
+                    account: undefined,
+                    labels: [],
+                })), { replace: true })
             }
+            // The bulk selection holds the previous org's conversation ids — clear it so a bulk
+            // action can never POST org-A ids under organizationId=B (a stale, rejected no-op).
+            setBulkMode(false)
+            setSelectedIds(new Set())
             setFiltersOpen(false)
         }
         prevOrgRef.current = organizationId
