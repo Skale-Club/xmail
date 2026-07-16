@@ -234,10 +234,21 @@ describe('outreach product consistency migration 040', () => {
                 (${stepB}::uuid, ${seqB}::uuid, 1, 'email', 'B', 'B body')
         `
 
-        // The migration aborts (its transaction rolls back) rather than dropping content. The
-        // RAISE fires inside a transactional batch, so postgres surfaces the aborted-transaction
-        // error; the authoritative proof of non-destruction is that both steps survive below.
-        await expect(reapply()).rejects.toThrow(/040_outreach_product_consistency/)
+        // Apply the (expected-to-fail) migration on a PRIVATE connection instead of the shared
+        // advisory-lock harness: a RAISE leaves the migration transaction aborted, and routing that
+        // through the shared lock would leave it held across the aborted transaction and starve
+        // sibling suites. The authoritative proof of non-destruction is that both steps survive.
+        const contents = await readFile(migrationPath, 'utf8')
+        const isolated = postgres(testDatabaseUrl as string, { max: 1, prepare: false, onnotice: () => {} })
+        let aborted = false
+        try {
+            await isolated.unsafe(contents)
+        } catch {
+            aborted = true
+        } finally {
+            await isolated.end({ timeout: 5 })
+        }
+        expect(aborted).toBe(true)
 
         // Both conflicting steps still exist — nothing was silently dropped.
         const steps = await sql<{ id: string }[]>`

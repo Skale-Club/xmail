@@ -21,8 +21,8 @@ interface Sequence {
     steps: Step[]
 }
 
-interface SequencesResponse {
-    sequences: Sequence[]
+interface SequenceResponse {
+    sequence: Sequence | null
 }
 
 interface SequenceTabProps {
@@ -32,14 +32,14 @@ interface SequenceTabProps {
 
 export default function SequenceTab({ campaignId, organizationId }: SequenceTabProps) {
     const { data, isLoading } = useQuery({
-        queryKey: ['campaign-sequences', organizationId, campaignId],
-        queryFn: () => apiFetch<SequencesResponse>(
-            `/api/outreach/campaigns/${campaignId}/sequences`
+        queryKey: ['campaign-sequence', organizationId, campaignId],
+        queryFn: () => apiFetch<SequenceResponse>(
+            `/api/outreach/campaigns/${campaignId}/sequence`
         ),
         enabled: !!campaignId,
     })
 
-    const sequence = data?.sequences?.[0]
+    const sequence = data?.sequence ?? undefined
     const steps = sequence?.steps ?? []
     const sortedSteps = React.useMemo(
         () => [...steps].sort((a, b) => a.stepOrder - b.stepOrder),
@@ -100,7 +100,7 @@ export default function SequenceTab({ campaignId, organizationId }: SequenceTabP
                         >
                             <div className="flex items-center gap-3 flex-wrap">
                                 <span className="text-sm font-semibold text-foreground">
-                                    Step {step.stepOrder + 1}
+                                    Step {step.stepOrder}
                                 </span>
                                 <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
                                     <Clock className="w-3 h-3" />

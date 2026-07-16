@@ -44,8 +44,8 @@ interface Sequence {
     steps: Step[]
 }
 
-interface SequencesResponse {
-    sequences: Sequence[]
+interface SequenceResponse {
+    sequence: Sequence | null
 }
 
 interface StatsTabProps {
@@ -63,9 +63,9 @@ export default function StatsTab({ campaignId, organizationId }: StatsTabProps) 
     })
 
     const { data: seqData, isLoading: seqLoading } = useQuery({
-        queryKey: ['campaign-sequences', organizationId, campaignId],
-        queryFn: () => apiFetch<SequencesResponse>(
-            `/api/outreach/campaigns/${campaignId}/sequences`
+        queryKey: ['campaign-sequence', organizationId, campaignId],
+        queryFn: () => apiFetch<SequenceResponse>(
+            `/api/outreach/campaigns/${campaignId}/sequence`
         ),
         enabled: !!campaignId,
     })
@@ -80,7 +80,7 @@ export default function StatsTab({ campaignId, organizationId }: StatsTabProps) 
     const replyRate = (s?.replyRate ?? 0).toFixed(1)
     const bounceRate = (s?.bounceRate ?? 0).toFixed(1)
 
-    const sequence = seqData?.sequences?.[0]
+    const sequence = seqData?.sequence ?? undefined
     const steps = sequence?.steps ?? []
     const sortedSteps = React.useMemo(
         () => [...steps].sort((a, b) => a.stepOrder - b.stepOrder),
@@ -204,7 +204,7 @@ export default function StatsTab({ campaignId, organizationId }: StatsTabProps) 
                                         className="border-t border-border"
                                     >
                                         <td className="px-4 py-2 text-sm text-foreground font-medium whitespace-nowrap">
-                                            Step {step.stepOrder + 1}
+                                            Step {step.stepOrder}
                                         </td>
                                         <td className="px-4 py-2 text-sm text-foreground max-w-xs truncate">
                                             {step.subject ?? (

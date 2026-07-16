@@ -87,35 +87,34 @@ const createDraftStep = (stepOrder: number, type: 'email' | 'delay' = 'email'): 
     plainBody: '',
 })
 
-async function createSequenceWithSteps(params: {
+async function saveCampaignSequence(params: {
     campaignId: string
     name: string
     description?: string
     steps: DraftStep[]
 }) {
-    const sequenceResponse = await apiFetch<{ sequence: Sequence }>(`/api/outreach/campaigns/${params.campaignId}/sequences`, {
-        method: 'POST',
-        body: JSON.stringify({
-            name: params.name,
-            description: params.description || undefined,
-        }),
-    })
-
-    for (const step of params.steps) {
-        await apiRequest(`/api/outreach/campaigns/sequences/${sequenceResponse.sequence.id}/steps`, {
-            method: 'POST',
-            body: JSON.stringify({
-                stepOrder: step.stepOrder,
-                type: step.type,
-                delayHours: step.delayHours,
-                subject: step.type === 'email' ? step.subject : undefined,
-                htmlBody: step.type === 'email' ? step.htmlBody : undefined,
-                plainBody: step.type === 'email' ? step.plainBody || undefined : undefined,
-            }),
-        })
+    // One transactional replace of the campaign's single canonical sequence. Step order is derived
+    // from array position on the server, so there is no client append loop and no second sequence.
+    const body = {
+        name: params.name,
+        description: params.description || undefined,
+        steps: params.steps.map((step) =>
+            step.type === 'delay'
+                ? { type: 'delay' as const, delayHours: step.delayHours }
+                : {
+                    type: 'email' as const,
+                    delayHours: step.delayHours,
+                    subject: step.subject,
+                    htmlBody: step.htmlBody,
+                    plainBody: step.plainBody || undefined,
+                }
+        ),
     }
-
-    return sequenceResponse.sequence
+    const response = await apiFetch<{ sequence: Sequence }>(`/api/outreach/campaigns/${params.campaignId}/sequence`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+    })
+    return response.sequence
 }
 
 async function deleteSequence(sequenceId: string) {
@@ -443,14 +442,15 @@ export function SequencesPage() {
     })
 
     const createMutation = useMutation({
-        mutationFn: createSequenceWithSteps,
+        mutationFn: saveCampaignSequence,
         onSuccess: () => {
-            toast({ title: 'Sequence created successfully', variant: 'success' })
+            toast({ title: 'Sequence saved successfully', variant: 'success' })
             queryClient.invalidateQueries({ queryKey: ['sequences'] })
+            queryClient.invalidateQueries({ queryKey: ['campaign-sequence'] })
             setLocation('/outreach/sequences')
         },
         onError: (error: Error) => {
-            toast({ title: 'Failed to create sequence', description: error.message, variant: 'destructive' })
+            toast({ title: 'Failed to save sequence', description: error.message, variant: 'destructive' })
         },
     })
 

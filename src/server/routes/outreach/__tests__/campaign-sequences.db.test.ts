@@ -107,7 +107,8 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-    await new Promise<void>((resolve) => server?.close(() => resolve()))
+    // Guard each teardown independently so a partial beforeAll never leaves the hook hanging.
+    if (server) await new Promise<void>((resolve) => server.close(() => resolve()))
     await closeApplicationDatabase?.()
     await sql?.end({ timeout: 1 })
 })

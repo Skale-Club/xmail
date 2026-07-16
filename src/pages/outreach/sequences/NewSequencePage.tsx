@@ -1,10 +1,10 @@
 import React from 'react'
 import { useLocation, useParams } from 'wouter'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Save, Clock, Mail, Trash2 } from 'lucide-react'
 import { OutreachLayout } from '../../../components/outreach/OutreachLayout'
 import { toast } from '../../../components/ui/toaster'
-import { apiFetch, apiRequest } from '../../../lib/api-client'
+import { apiFetch } from '../../../lib/api-client'
 
 interface Step {
     id: string
@@ -15,28 +15,67 @@ interface Step {
     htmlBody: string
 }
 
+interface CanonicalStep {
+    id: string
+    stepOrder: number
+    type: 'email' | 'delay' | 'condition'
+    delayHours: number
+    subject: string | null
+    htmlBody: string | null
+    plainBody: string | null
+}
+
+interface SequenceResponse {
+    sequence: {
+        id: string
+        name: string | null
+        steps: CanonicalStep[]
+    } | null
+}
+
+function makeEmptyStep(order: number): Step {
+    return { id: crypto.randomUUID(), type: 'email', order, delayHours: 0, subject: '', htmlBody: '' }
+}
+
 export function NewSequencePage() {
     const queryClient = useQueryClient()
     const [, setLocation] = useLocation()
     const params = useParams<{ id: string }>()
     const campaignId = params?.id
     const [name, setName] = React.useState('')
-    const [steps, setSteps] = React.useState<Step[]>([
-        {
-            id: '1',
-            type: 'email',
-            order: 1,
-            delayHours: 0,
-            subject: '',
-            htmlBody: ''
-        }
-    ])
+    const [steps, setSteps] = React.useState<Step[]>([makeEmptyStep(1)])
+
+    // Load the campaign's single canonical sequence so editing preserves existing steps rather than
+    // appending a second sequence (Phase 20 replaces the many-sequence write surface).
+    const { data, isLoading } = useQuery({
+        queryKey: ['campaign-sequence-editor', campaignId],
+        queryFn: () => apiFetch<SequenceResponse>(`/api/outreach/campaigns/${campaignId}/sequence`),
+        enabled: !!campaignId,
+    })
+
+    React.useEffect(() => {
+        if (!data) return
+        const sequence = data.sequence
+        setName(sequence?.name ?? 'Main Sequence')
+        const loaded = (sequence?.steps ?? [])
+            .filter((step) => step.type === 'email' || step.type === 'delay')
+            .sort((a, b) => a.stepOrder - b.stepOrder)
+            .map<Step>((step, index) => ({
+                id: crypto.randomUUID(),
+                type: step.type === 'delay' ? 'delay' : 'email',
+                order: index + 1,
+                delayHours: step.delayHours,
+                subject: step.subject ?? '',
+                htmlBody: step.htmlBody ?? step.plainBody ?? '',
+            }))
+        setSteps(loaded.length > 0 ? loaded : [makeEmptyStep(1)])
+    }, [data])
 
     const addStep = (type: 'email' | 'delay') => {
         setSteps(prev => [
             ...prev,
             {
-                id: Math.random().toString(36).substring(7),
+                id: crypto.randomUUID(),
                 type,
                 order: prev.length + 1,
                 delayHours: type === 'delay' ? 72 : 0,
@@ -54,44 +93,33 @@ export function NewSequencePage() {
         setSteps(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s))
     }
 
-    const createMutation = useMutation({
+    const saveMutation = useMutation({
         mutationFn: async (payload: { name: string; steps: Step[] }) => {
             if (!campaignId) throw new Error('No campaign ID — check route configuration')
-            // audit-2026-07 (C3): a campaign is auto-created with an empty "Main Sequence", and
-            // lead enrollment always targets that first sequence. Previously this editor created
-            // a SECOND sequence, so the steps landed somewhere enrollment never looked and the
-            // campaign reported "sequence has no steps". Reuse the campaign's existing default
-            // sequence instead; only create one if none exists.
-            const existing = await apiFetch<{ sequences: { id: string }[] }>(
-                `/api/outreach/campaigns/${campaignId}/sequences`
-            )
-            let sequenceId: string
-            if (existing.sequences && existing.sequences.length > 0) {
-                sequenceId = existing.sequences[0].id
-            } else {
-                const { sequence } = await apiFetch<{ sequence: { id: string } }>(
-                    `/api/outreach/campaigns/${campaignId}/sequences`,
-                    { method: 'POST', body: JSON.stringify({ name: payload.name || 'Main Sequence' }) }
-                )
-                sequenceId = sequence.id
+            // Single transactional replace of the entire ordered step set — the server derives
+            // one-based step order from array position and preserves step ids across edits.
+            const body = {
+                name: payload.name || undefined,
+                steps: payload.steps.map((step) =>
+                    step.type === 'delay'
+                        ? { type: 'delay' as const, delayHours: step.delayHours }
+                        : {
+                            type: 'email' as const,
+                            delayHours: step.delayHours,
+                            subject: step.subject,
+                            htmlBody: step.htmlBody,
+                        }
+                ),
             }
-            for (const step of payload.steps) {
-                await apiRequest(`/api/outreach/campaigns/sequences/${sequenceId}/steps`, {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        stepOrder: step.order,
-                        type: step.type,
-                        delayHours: step.delayHours,
-                        subject: step.type === 'email' ? step.subject : undefined,
-                        htmlBody: step.type === 'email' ? step.htmlBody : undefined,
-                    }),
-                })
-            }
-            return { id: sequenceId }
+            return apiFetch<SequenceResponse>(`/api/outreach/campaigns/${campaignId}/sequence`, {
+                method: 'PUT',
+                body: JSON.stringify(body),
+            })
         },
         onSuccess: () => {
             toast({ title: 'Sequence saved', variant: 'success' })
-            queryClient.invalidateQueries({ queryKey: ['campaign-sequences'] })
+            queryClient.invalidateQueries({ queryKey: ['campaign-sequence'] })
+            queryClient.invalidateQueries({ queryKey: ['campaign-sequence-editor'] })
             queryClient.invalidateQueries({ queryKey: ['sequences'] })
             setLocation(campaignId ? `/outreach/campaigns/${campaignId}` : '/outreach/sequences')
         },
@@ -101,15 +129,20 @@ export function NewSequencePage() {
     })
 
     const handleSave = () => {
-        if (!name.trim()) {
-            toast({ title: 'Please enter a sequence name', variant: 'destructive' })
-            return
-        }
         if (!campaignId) {
             toast({ title: 'Campaign not found — navigate from a campaign page', variant: 'destructive' })
             return
         }
-        createMutation.mutate({ name, steps })
+        if (steps.length === 0) {
+            toast({ title: 'Add at least one step', variant: 'destructive' })
+            return
+        }
+        const invalidEmail = steps.some(s => s.type === 'email' && (!s.subject.trim() || !s.htmlBody.trim()))
+        if (invalidEmail) {
+            toast({ title: 'Each email step needs a subject and a message body', variant: 'destructive' })
+            return
+        }
+        saveMutation.mutate({ name, steps })
     }
 
     return (
@@ -125,19 +158,21 @@ export function NewSequencePage() {
                                 type="text"
                                 value={name}
                                 onChange={(e) => setName(e.target.value)}
-                                placeholder="My New Sequence"
+                                placeholder="Main Sequence"
                                 className="bg-transparent text-2xl font-bold text-foreground outline-none placeholder:text-muted-foreground"
                             />
-                            <p className="text-sm text-muted-foreground">Draft • {steps.length} steps</p>
+                            <p className="text-sm text-muted-foreground">
+                                {isLoading ? 'Loading…' : `Draft • ${steps.length} steps`}
+                            </p>
                         </div>
                     </div>
                     <button
                         onClick={handleSave}
-                        disabled={createMutation.isPending}
+                        disabled={saveMutation.isPending || isLoading}
                         className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2 font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                     >
                         <Save className="h-5 w-5" />
-                        {createMutation.isPending ? 'Saving...' : 'Save Sequence'}
+                        {saveMutation.isPending ? 'Saving...' : 'Save Sequence'}
                     </button>
                 </div>
 
@@ -175,8 +210,9 @@ export function NewSequencePage() {
                                         <span className="text-sm text-foreground">Wait for</span>
                                         <input
                                             type="number"
+                                            min={0}
                                             value={step.delayHours}
-                                            onChange={(e) => updateStep(step.id, { delayHours: parseInt(e.target.value) || 0 })}
+                                            onChange={(e) => updateStep(step.id, { delayHours: Math.max(0, parseInt(e.target.value) || 0) })}
                                             className="w-20 rounded-lg border border-border bg-background px-3 py-1.5 text-sm"
                                         />
                                         <span className="text-sm text-foreground">hours</span>

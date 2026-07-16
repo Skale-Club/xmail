@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
 import { campaigns, sequences, sequenceSteps, campaignLeads, leads, organizationUsers, outreachEmails, emailAccounts } from '../../../db/schema'
-import { eq, and, sql, inArray, desc, asc } from 'drizzle-orm'
+import { eq, and, sql, inArray, desc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { computeCampaignMetrics } from '../../lib/outreach-campaign-metrics'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
@@ -10,6 +10,11 @@ import {
     validateSequenceForActivation,
     type SequenceValidationIssue,
 } from '../../lib/outreach-sequence-state'
+import {
+    getCanonicalSequence,
+    replaceCanonicalSequence,
+    sequencePayloadSchema,
+} from '../../lib/outreach-sequences'
 
 const router = Router()
 
@@ -58,7 +63,9 @@ const createSequenceSchema = z.object({
 })
 
 const createSequenceStepSchema = z.object({
-    stepOrder: z.number().int().min(0),
+    // One-based ordering (migration 040 / sequence_steps_order_positive). The canonical replace
+    // endpoint is the primary write surface; this legacy single-step path shares the same invariant.
+    stepOrder: z.number().int().min(1),
     type: z.enum(['email', 'delay', 'condition']).default('email'),
     delayHours: z.number().int().min(0).default(0),
     subject: z.string().optional(),
@@ -119,27 +126,16 @@ type CampaignActivationIssue = SequenceValidationIssue | {
 async function validateCampaignReadyForActivation(campaignId: string, organizationId: string): Promise<CampaignActivationIssue[]> {
     const issues: CampaignActivationIssue[] = []
 
-    // Lead enrollment currently selects the oldest campaign sequence. Until Phase 20
-    // introduces an explicit canonical-sequence field, activation must validate that
-    // exact same sequence rather than accepting content from any sibling sequence.
-    const canonicalSequence = await db.query.sequences.findFirst({
-        where: eq(sequences.campaignId, campaignId),
-        columns: { id: true },
-        orderBy: [asc(sequences.createdAt)],
-    })
+    // One database-enforced canonical sequence per campaign (Phase 20). Resolve it through the
+    // canonical service instead of any first-row convention.
+    const canonicalSequence = await getCanonicalSequence(campaignId, organizationId)
 
     if (!canonicalSequence) {
         issues.push({ code: 'sequence_missing', message: 'Campaign needs at least one sequence.' })
+    } else if (canonicalSequence.steps.length === 0) {
+        issues.push({ code: 'sequence_empty', message: 'Campaign sequence needs at least one step.' })
     } else {
-        const canonicalSteps = await db.query.sequenceSteps.findMany({
-            where: eq(sequenceSteps.sequenceId, canonicalSequence.id),
-            orderBy: [asc(sequenceSteps.stepOrder)],
-        })
-        if (canonicalSteps.length === 0) {
-            issues.push({ code: 'sequence_empty', message: 'Campaign sequence needs at least one step.' })
-        } else {
-            issues.push(...validateSequenceForActivation(canonicalSteps))
-        }
+        issues.push(...validateSequenceForActivation(canonicalSequence.steps))
     }
 
     const assignedLeads = await db.query.campaignLeads.findMany({
@@ -595,17 +591,22 @@ router.post('/', async (req: Request, res: Response) => {
 
         const validatedData = createCampaignSchema.parse(req.body)
 
-        const [newCampaign] = await db.insert(campaigns).values({
-            organizationId,
-            ...validatedData,
-        }).returning()
+        // Campaign creation and its single canonical sequence are one transaction (Phase 20):
+        // a campaign never exists without exactly one sequence, and a failure creates neither.
+        const { newCampaign, defaultSequence } = await db.transaction(async (tx) => {
+            const [campaign] = await tx.insert(campaigns).values({
+                organizationId,
+                ...validatedData,
+            }).returning()
 
-        // Create default sequence
-        const [defaultSequence] = await db.insert(sequences).values({
-            campaignId: newCampaign.id,
-            name: 'Main Sequence',
-            description: 'Default email sequence for this campaign',
-        }).returning()
+            const [sequence] = await tx.insert(sequences).values({
+                campaignId: campaign.id,
+                name: 'Main Sequence',
+                description: 'Default email sequence for this campaign',
+            }).returning()
+
+            return { newCampaign: campaign, defaultSequence: sequence }
+        })
 
         res.status(201).json({
             campaign: newCampaign,
@@ -725,9 +726,103 @@ router.delete('/:id', async (req: Request, res: Response) => {
     }
 })
 
-// ============ SEQUENCES ============
+// ============ CANONICAL SEQUENCE (Phase 20) ============
 
-// Get sequence for campaign
+// Get the single canonical sequence for a campaign.
+router.get('/:campaignId/sequence', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        const campaignId = req.params.campaignId
+
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+
+        const campaign = await db.query.campaigns.findFirst({
+            where: eq(campaigns.id, campaignId),
+            columns: { id: true, organizationId: true },
+        })
+        if (!campaign) {
+            return res.status(404).json({ error: 'Campaign not found' })
+        }
+
+        const membership = await checkOrgMembership(userId, campaign.organizationId)
+        if (!membership) {
+            return res.status(403).json({ error: 'Access denied' })
+        }
+
+        const sequence = await getCanonicalSequence(campaignId, campaign.organizationId)
+        res.json({ sequence })
+    } catch (error) {
+        console.error('Error fetching canonical sequence:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// Replace the campaign's complete ordered step set transactionally.
+router.put('/:campaignId/sequence', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        const campaignId = req.params.campaignId
+
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+
+        const campaign = await db.query.campaigns.findFirst({
+            where: eq(campaigns.id, campaignId),
+            columns: { id: true, organizationId: true },
+        })
+        if (!campaign) {
+            return res.status(404).json({ error: 'Campaign not found' })
+        }
+
+        const membership = await checkOrgMembership(userId, campaign.organizationId)
+        if (!membership) {
+            return res.status(403).json({ error: 'Access denied' })
+        }
+        if (!canWriteOutreach(membership)) {
+            return res.status(403).json({ error: 'Write access denied' })
+        }
+
+        const payload = sequencePayloadSchema.parse(req.body)
+        const result = await replaceCanonicalSequence({
+            campaignId,
+            organizationId: campaign.organizationId,
+            payload,
+        })
+
+        if (!result.ok) {
+            if (result.reason === 'campaign_not_found') {
+                return res.status(404).json({ error: 'Campaign not found' })
+            }
+            if (result.reason === 'campaign_not_editable') {
+                return res.status(409).json({
+                    error: `Cannot edit the sequence of a ${result.status} campaign — pause it first`,
+                    code: 'campaign_not_editable',
+                    status: result.status,
+                })
+            }
+            return res.status(409).json({
+                error: 'Cannot remove sequence steps that already have send history or active leads',
+                code: 'sequence_step_referenced',
+                conflicts: result.conflicts,
+            })
+        }
+
+        res.json({ sequence: result.sequence })
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: 'Validation error', details: error.errors })
+        }
+        console.error('Error replacing canonical sequence:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// ============ SEQUENCES (legacy compatibility adapters) ============
+
+// Deprecated: returns the single canonical sequence wrapped in an array for older clients.
 router.get('/:campaignId/sequences', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
@@ -739,6 +834,7 @@ router.get('/:campaignId/sequences', async (req: Request, res: Response) => {
 
         const campaign = await db.query.campaigns.findFirst({
             where: eq(campaigns.id, campaignId),
+            columns: { id: true, organizationId: true },
         })
 
         if (!campaign) {
@@ -750,26 +846,18 @@ router.get('/:campaignId/sequences', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Access denied' })
         }
 
-        const sequencesList = await db.query.sequences.findMany({
-            where: eq(sequences.campaignId, campaignId),
-            // audit-2026-07 (C3): deterministic order so sequences[0] is the campaign's default
-            // "Main Sequence" — the same one lead enrollment targets (oldest by createdAt).
-            orderBy: (seq, { asc }) => [asc(seq.createdAt)],
-            with: {
-                steps: {
-                    orderBy: (steps, { asc }) => [asc(steps.stepOrder)],
-                },
-            },
-        })
-
-        res.json({ sequences: sequencesList })
+        res.setHeader('Deprecation', 'true')
+        res.setHeader('Link', `</api/outreach/campaigns/${campaignId}/sequence>; rel="successor-version"`)
+        const canonical = await getCanonicalSequence(campaignId, campaign.organizationId)
+        res.json({ sequences: canonical ? [canonical] : [], deprecated: true })
     } catch (error) {
         console.error('Error fetching sequences:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
 })
 
-// Create sequence
+// Deprecated: a campaign has exactly one canonical sequence, so this never creates a second row —
+// it returns the existing canonical sequence (creating one only if the campaign somehow lacks it).
 router.post('/:campaignId/sequences', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
@@ -781,6 +869,7 @@ router.post('/:campaignId/sequences', async (req: Request, res: Response) => {
 
         const campaign = await db.query.campaigns.findFirst({
             where: eq(campaigns.id, campaignId),
+            columns: { id: true, organizationId: true },
         })
 
         if (!campaign) {
@@ -797,12 +886,20 @@ router.post('/:campaignId/sequences', async (req: Request, res: Response) => {
 
         const validatedData = createSequenceSchema.parse(req.body)
 
+        res.setHeader('Deprecation', 'true')
+        res.setHeader('Link', `</api/outreach/campaigns/${campaignId}/sequence>; rel="successor-version"`)
+
+        const existing = await getCanonicalSequence(campaignId, campaign.organizationId)
+        if (existing) {
+            return res.status(200).json({ sequence: existing, deprecated: true })
+        }
+
         const [newSequence] = await db.insert(sequences).values({
             campaignId,
             ...validatedData,
         }).returning()
 
-        res.status(201).json({ sequence: newSequence })
+        res.status(201).json({ sequence: newSequence, deprecated: true })
     } catch (error) {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: 'Validation error', details: error.errors })
@@ -1168,24 +1265,17 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
             return res.status(200).json({ added: 0, existing: existingLeadIds.size, campaignLeads: [] })
         }
 
-        // Get first step of sequence — two sequential queries (the previous subquery was
-        // a Drizzle anti-pattern that generated invalid SQL and was non-deterministic when
-        // a campaign had multiple sequences). See audit P0-09.
-        const firstSequence = await db.query.sequences.findFirst({
-            where: eq(sequences.campaignId, campaignId),
-            orderBy: [asc(sequences.createdAt)],
-        })
+        // Enroll onto the campaign's single canonical sequence (Phase 20) — no first-row
+        // convention. Its steps are returned ordered, so steps[0] is the true first step.
+        const canonicalSequence = await getCanonicalSequence(campaignId, campaign.organizationId)
 
-        if (!firstSequence) {
+        if (!canonicalSequence) {
             return res.status(400).json({
                 error: 'Campaign has no sequence — create a sequence with at least one step before adding leads',
             })
         }
 
-        const firstStep = await db.query.sequenceSteps.findFirst({
-            where: eq(sequenceSteps.sequenceId, firstSequence.id),
-            orderBy: [asc(sequenceSteps.stepOrder)],
-        })
+        const firstStep = canonicalSequence.steps[0]
 
         if (!firstStep) {
             return res.status(400).json({

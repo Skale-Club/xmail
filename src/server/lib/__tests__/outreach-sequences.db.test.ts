@@ -49,6 +49,8 @@ async function seedCampaign(campaignId: string, opts: { status?: string; orgId?:
 beforeAll(async () => {
     assertSafeTestDatabaseUrl(testDatabaseUrl, { runGuard })
     const target = { databaseUrl: testDatabaseUrl, runGuard }
+    // 038 provides outreach_emails.origin/idempotency_key/to_address for the send-history fixtures.
+    await applyMigrationFile(target, path.join(process.cwd(), 'supabase', 'migrations', '038_outreach_dispatch_state_machine.sql'))
     // Idempotent, advisory-locked; safe when a sibling suite already applied it.
     await applyMigrationFile(target, migrationPath)
     await applyMigrationFile(target, migrationPath)
