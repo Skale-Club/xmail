@@ -20,6 +20,7 @@ import {
     type InfiniteData,
 } from '@tanstack/react-query'
 import {
+    acceptInboxAiRun,
     applyInboxSuppression,
     attachInboxLabel,
     bulkUpdateInboxConversations,
@@ -30,6 +31,7 @@ import {
     deleteInboxAttachment,
     deleteInboxReminder,
     detachInboxLabel,
+    getInboxAiSettings,
     getInboxConversation,
     getInboxSendCommand,
     getInboxUnreadCount,
@@ -37,16 +39,21 @@ import {
     isInboxListQueryKey,
     listConversationReminders,
     listInboxAccountOptions,
+    listInboxAiRuns,
     listInboxCampaignOptions,
     listInboxConversations,
     listInboxLabels,
     listInboxSnippets,
     previewInboxSuppression,
+    requestInboxAiSuggestion,
     setInboxArchived,
     setInboxReadState,
     setInboxStatus,
     updateInboxReminder,
     uploadInboxAttachment,
+    type AiRunPublicDto,
+    type AiSuggestionResponse,
+    type AiSuggestionToneGoal,
     type BulkInboxAction,
     type BulkInboxInput,
     type BulkInboxResult,
@@ -573,4 +580,62 @@ export function useInboxSuppression(organizationId: string | undefined) {
         apply: (email: string, scope: SuppressionScope) => applyMutation.mutateAsync({ email, scope }),
         isApplying: applyMutation.isPending,
     }
+}
+
+// --- AI draft suggestions (locked #6: NEVER sends from here) ---
+// The composer only shows the "Suggest draft" affordance when draft assistance is enabled for the
+// org. Requesting a suggestion returns/persists an editable draft + a redacted audit run; the
+// operator inserts it and sends through the SEPARATE Phase 22 command path. Accepting a suggestion
+// records the operator's approval against the run (audit only — it does not send).
+
+function makeAiIdempotencyKey(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `inbox-ai:${crypto.randomUUID()}`
+    return `inbox-ai:${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+/** Whether draft assistance is enabled for the org (drives the "Suggest draft" affordance). */
+export function useInboxAiSettings(organizationId: string | undefined) {
+    return useQuery<{ draftAssistanceEnabled: boolean }, Error>({
+        queryKey: inboxKeys.aiSettings(organizationId),
+        enabled: !!organizationId,
+        queryFn: () => getInboxAiSettings(organizationId as string),
+        staleTime: 5 * 60_000,
+    })
+}
+
+/** Redacted AI-run history for the open conversation. */
+export function useInboxAiRuns(organizationId: string | undefined, conversationId: string | undefined) {
+    return useQuery<AiRunPublicDto[], Error>({
+        queryKey: inboxKeys.aiRuns(organizationId, conversationId ?? '__none__'),
+        enabled: !!organizationId && !!conversationId,
+        queryFn: async () => (await listInboxAiRuns(organizationId as string, conversationId as string)).runs,
+    })
+}
+
+/**
+ * On-demand suggestion controller. `request` asks for an editable draft (a fresh idempotency key per
+ * intent), refreshing the run history on completion; `accept` records the operator's acceptance
+ * against the run. Neither sends — sending remains the operator's separate composer action.
+ */
+export function useInboxAiSuggestion(organizationId: string | undefined, conversationId: string | undefined) {
+    const queryClient = useQueryClient()
+    const refreshHistory = useCallback(() => {
+        if (conversationId) queryClient.invalidateQueries({ queryKey: inboxKeys.aiRuns(organizationId, conversationId) })
+    }, [queryClient, organizationId, conversationId])
+
+    const request = useCallback(async (toneGoal: AiSuggestionToneGoal | null): Promise<AiSuggestionResponse> => {
+        const response = await requestInboxAiSuggestion(organizationId as string, conversationId as string, {
+            idempotencyKey: makeAiIdempotencyKey(),
+            toneGoal: toneGoal ?? undefined,
+        })
+        refreshHistory()
+        return response
+    }, [organizationId, conversationId, refreshHistory])
+
+    const accept = useCallback(async (runId: string): Promise<void> => {
+        await acceptInboxAiRun(organizationId as string, runId)
+        refreshHistory()
+    }, [organizationId, refreshHistory])
+
+    return { request, accept }
 }

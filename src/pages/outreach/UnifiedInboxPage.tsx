@@ -7,11 +7,15 @@ import { ConversationList } from '../../components/outreach/inbox/ConversationLi
 import { ConversationThread } from '../../components/outreach/inbox/ConversationThread'
 import { ConversationComposer } from '../../components/outreach/inbox/ConversationComposer'
 import { BulkActionsBar, ConversationActions } from '../../components/outreach/inbox/ConversationActions'
+import { AiDraftAssistant } from '../../components/outreach/inbox/AiDraftAssistant'
 import { Button } from '../../components/ui/button'
 import { useOrganization } from '../../hooks/useOrganization'
 import {
     useCreateInboxLabel,
     useInboxAccountOptions,
+    useInboxAiRuns,
+    useInboxAiSettings,
+    useInboxAiSuggestion,
     useInboxArchive,
     useInboxBulkAction,
     useInboxCampaignOptions,
@@ -135,6 +139,12 @@ export function UnifiedInboxPage() {
     const snippetsQuery = useInboxSnippets(organizationId)
     const composer = useInboxComposer(organizationId, state.conversation)
 
+    // --- AI draft assistant (human-in-the-loop; never sends — locked #6) ---
+    const aiSettings = useInboxAiSettings(organizationId)
+    const aiRunsQuery = useInboxAiRuns(organizationId, state.conversation)
+    const aiSuggestion = useInboxAiSuggestion(organizationId, state.conversation)
+    const draftAssistanceEnabled = aiSettings.data?.draftAssistanceEnabled ?? false
+
     // Near-real-time status from the SINGLE SSE stream opened by OutreachLayout (locked #9).
     // The page consumes it read-only to surface the degraded-sync marker; it never opens a
     // second stream. When live, the badge/list/open-thread converge via cache invalidation
@@ -234,6 +244,15 @@ export function UnifiedInboxPage() {
             onRemoveAttachment={composer.removeAttachment}
             onCancelCommand={composer.cancel}
             polledCommand={composer.polledCommand}
+            renderAiAssistant={(insertDraft) => (
+                <AiDraftAssistant
+                    enabled={draftAssistanceEnabled}
+                    onRequest={(tone) => aiSuggestion.request(tone)}
+                    onInsert={(draftBody) => insertDraft(draftBody)}
+                    onAccept={(runId) => aiSuggestion.accept(runId)}
+                    history={aiRunsQuery.data ?? []}
+                />
+            )}
         />
     ) : null
 

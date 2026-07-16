@@ -74,6 +74,13 @@ export interface ConversationComposerProps {
     onCancelCommand?: (commandId: string) => void
     /** Latest polled state of the active command, pushed by the parent (status/denial reconcile). */
     polledCommand?: InboxSendCommand | null
+    /**
+     * Optional AI draft assistant, rendered inside the open editor. It is handed an `insertDraft`
+     * callback that copies a suggested body into the normal editable field (preserving the
+     * operator's text behind an explicit replace confirmation). The assistant NEVER sends — the
+     * subsequent send is still the operator's Phase 22 action below.
+     */
+    renderAiAssistant?: (insertDraft: (body: string, subject?: string | null) => void) => React.ReactNode
 }
 
 type Mode = InboxSendMode | null
@@ -106,10 +113,12 @@ export function ConversationComposer({
     onRemoveAttachment,
     onCancelCommand,
     polledCommand,
+    renderAiAssistant,
 }: ConversationComposerProps) {
     const [mode, setMode] = React.useState<Mode>(null)
     const [accountId, setAccountId] = React.useState(defaultAccountId)
     const [body, setBody] = React.useState('')
+    const [pendingDraft, setPendingDraft] = React.useState<string | null>(null)
     const [forwardTo, setForwardTo] = React.useState('')
     const [attachments, setAttachments] = React.useState<InboxUploadedAttachment[]>([])
     const [uploadError, setUploadError] = React.useState<string | null>(null)
@@ -144,8 +153,28 @@ export function ConversationComposer({
         setScheduleEnabled(false)
         setScheduledAt('')
         setConfirmDiscard(false)
+        setPendingDraft(null)
         setCommand(null)
         setMode(null)
+    }, [])
+
+    // Copy an AI-suggested body into the editable field. If the operator has already typed a
+    // different draft, ask before replacing it — their text is never silently overwritten.
+    const insertDraft = React.useCallback((draftBody: string) => {
+        setBody((prev) => {
+            if (prev.trim().length > 0 && prev !== draftBody) {
+                setPendingDraft(draftBody)
+                return prev
+            }
+            return draftBody
+        })
+    }, [])
+
+    const confirmReplaceDraft = React.useCallback(() => {
+        setPendingDraft((draft) => {
+            if (draft !== null) setBody(draft)
+            return null
+        })
     }, [])
 
     const requestClose = React.useCallback(() => {
@@ -286,6 +315,20 @@ export function ConversationComposer({
             )}
 
             <p className="truncate text-xs text-muted-foreground"><span className="font-medium">Subject:</span> {subjectPreview || '(no subject)'}</p>
+
+            {/* AI draft assistant (optional). It can only insert into the body below — never send. */}
+            {renderAiAssistant?.(insertDraft)}
+
+            {/* Replace-draft confirmation: an inserted suggestion never overwrites typed text silently. */}
+            {pendingDraft !== null && (
+                <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs dark:border-amber-800 dark:bg-amber-950/40" role="alertdialog" aria-label="Replace your draft?">
+                    <p className="mb-1 font-medium">Replace your current draft with the suggestion?</p>
+                    <div className="flex gap-2">
+                        <Button type="button" size="sm" variant="ghost" onClick={() => setPendingDraft(null)}>Keep mine</Button>
+                        <Button type="button" size="sm" onClick={confirmReplaceDraft}>Replace</Button>
+                    </div>
+                </div>
+            )}
 
             <textarea
                 aria-label="Reply body"

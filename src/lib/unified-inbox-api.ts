@@ -246,6 +246,10 @@ export const inboxKeys = {
         ['outreach-inbox', organizationId, 'snippets'] as const,
     sendCommand: (organizationId: string | undefined, commandId: string) =>
         ['outreach-inbox', organizationId, 'send-command', commandId] as const,
+    aiSettings: (organizationId: string | undefined) =>
+        ['outreach-inbox', organizationId, 'ai-settings'] as const,
+    aiRuns: (organizationId: string | undefined, conversationId: string) =>
+        ['outreach-inbox', organizationId, 'ai-runs', conversationId] as const,
 }
 
 /** Predicate matcher for every list query of one organization (used by optimistic patch/rollback). */
@@ -618,4 +622,105 @@ export async function getInboxAttachmentDownloadUrl(
     attachmentId: string,
 ): Promise<{ url: string; filename: string }> {
     return apiFetch<{ url: string; filename: string }>(withOrg(`/attachments/${attachmentId}/download`, organizationId))
+}
+
+// ------------------------------------------------------------
+// AI draft suggestions (Phase 23 AI-02 / AI-05 / AI-06)
+// ------------------------------------------------------------
+// The AI draft path NEVER sends. `requestAiSuggestion` returns/persists an editable suggestion +
+// a redacted audit run; the operator inserts it into the normal composer and uses the SEPARATE
+// Phase 22 send path. Every DTO here is the server's REDACTED contract — it carries no credentials,
+// hidden/system prompt, model parameters, lease tokens, or cross-tenant message content.
+
+export type AiSuggestionToneGoal = 'neutral' | 'warm' | 'concise' | 'formal' | 'friendly'
+export const AI_SUGGESTION_TONE_GOALS: AiSuggestionToneGoal[] = ['neutral', 'warm', 'concise', 'formal', 'friendly']
+
+export type AiRunKind = 'draft' | 'autonomous'
+export type AiRunStatus = 'pending' | 'running' | 'awaiting_approval' | 'completed' | 'failed' | 'deferred' | 'cancelled'
+export type AiRunAction = 'draft' | 'wait' | 'complete' | 'escalate' | 'none'
+
+/** The public, redacted AI-run projection (mirrors the server's toPublicAiRun allowlist). */
+export interface AiRunPublicDto {
+    id: string
+    conversationId: string | null
+    campaignId: string | null
+    runKind: AiRunKind
+    status: AiRunStatus
+    action: AiRunAction | null
+    promptVersion: string | null
+    provider: string | null
+    model: string | null
+    outputSubject: string | null
+    outputBody: string | null
+    outputOutcome: string | null
+    policyCode: string | null
+    errorCode: string | null
+    contextHash: string | null
+    actorUserId: string | null
+    approvedByUserId: string | null
+    approvedAt: string | null
+    sendCommandId: string | null
+    outreachEmailId: string | null
+    latencyMs: number | null
+    promptTokens: number | null
+    completionTokens: number | null
+    totalTokens: number | null
+    createdAt: string
+    updatedAt: string
+}
+
+/** The editable draft an operator may insert into the composer. */
+export interface AiSuggestion {
+    runId: string
+    subject: string | null
+    body: string
+}
+
+/** The suggestion endpoint response. `suggestion` is non-null only for an insertable draft. */
+export interface AiSuggestionResponse {
+    enabled: boolean
+    suggestion: AiSuggestion | null
+    run: AiRunPublicDto | null
+}
+
+export interface RequestAiSuggestionInput {
+    idempotencyKey: string
+    toneGoal?: AiSuggestionToneGoal | null
+}
+
+export async function getInboxAiSettings(organizationId: string): Promise<{ draftAssistanceEnabled: boolean }> {
+    return apiFetch<{ draftAssistanceEnabled: boolean }>(withOrg('/ai-settings', organizationId))
+}
+
+/** Request an editable AI draft. Never dispatches; returns a suggestion/run only (or not-enabled). */
+export async function requestInboxAiSuggestion(
+    organizationId: string,
+    conversationId: string,
+    input: RequestAiSuggestionInput,
+): Promise<AiSuggestionResponse> {
+    return apiFetch<AiSuggestionResponse>(
+        withOrg(`/conversations/${conversationId}/ai-suggestions`, organizationId),
+        jsonBody('POST', { idempotencyKey: input.idempotencyKey, toneGoal: input.toneGoal ?? undefined }),
+    )
+}
+
+/** Redacted, cursor-bounded AI-run history for a conversation. */
+export async function listInboxAiRuns(
+    organizationId: string,
+    conversationId: string,
+    cursor?: string | null,
+): Promise<{ runs: AiRunPublicDto[]; nextCursor: string | null }> {
+    const suffix = cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+    return apiFetch<{ runs: AiRunPublicDto[]; nextCursor: string | null }>(
+        `${withOrg(`/conversations/${conversationId}/ai-runs`, organizationId)}${suffix}`,
+    )
+}
+
+/** Record explicit operator acceptance of a suggestion (audit only — this NEVER sends). */
+export async function acceptInboxAiRun(organizationId: string, runId: string): Promise<AiRunPublicDto> {
+    const data = await apiFetch<{ run: AiRunPublicDto }>(
+        withOrg(`/ai-runs/${runId}/accept`, organizationId),
+        jsonBody('POST'),
+    )
+    return data.run
 }

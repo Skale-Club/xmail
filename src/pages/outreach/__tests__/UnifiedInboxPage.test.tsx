@@ -74,8 +74,11 @@ import { ConversationList, type ConversationListProps } from '@/components/outre
 import { ConversationThread } from '@/components/outreach/inbox/ConversationThread'
 import { BulkActionsBar, ConversationActions } from '@/components/outreach/inbox/ConversationActions'
 import { ConversationComposer } from '@/components/outreach/inbox/ConversationComposer'
+import { AiDraftAssistant } from '@/components/outreach/inbox/AiDraftAssistant'
 import { InboxSyncStatus } from '@/components/outreach/inbox/InboxSyncStatus'
 import type {
+    AiRunPublicDto,
+    AiSuggestionResponse,
     CreateSendCommandInput,
     InboxAccountOption,
     InboxLabel,
@@ -676,6 +679,10 @@ vi.mock('@/hooks/useUnifiedInbox', () => ({
         polledCommand: null,
         reset: vi.fn(),
     }),
+    // AI draft assistant hooks: default OFF so the page wiring tests never surface the affordance.
+    useInboxAiSettings: () => ({ data: { draftAssistanceEnabled: false } }),
+    useInboxAiRuns: () => ({ data: [] }),
+    useInboxAiSuggestion: () => ({ request: vi.fn(), accept: vi.fn() }),
 }))
 
 // Imported AFTER the mocks so the page picks up the mocked modules.
@@ -1408,6 +1415,197 @@ describe('ConversationComposer: durable reply commands', () => {
         expect(screen.getByRole('alertdialog', { name: 'Discard draft?' })).toBeInTheDocument()
         fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
         expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('unsaved words')
+    })
+})
+
+// ============================================================
+// Phase 23 AI-02 — AI draft assistant: request → preview → insert → separate send
+// ============================================================
+// The assistant renders only when enabled, previews a draft, and on explicit Insert copies the body
+// into the composer's normal editable field + records acceptance — it NEVER sends and NEVER exposes
+// secrets/hidden prompts. Sending remains the operator's separate Phase 22 action.
+
+function makeAiRun(overrides: Partial<AiRunPublicDto> = {}): AiRunPublicDto {
+    return {
+        id: 'run-1',
+        conversationId: CONV_1,
+        campaignId: CAMPAIGN_1,
+        runKind: 'draft',
+        status: 'awaiting_approval',
+        action: 'draft',
+        promptVersion: 'inbox-draft@1',
+        provider: 'xphere',
+        model: 'kimi',
+        outputSubject: 'Re: Demo request',
+        outputBody: 'Thanks for the reply — here is the pricing.',
+        outputOutcome: null,
+        policyCode: null,
+        errorCode: null,
+        contextHash: 'abc123',
+        actorUserId: null,
+        approvedByUserId: null,
+        approvedAt: null,
+        sendCommandId: null,
+        outreachEmailId: null,
+        latencyMs: 120,
+        promptTokens: 100,
+        completionTokens: 30,
+        totalTokens: 130,
+        createdAt: '2026-07-16T10:00:00.000Z',
+        updatedAt: '2026-07-16T10:00:00.000Z',
+        ...overrides,
+    }
+}
+
+function suggestedResponse(body = 'Thanks for the reply — here is the pricing.'): AiSuggestionResponse {
+    const run = makeAiRun({ outputBody: body })
+    return { enabled: true, suggestion: { runId: run.id, subject: run.outputSubject, body }, run }
+}
+
+function renderAssistant(overrides: Partial<React.ComponentProps<typeof AiDraftAssistant>> = {}) {
+    const props: React.ComponentProps<typeof AiDraftAssistant> = {
+        enabled: true,
+        onRequest: vi.fn(async () => suggestedResponse()),
+        onInsert: vi.fn(),
+        onAccept: vi.fn(),
+        history: [],
+        ...overrides,
+    }
+    return { props, ...render(<AiDraftAssistant {...props} />) }
+}
+
+describe('AiDraftAssistant: gated, previewed, inserted — never sent', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    it('renders nothing when draft assistance is disabled', () => {
+        const { container } = renderAssistant({ enabled: false })
+        expect(container).toBeEmptyDOMElement()
+        expect(screen.queryByRole('button', { name: 'Suggest draft' })).not.toBeInTheDocument()
+    })
+
+    it('requests, previews the draft, and inserts + records acceptance on Insert (never sends)', async () => {
+        const onRequest = vi.fn(async () => suggestedResponse('Here is the pricing you asked for.'))
+        const onInsert = vi.fn()
+        const onAccept = vi.fn()
+        renderAssistant({ onRequest, onInsert, onAccept })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Suggest draft' }))
+        await waitFor(() => expect(onRequest).toHaveBeenCalledTimes(1))
+        expect(await screen.findByLabelText('AI draft preview')).toHaveTextContent('Here is the pricing you asked for.')
+
+        fireEvent.click(screen.getByRole('button', { name: 'Insert into reply' }))
+        expect(onInsert).toHaveBeenCalledWith('Here is the pricing you asked for.', 'Re: Demo request')
+        expect(onAccept).toHaveBeenCalledWith('run-1')
+    })
+
+    it('discards a previewed draft without inserting it', async () => {
+        const onInsert = vi.fn()
+        renderAssistant({ onInsert })
+        fireEvent.click(screen.getByRole('button', { name: 'Suggest draft' }))
+        await screen.findByLabelText('AI draft preview')
+        fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+        expect(onInsert).not.toHaveBeenCalled()
+        expect(screen.queryByLabelText('AI draft preview')).not.toBeInTheDocument()
+        // Back to the request affordance.
+        expect(screen.getByRole('button', { name: 'Suggest draft' })).toBeInTheDocument()
+    })
+
+    it('surfaces a recoverable failure inline with a retry and inserts nothing', async () => {
+        const onInsert = vi.fn()
+        const onRequest = vi.fn(async () => ({ enabled: true, suggestion: null, run: makeAiRun({ status: 'failed', action: null, outputBody: null, errorCode: 'decider_timeout' }) }))
+        renderAssistant({ onRequest, onInsert })
+        fireEvent.click(screen.getByRole('button', { name: 'Suggest draft' }))
+        expect(await screen.findByRole('alert')).toHaveTextContent(/timed out/i)
+        expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+        expect(onInsert).not.toHaveBeenCalled()
+    })
+
+    it('shows a no-reply outcome when the assistant declines to draft', async () => {
+        const onRequest = vi.fn(async () => ({ enabled: true, suggestion: null, run: makeAiRun({ status: 'completed', action: 'escalate', outputBody: null, outputOutcome: 'needs_human' }) }))
+        renderAssistant({ onRequest })
+        fireEvent.click(screen.getByRole('button', { name: 'Suggest draft' }))
+        expect(await screen.findByText(/did not suggest a reply/i)).toBeInTheDocument()
+    })
+
+    it('never renders secret/prompt/model-parameter fields from a run', () => {
+        // A run object only ever carries the redacted DTO fields — assert none of the forbidden ones
+        // are present as props and none leak into the rendered history.
+        const run = makeAiRun()
+        renderAssistant({ history: [run] })
+        expect(run).not.toHaveProperty('modelParameters')
+        expect(run).not.toHaveProperty('leaseToken')
+        expect(run).not.toHaveProperty('errorDetail')
+        expect(run).not.toHaveProperty('idempotencyKey')
+        expect(screen.queryByText(/system prompt/i)).not.toBeInTheDocument()
+        expect(screen.queryByText(/api[_-]?key/i)).not.toBeInTheDocument()
+    })
+})
+
+describe('ConversationComposer + AiDraftAssistant: draft flows into the editable field, send stays separate', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    function renderComposerWithAssistant(onRequest = vi.fn(async () => suggestedResponse('AI-written reply body'))) {
+        const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand())
+        const onInsertSpy = vi.fn()
+        render(
+            <ConversationComposer
+                accounts={ACCOUNTS}
+                defaultAccountId={ACCOUNT_1}
+                replyToPreview={['lead@acme.example']}
+                replyAllCcPreview={[]}
+                subjectPreview="Re: Demo request"
+                snippets={SNIPPETS}
+                onSend={onSend}
+                onUploadAttachment={vi.fn()}
+                polledCommand={null}
+                renderAiAssistant={(insertDraft) => (
+                    <AiDraftAssistant
+                        enabled
+                        onRequest={onRequest}
+                        onInsert={(body, subject) => { onInsertSpy(body, subject); insertDraft(body, subject) }}
+                        onAccept={vi.fn()}
+                        history={[]}
+                    />
+                )}
+            />,
+        )
+        return { onSend }
+    }
+
+    it('inserts the suggested body into an empty reply field, then sends via the normal path', async () => {
+        const { onSend } = renderComposerWithAssistant()
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        // Request + insert the AI draft.
+        fireEvent.click(screen.getByRole('button', { name: 'Suggest draft' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Insert into reply' }))
+        // The draft lands in the normal editable body — the operator can edit it.
+        const bodyField = screen.getByRole('textbox', { name: 'Reply body' }) as HTMLTextAreaElement
+        expect(bodyField).toHaveValue('AI-written reply body')
+        fireEvent.change(bodyField, { target: { value: 'AI-written reply body, edited by me.' } })
+        // Sending is the SEPARATE operator action (the assistant never sent).
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+        expect(onSend.mock.calls[0][0].bodyText).toBe('AI-written reply body, edited by me.')
+    })
+
+    it('asks before replacing an operator-typed draft, preserving it unless confirmed', async () => {
+        renderComposerWithAssistant()
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        // Operator types first.
+        const bodyField = screen.getByRole('textbox', { name: 'Reply body' })
+        fireEvent.change(bodyField, { target: { value: 'my own words' } })
+        // Requesting + inserting a suggestion must NOT silently overwrite it.
+        fireEvent.click(screen.getByRole('button', { name: 'Suggest draft' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Insert into reply' }))
+        expect(screen.getByRole('alertdialog', { name: 'Replace your draft?' })).toBeInTheDocument()
+        // Keep mine → text preserved.
+        fireEvent.click(screen.getByRole('button', { name: 'Keep mine' }))
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('my own words')
+        // Insert again and confirm the replace this time.
+        fireEvent.click(screen.getByRole('button', { name: 'Suggest draft' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Insert into reply' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Replace' }))
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('AI-written reply body')
     })
 })
 
