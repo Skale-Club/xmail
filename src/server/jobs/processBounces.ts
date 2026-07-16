@@ -24,6 +24,7 @@ import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, suppres
 import { eq, and, ne, sql, desc } from 'drizzle-orm'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
+import { shouldNotifyOutreachEvent } from '../lib/outreach-settings'
 import { runWithLock } from '../lib/cron-lock'
 import {
     consumeClassifiedEvents,
@@ -312,7 +313,10 @@ export async function markAsBounced(
         }).onConflictDoNothing()
     }
 
-    if (lead) {
+    // Emission is gated on the org's notifyOnBounce policy (CONS-04). The CAS above already
+    // guarantees this runs only on the transition into 'bounced', so a replayed DSN cannot
+    // re-notify even when the policy is enabled.
+    if (lead && await shouldNotifyOutreachEvent(organizationId, 'bounce')) {
         sendXphereOutreachEvent('bounced', {
             email: lead.email,
             campaign_id: campaignId,

@@ -23,6 +23,7 @@ import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns } from '
 import { eq, and, sql, gte } from 'drizzle-orm'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
+import { shouldNotifyOutreachEvent } from '../lib/outreach-settings'
 import { runWithLock } from '../lib/cron-lock'
 import {
     consumeClassifiedEvents,
@@ -405,6 +406,16 @@ export async function markAsReplied(
     const terminalStatuses = terminalStatusList()
     const undeliverableStatuses = undeliverableStatusList()
 
+    // Notification transport is gated on the resolved per-org policy AND on this being the
+    // transition into 'replied', so a replayed reply for an already-replied lead never
+    // re-notifies. The DB writes below are NOT gated — only the outbound notification is.
+    const priorRows = await db
+        .select({ status: campaignLeads.status })
+        .from(campaignLeads)
+        .where(and(eq(campaignLeads.id, campaignLeadId), eq(campaignLeads.campaignId, campaignId)))
+        .limit(1)
+    const wasAlreadyReplied = priorRows[0]?.status === 'replied'
+
     // W-2: this job and processBounces hold *different* advisory locks and run on the same
     // tick, so these writes interleave with markAsBounced's in nondeterministic order.
     // Everything below is therefore expressed as a guarded CASE evaluated by the database
@@ -475,12 +486,14 @@ export async function markAsReplied(
             .where(and(eq(emailAccounts.id, accountId), eq(emailAccounts.organizationId, organizationId))),
     ])
 
-    // Notify Xphere — light lookup for lead identity, not already in scope here.
+    // Notify Xphere — light lookup for lead identity, not already in scope here. Emission is
+    // gated by the organization's notifyOnReply policy (CONS-04); the DB writes above already
+    // ran regardless of the notification preference.
     const lead = await db.query.leads.findFirst({
         where: eq(leads.id, leadId),
         columns: { email: true, customFields: true },
     })
-    if (lead) {
+    if (lead && !wasAlreadyReplied && await shouldNotifyOutreachEvent(organizationId, 'reply')) {
         sendXphereOutreachEvent('replied', {
             email: lead.email,
             campaign_id: campaignId,

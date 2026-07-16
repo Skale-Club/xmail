@@ -16,6 +16,7 @@ import { campaigns, campaignLeads, leads, outreachEmails, suppressions } from '.
 import { eq, and, sql } from 'drizzle-orm'
 import { generateOutreachToken, verifyOutreachToken } from '../../lib/outreach-tokens'
 import { sendXphereOutreachEvent } from '../../lib/xphere-events'
+import { shouldNotifyOutreachEvent } from '../../lib/outreach-settings'
 
 const router = Router()
 
@@ -244,7 +245,7 @@ async function resolveUnsubscribeTarget(campaignLeadId: string, campaignId: stri
     return { campaignLead, lead: campaignLead.lead }
 }
 
-async function processUnsubscribe(campaignLeadId: string, campaignId: string): Promise<{ success: boolean; lead?: typeof leads.$inferSelect; error?: string }> {
+export async function processUnsubscribe(campaignLeadId: string, campaignId: string): Promise<{ success: boolean; lead?: typeof leads.$inferSelect; error?: string }> {
     const target = await resolveUnsubscribeTarget(campaignLeadId, campaignId)
 
     if (!target) {
@@ -308,12 +309,17 @@ async function processUnsubscribe(campaignLeadId: string, campaignId: string): P
         }).onConflictDoNothing()
     }
 
-    sendXphereOutreachEvent('unsubscribed', {
-        email: lead.email,
-        campaign_id: campaignId,
-        lead_id: lead.id,
-        customFields: lead.customFields,
-    })
+    // Emission is gated on the org's notifyOnUnsubscribe policy (CONS-04). The early return
+    // above on an already-unsubscribed lead makes this fire only on the first unsubscribe, so a
+    // replayed one-click POST never re-notifies. Suppression + status writes are NOT gated.
+    if (campaign && await shouldNotifyOutreachEvent(campaign.organizationId, 'unsubscribe')) {
+        sendXphereOutreachEvent('unsubscribed', {
+            email: lead.email,
+            campaign_id: campaignId,
+            lead_id: lead.id,
+            customFields: lead.customFields,
+        })
+    }
 
     return { success: true, lead }
 }

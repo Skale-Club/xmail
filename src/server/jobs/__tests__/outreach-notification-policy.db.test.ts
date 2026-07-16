@@ -18,6 +18,7 @@ const runGuard = process.env[TEST_DATABASE_GUARD_ENV]
 const testDatabaseUrl = process.env[TEST_DATABASE_URL_ENV]
 
 // ORG_A notifies on reply + unsubscribe, NOT bounce. ORG_B is the mirror image.
+const OWNER = 'c3000000-0000-4000-8000-0000000000f0'
 const ORG_A = 'c3000000-0000-4000-8000-000000000001'
 const ORG_B = 'c3000000-0000-4000-8000-000000000002'
 const ACC_A = 'c3000000-0000-4000-8000-000000000003'
@@ -48,8 +49,8 @@ async function seedScenario(org: string, campaign: string, account: string, step
         VALUES (${campaignLeadId}::uuid, ${campaign}::uuid, ${leadId}::uuid, ${status}::lead_status)
     `
     await sql`
-        INSERT INTO outreach_emails (id, organization_id, campaign_id, campaign_lead_id, sequence_step_id, email_account_id, subject, sent_at)
-        VALUES (${emailId}::uuid, ${org}::uuid, ${campaign}::uuid, ${campaignLeadId}::uuid, ${step}::uuid, ${account}::uuid, 'Hi', NOW())
+        INSERT INTO outreach_emails (id, organization_id, campaign_id, campaign_lead_id, sequence_step_id, email_account_id, subject, tracking_token, sent_at)
+        VALUES (${emailId}::uuid, ${org}::uuid, ${campaign}::uuid, ${campaignLeadId}::uuid, ${step}::uuid, ${account}::uuid, 'Hi', ${emailId}, NOW())
     `
     return { leadId, campaignLeadId, emailId }
 }
@@ -64,14 +65,22 @@ beforeAll(async () => {
     process.env.JWT_SECRET ||= 'test'
     sql = postgres(testDatabaseUrl, { max: 4, prepare: false })
 
+    // The disposable baseline bootstraps `suppressions` from an old server-scoped Drizzle
+    // snapshot; the org-scoping DDL is absent from the repo's migration history (a known
+    // local/CI vs. production schema gap). Bring it to the shape the outreach code writes so the
+    // bounce/unsubscribe suppression insert exercises the real path. 027 already added `source`.
+    await sql`ALTER TABLE suppressions ADD COLUMN IF NOT EXISTS organization_id uuid`
+    await sql`ALTER TABLE suppressions ALTER COLUMN server_id DROP NOT NULL`
+
     markAsReplied = (await import('../processReplies')).markAsReplied
     markAsBounced = (await import('../processBounces')).markAsBounced
     processUnsubscribe = (await import('../../routes/outreach/unsubscribe')).processUnsubscribe
     closeApplicationDatabase = (await import('../../../db')).closeDatabaseConnection
 
-    await sql`INSERT INTO organizations (id, name, slug) VALUES
-        (${ORG_A}::uuid, 'Notif A', 'notif-a'),
-        (${ORG_B}::uuid, 'Notif B', 'notif-b') ON CONFLICT (id) DO NOTHING`
+    await sql`INSERT INTO users (id, email) VALUES (${OWNER}::uuid, 'notif-owner@example.test') ON CONFLICT (id) DO NOTHING`
+    await sql`INSERT INTO organizations (id, name, slug, owner_id) VALUES
+        (${ORG_A}::uuid, 'Notif A', 'notif-a', ${OWNER}::uuid),
+        (${ORG_B}::uuid, 'Notif B', 'notif-b', ${OWNER}::uuid) ON CONFLICT (id) DO NOTHING`
     await sql`
         INSERT INTO outreach_settings (organization_id, notify_on_reply, notify_on_bounce, notify_on_unsubscribe) VALUES
             (${ORG_A}::uuid, TRUE, FALSE, TRUE),
@@ -88,9 +97,9 @@ beforeAll(async () => {
         (${CAMP_B}::uuid, ${ORG_B}::uuid, 'Camp B', 'active') ON CONFLICT (id) DO NOTHING`
     await sql`INSERT INTO sequences (id, campaign_id, name) VALUES
         (${SEQ_A}::uuid, ${CAMP_A}::uuid, 'S'), (${SEQ_B}::uuid, ${CAMP_B}::uuid, 'S') ON CONFLICT (id) DO NOTHING`
-    await sql`INSERT INTO sequence_steps (id, sequence_id, step_order, type, subject, delay_hours) VALUES
-        (${STEP_A}::uuid, ${SEQ_A}::uuid, 1, 'email', 'Hi', 0),
-        (${STEP_B}::uuid, ${SEQ_B}::uuid, 1, 'email', 'Hi', 0) ON CONFLICT (id) DO NOTHING`
+    await sql`INSERT INTO sequence_steps (id, sequence_id, step_order, type, subject, plain_body, delay_hours) VALUES
+        (${STEP_A}::uuid, ${SEQ_A}::uuid, 1, 'email', 'Hi', 'Body', 0),
+        (${STEP_B}::uuid, ${SEQ_B}::uuid, 1, 'email', 'Hi', 'Body', 0) ON CONFLICT (id) DO NOTHING`
 })
 
 afterAll(async () => {

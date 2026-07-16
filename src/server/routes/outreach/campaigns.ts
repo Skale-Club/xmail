@@ -5,6 +5,7 @@ import { campaigns, sequences, sequenceSteps, campaignLeads, leads, organization
 import { eq, and, sql, inArray, desc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
 import { computeCampaignMetrics } from '../../lib/outreach-campaign-metrics'
+import { resolveOutreachSettings } from '../../lib/outreach-settings'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import {
     validateSequenceForActivation,
@@ -30,17 +31,21 @@ function resultRows<T>(value: unknown): T[] {
 }
 
 // Validation schemas
+//
+// Defaultable fields are OPTIONAL (not Zod `.default(...)`) so the handler can tell an omitted
+// field from an explicit one and inherit the organization's stored settings for the former only
+// (Phase 20 CONS-03). Zod `.default()` erases that distinction at parse time.
 const createCampaignSchema = z.object({
     name: z.string().min(1, 'Name is required').max(100),
     description: z.string().optional(),
     fromName: z.string().optional(),
     replyToEmail: z.string().email().optional(),
-    timezone: z.string().default('UTC'),
-    sendOnWeekends: z.boolean().default(false),
-    sendStartTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/).default('09:00'),
-    sendEndTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/).default('17:00'),
-    trackOpens: z.boolean().default(true),
-    trackClicks: z.boolean().default(true),
+    timezone: z.string().optional(),
+    sendOnWeekends: z.boolean().optional(),
+    sendStartTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/).optional(),
+    sendEndTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/).optional(),
+    trackOpens: z.boolean().optional(),
+    trackClicks: z.boolean().optional(),
 })
 
 const updateCampaignSchema = z.object({
@@ -591,12 +596,29 @@ router.post('/', async (req: Request, res: Response) => {
 
         const validatedData = createCampaignSchema.parse(req.body)
 
+        // Omitted schedule/tracking fields inherit the organization's stored defaults; explicit
+        // request values always win. Resolved once at creation — later default changes never
+        // rewrite this campaign.
+        const settings = await resolveOutreachSettings(organizationId)
+        const campaignValues = {
+            name: validatedData.name,
+            description: validatedData.description,
+            fromName: validatedData.fromName,
+            replyToEmail: validatedData.replyToEmail,
+            timezone: validatedData.timezone ?? settings.defaultTimezone,
+            sendOnWeekends: validatedData.sendOnWeekends ?? settings.sendOnWeekends,
+            sendStartTime: validatedData.sendStartTime ?? settings.defaultSendStartTime,
+            sendEndTime: validatedData.sendEndTime ?? settings.defaultSendEndTime,
+            trackOpens: validatedData.trackOpens ?? settings.trackOpens,
+            trackClicks: validatedData.trackClicks ?? settings.trackClicks,
+        }
+
         // Campaign creation and its single canonical sequence are one transaction (Phase 20):
         // a campaign never exists without exactly one sequence, and a failure creates neither.
         const { newCampaign, defaultSequence } = await db.transaction(async (tx) => {
             const [campaign] = await tx.insert(campaigns).values({
                 organizationId,
-                ...validatedData,
+                ...campaignValues,
             }).returning()
 
             const [sequence] = await tx.insert(sequences).values({

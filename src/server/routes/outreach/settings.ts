@@ -4,6 +4,11 @@ import { db } from '../../../db'
 import { outreachSettings, organizationUsers } from '../../../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { isPlatformAdmin } from '../../lib/admin'
+import {
+    OUTREACH_SETTINGS_DEFAULTS,
+    resolveOutreachSettings,
+    toApiOutreachSettings,
+} from '../../lib/outreach-settings'
 
 const router = Router()
 
@@ -25,49 +30,11 @@ function canWriteOutreach(membership: Awaited<ReturnType<typeof checkOrgMembersh
     return membership?.role === 'admin' || membership?.role === 'member'
 }
 
-// Default values used when no settings row exists yet
-const DEFAULTS = {
-    defaultTimezone: 'UTC',
-    defaultSendStartTime: '09:00',
-    defaultSendEndTime: '17:00',
-    sendOnWeekends: false,
-    trackOpens: true,
-    trackClicks: true,
-    defaultDailyLimit: 50,
-    defaultMinMinutesBetweenEmails: 5,
-    warmupEnabled: true,
-    warmupDays: 21,
-    notifyOnReply: true,
-    notifyOnBounce: true,
-    notifyOnUnsubscribe: false,
-    weeklyReport: true,
-}
-
-function formatSettings(row: typeof DEFAULTS & { organizationId?: string; id?: string; createdAt?: Date; updatedAt?: Date }) {
-    return {
-        general: {
-            defaultTimezone: row.defaultTimezone,
-            defaultSendStartTime: row.defaultSendStartTime,
-            defaultSendEndTime: row.defaultSendEndTime,
-            sendOnWeekends: row.sendOnWeekends,
-            trackOpens: row.trackOpens,
-            trackClicks: row.trackClicks,
-        },
-        sending: {
-            defaultDailyLimit: row.defaultDailyLimit,
-            defaultMinMinutesBetweenEmails: row.defaultMinMinutesBetweenEmails,
-            warmupEnabled: row.warmupEnabled,
-            warmupDays: row.warmupDays,
-        },
-        notifications: {
-            emailOnReply: row.notifyOnReply,
-            emailOnBounce: row.notifyOnBounce,
-            emailOnUnsubscribe: row.notifyOnUnsubscribe,
-            weeklyReport: row.weeklyReport,
-        },
-    }
-}
-
+// The API accepts and returns exactly the settings that are actually consumed somewhere.
+// `weekly_report` is deliberately absent: there is no weekly-report transport, so the control
+// was removed from both the API and the UI rather than left decorative (Phase 20 CONS-03).
+// The `notifications.*` flags are the resolved policy read by the reply/bounce/unsubscribe
+// event paths — see src/server/lib/outreach-settings.ts.
 const updateSettingsSchema = z.object({
     general: z.object({
         defaultTimezone: z.string().optional(),
@@ -84,10 +51,9 @@ const updateSettingsSchema = z.object({
         warmupDays: z.number().int().min(1).max(365).optional(),
     }).optional(),
     notifications: z.object({
-        emailOnReply: z.boolean().optional(),
-        emailOnBounce: z.boolean().optional(),
-        emailOnUnsubscribe: z.boolean().optional(),
-        weeklyReport: z.boolean().optional(),
+        notifyOnReply: z.boolean().optional(),
+        notifyOnBounce: z.boolean().optional(),
+        notifyOnUnsubscribe: z.boolean().optional(),
     }).optional(),
 })
 
@@ -110,14 +76,8 @@ router.get('/', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Access denied' })
         }
 
-        const row = await db.query.outreachSettings.findFirst({
-            where: eq(outreachSettings.organizationId, organizationId),
-        })
-
-        // Return defaults if no row exists yet — do not create one on read
-        const data = row ?? DEFAULTS
-
-        return res.json(formatSettings(data))
+        const resolved = await resolveOutreachSettings(organizationId)
+        return res.json(toApiOutreachSettings(resolved))
     } catch (error) {
         console.error('Error fetching outreach settings:', error)
         return res.status(500).json({ error: 'Internal server error' })
@@ -148,53 +108,50 @@ router.patch('/', async (req: Request, res: Response) => {
 
         const validatedData = updateSettingsSchema.parse(req.body)
 
-        // Flatten the nested body into DB column names
-        const updateValues: Partial<typeof DEFAULTS> & { updatedAt: Date } = {
-            updatedAt: new Date(),
-        }
+        // Flatten the nested body into DB column names. Only explicitly-provided fields are set,
+        // so a partial PATCH never clobbers an untouched column back to its default.
+        const updateValues: Record<string, unknown> = { updatedAt: new Date() }
 
         if (validatedData.general) {
-            if (validatedData.general.defaultTimezone !== undefined) updateValues.defaultTimezone = validatedData.general.defaultTimezone
-            if (validatedData.general.defaultSendStartTime !== undefined) updateValues.defaultSendStartTime = validatedData.general.defaultSendStartTime
-            if (validatedData.general.defaultSendEndTime !== undefined) updateValues.defaultSendEndTime = validatedData.general.defaultSendEndTime
-            if (validatedData.general.sendOnWeekends !== undefined) updateValues.sendOnWeekends = validatedData.general.sendOnWeekends
-            if (validatedData.general.trackOpens !== undefined) updateValues.trackOpens = validatedData.general.trackOpens
-            if (validatedData.general.trackClicks !== undefined) updateValues.trackClicks = validatedData.general.trackClicks
+            const g = validatedData.general
+            if (g.defaultTimezone !== undefined) updateValues.defaultTimezone = g.defaultTimezone
+            if (g.defaultSendStartTime !== undefined) updateValues.defaultSendStartTime = g.defaultSendStartTime
+            if (g.defaultSendEndTime !== undefined) updateValues.defaultSendEndTime = g.defaultSendEndTime
+            if (g.sendOnWeekends !== undefined) updateValues.sendOnWeekends = g.sendOnWeekends
+            if (g.trackOpens !== undefined) updateValues.trackOpens = g.trackOpens
+            if (g.trackClicks !== undefined) updateValues.trackClicks = g.trackClicks
         }
 
         if (validatedData.sending) {
-            if (validatedData.sending.defaultDailyLimit !== undefined) updateValues.defaultDailyLimit = validatedData.sending.defaultDailyLimit
-            if (validatedData.sending.defaultMinMinutesBetweenEmails !== undefined) updateValues.defaultMinMinutesBetweenEmails = validatedData.sending.defaultMinMinutesBetweenEmails
-            if (validatedData.sending.warmupEnabled !== undefined) updateValues.warmupEnabled = validatedData.sending.warmupEnabled
-            if (validatedData.sending.warmupDays !== undefined) updateValues.warmupDays = validatedData.sending.warmupDays
+            const s = validatedData.sending
+            if (s.defaultDailyLimit !== undefined) updateValues.defaultDailyLimit = s.defaultDailyLimit
+            if (s.defaultMinMinutesBetweenEmails !== undefined) updateValues.defaultMinMinutesBetweenEmails = s.defaultMinMinutesBetweenEmails
+            if (s.warmupEnabled !== undefined) updateValues.warmupEnabled = s.warmupEnabled
+            if (s.warmupDays !== undefined) updateValues.warmupDays = s.warmupDays
         }
 
         if (validatedData.notifications) {
-            if (validatedData.notifications.emailOnReply !== undefined) updateValues.notifyOnReply = validatedData.notifications.emailOnReply
-            if (validatedData.notifications.emailOnBounce !== undefined) updateValues.notifyOnBounce = validatedData.notifications.emailOnBounce
-            if (validatedData.notifications.emailOnUnsubscribe !== undefined) updateValues.notifyOnUnsubscribe = validatedData.notifications.emailOnUnsubscribe
-            if (validatedData.notifications.weeklyReport !== undefined) updateValues.weeklyReport = validatedData.notifications.weeklyReport
+            const n = validatedData.notifications
+            if (n.notifyOnReply !== undefined) updateValues.notifyOnReply = n.notifyOnReply
+            if (n.notifyOnBounce !== undefined) updateValues.notifyOnBounce = n.notifyOnBounce
+            if (n.notifyOnUnsubscribe !== undefined) updateValues.notifyOnUnsubscribe = n.notifyOnUnsubscribe
         }
 
-        // UPSERT: insert defaults + overrides on first save, or update existing row
-        const [upserted] = await db
+        // UPSERT: insert defaults + overrides on first save, or update the existing row.
+        await db
             .insert(outreachSettings)
             .values({
                 organizationId,
-                ...DEFAULTS,
+                ...OUTREACH_SETTINGS_DEFAULTS,
                 ...updateValues,
             })
             .onConflictDoUpdate({
                 target: outreachSettings.organizationId,
                 set: updateValues,
             })
-            .returning()
 
-        if (!upserted) {
-            return res.status(500).json({ error: 'Upsert failed — no row returned' })
-        }
-
-        return res.json(formatSettings(upserted))
+        const resolved = await resolveOutreachSettings(organizationId)
+        return res.json(toApiOutreachSettings(resolved))
     } catch (error) {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: 'Validation error', details: error.errors })

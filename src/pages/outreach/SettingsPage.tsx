@@ -31,10 +31,9 @@ interface OutreachSettings {
         warmupDays: number
     }
     notifications: {
-        emailOnReply: boolean
-        emailOnBounce: boolean
-        emailOnUnsubscribe: boolean
-        weeklyReport: boolean
+        notifyOnReply: boolean
+        notifyOnBounce: boolean
+        notifyOnUnsubscribe: boolean
     }
 }
 
@@ -288,41 +287,37 @@ export function SettingsPage() {
                         </div>
                     </div>
                     <div className="p-4 space-y-3">
+                        <p className="text-xs text-muted-foreground">
+                            When enabled, the matching reply, bounce, or unsubscribe emits an
+                            outreach event to connected integrations (e.g. Xphere). Each toggle
+                            gates only that event notification — inbound processing always runs.
+                        </p>
                         <label className="flex items-center gap-2 cursor-pointer">
                             <input
                                 type="checkbox"
                                 className="rounded border-gray-300"
-                                checked={formData.notifications?.emailOnReply ?? true}
-                                onChange={(e) => updateNotifications('emailOnReply', e.target.checked)}
+                                checked={formData.notifications?.notifyOnReply ?? true}
+                                onChange={(e) => updateNotifications('notifyOnReply', e.target.checked)}
                             />
-                            <span className="text-sm text-gray-700 dark:text-gray-300">Email me when someone replies</span>
+                            <span className="text-sm text-gray-700 dark:text-gray-300">Notify on replies</span>
                         </label>
                         <label className="flex items-center gap-2 cursor-pointer">
                             <input
                                 type="checkbox"
                                 className="rounded border-gray-300"
-                                checked={formData.notifications?.emailOnBounce ?? true}
-                                onChange={(e) => updateNotifications('emailOnBounce', e.target.checked)}
+                                checked={formData.notifications?.notifyOnBounce ?? true}
+                                onChange={(e) => updateNotifications('notifyOnBounce', e.target.checked)}
                             />
-                            <span className="text-sm text-gray-700 dark:text-gray-300">Email me on bounces</span>
+                            <span className="text-sm text-gray-700 dark:text-gray-300">Notify on bounces</span>
                         </label>
                         <label className="flex items-center gap-2 cursor-pointer">
                             <input
                                 type="checkbox"
                                 className="rounded border-gray-300"
-                                checked={formData.notifications?.emailOnUnsubscribe || false}
-                                onChange={(e) => updateNotifications('emailOnUnsubscribe', e.target.checked)}
+                                checked={formData.notifications?.notifyOnUnsubscribe || false}
+                                onChange={(e) => updateNotifications('notifyOnUnsubscribe', e.target.checked)}
                             />
-                            <span className="text-sm text-gray-700 dark:text-gray-300">Email me on unsubscribes</span>
-                        </label>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                                type="checkbox"
-                                className="rounded border-gray-300"
-                                checked={formData.notifications?.weeklyReport ?? true}
-                                onChange={(e) => updateNotifications('weeklyReport', e.target.checked)}
-                            />
-                            <span className="text-sm text-gray-700 dark:text-gray-300">Send weekly performance report</span>
+                            <span className="text-sm text-gray-700 dark:text-gray-300">Notify on unsubscribes</span>
                         </label>
                     </div>
                 </div>

@@ -7,6 +7,7 @@ import { isPlatformAdmin } from '../../lib/admin'
 import { encryptSecret, decryptSecret } from '../../lib/crypto'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import { getEffectiveDailySendLimit } from '../../lib/outreach-sender'
+import { resolveOutreachSettings } from '../../lib/outreach-settings'
 import { listInboxProviders } from '../../lib/inbox-providers'
 import { getNativeMailboxByEmail, getNativeMailboxForOrganization } from '../../lib/native-send'
 import { isPrivateHostWithDns } from '../../lib/network-guard'
@@ -124,11 +125,13 @@ const createEmailAccountSchema = z.object({
     imapUsername: z.string().optional(),
     imapPassword: z.string().optional(),
     imapSecure: z.boolean().default(true),
-    dailySendLimit: z.number().int().min(1).max(10000).default(50),
-    minMinutesBetweenEmails: z.number().int().min(1).default(5),
-    maxMinutesBetweenEmails: z.number().int().min(1).default(30),
-    warmupEnabled: z.boolean().default(true),
-    warmupDays: z.number().int().min(1).max(60).default(14),
+    // Defaultable sending fields are OPTIONAL (not Zod `.default`) so the handler can inherit the
+    // organization's stored settings for omitted values and let explicit values win (CONS-03).
+    dailySendLimit: z.number().int().min(1).max(10000).optional(),
+    minMinutesBetweenEmails: z.number().int().min(1).optional(),
+    maxMinutesBetweenEmails: z.number().int().min(1).optional(),
+    warmupEnabled: z.boolean().optional(),
+    warmupDays: z.number().int().min(1).max(60).optional(),
 }).superRefine((data, ctx) => {
     if (data.provider === 'smtp') {
         if (!data.smtpHost) {
@@ -482,6 +485,16 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Email account already exists' })
         }
 
+        // Omitted sending/warmup fields inherit the organization's stored defaults; explicit
+        // values win. maxMinutesBetweenEmails has no settings equivalent, so it keeps its fixed
+        // fallback. Warmup days are clamped to the account column's stated bound.
+        const settings = await resolveOutreachSettings(organizationId)
+        const dailySendLimit = validatedData.dailySendLimit ?? settings.defaultDailyLimit
+        const minMinutesBetweenEmails = validatedData.minMinutesBetweenEmails ?? settings.defaultMinMinutesBetweenEmails
+        const maxMinutesBetweenEmails = validatedData.maxMinutesBetweenEmails ?? 30
+        const warmupEnabled = validatedData.warmupEnabled ?? settings.warmupEnabled
+        const warmupDays = validatedData.warmupDays ?? Math.min(settings.warmupDays, 60)
+
         let newAccount: typeof emailAccounts.$inferSelect
 
         if (validatedData.provider === 'native') {
@@ -528,11 +541,11 @@ router.post('/', async (req: Request, res: Response) => {
                 imapUsername: null,
                 imapPassword: null,
                 imapSecure: null,
-                dailySendLimit: validatedData.dailySendLimit,
-                minMinutesBetweenEmails: validatedData.minMinutesBetweenEmails,
-                maxMinutesBetweenEmails: validatedData.maxMinutesBetweenEmails,
-                warmupEnabled: validatedData.warmupEnabled,
-                warmupDays: validatedData.warmupDays,
+                dailySendLimit,
+                minMinutesBetweenEmails,
+                maxMinutesBetweenEmails,
+                warmupEnabled,
+                warmupDays,
                 status: 'pending',
             }).returning()
             newAccount = inserted
@@ -564,11 +577,11 @@ router.post('/', async (req: Request, res: Response) => {
                 imapUsername: validatedData.imapUsername,
                 imapPassword: validatedData.imapPassword ? encryptSecret(validatedData.imapPassword) : null,
                 imapSecure: validatedData.imapSecure,
-                dailySendLimit: validatedData.dailySendLimit,
-                minMinutesBetweenEmails: validatedData.minMinutesBetweenEmails,
-                maxMinutesBetweenEmails: validatedData.maxMinutesBetweenEmails,
-                warmupEnabled: validatedData.warmupEnabled,
-                warmupDays: validatedData.warmupDays,
+                dailySendLimit,
+                minMinutesBetweenEmails,
+                maxMinutesBetweenEmails,
+                warmupEnabled,
+                warmupDays,
                 status: 'pending',
             }).returning()
             newAccount = inserted

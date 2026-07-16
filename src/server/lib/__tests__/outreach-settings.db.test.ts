@@ -127,6 +127,11 @@ describe('resolveOutreachSettings', () => {
     it('returns stored overrides over the defaults', async () => {
         const overrideOrg = 'c1000000-0000-4000-8000-0000000000a2'
         await sql`
+            INSERT INTO organizations (id, name, slug, owner_id)
+            VALUES (${overrideOrg}::uuid, 'Override Org', 'override-org', ${IDS.admin}::uuid)
+            ON CONFLICT (id) DO NOTHING
+        `
+        await sql`
             INSERT INTO outreach_settings (organization_id, default_timezone, default_daily_limit, notify_on_unsubscribe)
             VALUES (${overrideOrg}::uuid, 'Europe/Paris', 321, TRUE)
         `
