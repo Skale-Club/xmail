@@ -123,3 +123,82 @@ regressions; `vitest.config.ts` untouched.
 
 None. Both fixes are exactly the scope in `21-REVIEW.md`; no architectural changes, no unrelated
 files touched.
+
+---
+
+# N-1 residual (Phase 21 re-review) — Calendar-invalid cursor timestamp still 500s — FIXED
+
+**Context.** The re-review found W-1 was not fully complete. The `t` guard added in W-1 used
+`Number.isNaN(Date.parse(envelope.t))`, and `Date.parse` is **more lenient** than Postgres
+`::timestamp`: calendar-invalid dates — `2026-02-30`, `2027-02-29` (Feb 29 in a non-leap year),
+`2026-04-31` (April has 30 days) — parse in JS, which silently **rolls them over** (`2026-02-30` →
+Mar 2), so they return a non-NaN Date and pass the guard. Postgres rejects them with "date/time field
+value out of range", so the `${t}::timestamp` cast in `queries.ts` throws → generic handler → **HTTP
+500**. This is the exact self-inflicted-500 class W-1 targets, just a residual sub-class the
+`Date.parse` guard missed. Low severity (a caller 500ing on its own hand-crafted cursor; no
+cross-tenant / injection / data-leak impact — the fingerprint and org-scoped WHERE are untouched),
+but W-1 should be complete.
+
+**Fix (`src/server/lib/unified-inbox/cursor.ts`).** Replaced the `Date.parse` guard with a strict,
+self-contained validator `isPostgresTimestampText(value)` that mirrors Postgres calendar semantics
+instead of JS leniency:
+1. **Shape** — a regex accepting exactly what `last_message_at::text` emits for a `timestamp` column:
+   `^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?$` — `YYYY-MM-DD HH:MM:SS`, space
+   separator, optional `.ffffff` fractional part (microsecond precision), no timezone.
+2. **Numeric range** — `month` 1–12; `hour ≤ 23`, `minute ≤ 59`, `second ≤ 59` (the regex already
+   fixes each to two digits).
+3. **Calendar round-trip** — construct `new Date(Date.UTC(year, month-1, day))` and require every UTC
+   component (`getUTCFullYear`/`getUTCMonth`/`getUTCDate`) to equal the parsed input. JS rolls an
+   out-of-range day forward, so a changed component means the day-of-month was invalid for its
+   month/year → reject. (Time fields are already range-gated, so only the date needs the round-trip.)
+
+On failure it raises `ConversationCursorError` — the same guard, in the same place (before the
+fingerprint check) as the existing `t`/`i` checks — so the route maps it to **400**. The now-inaccurate
+codec comment (which claimed the casts "can never throw downstream") was corrected to state the `t`
+check mirrors Postgres calendar semantics rather than `Date.parse`.
+
+Legitimate cursors are unaffected: microsecond precision (`2026-07-16 12:00:00.123456`), whole-second
+(`2026-07-16 12:00:00`), and real leap days (`2024-02-29`) all still decode and paginate. The `i`
+(UUID) guard, fingerprint binding, and every other codec behavior are unchanged.
+
+**How the timestamp is validated (exactly):** strict regex for the Postgres `timestamp::text` shape →
+`month`/`hour`/`minute`/`second` range gates → `Date.UTC` round-trip of `year`/`month`/`day` that
+rejects any day-of-month invalid for its month/year (catching `Date.parse`'s silent rollover).
+
+**Tests that lock it:**
+- `src/server/lib/unified-inbox/__tests__/cursor.test.ts` — a valid-fingerprint cursor whose `t` is
+  each of `2026-02-30`, `2027-02-29`, `2026-04-31` must throw `ConversationCursorError` (the test also
+  asserts `Number.isNaN(Date.parse(t)) === false` first, proving each is exactly a `Date.parse`-valid /
+  Postgres-invalid value — the residual gap). Plus a positive test that a real
+  `2026-07-16 12:00:00.123456` value still decodes to the same position.
+- `src/server/routes/outreach/__tests__/unified-inbox.db.test.ts` — a route test corrupts a real
+  `nextCursor`'s `t` to each calendar-invalid date (keeping `f`/`v` intact) and asserts the endpoint
+  returns **400** (was 500), while the genuine cursor still returns 200. Locks the actual HTTP status.
+
+**RED before fix:**
+- unit — "expected function to throw an error, but it didn't" (the codec accepted `2026-02-30`).
+- route — "expected 500 to be 400" (the calendar-invalid cursor reached the `::timestamp` cast and 500'd).
+
+**GREEN after fix:** both suites pass; full suite green and deterministic across two runs.
+
+**Files:** `src/server/lib/unified-inbox/cursor.ts` (add `isPostgresTimestampText`, swap the `t` guard,
+correct the comment).
+
+## Gate results — N-1 (run twice for determinism)
+
+| Gate                                            | Run 1               | Run 2                          |
+| ----------------------------------------------- | ------------------- | ------------------------------ |
+| `npm run test`                                  | 527 pass / 45 files | 527 pass / 45 files (identical) |
+| `npm run build`                                 | exit 0              | —                              |
+| `npm run lint` (max-warnings 0)                 | exit 0              | —                              |
+| `tsc -p tsconfig.json --noEmit` (client)        | exit 0              | —                              |
+| `tsc -p tsconfig.server.json --noEmit` (server) | exit 0              | —                              |
+
+Test count rose 524 → 527 (+2 cursor unit: calendar-invalid + positive microsecond; +1 cursor route
+db). No Phase 18/19/20/21 regressions; `vitest.config.ts` untouched; no new migration; no
+production-DB access.
+
+## Commits — N-1
+
+- `4c1136d` test(21): assert calendar-invalid cursor timestamp is rejected (RED)
+- `d28824a` fix(21): reject calendar-invalid cursor timestamps with 400 not 500
