@@ -70,7 +70,8 @@ function resolvePort(port: number | null | undefined): number {
     return port
 }
 
-function describeMode(mode: SmtpSubmissionMode): string {
+/** Human label for a mode. Exported so operator UI names the mode the server will use. */
+export function describeSmtpSecurityMode(mode: SmtpSubmissionMode): string {
     switch (mode) {
         case 'implicit_tls':
             return 'implicit TLS'
@@ -79,6 +80,15 @@ function describeMode(mode: SmtpSubmissionMode): string {
         case 'starttls_opportunistic':
             return 'STARTTLS (opportunistic)'
     }
+}
+
+/**
+ * True when the port alone determines the TLS mode, so a user-supplied flag is redundant
+ * (and, if it disagrees, rejected). Only nonstandard ports need to be asked about.
+ */
+export function isStandardSmtpPort(port: number | null | undefined): boolean {
+    const resolved = resolvePort(port)
+    return resolved === SMTP_IMPLICIT_TLS_PORT || resolved === SMTP_SUBMISSION_PORT || resolved === SMTP_RELAY_PORT
 }
 
 /**
@@ -109,8 +119,8 @@ export function resolveSmtpSecurity(input: SmtpSecurityInput): SmtpSecurityResol
     // Only an explicit flag can be "wrong". An unset flag has nothing to contradict.
     const normalized = requested !== null && requested !== secure
     const warning = normalized
-        ? `SMTP port ${port} implies ${describeMode(mode)}, but this account stores secure=${requested}. ` +
-          `Using ${describeMode(mode)} instead. Re-save the inbox to store secure=${secure} for port ${port}.`
+        ? `SMTP port ${port} implies ${describeSmtpSecurityMode(mode)}, but this account stores secure=${requested}. ` +
+          `Using ${describeSmtpSecurityMode(mode)} instead. Re-save the inbox to store secure=${secure} for port ${port}.`
         : null
 
     return {

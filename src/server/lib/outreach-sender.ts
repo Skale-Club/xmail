@@ -18,6 +18,10 @@ import {
     type ProviderAcceptance,
     type ProviderFailure,
 } from './outreach-dispatch'
+import { buildSmtpTransportOptions } from './smtp-security'
+import { createLogger } from './logger'
+
+const log = createLogger('outreach.sender')
 
 interface SendOutreachEmailParams {
     account: typeof emailAccounts.$inferSelect
@@ -57,18 +61,26 @@ export function createSmtpTransporter(account: typeof emailAccounts.$inferSelect
     if (!account.smtpHost || !account.smtpPassword || !account.smtpUsername) {
         throw new Error('SMTP account missing required fields')
     }
-    
+
     const decryptedPassword = decryptSecret(account.smtpPassword)
 
-    return nodemailer.createTransport({
+    // PROV-01: the port/flag → transport mapping lives in one place, shared with the
+    // verification transporter in routes/outreach/email-accounts.ts, so an inbox cannot
+    // verify under one TLS mode and then send under another.
+    const { options, resolution } = buildSmtpTransportOptions({
         host: account.smtpHost,
-        port: account.smtpPort || 587,
-        secure: account.smtpSecure ?? true,
-        auth: {
-            user: account.smtpUsername,
-            pass: decryptedPassword,
-        },
+        port: account.smtpPort,
+        secure: account.smtpSecure,
+        username: account.smtpUsername,
+        password: decryptedPassword,
     })
+
+    if (resolution.warning) {
+        // Account id only — never the host credentials or the decrypted password.
+        log.warn({ emailAccountId: account.id, mode: resolution.mode }, resolution.warning)
+    }
+
+    return nodemailer.createTransport(options)
 }
 
 export function isWithinSendWindow(campaign: typeof campaigns.$inferSelect, now: Date): boolean {

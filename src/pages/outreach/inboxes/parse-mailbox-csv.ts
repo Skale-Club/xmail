@@ -6,6 +6,8 @@
  * import graph is what makes it directly testable.
  */
 
+import { resolveSmtpSecurity } from '../../../server/lib/smtp-security'
+
 export interface ParsedMailbox {
     email: string
     smtpHost: string
@@ -108,9 +110,10 @@ export function parseMailboxCsv(text: string): { mailboxes: ParsedMailbox[]; err
             // Vendors commonly omit the username when it is the address.
             smtpUsername: row.smtpUsername || email,
             smtpPassword: row.smtpPassword,
-            // 465 is implicit TLS; 587 is STARTTLS, which nodemailer expects as secure:false.
-            // Getting this backwards makes verification fail with a confusing handshake error.
-            smtpSecure: smtpPort === 465,
+            // Derived from the port by the same resolver the API validates against and the
+            // sender dials with, so an import cannot produce a row the server would 422
+            // (or, worse, one that verifies and then fails to send).
+            smtpSecure: resolveSmtpSecurity({ port: smtpPort }).secure,
             imapHost: row.imapHost || undefined,
             imapPort,
             imapUsername: row.imapHost ? (row.imapUsername || email) : undefined,

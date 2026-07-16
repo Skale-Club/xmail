@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
     buildSmtpTransportOptions,
+    describeSmtpSecurityMode,
+    isStandardSmtpPort,
     resolveSmtpSecurity,
     type SmtpSecurityInput,
 } from '../smtp-security'
@@ -139,6 +141,28 @@ describe('resolveSmtpSecurity', () => {
     it('is deterministic for a given input', () => {
         const input: SmtpSecurityInput = { port: 587, secure: true }
         expect(resolveSmtpSecurity(input)).toEqual(resolveSmtpSecurity(input))
+    })
+})
+
+describe('isStandardSmtpPort', () => {
+    it.each([465, 587, 25])('treats %s as a standard port whose TLS mode is implied', (port) => {
+        expect(isStandardSmtpPort(port)).toBe(true)
+    })
+
+    it.each([2525, 1025, 8025])('treats %s as nonstandard, so the stored flag matters', (port) => {
+        expect(isStandardSmtpPort(port)).toBe(false)
+    })
+
+    it('treats an unset port as standard, since it falls back to 587', () => {
+        expect(isStandardSmtpPort(null)).toBe(true)
+    })
+})
+
+describe('describeSmtpSecurityMode', () => {
+    it('labels every mode for operator-facing UI', () => {
+        expect(describeSmtpSecurityMode('implicit_tls')).toMatch(/implicit TLS/i)
+        expect(describeSmtpSecurityMode('starttls_required')).toMatch(/STARTTLS/i)
+        expect(describeSmtpSecurityMode('starttls_opportunistic')).toMatch(/STARTTLS/i)
     })
 })
 

@@ -10,6 +10,37 @@ import { getEffectiveDailySendLimit } from '../../lib/outreach-sender'
 import { listInboxProviders } from '../../lib/inbox-providers'
 import { getNativeMailboxByEmail } from '../../lib/native-send'
 import { isPrivateHostWithDns } from '../../lib/network-guard'
+import { buildSmtpTransportOptions, resolveSmtpSecurity } from '../../lib/smtp-security'
+import { createLogger } from '../../lib/logger'
+
+const log = createLogger('outreach.email-accounts')
+
+/** Stable code so clients can branch on the TLS mismatch rather than parse the message. */
+const SMTP_TLS_MODE_MISMATCH = 'smtp_tls_mode_mismatch'
+
+// PROV-01 — reject a port/flag pair that cannot mean what the caller asked for, but only when
+// the caller stated a preference. An omitted smtpSecure is derived from the port instead (see
+// canonicalSmtpSecure), which is what stops new port-587 inboxes from persisting implicit TLS.
+// Legacy rows are NOT re-validated on read: verification and send normalize them instead, so
+// this check cannot strand an inbox that was already working.
+function checkSmtpSecurityConflict(
+    port: number | null | undefined,
+    secure: boolean | null | undefined,
+): { error: string; code: string; details: Record<string, unknown> } | null {
+    if (secure === undefined || secure === null) return null
+    const resolution = resolveSmtpSecurity({ port, secure })
+    if (!resolution.normalized) return null
+    return {
+        error: `SMTP port ${resolution.port} cannot use secure=${secure}. Port ${resolution.port} means ${resolution.mode === 'implicit_tls' ? 'implicit TLS (secure=true)' : 'STARTTLS (secure=false)'}.`,
+        code: SMTP_TLS_MODE_MISMATCH,
+        details: { port: resolution.port, requestedSecure: secure, expectedSecure: resolution.secure, mode: resolution.mode },
+    }
+}
+
+/** The value actually stored: the caller's when coherent, otherwise derived from the port. */
+function canonicalSmtpSecure(port: number | null | undefined, secure: boolean | null | undefined): boolean {
+    return resolveSmtpSecurity({ port, secure }).secure
+}
 
 // SEC — mail hosts are attacker-controllable free text, and both the verify endpoint and the
 // sender open outbound connections to them. Unguarded, that is an SSRF oracle and an internal
@@ -54,7 +85,9 @@ const createEmailAccountSchema = z.object({
     smtpPort: z.number().int().min(1).max(65535).default(587),
     smtpUsername: z.string().min(1).optional(),
     smtpPassword: z.string().min(1).optional(),
-    smtpSecure: z.boolean().default(true),
+    // No default: an omitted flag is derived from the port by canonicalSmtpSecure. Defaulting
+    // this to true is what made every 587 inbox claim implicit TLS (PROV-01).
+    smtpSecure: z.boolean().optional(),
     imapHost: z.string().optional(),
     imapPort: z.number().int().min(1).max(65535).default(993),
     imapUsername: z.string().optional(),
@@ -87,7 +120,8 @@ const importMailboxSchema = z.object({
     smtpPort: z.number().int().min(1).max(65535).default(587),
     smtpUsername: z.string().min(1, 'SMTP username is required'),
     smtpPassword: z.string().min(1, 'SMTP password is required'),
-    smtpSecure: z.boolean().default(true),
+    // As in createEmailAccountSchema: derived from the port when the vendor export omits it.
+    smtpSecure: z.boolean().optional(),
     imapHost: z.string().optional(),
     imapPort: z.number().int().min(1).max(65535).default(993),
     imapUsername: z.string().optional(),
@@ -272,6 +306,22 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
             return res.status(400).json({ error: hostError })
         }
 
+        // Same all-or-nothing rule as the host check: a sheet that states an impossible
+        // port/TLS pair is a broken export, and half-importing it leaves the operator
+        // reconciling which rows landed. Rows that simply omit the flag are fine — they
+        // get the port's canonical value below.
+        const conflicts = toInsert
+            .map((m) => ({ email: m.email, conflict: checkSmtpSecurityConflict(m.smtpPort, m.smtpSecure) }))
+            .filter((entry): entry is { email: string; conflict: NonNullable<ReturnType<typeof checkSmtpSecurityConflict>> } => entry.conflict !== null)
+
+        if (conflicts.length > 0) {
+            return res.status(422).json({
+                error: `${conflicts.length} mailbox(es) declare an SMTP port and TLS mode that cannot both be true.`,
+                code: SMTP_TLS_MODE_MISMATCH,
+                details: conflicts.map((c) => ({ email: c.email, ...c.conflict.details })),
+            })
+        }
+
         const inserted = await db.insert(emailAccounts).values(
             toInsert.map((m) => ({
                 organizationId,
@@ -283,7 +333,7 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
                 smtpPort: m.smtpPort,
                 smtpUsername: m.smtpUsername,
                 smtpPassword: encryptSecret(m.smtpPassword),
-                smtpSecure: m.smtpSecure,
+                smtpSecure: canonicalSmtpSecure(m.smtpPort, m.smtpSecure),
                 imapHost: m.imapHost,
                 imapPort: m.imapPort,
                 imapUsername: m.imapUsername,
@@ -461,6 +511,11 @@ router.post('/', async (req: Request, res: Response) => {
                 return res.status(400).json({ error: hostError })
             }
 
+            const securityConflict = checkSmtpSecurityConflict(validatedData.smtpPort, validatedData.smtpSecure)
+            if (securityConflict) {
+                return res.status(422).json(securityConflict)
+            }
+
             // validatedData.smtpHost/smtpUsername/smtpPassword are guaranteed present by
             // superRefine when provider === 'smtp' (the default).
             const [inserted] = await db.insert(emailAccounts).values({
@@ -472,7 +527,7 @@ router.post('/', async (req: Request, res: Response) => {
                 smtpPort: validatedData.smtpPort,
                 smtpUsername: validatedData.smtpUsername as string,
                 smtpPassword: encryptSecret(validatedData.smtpPassword as string),
-                smtpSecure: validatedData.smtpSecure,
+                smtpSecure: canonicalSmtpSecure(validatedData.smtpPort, validatedData.smtpSecure),
                 imapHost: validatedData.imapHost,
                 imapPort: validatedData.imapPort,
                 imapUsername: validatedData.imapUsername,
@@ -548,7 +603,21 @@ router.put('/:id', async (req: Request, res: Response) => {
         if (validatedData.smtpPort !== undefined) updateValues.smtpPort = validatedData.smtpPort
         if (validatedData.smtpUsername !== undefined) updateValues.smtpUsername = validatedData.smtpUsername
         if (validatedData.smtpPassword !== undefined) updateValues.smtpPassword = encryptSecret(validatedData.smtpPassword)
-        if (validatedData.smtpSecure !== undefined) updateValues.smtpSecure = validatedData.smtpSecure
+
+        // Port and TLS mode are one setting in two columns, so resolve them together against
+        // the row's post-update state. Editing only the port must re-derive the flag —
+        // otherwise moving 465 → 587 would silently keep implicit TLS and break sending.
+        // A stale stored flag is normalized silently; only an explicit contradiction is a 422.
+        if (validatedData.smtpPort !== undefined || validatedData.smtpSecure !== undefined) {
+            const nextPort = validatedData.smtpPort ?? account.smtpPort
+            if (validatedData.smtpSecure !== undefined) {
+                const securityConflict = checkSmtpSecurityConflict(nextPort, validatedData.smtpSecure)
+                if (securityConflict) {
+                    return res.status(422).json(securityConflict)
+                }
+            }
+            updateValues.smtpSecure = canonicalSmtpSecure(nextPort, validatedData.smtpSecure ?? account.smtpSecure)
+        }
         if (validatedData.imapHost !== undefined) updateValues.imapHost = validatedData.imapHost
         if (validatedData.imapPort !== undefined) updateValues.imapPort = validatedData.imapPort
         if (validatedData.imapUsername !== undefined) updateValues.imapUsername = validatedData.imapUsername
@@ -732,19 +801,27 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
             return res.status(400).json({ error: hostError, verified: false })
         }
 
-        // Test SMTP connection
+        // Test SMTP connection.
+        // PROV-01: same resolver as createSmtpTransporter (lib/outreach-sender.ts), so what
+        // verifies here is exactly what the sender will dial later. Legacy rows whose
+        // smtp_secure contradicts their port are normalized rather than failed — they predate
+        // the write-time validation on the create/import/update handlers above.
         try {
-            const smtpTransporter = nodemailer.createTransport({
+            const { options, resolution } = buildSmtpTransportOptions({
                 host: account.smtpHost,
-                port: account.smtpPort || 587,
-                secure: account.smtpSecure ?? true,
-                auth: {
-                    user: account.smtpUsername || account.email,
-                    pass: smtpPassword,
-                },
-                connectionTimeout: 10_000,
-                greetingTimeout: 10_000,
-            } as nodemailer.TransportOptions)
+                port: account.smtpPort,
+                secure: account.smtpSecure,
+                username: account.smtpUsername || account.email,
+                password: smtpPassword,
+                connectionTimeoutMs: 10_000,
+                greetingTimeoutMs: 10_000,
+            })
+
+            if (resolution.warning) {
+                log.warn({ emailAccountId: account.id, mode: resolution.mode }, resolution.warning)
+            }
+
+            const smtpTransporter = nodemailer.createTransport(options as nodemailer.TransportOptions)
 
             await smtpTransporter.verify()
             smtpTransporter.close()

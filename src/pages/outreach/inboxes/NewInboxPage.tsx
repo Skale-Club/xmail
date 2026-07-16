@@ -12,6 +12,11 @@ import {
 } from 'lucide-react'
 import { OutreachLayout } from '../../../components/outreach/OutreachLayout'
 import { apiFetch } from '../../../lib/api-client'
+import {
+    describeSmtpSecurityMode,
+    isStandardSmtpPort,
+    resolveSmtpSecurity,
+} from '../../../server/lib/smtp-security'
 
 interface Organization {
     id: string
@@ -44,7 +49,10 @@ const defaultForm: SmtpForm = {
     smtpPort: 587,
     smtpUsername: '',
     smtpPassword: '',
-    smtpSecure: true,
+    // Derived, never hardcoded (PROV-01): 587 is STARTTLS, which nodemailer expects as
+    // secure:false. This used to be `true`, which is what made every SMTP inbox created
+    // here claim implicit TLS on a STARTTLS port.
+    smtpSecure: resolveSmtpSecurity({ port: 587 }).secure,
     imapHost: '',
     imapPort: 993,
     imapUsername: '',
@@ -55,11 +63,13 @@ const defaultForm: SmtpForm = {
     warmupDays: 14,
 }
 
+// Presets deliberately carry no smtpSecure: the port implies it, and withCanonicalSmtpSecurity
+// derives it on apply. A preset that stated its own flag is exactly how these three drifted
+// into 587 + implicit TLS.
 const providerPresets: Record<string, Partial<SmtpForm>> = {
     outlook: {
         smtpHost: 'smtp-mail.outlook.com',
         smtpPort: 587,
-        smtpSecure: true,
         imapHost: 'outlook.office365.com',
         imapPort: 993,
         imapSecure: true,
@@ -67,7 +77,6 @@ const providerPresets: Record<string, Partial<SmtpForm>> = {
     gmail: {
         smtpHost: 'smtp.gmail.com',
         smtpPort: 587,
-        smtpSecure: true,
         imapHost: 'imap.gmail.com',
         imapPort: 993,
         imapSecure: true,
@@ -75,11 +84,18 @@ const providerPresets: Record<string, Partial<SmtpForm>> = {
     yahoo: {
         smtpHost: 'smtp.mail.yahoo.com',
         smtpPort: 587,
-        smtpSecure: true,
         imapHost: 'imap.mail.yahoo.com',
         imapPort: 993,
         imapSecure: true,
     },
+}
+
+/**
+ * Keep the form's TLS flag consistent with its port using the same resolver the API validates
+ * against, so the form cannot submit a pair the server would reject with 422.
+ */
+function withCanonicalSmtpSecurity(form: SmtpForm): SmtpForm {
+    return { ...form, smtpSecure: resolveSmtpSecurity({ port: form.smtpPort, secure: form.smtpSecure }).secure }
 }
 
 function detectProvider(email: string): string | null {
@@ -183,7 +199,7 @@ export function NewInboxPage() {
         setForm(prev => ({ ...prev, email }))
         const provider = detectProvider(email)
         if (provider && providerPresets[provider]) {
-            setForm(prev => ({
+            setForm(prev => withCanonicalSmtpSecurity({
                 ...prev,
                 email,
                 ...providerPresets[provider],
@@ -217,6 +233,7 @@ export function NewInboxPage() {
     }
 
     const isLoading = outlookMutation.isPending || smtpMutation.isPending
+    const smtpSecurity = resolveSmtpSecurity({ port: form.smtpPort, secure: form.smtpSecure })
 
     return (
         <OutreachLayout>
@@ -403,7 +420,7 @@ export function NewInboxPage() {
                                         <input
                                             type="number"
                                             value={form.smtpPort}
-                                            onChange={(e) => setForm(prev => ({ ...prev, smtpPort: parseInt(e.target.value) || 587 }))}
+                                            onChange={(e) => setForm(prev => withCanonicalSmtpSecurity({ ...prev, smtpPort: parseInt(e.target.value) || 587 }))}
                                             className="w-full px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary focus:border-transparent"
                                         />
                                     </div>
@@ -447,18 +464,39 @@ export function NewInboxPage() {
                                     </div>
                                 </div>
 
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="checkbox"
-                                        id="smtpSecure"
-                                        checked={form.smtpSecure}
-                                        onChange={(e) => setForm(prev => ({ ...prev, smtpSecure: e.target.checked }))}
-                                        className="rounded border-input text-primary focus:ring-primary"
-                                    />
-                                    <label htmlFor="smtpSecure" className="text-sm text-gray-700 dark:text-gray-300">
-                                        Use TLS/SSL
-                                    </label>
-                                </div>
+                                {/*
+                                  * PROV-01: on a standard port the encryption mode is implied, so we
+                                  * report it rather than offer a "Use TLS/SSL" checkbox that could only
+                                  * ever contradict the port (and now earns a 422). The choice is only
+                                  * real on a nonstandard port, where nothing implies the mode.
+                                  */}
+                                {isStandardSmtpPort(form.smtpPort) ? (
+                                    <p className="text-sm text-muted-foreground">
+                                        Encryption:{' '}
+                                        <span className="font-medium text-foreground">
+                                            {describeSmtpSecurityMode(smtpSecurity.mode)}
+                                        </span>
+                                        {' — '}determined by port {form.smtpPort}.
+                                    </p>
+                                ) : (
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="checkbox"
+                                                id="smtpSecure"
+                                                checked={form.smtpSecure}
+                                                onChange={(e) => setForm(prev => withCanonicalSmtpSecurity({ ...prev, smtpSecure: e.target.checked }))}
+                                                className="rounded border-input text-primary focus:ring-primary"
+                                            />
+                                            <label htmlFor="smtpSecure" className="text-sm text-gray-700 dark:text-gray-300">
+                                                Port {form.smtpPort} uses implicit TLS (SSL) from connection start
+                                            </label>
+                                        </div>
+                                        <p className="mt-1 text-xs text-muted-foreground">
+                                            Leave unchecked if this port expects STARTTLS on a cleartext connection.
+                                        </p>
+                                    </div>
+                                )}
                             </div>
 
                             <div className="bg-card rounded-lg border border-border p-6 space-y-4">
