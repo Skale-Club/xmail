@@ -1,10 +1,10 @@
 import React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation } from 'wouter'
-import { Plus, Mail, ChevronDown, Clock, Trash2 } from 'lucide-react'
+import { Plus, Mail, Clock, Trash2 } from 'lucide-react'
 import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { PaginationControls } from '../../components/ui/PaginationControls'
-import { apiFetch, apiRequest } from '../../lib/api-client'
+import { apiFetch } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
 import {
     Dialog,
@@ -117,23 +117,17 @@ async function saveCampaignSequence(params: {
     return response.sequence
 }
 
-async function deleteSequence(sequenceId: string) {
-    await apiRequest(`/api/outreach/campaigns/sequences/${sequenceId}`, {
-        method: 'DELETE',
-    })
-}
-
+// A campaign has exactly one canonical sequence (Phase 20, CONS-01). "Deleting" a sequence is
+// meaningless — a campaign always retains its sequence, and the backend refuses the destructive
+// legacy delete (409). So this card is read-only; the step set is edited via the New Sequence
+// dialog, which does a history-safe transactional replace.
 function SequenceCard({
     sequence,
     stepsCount,
-    onDelete,
 }: {
     sequence: Sequence
     stepsCount: number
-    onDelete: (id: string) => void
 }) {
-    const [showMenu, setShowMenu] = React.useState(false)
-
     return (
         <div className="rounded-lg border border-border bg-card p-4">
             <div className="flex items-start justify-between">
@@ -152,28 +146,6 @@ function SequenceCard({
                         <p className="mt-2 text-sm text-muted-foreground">
                             Campaign: {sequence.campaign.name}
                         </p>
-                    )}
-                </div>
-                <div className="relative">
-                    <button
-                        onClick={() => setShowMenu(!showMenu)}
-                        className="rounded p-1 hover:bg-accent"
-                    >
-                        <ChevronDown className="h-5 w-5 text-gray-400" />
-                    </button>
-                    {showMenu && (
-                        <>
-                            <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-                            <div className="absolute right-0 top-8 z-20 w-40 rounded-lg border border-border bg-popover py-1 shadow-lg">
-                                <button
-                                    onClick={() => { onDelete(sequence.id); setShowMenu(false) }}
-                                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
-                                >
-                                    <Trash2 className="h-4 w-4" />
-                                    Delete
-                                </button>
-                            </div>
-                        </>
                     )}
                 </div>
             </div>
@@ -454,23 +426,6 @@ export function SequencesPage() {
         },
     })
 
-    const deleteMutation = useMutation({
-        mutationFn: deleteSequence,
-        onSuccess: () => {
-            toast({ title: 'Sequence deleted', variant: 'success' })
-            queryClient.invalidateQueries({ queryKey: ['sequences'] })
-        },
-        onError: (error: Error) => {
-            toast({ title: 'Failed to delete sequence', description: error.message, variant: 'destructive' })
-        },
-    })
-
-    const handleDelete = (id: string) => {
-        if (confirm('Are you sure you want to delete this sequence?')) {
-            deleteMutation.mutate(id)
-        }
-    }
-
     return (
         <OutreachLayout>
             {!currentOrganization ? (
@@ -513,7 +468,6 @@ export function SequencesPage() {
                                 key={sequence.id}
                                 sequence={sequence}
                                 stepsCount={sequence.steps?.length || 0}
-                                onDelete={handleDelete}
                             />
                         ))}
                     </div>

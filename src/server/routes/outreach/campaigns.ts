@@ -14,6 +14,7 @@ import {
 import {
     getCanonicalSequence,
     replaceCanonicalSequence,
+    deleteSequenceStep,
     sequencePayloadSchema,
 } from '../../lib/outreach-sequences'
 
@@ -863,6 +864,13 @@ router.post('/:campaignId/sequences', async (req: Request, res: Response) => {
 })
 
 // Delete sequence
+//
+// Phase 20 (CONS-01): a campaign has exactly ONE database-enforced canonical sequence. Deleting it
+// would leave the campaign with zero sequences AND, because outreach_emails.sequence_step_id is
+// ON DELETE CASCADE (schema.ts), silently destroy the send history of every referenced step — the
+// exact destruction PUT /:campaignId/sequence refuses with 409 sequence_step_referenced. A campaign
+// always retains its canonical sequence, so this endpoint refuses the operation. Edit the step set
+// via PUT /:campaignId/sequence (which preserves history) instead.
 router.delete('/sequences/:sequenceId', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
@@ -886,10 +894,11 @@ router.delete('/sequences/:sequenceId', async (req: Request, res: Response) => {
         const membership = await requireOutreachWrite(req, res, sequence.campaign.organizationId)
         if (!membership) return
 
-        await db.delete(sequenceSteps).where(eq(sequenceSteps.sequenceId, sequenceId))
-        await db.delete(sequences).where(eq(sequences.id, sequenceId))
-
-        res.json({ success: true })
+        return res.status(409).json({
+            error: 'A campaign always keeps its single canonical sequence. Edit its steps via '
+                + 'PUT /api/outreach/campaigns/:campaignId/sequence instead of deleting the sequence.',
+            code: 'canonical_sequence_undeletable',
+        })
     } catch (error) {
         console.error('Error deleting sequence:', error)
         res.status(500).json({ error: 'Internal server error' })
@@ -990,6 +999,11 @@ router.put('/sequences/steps/:stepId', async (req: Request, res: Response) => {
 })
 
 // Delete sequence step
+//
+// Routes through the canonical service so it honours the SAME history-preservation contract as
+// PUT /:campaignId/sequence: a step still referenced by send history (outreach_emails) or an active
+// lead pointer (campaign_leads) is refused with 409 sequence_step_referenced rather than being
+// cascade-deleted. Only an unreferenced step is hard-deleted.
 router.delete('/sequences/steps/:stepId', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
@@ -1017,7 +1031,20 @@ router.delete('/sequences/steps/:stepId', async (req: Request, res: Response) =>
         const membership = await requireOutreachWrite(req, res, step.sequence.campaign.organizationId)
         if (!membership) return
 
-        await db.delete(sequenceSteps).where(eq(sequenceSteps.id, stepId))
+        const result = await deleteSequenceStep({
+            stepId,
+            organizationId: step.sequence.campaign.organizationId,
+        })
+        if (!result.ok) {
+            if (result.reason === 'step_not_found') {
+                return res.status(404).json({ error: 'Step not found' })
+            }
+            return res.status(409).json({
+                error: 'Cannot delete a sequence step that already has send history or an active lead',
+                code: 'sequence_step_referenced',
+                conflicts: [{ stepId: result.stepId, stepOrder: result.stepOrder }],
+            })
+        }
 
         res.json({ success: true })
     } catch (error) {

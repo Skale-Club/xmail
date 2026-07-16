@@ -307,3 +307,50 @@ export async function replaceCanonicalSequence(input: {
         return { ok: true, sequence: { ...sequenceRow, steps: resultSteps } }
     })
 }
+
+export type DeleteSequenceStepResult =
+    | { ok: true }
+    | { ok: false; reason: 'step_not_found' }
+    | { ok: false; reason: 'step_referenced'; stepId: string; stepOrder: number }
+
+/**
+ * Hard-delete a single sequence step, but ONLY when it carries no send history and no active lead
+ * pointer. A referenced step (any `outreach_emails.sequence_step_id` or
+ * `campaign_leads.current_step_id` pointing at it) is refused with `step_referenced` — the SAME
+ * history-preservation gate `replaceCanonicalSequence` enforces, reusing `findReferencedStepIds`
+ * so the check is never duplicated. Without this gate the `ON DELETE CASCADE` on
+ * `outreach_emails.sequence_step_id` (schema.ts) would silently destroy sent-mail records.
+ *
+ * The step is resolved and deleted inside one transaction, scoped through its campaign
+ * organization; a missing or cross-tenant step returns `step_not_found`.
+ */
+export async function deleteSequenceStep(input: {
+    stepId: string
+    organizationId: string
+}): Promise<DeleteSequenceStepResult> {
+    const { stepId, organizationId } = input
+
+    return db.transaction(async (tx): Promise<DeleteSequenceStepResult> => {
+        const step = await tx.query.sequenceSteps.findFirst({
+            where: eq(sequenceSteps.id, stepId),
+            columns: { id: true, stepOrder: true },
+            with: {
+                sequence: {
+                    columns: { id: true },
+                    with: { campaign: { columns: { organizationId: true } } },
+                },
+            },
+        })
+        if (!step || step.sequence.campaign.organizationId !== organizationId) {
+            return { ok: false, reason: 'step_not_found' }
+        }
+
+        const referenced = await findReferencedStepIds(tx, [stepId])
+        if (referenced.has(stepId)) {
+            return { ok: false, reason: 'step_referenced', stepId, stepOrder: step.stepOrder }
+        }
+
+        await tx.delete(sequenceSteps).where(eq(sequenceSteps.id, stepId))
+        return { ok: true }
+    })
+}
