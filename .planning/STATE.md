@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-stopped_at: Completed 21-02-PLAN.md
-last_updated: "2026-07-16T12:42:17.735Z"
+stopped_at: Completed 21-03-PLAN.md
+last_updated: "2026-07-16T13:24:56.984Z"
 progress:
   total_phases: 15
   completed_phases: 7
   total_plans: 41
-  completed_plans: 30
+  completed_plans: 31
   percent: 60
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 21 (Unified Inbox Foundation) — NEXT
-Plan: 2 of 4
+Plan: 3 of 4
 Phase 20 (Outreach Product and API Consistency) — COMPLETE + VERIFIED (CONS-01..07; security + data-migration reviews clean; verifier found 1 blocking gap + 5 non-blocking, all fixed and re-reviewed clean; 422/422 tests)
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
@@ -131,8 +131,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T12:41:12.318Z
-Stopped at: Completed 21-02-PLAN.md
+Last session: 2026-07-16T13:24:39.337Z
+Stopped at: Completed 21-03-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -153,6 +153,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 20 P03 | 24min | 3 tasks | 17 files |
 | Phase 21 P01 | 35min | 3 tasks | 4 files |
 | Phase 21 P02 | 35min | 3 tasks | 9 files |
+| Phase 21 P03 | 30min | 3 tasks | 14 files |
 
 ## Decisions
 
@@ -182,3 +183,5 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 21]: (21-01) Cross-tenant safety is DB-enforced via composite (id, organization_id) FKs on every child; campaign_lead is bound through its campaign via (campaign_lead_id, campaign_id) since campaign_leads has no organization_id.
 - [Phase 21]: (21-02) Two independent lifecycles on outreach_provider_events: Phase 19 processed_at (classification side effects) vs Phase 21 materialization_status/lease/attempts (durable message). The materializer never reads/writes/claims processed_at; idempotency is DB-enforced via unique (org,account,source_key) + FOR UPDATE + 'materialized' short-circuit.
 - [Phase 21]: (21-02) Attribution precedence In-Reply-To -> References(root-first) -> trustworthy provider thread -> bounded address heuristic, scoped by org AND account with strategy+confidence recorded. Ambiguity = one lead across multiple campaigns (leads unique per org+email) -> unattributed; never cross-org.
+- [Phase 21]: (21-03) Provider field mapping lives in one boundary (unified-inbox/providers/{native,imap,outlook}.ts); IMAP now retains the full safe-header allow-list (was a 6-header subset), so native/IMAP/Graph materialize equivalent fields. Attachments stay metadata-only (id/name/mime/size/inline/contentId).
+- [Phase 21]: (21-03) Every durably sent outreach_email materializes to ONE outbound conversation message (source_key outreach-email:<id>) via the SOLE best-effort hook in outreach-dispatch.ts after finalizeSent; a bounded restart-safe NOT EXISTS anti-join backfill (outbound before inbound) closes crash windows without resending. Outbound roots its thread by its own Message-ID so inbound replies converge.
