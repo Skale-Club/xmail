@@ -1,11 +1,12 @@
 ---
 phase: 19
 phase_name: Provider Parity and Deliverability
-status: gaps_found
-score: 11/12 declared truths verified (6/6 artifacts, 8/8 key links)
+status: passed
+score: 12/12 declared truths verified (6/6 artifacts, 8/8 key links) after review-fix pass
 verified_at: 2026-07-16T02:35:00Z
+resolved_at: 2026-07-16T07:10:00Z
 verifier: Claude (gsd-verifier, Opus 4.8)
-re_verification: false
+re_verification: true
 gaps:
   - truth: "A verified Outlook outreach account has proven read, write, and send capability"
     plan: 19-04
@@ -31,6 +32,32 @@ human_verification:
     expected: "Initial delta cursor persists; one MIME campaign fixture sends with List-Unsubscribe/Message-ID intact; a reply and a DSN each produce exactly one outreach_provider_events row and one side effect."
     why_human: "Requires a real Microsoft 365 tenant. All 38 outlook-inbound tests and the Graph MIME send tests mock `fetch`, so Graph's real contract (sendMail MIME content-type acceptance, delta/410 semantics, scope shape) is unexercised."
 ---
+
+## Resolution addendum (2026-07-16, post review-fix)
+
+The verdict above was `gaps_found` on GAP-1 only (PROV-02 over-claim). The Phase 19 code review
+(`19-REVIEW.md`) additionally surfaced 3 critical + 5 warnings that the passing gates did not catch.
+All were addressed in a fix pass (`19-REVIEW-FIX.md`) and independently re-reviewed: **all 8 findings
+confirmed fixed, no new regressions, 353/353 tests, lint clean, both tsc projects clean.**
+
+GAP-1 is resolved as a wording correction, exactly as this report recommended: 19-04's declared truth
+and summary were changed from "proven send capability" to what the code actually guarantees — proven
+**inbound** capability plus **asserted** send/write from the granted scope list (Graph has no zero-send
+probe; 19-04 pre-authorised this fallback). The safety property that matters — an Outlook account is
+**never** verified send-only — is proven and was hardened by the W-1 fix (a Graph 429/503 on the first
+delta page now leaves the account `pending`, never `verified`).
+
+The manual Outlook sandbox gate remains an **operator prerequisite** carried forward (see
+`human_verification` above): the entire Graph surface is still verified only against mocked `fetch`.
+This is the one item that cannot be closed without a real Microsoft 365 tenant and does not block the
+phase, since no live cold outreach runs yet (no disposable sending domain).
+
+Phase 19 status is therefore **passed**. The critical fixes closed real defects the phase would
+otherwise have shipped: authenticated SMTP over cleartext on port 25, silent loss of inbound bounce
+events on container restart, and an ex-member's personal INBOX being staged under their former
+organization. A latent bug the review missed — `markAsReplied` binding a raw `Date` into a drizzle
+`sql` template, which threw on every matched reply since it shipped — was also found and fixed during
+the pass.
 
 # Phase 19: Provider Parity and Deliverability — Verification Report
 

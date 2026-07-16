@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-stopped_at: Completed 19-04-PLAN.md
-last_updated: "2026-07-16T06:07:06.000Z"
+stopped_at: Completed + verified phase 19 (review-fix pass clean)
+last_updated: "2026-07-16T07:15:00.000Z"
 progress:
   total_phases: 15
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 41
-  completed_plans: 25
-  percent: 60
+  completed_plans: 29
+  percent: 71
 ---
 
 # Project State
@@ -27,14 +27,19 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 19 (Provider Parity and Deliverability) — IN PROGRESS
-Plan: 4 of 4 complete (19-01 SMTP TLS parity, 19-02 provider MIME parity, 19-03 provider-neutral inbound staging)
+Phase: 20 (Outreach Product and API Consistency) — NEXT
+Plan: 0 of 3
+Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
 Status: Ready to execute
 
-**Resume point:** Execute 19-04-PLAN.md (Outlook Graph inbound + activation gate). Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
+**Resume point:** Execute Phase 20 (product/API consistency: settings applied, follow-up limits, search, schema-migration parity). Then 21 (Unified Inbox foundation), 22 (Unified Inbox UX), 23 (guarded AI automation).
+
+**Operator prerequisites accumulated (do NOT auto-apply):**
+- Migrations 038 (dispatch state machine) and 039 (provider events/cursors) are written + tested against disposable Postgres but NOT applied to production. Applying them is a manual deploy step.
+- Outlook Graph sandbox gate (19-04 <verification>) unrun — needs a real Microsoft 365 tenant. Entire Graph surface is mock-verified only.
 
 > **Progress counters:** the `state` tool derives these from ROADMAP-registered phases
 > only (05-09 + 14-23 = 15 phases, 41 plans, 24 summaries). Phases 10-13 exist under
