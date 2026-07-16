@@ -406,41 +406,28 @@ router.post('/:token', async (req, res: Response) => {
     return res.send(generateUnsubscribeHtml(result.lead!.email, campaign?.name || 'our mailing list'))
 })
 
-router.get('/check/:leadId/:campaignId', async (req, res: Response) => {
-    const { leadId, campaignId } = req.params
+// Unsubscribe-status probe. Requires the SAME HMAC `unsub` token as the one-click flow —
+// raw lead/campaign ids are NOT a valid route shape, so a leaked or logged id pair can no
+// longer be enumerated (the token is unforgeable without ENCRYPTION_KEY/JWT_SECRET). The
+// response is reduced to a single boolean: it never echoes the email, lead status, or
+// campaign-lead status. Read-only, RFC 8058-safe (no DB writes). Hardens the pre-existing
+// unauthenticated info-disclosure endpoint flagged out-of-scope by Phase 20's review.
+router.get('/check/:token', async (req, res: Response) => {
+    const { token } = req.params
 
-    const lead = await db.query.leads.findFirst({
-        where: eq(leads.id, leadId),
-        columns: {
-            id: true,
-            email: true,
-            status: true,
-            unsubscribedAt: true,
-        },
-    })
-
-    if (!lead) {
-        return res.status(404).json({ error: 'Lead not found' })
+    const decoded = verifyOutreachToken(token, 'unsub')
+    if (!decoded || !decoded.cid) {
+        return res.status(400).json({ error: 'Invalid or expired unsubscribe token' })
     }
 
-    const campaignLead = await db.query.campaignLeads.findFirst({
-        where: and(
-            eq(campaignLeads.leadId, leadId),
-            eq(campaignLeads.campaignId, campaignId)
-        ),
-        columns: {
-            id: true,
-            status: true,
-        },
-    })
+    const target = await resolveUnsubscribeTarget(decoded.clid, decoded.cid)
+    if (!target) {
+        return res.status(404).json({ error: 'Not found' })
+    }
 
+    const { lead } = target
     res.json({
-        leadId: lead.id,
-        campaignId,
         isUnsubscribed: lead.status === 'unsubscribed' || !!lead.unsubscribedAt,
-        leadStatus: lead.status,
-        unsubscribedAt: lead.unsubscribedAt,
-        campaignLeadStatus: campaignLead?.status || null,
     })
 })
 
