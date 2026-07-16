@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-last_updated: "2026-07-16T02:43:30.658Z"
+last_updated: "2026-07-16T03:03:48.872Z"
 progress:
   total_phases: 14
   completed_phases: 4
   total_plans: 45
-  completed_plans: 19
-  percent: 42
+  completed_plans: 20
+  percent: 44
 ---
 
 # Project State
@@ -27,14 +27,14 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 18 (Outreach Safety and Execution Reliability) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
 Status: Ready to execute
 
-**Resume point:** Execute `18-03-PLAN.md`. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
+**Resume point:** Execute `18-04-PLAN.md`. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
 
-Progress: [████░░░░░░] 42%
+Progress: [████░░░░░░] 44%
 
 ### v1.2 Phase Status
 
@@ -114,10 +114,10 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T02:43:30.649Z
-Stopped at: Completed 18-02-PLAN.md
+Last session: 2026-07-16T03:03:48.864Z
+Stopped at: Completed 18-03-PLAN.md
 Resume file: None
-Next action: execute `.planning/phases/18-outreach-safety-and-execution-reliability/18-03-PLAN.md`
+Next action: execute `.planning/phases/18-outreach-safety-and-execution-reliability/18-04-PLAN.md`
 
 ## Performance Metrics
 
@@ -125,8 +125,12 @@ Next action: execute `.planning/phases/18-outreach-safety-and-execution-reliabil
 |-------|------|----------|-------|
 | Phase 18 P01 | 13 min | 3 tasks | 11 files |
 | Phase 18 P02 | 8 min | 2 tasks | 4 files |
+| Phase 18 P03 | 18 min | 2 tasks | 10 files |
 
 ## Decisions
 
 - [Phase 18]: Explicit delay rows own their wait; email-to-delay transitions are immediate. — Applies delayHours exactly once while preserving email-only timing.
 - [Phase 18]: Activation validates the oldest-created canonical sequence and returns stable 422 issue codes. — Matches current enrollment selection until Phase 20 adds an explicit canonical sequence.
+- [Phase 18]: Unknown provider acceptance becomes held and is never retried automatically. — SMTP cannot prove exactly-once delivery after remote acceptance and process loss.
+- [Phase 18]: Every dispatch finalize is conditioned on the owning lease token. — Expired workers cannot overwrite a newer recovery decision.
+- [Phase 18]: Retry classification distinguishes known pre-acceptance negatives from terminal and ambiguous failures. — Only safe SMTP 4xx, HTTP 408/429/5xx, DNS, and pre-DATA connection failures receive bounded backoff.
