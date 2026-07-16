@@ -16,7 +16,8 @@
 //   3. dispatch — the executor loads ready bytes for the command's ids (loadAttachmentsForDispatch)
 //                 and hands them to the shared composer as MIME parts.
 //   4. download — requireOutreachRead returns only a short-lived signed URL (getAttachmentDownloadUrl).
-//   5. cleanup  — delete removes row + object; a lifecycle job prunes expired pending intents.
+//   5. cleanup  — delete removes row + object; a lifecycle job (cleanupExpiredAttachments, wired
+//                 in jobs/index.ts) prunes expired intents AND abandoned, never-bound `ready` uploads.
 //
 // The bounded validation is a PURE function so it is fully unit-testable without Storage/DB.
 
@@ -374,7 +375,13 @@ export async function deleteInboxAttachment(organizationId: string, attachmentId
     await storage.remove(rows[0].bucket, [rows[0].path]).catch(() => {})
 }
 
-/** Prune pending/orphan intents older than the TTL (row + object). Returns the count removed. */
+/**
+ * Prune abandoned attachment rows older than the TTL (row + object). Returns the count removed.
+ * Covers pending/failed intents AND abandoned `ready` uploads that were never bound to a send
+ * command — an upload marks the row `ready` immediately, so a `ready` row with no sendCommandId
+ * older than the TTL is an orphaned upload whose object would otherwise leak in the private bucket.
+ * The isNull(sendCommandId) guard + the 24h TTL leave any in-flight compose→bind window untouched.
+ */
 export async function cleanupExpiredAttachments(deps: AttachmentDeps = {}): Promise<number> {
     const storage = deps.storage ?? defaultStorage()
     const now = (deps.now ?? (() => new Date()))()
@@ -387,7 +394,11 @@ export async function cleanupExpiredAttachments(deps: AttachmentDeps = {}): Prom
         .where(and(
             lt(inboxAttachments.createdAt, cutoff),
             isNull(inboxAttachments.sendCommandId),
-            or(eq(inboxAttachments.status, 'pending'), eq(inboxAttachments.status, 'failed')),
+            or(
+                eq(inboxAttachments.status, 'pending'),
+                eq(inboxAttachments.status, 'failed'),
+                eq(inboxAttachments.status, 'ready'),
+            ),
         ))
         .returning({ bucket: inboxAttachments.storageBucket, path: inboxAttachments.storagePath })
     if (rows.length > 0) {

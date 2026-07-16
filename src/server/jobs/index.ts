@@ -8,6 +8,7 @@ import { runBouncesProcessorWithLock } from './processBounces'
 import { runFollowUpsProcessorWithLock } from './processFollowUps'
 import { runMaterializerWithLock } from './materializeUnifiedInbox'
 import { runInboxCommandsWithLock } from './processInboxCommands'
+import { cleanupExpiredAttachments } from '../lib/inbox-attachments'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
 import { createLogger } from '../lib/logger'
@@ -160,8 +161,26 @@ export function startJobs(): void {
         })
     })
 
+    // Phase 22 — storage hygiene: prune abandoned Unified Inbox attachment uploads (expired
+    // intents AND never-bound `ready` orphans) daily so their objects don't leak in the private
+    // bucket. Global reaper (no org scope needed); the isNull(sendCommandId) + 24h TTL guard keeps
+    // any in-flight compose→bind window safe.
+    cron.schedule('30 3 * * *', () => {
+        cleanupExpiredAttachments()
+            .then((removed) => {
+                if (removed > 0) log.info({ action: 'outreach.jobs.cleanupInboxAttachments_removed', removed }, 'pruned abandoned inbox attachments')
+            })
+            .catch((err) => {
+                const e = err instanceof Error ? err : new Error(String(err))
+                log.error({
+                    action: 'outreach.jobs.cleanupInboxAttachments_failed',
+                    error: { message: e.message, stack: e.stack },
+                }, 'cleanupInboxAttachments failed')
+            })
+    })
+
     log.info({
         action: 'outreach.jobs.scheduler_ready',
-        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, followups=10min, unifiedInbox=5min, inboxCommands=1min',
+        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, followups=10min, unifiedInbox=5min, inboxCommands=1min, cleanupInboxAttachments=daily-3:30am',
     }, 'scheduler ready')
 }

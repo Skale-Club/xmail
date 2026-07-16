@@ -113,12 +113,18 @@ export function InboxFilterRail({
                                 >
                                     {view.icon}
                                     <span className="flex-1 text-left">{view.label}</span>
-                                    {view.key === 'unread' && unreadCount != null && unreadCount > 0 && (
-                                        <span
-                                            className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-primary-foreground"
-                                            aria-label={`${unreadCount} unread`}
-                                        >
-                                            <span aria-hidden="true">{unreadCount > 99 ? '99+' : unreadCount}</span>
+                                    {/* Persistent polite live region so unread-count changes
+                                        (SSE/poll driven) are announced to screen readers. */}
+                                    {view.key === 'unread' && (
+                                        <span aria-live="polite" aria-atomic="true">
+                                            {unreadCount != null && unreadCount > 0 && (
+                                                <span
+                                                    className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-primary-foreground"
+                                                    aria-label={`${unreadCount} unread`}
+                                                >
+                                                    <span aria-hidden="true">{unreadCount > 99 ? '99+' : unreadCount}</span>
+                                                </span>
+                                            )}
                                         </span>
                                     )}
                                 </button>
