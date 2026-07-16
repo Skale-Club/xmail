@@ -253,7 +253,10 @@ export function UnifiedInboxPage() {
             onAttachLabel={(label) => labelAttach.mutate({ conversationId: detailConversation.id, label })}
             onDetachLabel={(labelId) => labelDetach.mutate({ conversationId: detailConversation.id, labelId })}
             onCreateReminder={(remindAt, note) => reminderMutations.create.mutate({ remindAt, note })}
-            busy={readState.isPending || archive.isPending || statusMutation.isPending}
+            // Label attach/detach share this gate with read/archive/status so single-conversation
+            // optimistic mutations never overlap. Concurrent mutations snapshot the same org-wide
+            // list, so one's rollback could otherwise revert another's applied optimistic patch.
+            busy={readState.isPending || archive.isPending || statusMutation.isPending || labelAttach.isPending || labelDetach.isPending}
         />
     ) : null
 

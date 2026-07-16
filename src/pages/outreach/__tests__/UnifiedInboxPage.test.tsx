@@ -621,6 +621,7 @@ const hooks = vi.hoisted(() => {
             search: '',
             list: makeListReturn([]),
             detail: { data: undefined as InboxConversationDetail | undefined, isLoading: false, isError: false, refetch: vi.fn() },
+            labelAttachPending: false,
         },
         makeListReturn,
     }
@@ -659,7 +660,7 @@ vi.mock('@/hooks/useUnifiedInbox', () => ({
     useInboxReadState: () => stubMutation(),
     useInboxArchive: () => stubMutation(),
     useInboxStatus: () => stubMutation(),
-    useInboxLabelAttach: () => stubMutation(),
+    useInboxLabelAttach: () => ({ ...stubMutation(), isPending: hooks.state.labelAttachPending }),
     useInboxLabelDetach: () => stubMutation(),
     useCreateInboxLabel: () => stubMutation(),
     useInboxBulkAction: () => stubMutation(),
@@ -688,6 +689,7 @@ describe('UnifiedInboxPage: tenant isolation + selection', () => {
         hooks.state.search = ''
         hooks.state.list = hooks.makeListReturn([])
         hooks.state.detail = { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
+        hooks.state.labelAttachPending = false
     })
 
     it('prompts to pick an organization when none is selected', () => {
@@ -724,6 +726,20 @@ describe('UnifiedInboxPage: tenant isolation + selection', () => {
         render(<UnifiedInboxPage />)
         fireEvent.click(screen.getByRole('button', { name: /Back/ }))
         expect(hooks.navigate).toHaveBeenCalledWith('/outreach/unified-inbox')
+    })
+
+    // W-4: label attach/detach were NOT in the shared `busy` gate, so an operator could fire a
+    // label op concurrently with archive/read/status — and a failed label rollback (org-wide list
+    // snapshot) could revert the other in-flight mutation's optimistic patch. Gating label ops with
+    // the other single-conversation actions prevents the overlap.
+    it('gates single-conversation actions while a label mutation is in flight', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        hooks.state.labelAttachPending = true
+        render(<UnifiedInboxPage />)
+        expect(screen.getByRole('button', { name: 'Mark read' })).toBeDisabled()
+        expect(screen.getByRole('button', { name: 'Archive' })).toBeDisabled()
     })
 })
 
@@ -879,6 +895,32 @@ describe('operator mutations: optimistic + rollback', () => {
             await result.current.mutateAsync({ conversationIds: [CONV_1, CAMPAIGN_1], action: 'read' }).catch(() => undefined)
         })
 
+        expect(listConversations(queryClient, listKey).every((c) => c.unread === true)).toBe(true)
+    })
+
+    // W-3: the bulk mutation optimistically patches every selected conversation's DETAIL cache, so
+    // a failed bulk action must restore the open thread's detail too — not just the list — or an
+    // open selected thread's header shows a phantom optimistic state (misrepresenting a failure).
+    it('restores the DETAIL cache of an open selected conversation when a bulk action fails', async () => {
+        const { queryClient, wrapper } = makeWrapper()
+        const listKey = seedList(queryClient, ORG_A, [
+            makeConversation({ id: CONV_1, unread: true }),
+            makeConversation({ id: CAMPAIGN_1, unread: true }),
+        ])
+        // Conversation X (CONV_1) is OPEN — its thread header shows unread=true.
+        const detailKey = inboxKeys.detail(ORG_A, CONV_1)
+        queryClient.setQueryData(detailKey, makeDetail({ conversation: { ...makeDetail().conversation, unread: true } }))
+        apiClientMocks.apiFetch.mockRejectedValueOnce(new apiClientMocks.ApiClientError('nope', { status: 500 }))
+
+        const { result } = renderHook(() => hooksModule.useInboxBulkAction(ORG_A), { wrapper })
+        await act(async () => {
+            await result.current.mutateAsync({ conversationIds: [CONV_1, CAMPAIGN_1], action: 'read' }).catch(() => undefined)
+        })
+        await waitFor(() => expect(result.current.isError).toBe(true))
+
+        // The open thread's detail is restored (still unread) — never left optimistically read.
+        expect((queryClient.getQueryData(detailKey) as InboxConversationDetail).conversation.unread).toBe(true)
+        // And the list rollback still holds.
         expect(listConversations(queryClient, listKey).every((c) => c.unread === true)).toBe(true)
     })
 })

@@ -341,12 +341,27 @@ export function useCreateInboxLabel(organizationId: string | undefined) {
  */
 export function useInboxBulkAction(organizationId: string | undefined) {
     const queryClient = useQueryClient()
-    return useMutation<BulkInboxResult, Error, BulkInboxInput & { label?: InboxLabel }, { listSnapshots: ListSnapshot }>({
+    return useMutation<
+        BulkInboxResult,
+        Error,
+        BulkInboxInput & { label?: InboxLabel },
+        { listSnapshots: ListSnapshot; detailSnapshots: Array<[readonly unknown[], InboxConversationDetail | undefined]> }
+    >({
         mutationFn: ({ label: _label, ...input }) => bulkUpdateInboxConversations(organizationId as string, input),
         onMutate: async (vars) => {
             await queryClient.cancelQueries({ predicate: isOrgListQuery(organizationId) })
             const listSnapshots = snapshotInboxLists(queryClient, organizationId)
+            // Snapshot the DETAIL cache of every selected conversation too — bulk optimistically
+            // patches each detail below, so a rollback must restore them exactly like the list (the
+            // single-conversation path already does this). Otherwise an OPEN selected thread's
+            // header is left showing a phantom optimistic state after a failed bulk action.
+            const detailSnapshots: Array<[readonly unknown[], InboxConversationDetail | undefined]> = []
             const ids = new Set(vars.conversationIds)
+            for (const id of vars.conversationIds) {
+                const detailKey = inboxKeys.detail(organizationId, id)
+                await queryClient.cancelQueries({ queryKey: detailKey })
+                detailSnapshots.push([detailKey, queryClient.getQueryData<InboxConversationDetail>(detailKey)])
+            }
             patchInboxLists(queryClient, organizationId, (item) => {
                 if (!ids.has(item.id)) return item
                 return applyBulkOptimistic(item, vars)
@@ -354,14 +369,20 @@ export function useInboxBulkAction(organizationId: string | undefined) {
             for (const id of vars.conversationIds) {
                 patchInboxDetail(queryClient, organizationId, id, (s) => applyBulkSummaryOptimistic(s, vars))
             }
-            return { listSnapshots }
+            return { listSnapshots, detailSnapshots }
         },
         onError: (_error, _vars, context) => {
-            if (context) restoreInboxLists(queryClient, context.listSnapshots)
+            if (!context) return
+            restoreInboxLists(queryClient, context.listSnapshots)
+            for (const [detailKey, data] of context.detailSnapshots) queryClient.setQueryData(detailKey, data)
         },
-        onSettled: () => {
+        onSettled: (_data, _error, vars) => {
             queryClient.invalidateQueries({ queryKey: inboxKeys.unread(organizationId) })
             queryClient.invalidateQueries({ predicate: isOrgListQuery(organizationId) })
+            // Invalidate each affected detail so the open thread reconciles to server truth on settle.
+            for (const id of vars.conversationIds) {
+                queryClient.invalidateQueries({ queryKey: inboxKeys.detail(organizationId, id) })
+            }
         },
     })
 }
