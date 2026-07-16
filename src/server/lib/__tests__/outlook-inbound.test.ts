@@ -97,7 +97,11 @@ function outlookMailbox(overrides: Record<string, unknown> = {}) {
         status: 'active',
         accessTokenEncrypted: encryptSecret('access-token-current'),
         refreshTokenEncrypted: encryptSecret('refresh-token-current'),
-        tokenExpiresAt: new Date(NOW.getTime() + 60 * 60_000),
+        // getValidOutlookAccessToken checks expiry against the REAL Date.now(), not the injected
+        // `now`, so this must be relative to real time — pinning it to NOW+1h made the fixture
+        // spuriously "expired" and hit the refresh path once the real wall clock passed the
+        // simulated 13:00Z, failing every reader test with "Failed to obtain Outlook token".
+        tokenExpiresAt: new Date(Date.now() + 60 * 60_000),
         lastSyncedAt: null,
         lastSendAt: null,
         createdAt: new Date(),
