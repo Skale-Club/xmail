@@ -200,6 +200,44 @@ describe('dispatchOutreachMessage', () => {
         expect(deps.provider.send).not.toHaveBeenCalled()
     })
 
+    // W-4. `.local` is reserved for mDNS (RFC 6762): it never resolves publicly and it does
+    // not match From, and receiver-side filters score both Message-ID domain validity and
+    // From-domain correspondence on unsolicited bulk mail. The digest is derived from
+    // (organizationId, idempotencyKey) and the LOCAL PART carries identity, so the domain
+    // can move to the sender's real one without touching Phase 18 idempotency.
+    it('mints a Message-ID on the sender domain rather than the mDNS-reserved .local', () => {
+        const id = createStableOutreachMessageId(INPUT.organizationId, INPUT.idempotencyKey, 'seller@skale.club')
+
+        expect(id).toMatch(/^<xmail-[0-9a-f]{40}@skale\.club>$/)
+        expect(id).not.toContain('.local')
+    })
+
+    it('keeps the local part stable across senders, so Phase 18 idempotency is untouched', () => {
+        const local = (id: string) => id.slice(1, id.indexOf('@'))
+
+        // Same (organizationId, idempotencyKey) => same identity, whatever the domain. This
+        // is what makes a retry reuse one Message-ID rather than mint a second.
+        expect(local(createStableOutreachMessageId(INPUT.organizationId, INPUT.idempotencyKey, 'a@one.test')))
+            .toBe(local(createStableOutreachMessageId(INPUT.organizationId, INPUT.idempotencyKey, 'b@two.test')))
+
+        expect(local(createStableOutreachMessageId(INPUT.organizationId, 'other-key', 'a@one.test')))
+            .not.toBe(local(createStableOutreachMessageId(INPUT.organizationId, INPUT.idempotencyKey, 'a@one.test')))
+    })
+
+    it('lowercases the sender domain so the stored id matches the LOWER() matcher', () => {
+        // The dispatcher stores the id unbracketed and processReplies compares with LOWER();
+        // minting a mixed-case domain would still match, but normalizing here keeps the
+        // stored value and the composed header byte-identical.
+        expect(createStableOutreachMessageId(INPUT.organizationId, INPUT.idempotencyKey, 'Seller@Skale.Club'))
+            .toBe(createStableOutreachMessageId(INPUT.organizationId, INPUT.idempotencyKey, 'seller@skale.club'))
+    })
+
+    it('refuses to mint an id for a sender with no usable domain', () => {
+        // Better a dispatch failure than a message shipped with an unroutable Message-ID.
+        expect(() => createStableOutreachMessageId(INPUT.organizationId, INPUT.idempotencyKey, 'not-an-address'))
+            .toThrow(/domain/i)
+    })
+
     it('uses one stable Message-ID and rejects a stale-token success finalize', async () => {
         const repo = repository()
         vi.mocked(repo.finalizeSent).mockResolvedValue(false)
