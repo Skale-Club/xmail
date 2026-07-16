@@ -186,3 +186,38 @@ hygiene with no observable-truth impact and is safe to address in a follow-up.
 
 _Verified: 2026-07-16T20:35:00Z_
 _Verifier: Claude (gsd-verifier) — direct source inspection + fresh test/build/lint/tsc runs_
+
+## Resolution addendum (2026-07-16, post review-fix)
+
+The phase passed verification with no gaps. It also went through a full 3-lens code review
+(`22-REVIEW.md`) — backend security/send-safety, frontend correctness, and requirements verification.
+The security and safety-critical surfaces were **clean across all lenses** (policy-gated unspoofable
+send, tenant scoping, SSE org-isolation with no body broadcast, bounded/owned attachments, the
+`@domain` suppression widening exact-match and org-scoped). The review found **1 critical + 6 warnings
++ 2 info**, all client-side draft-loss and same-org reliability/correctness gaps the tests missed. All
+were fixed and independently re-reviewed (all 9 CONFIRMED FIXED, no new regressions):
+
+- **C-1 (critical)** — an open thread blanked and the composer draft was destroyed when a background
+  detail refetch errored (React Query v5 retains cached data on a failed background refetch; SSE
+  invalidates the open thread on every org event). Fixed: the error card renders only with no cached
+  data; on a failed background refresh the thread + composer stay mounted with a non-destructive
+  "couldn't refresh" banner. Directly restores the UIX-06 "events must not clobber an active composer"
+  guarantee.
+- **W-1** — a multi-recipient forward reached only the first To address; the rest were silently
+  dropped. Fixed: remaining recipients folded into the envelope Cc, still suppression-filtered and
+  still through the Phase 18 policy gate.
+- **W-2** — a scheduled reply could send silently missing attachments the operator deleted before
+  send-time. Fixed: dispatch re-asserts the full attachment set; any missing → the command is held
+  with a visible reason (no partial send), transient storage errors still reschedule.
+- **W-3/W-4/W-5/W-6** — bulk mutation now snapshots/restores the detail cache; label ops joined the
+  shared busy gate; org switch clears bulk selection + prior-org filter UUIDs; the conversation list
+  keeps cached rows on a failed background refetch. **I-1/I-2** — the expired-attachment reaper is
+  scheduled; the unread badge is in an aria-live region.
+
+**Fresh gates after fixes:** `npm run test` **700 passed (50 files)**, green and byte-identical on
+repeat runs; build exit 0; lint 0 warnings; client and server `tsc --noEmit` both clean.
+
+Phase 22 status remains **passed**, now with the review findings resolved. The Unified Inbox operator
+experience is complete: workspace UI, actions with rollback, reply/forward through the durable
+policy-gated executor, durable scheduling, bounded attachments, and near-real-time updates that
+preserve the operator's draft.
