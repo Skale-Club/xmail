@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-stopped_at: Completed + verified phase 19 (review-fix pass clean)
-last_updated: "2026-07-16T07:15:00.000Z"
+stopped_at: Completed 20-01-PLAN.md
+last_updated: "2026-07-16T08:37:08.728Z"
 progress:
   total_phases: 15
-  completed_phases: 7
+  completed_phases: 6
   total_plans: 41
-  completed_plans: 29
-  percent: 71
+  completed_plans: 26
+  percent: 60
 ---
 
 # Project State
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 20 (Outreach Product and API Consistency) — NEXT
-Plan: 0 of 3
+Plan: 1 of 3
 Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..05; review found 3 critical + 5 warnings, all fixed and re-reviewed clean; 353/353 tests)
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
@@ -38,6 +38,7 @@ Status: Ready to execute
 **Resume point:** Execute Phase 20 (product/API consistency: settings applied, follow-up limits, search, schema-migration parity). Then 21 (Unified Inbox foundation), 22 (Unified Inbox UX), 23 (guarded AI automation).
 
 **Operator prerequisites accumulated (do NOT auto-apply):**
+
 - Migrations 038 (dispatch state machine) and 039 (provider events/cursors) are written + tested against disposable Postgres but NOT applied to production. Applying them is a manual deploy step.
 - Outlook Graph sandbox gate (19-04 <verification>) unrun — needs a real Microsoft 365 tenant. Entire Graph surface is mock-verified only.
 
@@ -128,8 +129,8 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T06:07:05.996Z
-Stopped at: Completed 19-04-PLAN.md
+Last session: 2026-07-16T08:36:54.100Z
+Stopped at: Completed 20-01-PLAN.md
 Resume file: None
 Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation gate).
 
@@ -145,6 +146,7 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 | Phase 19 P02 | 18min | 2 tasks | 7 files |
 | Phase 19 P03 | 22min | 2 tasks | 10 files |
 | Phase 19 P04 | 32min | 3 tasks | 8 files |
+| Phase 20 P01 | 34min | 3 tasks | 11 files |
 
 ## Decisions
 
@@ -165,3 +167,4 @@ Next action: execute Phase 19 Plan 04 (Outlook Graph inbound sync + activation g
 - [Phase 19]: (19-03) IMAP provider_message_id prefers the internet Message-ID over uid coordinates, because uid:<validity>:<uid> is not stable across a UIDVALIDITY reset and would re-ingest the whole mailbox as new events.
 - [Phase 19]: Outlook fresh-chain state is carried on the delta cursor itself; it cannot be inferred from a null cursor or the link shape
 - [Phase 19]: Outlook send capability is asserted from the granted Mail.Send scope: Graph has no zero-send probe, and the gate is stated in the verify response
+- [Phase 20]: Campaign sequences: one DB-enforced canonical sequence per campaign; transactional replace endpoint derives one-based step order from array position and returns 409 rather than orphaning referenced steps
