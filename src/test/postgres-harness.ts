@@ -220,6 +220,71 @@ async function installCampaignsAiAutonomousColumn(target: MigrationTarget): Prom
     }
 }
 
+/**
+ * outreach_ai_runs (migration 043) is read by the Phase 23 autonomous processor, which the campaign
+ * follow-up job (`processFollowUps` → `processDueAutonomousRuns`) queries on every tick. Any campaign-
+ * lifecycle suite that drives that job therefore needs the table to EXIST, or its `SELECT` fails with
+ * `relation "outreach_ai_runs" does not exist`. The full 043 file cannot be replayed in this generic
+ * baseline (its composite FKs target the Phase 21/22 tables 041/042 do not seed here, and its RLS
+ * references helpers this harness deliberately stubs), but the column-only CREATE is self-contained
+ * and idempotent — mirroring `installCampaignsAiAutonomousColumn` above. The dedicated migration suite
+ * (`inbox-ai-migration.db.test.ts`) still applies the FULL 043 explicitly (twice, for idempotency),
+ * which adds every constraint / index / RLS policy over this table via its own IF-NOT-EXISTS /
+ * DROP-then-ADD guards — so this baseline only closes the "table must exist for a SELECT" gap.
+ */
+async function installOutreachAiRunsTable(target: MigrationTarget): Promise<void> {
+    assertSafeTestDatabaseUrl(target.databaseUrl, target)
+    const sql = postgres(target.databaseUrl, { max: 1, prepare: false, onnotice: () => {} })
+    try {
+        // Column-for-column parity with 043's CREATE TABLE (and the Drizzle schema, which selects every
+        // mapped column). No FKs / checks / indexes / RLS — those are owned by the full-043 migration suite.
+        await sql.unsafe(`
+            CREATE TABLE IF NOT EXISTS public.outreach_ai_runs (
+                id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                organization_id uuid NOT NULL,
+                conversation_id uuid,
+                campaign_id uuid,
+                campaign_lead_id uuid,
+                trigger_message_id uuid,
+                input_message_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+                context_hash text,
+                run_kind text NOT NULL,
+                status text NOT NULL DEFAULT 'pending',
+                action text,
+                prompt_version text,
+                provider text,
+                model text,
+                model_parameters jsonb NOT NULL DEFAULT '{}'::jsonb,
+                output_subject text,
+                output_body text,
+                output_outcome text,
+                policy_code text,
+                policy_retry_at timestamp,
+                actor_user_id uuid,
+                approved_by_user_id uuid,
+                approved_at timestamp,
+                send_command_id uuid,
+                outreach_email_id uuid,
+                lease_token uuid,
+                lease_expires_at timestamp,
+                attempts integer NOT NULL DEFAULT 0,
+                max_attempts integer NOT NULL DEFAULT 5,
+                idempotency_key text NOT NULL,
+                latency_ms integer,
+                prompt_tokens integer,
+                completion_tokens integer,
+                total_tokens integer,
+                error_code text,
+                error_detail text,
+                created_at timestamp DEFAULT now() NOT NULL,
+                updated_at timestamp DEFAULT now() NOT NULL
+            );
+        `)
+    } finally {
+        await sql.end({ timeout: 1 })
+    }
+}
+
 export async function applyHandWrittenMigrations(
     target: MigrationTarget,
     rootDir = process.cwd(),
@@ -243,6 +308,9 @@ export async function applyHandWrittenMigrations(
     // Canonical campaigns column from 043 (see note above) — applied inline because the full file
     // has dependencies the generic baseline does not seed.
     await installCampaignsAiAutonomousColumn(target)
+    // outreach_ai_runs table from 043 (columns only) so the follow-up job's autonomous-run SELECT
+    // succeeds in every campaign-lifecycle suite. The full-043 migration suite adds constraints/RLS.
+    await installOutreachAiRunsTable(target)
 }
 
 export async function applyMigrationFile(target: MigrationTarget, filePath: string): Promise<void> {
