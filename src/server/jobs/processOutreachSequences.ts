@@ -12,7 +12,7 @@ import {
     resolveSequenceAction,
     TERMINAL_CAMPAIGN_LEAD_STATUSES,
 } from '../lib/outreach-sequence-state'
-import { incrementAccountStats, incrementCampaignStats } from '../lib/outreach-sender'
+import { incrementCampaignStats } from '../lib/outreach-sender'
 import { generateOutreachToken } from '../lib/outreach-tokens'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 
@@ -138,8 +138,8 @@ async function advanceCampaignLeadAfterDispatch(
     campaignLead: CampaignLeadWithRelations,
     sequenceAction: Extract<ReturnType<typeof resolveSequenceAction>, { type: 'send_email' }>,
     sentAt: Date,
-): Promise<void> {
-    await db.update(campaignLeads)
+): Promise<boolean> {
+    const advanced = await db.update(campaignLeads)
         .set({
             status: 'contacted',
             firstContactedAt: campaignLead.firstContactedAt ?? sentAt,
@@ -150,7 +150,16 @@ async function advanceCampaignLeadAfterDispatch(
             completedAt: sequenceAction.nextStep ? campaignLead.completedAt : sentAt,
             updatedAt: sentAt,
         })
-        .where(eq(campaignLeads.id, campaignLead.id))
+        .where(and(
+            eq(campaignLeads.id, campaignLead.id),
+            eq(campaignLeads.currentStepId, sequenceAction.step.id),
+            sql`${campaignLeads.status} NOT IN (${sql.join(
+                TERMINAL_CAMPAIGN_LEAD_STATUSES.map((status) => sql`${status}`),
+                sql`, `,
+            )})`,
+        ))
+        .returning({ id: campaignLeads.id })
+    return advanced.length === 1
 }
 
 export async function processOutreachSequences(): Promise<{ processed: number; sent: number; errors: number }> {
@@ -263,6 +272,9 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
 
             const abVariant = selectAbVariant(emailStep, lead.id)
             const trackingToken = generateOutreachToken({ kind: 'track', clid: campaignLead.id, cid: campaign.id })
+            const frozenSubject = abVariant === 'b' && emailStep.subjectB ? emailStep.subjectB : sequenceAction.content.subject
+            const frozenText = abVariant === 'b' && emailStep.plainBodyB ? emailStep.plainBodyB : sequenceAction.content.plainBody
+            const frozenHtml = abVariant === 'b' && emailStep.htmlBodyB ? emailStep.htmlBodyB : sequenceAction.content.htmlBody
             const dispatchResult = await dispatchOutreachMessage({
                 origin: 'campaign',
                 organizationId: campaign.organizationId,
@@ -274,9 +286,9 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 trackingToken,
                 idempotencyKey: `campaign:${campaignLead.id}:${emailStep.id}`,
                 to: lead.email,
-                subject: sequenceAction.content.subject,
-                text: sequenceAction.content.plainBody,
-                html: sequenceAction.content.htmlBody,
+                subject: frozenSubject,
+                text: frozenText,
+                html: frozenHtml,
                 abVariant,
             }, {
                 provider: createCampaignDispatchProvider({
@@ -326,15 +338,22 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
             }
 
             const sentAt = new Date()
-            await advanceCampaignLeadAfterDispatch(campaignLead, sequenceAction, sentAt)
+            const progressAdvanced = await advanceCampaignLeadAfterDispatch(campaignLead, sequenceAction, sentAt)
+            if (!progressAdvanced) {
+                log.info({
+                    action: 'outreach.processor.terminal_race_preserved',
+                    campaignLeadId: campaignLead.id,
+                    sequenceStepId: emailStep.id,
+                }, 'did not overwrite campaign lead progress after a terminal event')
+                continue
+            }
             if (lead.status === 'new') {
                 await db.update(leads)
                     .set({ status: 'contacted', lastContactedAt: sentAt, updatedAt: sentAt })
-                    .where(eq(leads.id, lead.id))
+                    .where(and(eq(leads.id, lead.id), eq(leads.status, 'new')))
             }
 
             if (dispatchResult.status === 'sent') {
-                await incrementAccountStats(emailAccount.id, 'totalSent')
                 emailAccount.currentDailySent += 1
                 emailAccount.lastSentAt = sentAt
                 accountDeferredUntil.set(
@@ -408,32 +427,26 @@ export async function markCompletedCampaigns(): Promise<void> {
         TERMINAL_CAMPAIGN_LEAD_STATUSES.map((status) => sql`${status}`),
         sql`, `,
     )
-    const completedCampaigns = await db
-        .select({ id: campaigns.id })
-        .from(campaigns)
-        .where(and(
-            eq(campaigns.status, 'active'),
-            sql`EXISTS (
-                SELECT 1 FROM campaign_leads
-                WHERE campaign_leads.campaign_id = ${campaigns.id}
-            )`,
-            sql`NOT EXISTS (
-                SELECT 1 FROM campaign_leads
-                WHERE campaign_leads.campaign_id = ${campaigns.id}
-                  AND campaign_leads.completed_at IS NULL
-                  AND campaign_leads.status NOT IN (${terminalStatuses})
-            )`,
-        ))
-
-    if (completedCampaigns.length === 0) return
     const completedAt = new Date()
-    const updated = await db.update(campaigns)
-        .set({ status: 'completed', completedAt, updatedAt: completedAt })
-        .where(and(
-            inArray(campaigns.id, completedCampaigns.map((campaign) => campaign.id)),
-            eq(campaigns.status, 'active'),
-        ))
-        .returning({ id: campaigns.id })
+    const updated = rowsOf<{ id: string }>(await db.execute(sql`
+        UPDATE campaigns AS campaign
+        SET status = 'completed',
+            completed_at = ${completedAt},
+            updated_at = ${completedAt}
+        WHERE campaign.status = 'active'
+          AND EXISTS (
+              SELECT 1 FROM campaign_leads
+              WHERE campaign_leads.campaign_id = campaign.id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM campaign_leads
+              WHERE campaign_leads.campaign_id = campaign.id
+                AND campaign_leads.completed_at IS NULL
+                AND campaign_leads.status NOT IN (${terminalStatuses})
+          )
+        RETURNING campaign.id
+    `))
+    if (updated.length === 0) return
     log.info({
         action: 'outreach.processor.campaigns_completed',
         count: updated.length,

@@ -61,6 +61,10 @@ describe('outreach dispatch migration 038', () => {
                 'dispatch_started_at',
                 'last_attempt_at',
                 'last_error_code',
+                'in_reply_to',
+                'message_references',
+                'capacity_reserved_at',
+                'capacity_released_at',
             ]) {
                 expect(byName.get(name)?.is_nullable).toBe('YES')
             }
@@ -85,11 +89,13 @@ describe('outreach dispatch migration 038', () => {
                     'outreach_emails_origin_check',
                     'outreach_emails_attempts_check',
                     'outreach_emails_recipient_key_check',
-                    'outreach_emails_origin_shape_check'
+                    'outreach_emails_origin_shape_check',
+                    'outreach_emails_capacity_reservation_check'
                   )
             `
             expect(constraints.map((row) => row.conname).sort()).toEqual([
                 'outreach_emails_attempts_check',
+                'outreach_emails_capacity_reservation_check',
                 'outreach_emails_origin_check',
                 'outreach_emails_origin_shape_check',
                 'outreach_emails_recipient_key_check',
@@ -139,12 +145,17 @@ describe('outreach dispatch migration 038', () => {
             "dispatchStartedAt: timestamp('dispatch_started_at')",
             "lastAttemptAt: timestamp('last_attempt_at')",
             "lastErrorCode: text('last_error_code')",
+            "inReplyTo: text('in_reply_to')",
+            "messageReferences: text('message_references')",
+            "capacityReservedAt: timestamp('capacity_reserved_at')",
+            "capacityReleasedAt: timestamp('capacity_released_at')",
             'outreach_emails_org_idempotency_unique',
             'idx_outreach_emails_dispatch_eligibility',
             'outreach_emails_origin_check',
             'outreach_emails_attempts_check',
             'outreach_emails_recipient_key_check',
             'outreach_emails_origin_shape_check',
+            'outreach_emails_capacity_reservation_check',
         ]) {
             expect(schema).toContain(mapping)
         }
@@ -169,10 +180,10 @@ describe('outreach dispatch migration 038', () => {
             `
             await sql`
                 INSERT INTO email_accounts (
-                    id, organization_id, email, smtp_host, smtp_username, smtp_password
+                    id, organization_id, email, smtp_host, smtp_username, smtp_password, status
                 ) VALUES (
                     ${accountId}::uuid, ${organizationId}::uuid, 'sender@example.test',
-                    'localhost', 'sender', 'not-a-real-secret'
+                    'localhost', 'sender', 'not-a-real-secret', 'verified'
                 )
                 ON CONFLICT (id) DO NOTHING
             `
@@ -210,7 +221,21 @@ describe('outreach dispatch migration 038', () => {
             expect(reclaimed.kind).toBe('claimed')
             if (reclaimed.kind !== 'claimed') throw new Error('expected reclaimed lease')
 
-            await expect(repository.startDispatch(reclaimed, new Date(now.getTime() + 62_000)))
+            await expect(repository.startDispatch(reclaimed, new Date(now.getTime() + 62_000), {
+                account: {
+                    id: accountId,
+                    organizationId,
+                    status: 'verified',
+                    dailySendLimit: 50,
+                    currentDailySent: 0,
+                    warmupEnabled: false,
+                    warmupDays: 14,
+                    warmupCurrentDay: 14,
+                    minMinutesBetweenEmails: 0,
+                    lastSentAt: null,
+                },
+                dailyLimit: 50,
+            }))
                 .resolves.toEqual({ attemptCount: 1, maxAttempts: 3 })
 
             const held = await repository.claim(baseInput, {
@@ -227,6 +252,83 @@ describe('outreach dispatch migration 038', () => {
                   AND idempotency_key = ${baseInput.idempotencyKey}
             `
             expect(row).toEqual({ status: 'held', last_error_code: 'ambiguous_stale_lease' })
+        } finally {
+            await sql.end({ timeout: 1 })
+        }
+    })
+
+    it('atomically reserves one shared account slot across distinct dispatch origins', async () => {
+        assertSafeTestDatabaseUrl(testDatabaseUrl, { runGuard })
+        const sql = postgres(testDatabaseUrl, { max: 2, prepare: false })
+        const userId = '20000000-0000-4000-8000-000000000001'
+        const organizationId = '20000000-0000-4000-8000-000000000002'
+        const accountId = '20000000-0000-4000-8000-000000000003'
+        const now = new Date('2026-07-16T14:00:00.000Z')
+        try {
+            await sql`INSERT INTO users (id, email) VALUES (${userId}::uuid, 'capacity-owner@example.test') ON CONFLICT (id) DO NOTHING`
+            await sql`
+                INSERT INTO organizations (id, name, slug, owner_id)
+                VALUES (${organizationId}::uuid, 'Capacity Test', 'capacity-test', ${userId}::uuid)
+                ON CONFLICT (id) DO NOTHING
+            `
+            await sql`
+                INSERT INTO email_accounts (
+                    id, organization_id, email, smtp_host, smtp_username, smtp_password,
+                    status, daily_send_limit, current_daily_sent, min_minutes_between_emails
+                ) VALUES (
+                    ${accountId}::uuid, ${organizationId}::uuid, 'capacity@example.test',
+                    'localhost', 'capacity', 'not-a-real-secret', 'verified', 1, 0, 0
+                ) ON CONFLICT (id) DO NOTHING
+            `
+
+            const repository = createSqlDispatchRepository(async () => sql as unknown as DispatchSqlClient)
+            const makeInput = (key: string): DispatchOutreachInput => ({
+                origin: 'manual', organizationId, emailAccountId: accountId,
+                idempotencyKey: key, to: 'recipient@example.test', subject: key, text: key,
+            })
+            const claims = await Promise.all([
+                repository.claim(makeInput('manual:capacity-a'), {
+                    now, leaseToken: '20000000-0000-4000-8000-000000000010',
+                    leaseExpiresAt: new Date(now.getTime() + 60_000),
+                }),
+                repository.claim(makeInput('manual:capacity-b'), {
+                    now, leaseToken: '20000000-0000-4000-8000-000000000011',
+                    leaseExpiresAt: new Date(now.getTime() + 60_000),
+                }),
+            ])
+            const claimedRows = claims.filter((claim): claim is Extract<typeof claim, { kind: 'claimed' }> => claim.kind === 'claimed')
+            expect(claimedRows).toHaveLength(2)
+            const capacity = {
+                account: {
+                    id: accountId, organizationId, status: 'verified' as const,
+                    dailySendLimit: 1, currentDailySent: 0, warmupEnabled: false,
+                    warmupDays: 14, warmupCurrentDay: 14,
+                    minMinutesBetweenEmails: 0, lastSentAt: null,
+                },
+                dailyLimit: 1,
+            }
+            const starts = await Promise.all(claimedRows.map((claim) => repository.startDispatch(claim, now, capacity)))
+            expect(starts.filter(Boolean)).toHaveLength(1)
+
+            const [account] = await sql<{ current_daily_sent: number }[]>`
+                SELECT current_daily_sent FROM email_accounts WHERE id = ${accountId}::uuid
+            `
+            expect(account.current_daily_sent).toBe(1)
+
+            const winnerIndex = starts.findIndex(Boolean)
+            await repository.finalizeFailure(claimedRows[winnerIndex], {
+                status: 'failed',
+                failure: {
+                    code: 'smtp_421', classification: 'transient', acceptance: 'rejected',
+                    retryable: true, message: 'known rejection',
+                },
+                nextAttemptAt: new Date(now.getTime() + 60_000),
+                now,
+            })
+            const [released] = await sql<{ current_daily_sent: number }[]>`
+                SELECT current_daily_sent FROM email_accounts WHERE id = ${accountId}::uuid
+            `
+            expect(released.current_daily_sent).toBe(0)
         } finally {
             await sql.end({ timeout: 1 })
         }

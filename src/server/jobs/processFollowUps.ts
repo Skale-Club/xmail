@@ -12,7 +12,6 @@
 import { db } from '../../db'
 import { campaignLeads } from '../../db/schema'
 import { eq, and, lte, isNotNull } from 'drizzle-orm'
-import { incrementAccountStats } from '../lib/outreach-sender'
 import { decideFollowUp, enforceGuardrails, type FollowUpContext } from '../lib/outreach-followup'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
@@ -192,7 +191,6 @@ export async function processFollowUps(): Promise<{ processed: number; sent: num
                 .where(eq(campaignLeads.id, cl.id))
 
             if (dispatchResult.status === 'sent') {
-                await incrementAccountStats(account.id, 'totalSent')
                 result.sent++
                 sendXphereOutreachEvent('followup.sent', {
                     email: lead.email,

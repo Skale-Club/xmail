@@ -53,6 +53,16 @@ function claimed(overrides: Partial<DispatchClaimed> = {}): DispatchClaimed {
         leaseToken: '00000000-0000-4000-8000-000000000011',
         attemptCount: 0,
         maxAttempts: 3,
+        payload: {
+            to: INPUT.to,
+            subject: INPUT.subject,
+            text: INPUT.text ?? null,
+            html: INPUT.html ?? null,
+            trackingToken: INPUT.trackingToken,
+            inReplyTo: INPUT.inReplyTo,
+            references: INPUT.references,
+            abVariant: INPUT.abVariant,
+        },
         ...overrides,
     }
 }
@@ -150,6 +160,8 @@ describe('provider failure normalization', () => {
             .toMatchObject({ classification: 'ambiguous', acceptance: 'unknown', retryable: false })
         expect(normalizeProviderFailure(Object.assign(new Error('invalid content'), { statusCode: 422 })))
             .toMatchObject({ classification: 'terminal', acceptance: 'rejected', retryable: false })
+        expect(normalizeProviderFailure(Object.assign(new Error('phase unknown'), { code: 'ETIMEDOUT' })))
+            .toMatchObject({ classification: 'ambiguous', acceptance: 'unknown', retryable: false })
     })
 })
 
@@ -205,6 +217,34 @@ describe('dispatchOutreachMessage', () => {
             expect.objectContaining({ acceptance: 'accepted' }),
             NOW,
         )
+    })
+
+    it('sends the payload frozen by the first durable claim on a retry', async () => {
+        const repo = repository(claimed({
+            payload: {
+                to: INPUT.to,
+                subject: 'Original subject',
+                text: 'Original body',
+                html: '<p>Original body</p>',
+                trackingToken: 'persisted-token',
+                abVariant: 'b',
+            },
+        }))
+        const deps = dependencies(repo)
+
+        await dispatchOutreachMessage({
+            ...INPUT,
+            subject: 'Edited subject',
+            text: 'Edited body',
+            trackingToken: 'new-token',
+        }, deps)
+
+        expect(deps.provider.send).toHaveBeenCalledWith(expect.objectContaining({
+            subject: 'Original subject',
+            text: 'Original body',
+            trackingToken: 'persisted-token',
+            abVariant: 'b',
+        }))
     })
 
     it('schedules capped backoff only for a known pre-acceptance transient failure', async () => {

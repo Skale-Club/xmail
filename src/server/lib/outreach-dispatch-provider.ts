@@ -20,9 +20,21 @@ export function createCampaignDispatchProvider(
     context: CampaignDispatchProviderContext,
 ): DispatchProvider {
     return {
-        send: ({ stableMessageId }) => sendOutreachEmail({
+        send: (input) => sendOutreachEmail({
             ...context,
-            stableMessageId,
+            step: {
+                ...context.step,
+                subject: input.subject,
+                plainBody: input.text ?? null,
+                htmlBody: input.html ?? null,
+                subjectB: null,
+                plainBodyB: null,
+                htmlBodyB: null,
+                abTestEnabled: false,
+            },
+            trackingToken: input.trackingToken ?? context.trackingToken,
+            abVariant: 'a',
+            stableMessageId: input.stableMessageId,
         }),
     }
 }

@@ -930,6 +930,10 @@ export const outreachEmails = pgTable('outreach_emails', {
     dispatchStartedAt: timestamp('dispatch_started_at'),
     lastAttemptAt: timestamp('last_attempt_at'),
     lastErrorCode: text('last_error_code'),
+    inReplyTo: text('in_reply_to'),
+    messageReferences: text('message_references'),
+    capacityReservedAt: timestamp('capacity_reserved_at'),
+    capacityReleasedAt: timestamp('capacity_released_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -969,6 +973,10 @@ export const outreachEmails = pgTable('outreach_emails', {
             OR (${table.origin} = 'agentic' AND ${table.campaignId} IS NOT NULL AND ${table.campaignLeadId} IS NOT NULL AND ${table.sequenceStepId} IS NULL)
             OR (${table.origin} IN ('manual', 'unified_inbox') AND ${table.campaignId} IS NULL AND ${table.campaignLeadId} IS NULL AND ${table.sequenceStepId} IS NULL)
         )`,
+    ),
+    outreachEmailsCapacityReservationCheck: check(
+        'outreach_emails_capacity_reservation_check',
+        sql`${table.capacityReleasedAt} IS NULL OR ${table.capacityReservedAt} IS NOT NULL`,
     ),
 }))
 

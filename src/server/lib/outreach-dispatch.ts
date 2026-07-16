@@ -5,6 +5,8 @@ import {
     DeliveryPolicyDecision,
     DeliveryPolicyInput,
     OutreachOrigin,
+    effectiveDailyLimit,
+    type AccountPolicySnapshot,
 } from './outreach-delivery-policy'
 
 type ErrorRecord = Record<string, unknown>
@@ -83,7 +85,7 @@ export function normalizeProviderFailure(error: unknown): ProviderFailure {
         'EHOSTUNREACH',
         'ENETUNREACH',
     ])
-    const preDataCommand = !command || ['CONN', 'CONNECT', 'EHLO', 'HELO', 'MAIL', 'RCPT'].includes(command)
+    const preDataCommand = command != null && ['CONN', 'CONNECT', 'EHLO', 'HELO', 'MAIL', 'RCPT'].includes(command)
     const phaseSensitiveConnectionError = rawCode && ['ETIMEDOUT', 'ECONNRESET', 'ESOCKET'].includes(rawCode)
     if ((rawCode && definitelyPreAcceptance.has(rawCode)) || (phaseSensitiveConnectionError && preDataCommand)) {
         return providerFailure(rawCode?.toLowerCase() || 'connection_failed', 'transient', 'rejected', true, message)
@@ -136,6 +138,16 @@ export interface DispatchClaimed {
     leaseToken: string
     attemptCount: number
     maxAttempts: number
+    payload: {
+        to: string
+        subject: string
+        text: string | null
+        html: string | null
+        trackingToken?: string
+        inReplyTo?: string | null
+        references?: string | null
+        abVariant?: 'a' | 'b'
+    }
 }
 
 export type DispatchClaimResult = DispatchClaimed | {
@@ -149,7 +161,11 @@ export interface DispatchRepository {
         leaseToken: string
         leaseExpiresAt: Date
     }): Promise<DispatchClaimResult>
-    startDispatch(claim: DispatchClaimed, now: Date): Promise<{ attemptCount: number; maxAttempts: number } | null>
+    startDispatch(
+        claim: DispatchClaimed,
+        now: Date,
+        capacity: { account: AccountPolicySnapshot; dailyLimit: number },
+    ): Promise<{ attemptCount: number; maxAttempts: number } | null>
     releaseClaim(claim: DispatchClaimed, code: DeliveryPolicyCode, now: Date): Promise<boolean>
     finalizeSent(claim: DispatchClaimed, result: Extract<ProviderDispatchResult, { success: true }>, now: Date): Promise<boolean>
     finalizeFailure(claim: DispatchClaimed, input: {
@@ -250,6 +266,27 @@ interface DispatchRow {
     leaseToken: string | null
     leaseExpiresAt: Date | null
     dispatchStartedAt: Date | null
+    toAddress: string
+    subject: string
+    plainBody: string | null
+    htmlBody: string | null
+    trackingToken: string | null
+    inReplyTo: string | null
+    messageReferences: string | null
+    abVariant: 'a' | 'b' | null
+}
+
+function frozenPayload(row: DispatchRow): DispatchClaimed['payload'] {
+    return {
+        to: row.toAddress,
+        subject: row.subject,
+        text: row.plainBody,
+        html: row.htmlBody,
+        trackingToken: row.trackingToken ?? undefined,
+        inReplyTo: row.inReplyTo,
+        references: row.messageReferences,
+        abVariant: row.abVariant ?? undefined,
+    }
 }
 
 function firstRow<T>(rows: unknown): T | undefined {
@@ -268,7 +305,7 @@ export function createSqlDispatchRepository(
             const queryClient = await getClient()
 
             await queryClient`
-                UPDATE outreach_emails
+                UPDATE outreach_emails AS outreach_email
                 SET status = 'held',
                     lease_token = NULL,
                     lease_expires_at = NULL,
@@ -286,13 +323,14 @@ export function createSqlDispatchRepository(
                 INSERT INTO outreach_emails (
                     organization_id, origin, idempotency_key, to_address,
                     campaign_id, campaign_lead_id, sequence_step_id, email_account_id,
-                    tracking_token, subject, plain_body, html_body, ab_variant, status,
+                    tracking_token, subject, plain_body, html_body, in_reply_to, message_references, ab_variant, status,
                     attempt_count, max_attempts, lease_token, lease_expires_at,
                     created_at, updated_at
                 ) VALUES (
                     ${input.organizationId}, ${input.origin}, ${input.idempotencyKey}, ${input.to},
                     ${input.campaignId ?? null}, ${input.campaignLeadId ?? null}, ${input.sequenceStepId ?? null}, ${input.emailAccountId},
-                    ${input.trackingToken ?? null}, ${input.subject}, ${input.text ?? null}, ${input.html ?? null}, ${input.abVariant ?? null}, 'queued',
+                    ${input.trackingToken ?? null}, ${input.subject}, ${input.text ?? null}, ${input.html ?? null},
+                    ${input.inReplyTo ?? null}, ${input.references ?? null}, ${input.abVariant ?? null}, 'queued',
                     0, ${Math.max(1, input.maxAttempts ?? 3)}, ${context.leaseToken}::uuid, ${context.leaseExpiresAt},
                     ${context.now}, ${context.now}
                 )
@@ -320,7 +358,11 @@ export function createSqlDispatchRepository(
                     next_attempt_at AS "nextAttemptAt",
                     lease_token::text AS "leaseToken",
                     lease_expires_at AS "leaseExpiresAt",
-                    dispatch_started_at AS "dispatchStartedAt"
+                    dispatch_started_at AS "dispatchStartedAt",
+                    to_address AS "toAddress", subject,
+                    plain_body AS "plainBody", html_body AS "htmlBody",
+                    tracking_token AS "trackingToken", in_reply_to AS "inReplyTo",
+                    message_references AS "messageReferences", ab_variant AS "abVariant"
             `
             const claimedRow = firstRow<DispatchRow>(claimedRows)
             if (claimedRow?.leaseToken) {
@@ -330,6 +372,7 @@ export function createSqlDispatchRepository(
                     leaseToken: claimedRow.leaseToken,
                     attemptCount: Number(claimedRow.attemptCount),
                     maxAttempts: Number(claimedRow.maxAttempts),
+                    payload: frozenPayload(claimedRow),
                 }
             }
 
@@ -341,7 +384,11 @@ export function createSqlDispatchRepository(
                     next_attempt_at AS "nextAttemptAt",
                     lease_token::text AS "leaseToken",
                     lease_expires_at AS "leaseExpiresAt",
-                    dispatch_started_at AS "dispatchStartedAt"
+                    dispatch_started_at AS "dispatchStartedAt",
+                    to_address AS "toAddress", subject,
+                    plain_body AS "plainBody", html_body AS "htmlBody",
+                    tracking_token AS "trackingToken", in_reply_to AS "inReplyTo",
+                    message_references AS "messageReferences", ab_variant AS "abVariant"
                 FROM outreach_emails
                 WHERE organization_id = ${input.organizationId}
                   AND idempotency_key = ${input.idempotencyKey}
@@ -365,21 +412,51 @@ export function createSqlDispatchRepository(
             }
         },
 
-        async startDispatch(claim, now) {
+        async startDispatch(claim, now, capacity) {
             const queryClient = await getClient()
             const rows = await queryClient`
-                UPDATE outreach_emails
+                WITH reserved_account AS (
+                    UPDATE email_accounts
+                    SET current_daily_sent = current_daily_sent + 1,
+                        last_sent_at = ${now},
+                        updated_at = ${now}
+                    WHERE id = ${capacity.account.id}::uuid
+                      AND organization_id = ${capacity.account.organizationId}::uuid
+                      AND status = 'verified'
+                      AND current_daily_sent < ${capacity.dailyLimit}
+                      AND (
+                          last_sent_at IS NULL
+                          OR last_sent_at <= ${now} - (${Math.max(0, capacity.account.minMinutesBetweenEmails)} * INTERVAL '1 minute')
+                      )
+                      AND EXISTS (
+                          SELECT 1 FROM outreach_emails
+                          WHERE id = ${claim.rowId}::uuid
+                            AND lease_token = ${claim.leaseToken}::uuid
+                            AND status = 'queued'
+                            AND dispatch_started_at IS NULL
+                            AND lease_expires_at > ${now}
+                            AND attempt_count < max_attempts
+                            AND (capacity_reserved_at IS NULL OR capacity_released_at IS NOT NULL)
+                      )
+                    RETURNING id
+                )
+                UPDATE outreach_emails AS outreach_email
                 SET dispatch_started_at = ${now},
                     last_attempt_at = ${now},
                     attempt_count = attempt_count + 1,
+                    capacity_reserved_at = ${now},
+                    capacity_released_at = NULL,
                     updated_at = ${now}
-                WHERE id = ${claim.rowId}::uuid
-                  AND lease_token = ${claim.leaseToken}::uuid
-                  AND status = 'queued'
-                  AND dispatch_started_at IS NULL
-                  AND lease_expires_at > ${now}
-                  AND attempt_count < max_attempts
-                RETURNING attempt_count AS "attemptCount", max_attempts AS "maxAttempts"
+                FROM reserved_account
+                WHERE outreach_email.id = ${claim.rowId}::uuid
+                  AND outreach_email.lease_token = ${claim.leaseToken}::uuid
+                  AND outreach_email.status = 'queued'
+                  AND outreach_email.dispatch_started_at IS NULL
+                  AND outreach_email.lease_expires_at > ${now}
+                  AND outreach_email.attempt_count < outreach_email.max_attempts
+                  AND outreach_email.email_account_id = reserved_account.id
+                  AND (outreach_email.capacity_reserved_at IS NULL OR outreach_email.capacity_released_at IS NOT NULL)
+                RETURNING outreach_email.attempt_count AS "attemptCount", outreach_email.max_attempts AS "maxAttempts"
             `
             const row = firstRow<{ attemptCount: number; maxAttempts: number }>(rows)
             return row ? { attemptCount: Number(row.attemptCount), maxAttempts: Number(row.maxAttempts) } : null
@@ -407,6 +484,7 @@ export function createSqlDispatchRepository(
         async finalizeSent(claim, result, now) {
             const queryClient = await getClient()
             const rows = await queryClient`
+                WITH finalized AS (
                 UPDATE outreach_emails
                 SET status = 'sent',
                     message_id = ${result.messageId ?? null},
@@ -420,7 +498,18 @@ export function createSqlDispatchRepository(
                     updated_at = ${now}
                 WHERE id = ${claim.rowId}::uuid
                   AND lease_token = ${claim.leaseToken}::uuid
-                RETURNING id
+                  AND status = 'queued'
+                  AND dispatch_started_at IS NOT NULL
+                RETURNING id, email_account_id
+                ), counted AS (
+                    UPDATE email_accounts
+                    SET total_sent = total_sent + 1,
+                        updated_at = ${now}
+                    FROM finalized
+                    WHERE email_accounts.id = finalized.email_account_id
+                    RETURNING email_accounts.id
+                )
+                SELECT id FROM finalized
             `
             return firstRow(rows) != null
         },
@@ -428,6 +517,7 @@ export function createSqlDispatchRepository(
         async finalizeFailure(claim, input) {
             const queryClient = await getClient()
             const rows = await queryClient`
+                WITH finalized AS (
                 UPDATE outreach_emails
                 SET status = ${input.status}::message_status,
                     next_attempt_at = ${input.nextAttemptAt},
@@ -436,10 +526,27 @@ export function createSqlDispatchRepository(
                     dispatch_started_at = CASE WHEN ${input.status} = 'failed' THEN NULL ELSE dispatch_started_at END,
                     last_error_code = ${input.failure.code},
                     bounce_reason = ${input.failure.message},
+                    capacity_released_at = CASE
+                        WHEN ${input.status} = 'failed' THEN ${input.now}
+                        ELSE capacity_released_at
+                    END,
                     updated_at = ${input.now}
                 WHERE id = ${claim.rowId}::uuid
                   AND lease_token = ${claim.leaseToken}::uuid
-                RETURNING id
+                  AND status = 'queued'
+                  AND dispatch_started_at IS NOT NULL
+                RETURNING id, email_account_id,
+                    (${input.status} = 'failed' AND capacity_reserved_at IS NOT NULL) AS release_capacity
+                ), released AS (
+                    UPDATE email_accounts
+                    SET current_daily_sent = GREATEST(current_daily_sent - 1, 0),
+                        updated_at = ${input.now}
+                    FROM finalized
+                    WHERE email_accounts.id = finalized.email_account_id
+                      AND finalized.release_capacity
+                    RETURNING email_accounts.id
+                )
+                SELECT id FROM finalized
             `
             return firstRow(rows) != null
         },
@@ -496,13 +603,25 @@ export async function dispatchOutreachMessage(
         return deferred(beforeProvider)
     }
 
-    const dispatchStarted = await repository.startDispatch(claim, now())
-    if (!dispatchStarted) return { status: 'lost_lease', rowId: claim.rowId }
+    const reserveNow = now()
+    const dispatchStarted = await repository.startDispatch(claim, reserveNow, {
+        account: beforeProvider.account,
+        dailyLimit: effectiveDailyLimit(beforeProvider.account),
+    })
+    if (!dispatchStarted) {
+        const capacityDecision = await evaluatePolicy(policyInput(input, now()))
+        if (!capacityDecision.allowed) {
+            const released = await repository.releaseClaim(claim, capacityDecision.code, now())
+            return released ? deferred(capacityDecision) : { status: 'lost_lease', rowId: claim.rowId }
+        }
+        return { status: 'lost_lease', rowId: claim.rowId }
+    }
 
     const stableMessageId = createStableOutreachMessageId(input.organizationId, input.idempotencyKey)
+    const providerInput: DispatchOutreachInput = { ...input, ...claim.payload }
     let providerResult: ProviderDispatchResult
     try {
-        providerResult = await dependencies.provider.send({ ...input, stableMessageId })
+        providerResult = await dependencies.provider.send({ ...providerInput, stableMessageId })
     } catch (error) {
         const normalized = normalizeProviderFailure(error)
         providerResult = { success: false, acceptance: normalized.acceptance, failure: normalized }

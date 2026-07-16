@@ -7,7 +7,6 @@ import { emailAccounts, organizationUsers } from '../../../db/schema'
 import { isPlatformAdmin } from '../../lib/admin'
 import { dispatchOutreachMessage } from '../../lib/outreach-dispatch'
 import { createThreadedDispatchProvider } from '../../lib/outreach-dispatch-provider'
-import { incrementAccountStats } from '../../lib/outreach-sender'
 
 const router = Router()
 
@@ -73,7 +72,6 @@ router.post('/', async (req: Request, res: Response) => {
         })
 
         if (dispatchResult.status === 'sent') {
-            await incrementAccountStats(account.id, 'totalSent')
             return res.json({ success: true, messageId: dispatchResult.messageId, requestId })
         }
         if (dispatchResult.status === 'duplicate') {

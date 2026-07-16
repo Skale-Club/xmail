@@ -177,7 +177,7 @@ function nextUtcDailyReset(now: Date): Date {
     ))
 }
 
-function effectiveDailyLimit(account: AccountPolicySnapshot): number {
+export function effectiveDailyLimit(account: AccountPolicySnapshot): number {
     const fullLimit = Math.max(1, account.dailySendLimit)
     if (!account.warmupEnabled) return fullLimit
 

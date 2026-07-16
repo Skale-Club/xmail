@@ -23,7 +23,12 @@ ALTER TABLE outreach_emails
     ADD COLUMN IF NOT EXISTS lease_expires_at timestamp,
     ADD COLUMN IF NOT EXISTS dispatch_started_at timestamp,
     ADD COLUMN IF NOT EXISTS last_attempt_at timestamp,
-    ADD COLUMN IF NOT EXISTS last_error_code text;
+    ADD COLUMN IF NOT EXISTS last_error_code text,
+    ADD COLUMN IF NOT EXISTS in_reply_to text,
+    ADD COLUMN IF NOT EXISTS message_references text;
+ALTER TABLE outreach_emails
+    ADD COLUMN IF NOT EXISTS capacity_reserved_at timestamp,
+    ADD COLUMN IF NOT EXISTS capacity_released_at timestamp;
 
 -- Every pre-038 row represented a campaign sequence email. Keep the logical key
 -- independent from the physical row id so restarts derive the same value.
@@ -103,6 +108,11 @@ ALTER TABLE outreach_emails
             AND sequence_step_id IS NULL
         )
     );
+
+ALTER TABLE outreach_emails DROP CONSTRAINT IF EXISTS outreach_emails_capacity_reservation_check;
+ALTER TABLE outreach_emails
+    ADD CONSTRAINT outreach_emails_capacity_reservation_check
+    CHECK (capacity_released_at IS NULL OR capacity_reserved_at IS NOT NULL);
 
 CREATE UNIQUE INDEX IF NOT EXISTS outreach_emails_org_idempotency_unique
     ON outreach_emails (organization_id, idempotency_key);
