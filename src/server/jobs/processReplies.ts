@@ -49,14 +49,33 @@ interface OutreachEmailWithRelations {
     leadId: string
 }
 
-const MAX_REPLY_CONTEXT_LENGTH = 20_000
+/**
+ * Bounded because this text is persisted on campaign_leads and then handed to the follow-up
+ * decider as prompt context: an unbounded reply (a quoted thread, a forwarded newsletter)
+ * would otherwise grow the row and the prompt without limit.
+ */
+export const MAX_REPLY_CONTEXT_LENGTH = 20_000
 
-function normalizeInboundMessageId(messageId: string | null | undefined, fallback: string): string {
+/**
+ * The id stored on campaign_leads.last_reply_message_id, which processFollowUps sends back
+ * out as In-Reply-To. Unbracketed to match how outreach_emails.message_id is stored and
+ * compared.
+ */
+export function normalizeInboundMessageId(messageId: string | null | undefined, fallback: string): string {
     const normalized = messageId?.replace(/[<>]/g, '').trim()
     return (normalized || fallback).slice(0, 500)
 }
 
-function normalizeReplyText(text: string | null | undefined, html?: string | false | null): string {
+/**
+ * Reply text for follow-up context, from whichever body the provider gave us.
+ *
+ * The HTML fallback is not a nicety: Graph returns exactly one body, and anything composed
+ * in Outlook comes back as HTML with no text alternative. Without the fallback, an Outlook
+ * reply reaches the agentic decider as an empty string and it answers a conversation it
+ * cannot read — while an SMTP reply to the same campaign works fine. Exported so that
+ * cross-provider parity is asserted on the real function rather than a copy of it.
+ */
+export function normalizeReplyText(text: string | null | undefined, html?: string | false | null): string {
     const source = text?.trim() || (typeof html === 'string'
         ? html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
         : '')

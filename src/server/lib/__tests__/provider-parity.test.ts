@@ -210,23 +210,29 @@ function claimed(overrides: Partial<DispatchClaimed> = {}): DispatchClaimed {
             subject: INPUT.subject,
             text: INPUT.text ?? null,
             html: INPUT.html ?? null,
-            trackingToken: null,
-            inReplyTo: null,
-            references: null,
-            abVariant: null,
+            trackingToken: INPUT.trackingToken,
+            inReplyTo: INPUT.inReplyTo,
+            references: INPUT.references,
+            abVariant: INPUT.abVariant,
         },
         ...overrides,
     }
 }
 
-function repository(claimResult: DispatchClaimResult = claimed()) {
+function repository(claimResult: DispatchClaimResult = claimed()): DispatchRepository & {
+    claim: ReturnType<typeof vi.fn>
+    startDispatch: ReturnType<typeof vi.fn>
+    releaseClaim: ReturnType<typeof vi.fn>
+    finalizeSent: ReturnType<typeof vi.fn>
+    finalizeFailure: ReturnType<typeof vi.fn>
+} {
     return {
         claim: vi.fn().mockResolvedValue(claimResult),
         startDispatch: vi.fn().mockResolvedValue({ attemptCount: 1, maxAttempts: 3 }),
         releaseClaim: vi.fn().mockResolvedValue(true),
         finalizeSent: vi.fn().mockResolvedValue(true),
         finalizeFailure: vi.fn().mockResolvedValue(true),
-    } satisfies DispatchRepository as DispatchRepository & Record<string, ReturnType<typeof vi.fn>>
+    }
 }
 
 const ALLOWED_SNAPSHOT: DeliveryPolicySnapshot = {
@@ -503,13 +509,13 @@ interface InboundFixture {
 
 function inboundFixture(kind: ProviderKind): InboundFixture {
     const providerName = kind
-    const base = {
+    const base: Pick<NormalizedInboundMessage, 'provider' | 'toAddresses' | 'ccAddresses' | 'attachments' | 'receivedAt'> = {
         provider: providerName,
         toAddresses: ['seller@example.com'],
         ccAddresses: [],
         attachments: [],
         receivedAt: NOW,
-    } as const
+    }
 
     // Each provider hands us a different body shape: SMTP/IMAP parses text, native stores
     // both, Graph returns exactly one — html for anything composed in Outlook.
