@@ -14,7 +14,7 @@
 
 ## Provider parity and deliverability
 
-- [ ] **PROV-01** — SMTP presets and verification use correct implicit-TLS versus STARTTLS behavior, including port 587.
+- [x] **PROV-01** — SMTP presets and verification use correct implicit-TLS versus STARTTLS behavior, including port 587.
 - [ ] **PROV-02** — Outlook accounts ingest replies and bounces with bodies and stable provider identifiers, or cannot be activated for outreach until parity is available.
 - [ ] **PROV-03** — Every supported outbound provider emits equivalent unsubscribe metadata and preserves Message-ID/threading headers.
 - [ ] **PROV-04** — Native DSNs cannot be consumed as human replies; IMAP/Graph bounce scans are bounded, resumable, and idempotent.

@@ -3,13 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.4
 milestone_name: Reliable Outreach + Unified Inbox
 status: executing
-last_updated: "2026-07-16T04:20:00.000Z"
+stopped_at: Completed 19-01-PLAN.md
+last_updated: "2026-07-16T04:32:20.399Z"
 progress:
   total_phases: 14
   completed_phases: 6
   total_plans: 45
-  completed_plans: 25
-  percent: 56
+  completed_plans: 26
+  percent: 58
 ---
 
 # Project State
@@ -27,15 +28,15 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 19 (Provider Parity and Deliverability) — IN PROGRESS
-Plan: 0 of 4
+Plan: 1 of 4
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
-Status: Phase complete — ready for verification
+Status: Ready to execute
 
-**Resume point:** Verify Phase 18, then advance to Phase 19. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
+**Resume point:** Execute 19-02-PLAN.md. Existing v1.2 operator tasks remain independent and are not silently folded into v1.4.
 
-Progress: [█████░░░░░] 47%
+Progress: [██████░░░░] 58%
 
 ### v1.2 Phase Status
 
@@ -115,10 +116,10 @@ Full IMAP/SMTP/MX stack, SASL PLAIN/LOGIN, UID ops, autodiscovery routes, UI car
 
 ## Session Continuity
 
-Last session: 2026-07-16T03:25:19.788Z
-Stopped at: Completed 18-04-PLAN.md
+Last session: 2026-07-16T04:32:06.589Z
+Stopped at: Completed 19-01-PLAN.md
 Resume file: None
-Next action: verify Phase 18 and continue with Phase 19 provider parity.
+Next action: execute Phase 19 Plan 02 (Outlook Graph MIME send parity).
 
 ## Performance Metrics
 
@@ -128,6 +129,7 @@ Next action: verify Phase 18 and continue with Phase 19 provider parity.
 | Phase 18 P02 | 8 min | 2 tasks | 4 files |
 | Phase 18 P03 | 18 min | 2 tasks | 10 files |
 | Phase 18 P04 | 16 min | 3 tasks | 11 files |
+| Phase 19 P01 | 12min | 2 tasks | 7 files |
 
 ## Decisions
 
@@ -139,3 +141,5 @@ Next action: verify Phase 18 and continue with Phase 19 provider parity.
 - [Phase 18]: Rank due work per account before applying the global cap. — One blocked or backlogged inbox cannot starve other verified accounts.
 - [Phase 18]: All outreach origins use one durable dispatcher boundary. — Campaign, manual, and agentic sends share policy, leases, retries, and idempotency.
 - [Phase 18]: Due-work selection and campaign completion import one exhaustive terminal-status set. — New lead statuses cannot silently diverge between scheduling and completion.
+- [Phase 19]: SMTP port 465 = implicit TLS, 587 = required STARTTLS, 25 = opportunistic STARTTLS; one resolver (smtp-security.ts) shared by verify, send, presets, and CSV import
+- [Phase 19]: Legacy smtp_secure/port contradictions normalize with a warning rather than failing; only explicit contradictory writes get 422 smtp_tls_mode_mismatch
