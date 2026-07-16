@@ -1,242 +1,74 @@
 /**
- * Agentic Follow-up Processor (P002)
+ * Autonomous AI follow-up processor (Phase 23 AI-03/04).
  *
- * Picks campaign_leads that a matched reply scheduled for a follow-up decision
- * (next_follow_up_at <= now), asks the decider what to do ("Xphere decides, Xmail executes"),
- * enforces guardrails, and executes: send a threaded reply / wait / complete.
+ * RETIRES the legacy direct-send path. The old job scanned `campaign_leads.next_follow_up_at`, asked
+ * a decider, and called the shared outreach dispatcher DIRECTLY — bypassing organization/campaign
+ * autonomy enablement, durable audit, leases, full reply bodies, and the single policy-gated executor.
  *
- * GATED: leads only get here if their campaign has agentic_followup_enabled = true (the reply
- * processor is what sets next_follow_up_at). So this job is inert for every existing campaign.
+ * This job now has exactly one delivery path and zero direct sends:
+ *   1. It claims AUDITED, LEASED autonomous runs from `outreach_ai_runs` (scheduled by processReplies
+ *      when effective org+campaign autonomy is enabled) and processes each through the SINGLE
+ *      `executeInboxSendCommand` executor via the runtime. It imports NO provider adapter and never
+ *      calls the low-level threaded sender or the shared dispatcher.
+ *   2. It DRAINS the legacy `next_follow_up_at` queue WITHOUT sending. The column is now a rollout
+ *      compatibility artifact; leaving it armed would only block campaign completion (which counts an
+ *      armed agentic follow-up as pending work). A campaign now earns an autonomous follow-up ONLY via
+ *      the new opt-in flags (org `autonomous_enabled` + campaign `ai_autonomous_enabled`), never the
+ *      legacy `agentic_followup_enabled` boolean alone.
  */
 
+import { and, isNotNull, lte } from 'drizzle-orm'
 import { db } from '../../db'
 import { campaignLeads } from '../../db/schema'
-import { eq, and, lte, isNotNull } from 'drizzle-orm'
-import { decideFollowUp, enforceGuardrails, type FollowUpContext } from '../lib/outreach-followup'
 import { createLogger } from '../lib/logger'
-import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { runWithLock } from '../lib/cron-lock'
-import { dispatchOutreachMessage } from '../lib/outreach-dispatch'
-import { createThreadedDispatchProvider } from '../lib/outreach-dispatch-provider'
-import { generateUnsubscribeLink } from '../routes/outreach/unsubscribe'
+import { processDueAutonomousRuns, type ProcessAutonomousRunsResult } from '../lib/inbox-ai-automation-runtime'
 
 const log = createLogger('outreach.followup')
 
-const FOLLOWUP_BATCH_LIMIT = 100
-const DEFAULT_WAIT_HOURS = 24
-const DEFAULT_REARM_HOURS = 72
-
-function hoursFromNow(hours: number): Date {
-    return new Date(Date.now() + hours * 60 * 60 * 1000)
+export interface FollowUpsResult {
+    autonomous: ProcessAutonomousRunsResult
+    /** Legacy `next_follow_up_at` rows cleared this tick (no send). */
+    legacyDrained: number
 }
 
-export async function processFollowUps(): Promise<{ processed: number; sent: number; completed: number; errors: number }> {
+/**
+ * Process due autonomous AI runs and drain the retired legacy follow-up queue. No email is ever sent
+ * from this function directly — every send is a durable command dispatched by the single executor.
+ */
+export async function processFollowUps(): Promise<FollowUpsResult> {
+    const autonomous = await processDueAutonomousRuns()
+    const legacyDrained = await drainLegacyFollowUps()
+    return { autonomous, legacyDrained }
+}
+
+/**
+ * Clear any DUE legacy `next_follow_up_at` without sending. The direct-send path is gone; an armed
+ * column would only keep an agentic campaign from completing. This is the inert successor to the old
+ * "send or clear" branch — it can now only clear.
+ */
+async function drainLegacyFollowUps(): Promise<number> {
     const now = new Date()
-    const result = { processed: 0, sent: 0, completed: 0, errors: 0 }
-
-    const dueLeads = await db.query.campaignLeads.findMany({
-        where: and(
-            isNotNull(campaignLeads.nextFollowUpAt),
-            lte(campaignLeads.nextFollowUpAt, now),
-        ),
-        limit: FOLLOWUP_BATCH_LIMIT,
-        with: {
-            campaign: true,
-            lead: true,
-            assignedEmailAccount: true,
-        },
-    })
-
-    for (const cl of dueLeads) {
-        result.processed++
-        try {
-            const campaign = cl.campaign
-            const lead = cl.lead
-            if (!campaign || !lead) {
-                await clearSchedule(cl.id)
-                continue
-            }
-
-            // Campaign may have been toggled off after scheduling — respect it.
-            if (!campaign.agenticFollowupEnabled || campaign.status !== 'active') {
-                await clearSchedule(cl.id)
-                continue
-            }
-
-            const ctx: FollowUpContext = {
-                organizationId: campaign.organizationId,
-                campaignId: campaign.id,
-                campaignLeadId: cl.id,
-                leadEmail: lead.email,
-                leadFirstName: lead.firstName,
-                leadCompany: lead.companyName,
-                sellerName: campaign.fromName ?? null,
-                lastReplyText: cl.lastReplyText ?? null,
-                followUpCount: cl.followUpCount,
-                maxFollowUps: campaign.maxFollowUps,
-            }
-
-            const raw = await decideFollowUp(ctx)
-
-            // The dispatcher owns live suppression, schedule, organization, and
-            // account policy. The decision guard retains only conversation limits.
-            const decision = enforceGuardrails(raw, {
-                unsubscribed: lead.unsubscribedAt != null,
-                suppressed: false,
-                withinWindow: true,
-                followUpCount: cl.followUpCount,
-                maxFollowUps: campaign.maxFollowUps,
-            })
-
-            if (decision.action === 'complete') {
-                await clearSchedule(cl.id)
-                result.completed++
-                sendXphereOutreachEvent('followup.completed', {
-                    email: lead.email,
-                    campaign_id: campaign.id,
-                    lead_id: lead.id,
-                    customFields: lead.customFields,
-                    outcome: decision.outcome ?? null,
-                })
-                log.info({ action: 'outreach.followup.completed', campaignLeadId: cl.id, outcome: decision.outcome }, 'follow-up completed')
-                continue
-            }
-
-            if (decision.action === 'wait') {
-                await db.update(campaignLeads)
-                    .set({ nextFollowUpAt: hoursFromNow(decision.followUpHours ?? DEFAULT_WAIT_HOURS) })
-                    .where(eq(campaignLeads.id, cl.id))
-                log.info({ action: 'outreach.followup.wait', campaignLeadId: cl.id, followUpHours: decision.followUpHours ?? DEFAULT_WAIT_HOURS }, 'follow-up deferred')
-                continue
-            }
-
-            // action === 'send'
-            const account = cl.assignedEmailAccount
-            if (!account || account.status !== 'verified') {
-                // Cannot send without a verified inbox — stop rather than loop.
-                await clearSchedule(cl.id)
-                result.errors++
-                log.warn({ action: 'outreach.followup.no_account', campaignLeadId: cl.id }, 'no verified inbox for follow-up')
-                continue
-            }
-
-            if (!cl.lastReplyMessageId) {
-                await clearSchedule(cl.id)
-                result.errors++
-                log.warn({ action: 'outreach.followup.no_inbound_reply', campaignLeadId: cl.id }, 'follow-up has no inbound reply id')
-                continue
-            }
-
-            const subject = decision.subject && decision.subject.trim().length > 0
-                ? decision.subject
-                : `Re: ${campaign.name}`
-
-            // An agentic follow-up is campaign traffic, so it owes the recipient the same
-            // one-click opt-out the first touch carried (PROV-03). Before Phase 19 this was
-            // not merely unset — the threaded path had no way to carry the header at all.
-            const baseUrl = process.env.FRONTEND_URL || 'http://localhost:9000'
-            const replyToDomain = campaign.replyToEmail?.split('@')[1] || process.env.MAIL_DOMAIN || 'example.com'
-
-            const dispatchResult = await dispatchOutreachMessage({
-                origin: 'agentic',
-                organizationId: campaign.organizationId,
-                emailAccountId: account.id,
-                campaignId: campaign.id,
-                campaignLeadId: cl.id,
-                leadId: lead.id,
-                idempotencyKey: `agentic:${cl.id}:${cl.lastReplyMessageId}:${cl.followUpCount + 1}`,
-                to: lead.email,
-                subject,
-                text: decision.message!,
-                inReplyTo: cl.lastReplyMessageId,
-                references: cl.lastReplyMessageId,
-            }, {
-                provider: createThreadedDispatchProvider({
-                    account,
-                    fromName: campaign.fromName,
-                    replyTo: campaign.replyToEmail,
-                    unsubscribe: {
-                        url: generateUnsubscribeLink(cl.id, campaign.id, baseUrl),
-                        mailto: `unsubscribe@${replyToDomain}?subject=unsubscribe`,
-                        oneClick: true,
-                    },
-                }),
-            })
-
-            if (dispatchResult.status === 'deferred') {
-                await db.update(campaignLeads)
-                    .set({ nextFollowUpAt: dispatchResult.retryAt ?? null, updatedAt: new Date() })
-                    .where(eq(campaignLeads.id, cl.id))
-                log.info({ action: 'outreach.followup.policy_deferred', campaignLeadId: cl.id, code: dispatchResult.code, retryAt: dispatchResult.retryAt }, 'follow-up deferred by policy')
-                continue
-            }
-
-            if (dispatchResult.status === 'retry_scheduled') {
-                await db.update(campaignLeads)
-                    .set({ nextFollowUpAt: dispatchResult.nextAttemptAt, updatedAt: new Date() })
-                    .where(eq(campaignLeads.id, cl.id))
-                continue
-            }
-
-            if (dispatchResult.status === 'in_progress' || dispatchResult.status === 'lost_lease') {
-                await db.update(campaignLeads)
-                    .set({ nextFollowUpAt: hoursFromNow(1 / 12), updatedAt: new Date() })
-                    .where(eq(campaignLeads.id, cl.id))
-                continue
-            }
-
-            if (dispatchResult.status === 'held' || dispatchResult.status === 'exhausted' || dispatchResult.status === 'failed') {
-                await clearSchedule(cl.id)
-                result.errors++
-                log.error({ action: 'outreach.followup.dispatch_stopped', campaignLeadId: cl.id, status: dispatchResult.status }, 'follow-up dispatch stopped')
-                continue
-            }
-
-            await db.update(campaignLeads)
-                .set({
-                    followUpCount: cl.followUpCount + 1,
-                    lastContactedAt: now,
-                    // Re-arm for the next turn; the reply processor will bring the clock forward
-                    // if the lead answers again sooner.
-                    nextFollowUpAt: hoursFromNow(decision.followUpHours ?? DEFAULT_REARM_HOURS),
-                })
-                .where(eq(campaignLeads.id, cl.id))
-
-            if (dispatchResult.status === 'sent') {
-                result.sent++
-                sendXphereOutreachEvent('followup.sent', {
-                    email: lead.email,
-                    campaign_id: campaign.id,
-                    lead_id: lead.id,
-                    customFields: lead.customFields,
-                })
-                log.info({ action: 'outreach.followup.sent', campaignLeadId: cl.id, followUpCount: cl.followUpCount + 1 }, 'follow-up sent')
-            } else {
-                log.info({ action: 'outreach.followup.duplicate_recovered', campaignLeadId: cl.id, followUpCount: cl.followUpCount + 1 }, 'recovered already-sent follow-up progress')
-            }
-        } catch (error) {
-            const err = error instanceof Error ? error : new Error(String(error))
-            result.errors++
-            log.error({ action: 'outreach.followup.exception', campaignLeadId: cl.id, error: { message: err.message, stack: err.stack } }, 'follow-up processing threw')
-        }
-    }
-
-    return result
+    const cleared = await db
+        .update(campaignLeads)
+        .set({ nextFollowUpAt: null, updatedAt: now })
+        .where(and(isNotNull(campaignLeads.nextFollowUpAt), lte(campaignLeads.nextFollowUpAt, now)))
+        .returning({ id: campaignLeads.id })
+    return cleared.length
 }
 
-async function clearSchedule(campaignLeadId: string): Promise<void> {
-    await db.update(campaignLeads)
-        .set({ nextFollowUpAt: null })
-        .where(eq(campaignLeads.id, campaignLeadId))
-}
-
+// Stable advisory-lock name — renaming would let old/new instances overlap during a rollout.
 const FOLLOWUP_PROCESSOR_LOCK_NAME = 'outreach-followups-processor'
 
 export async function runFollowUpsProcessorWithLock(): Promise<void> {
     await runWithLock(FOLLOWUP_PROCESSOR_LOCK_NAME, async () => {
         const result = await processFollowUps()
-        if (result.processed > 0) {
-            log.info({ action: 'outreach.followup.tick.complete', ...result }, 'follow-up tick complete')
+        if (result.autonomous.claimable > 0 || result.legacyDrained > 0) {
+            log.info({
+                action: 'outreach.followup.tick.complete',
+                ...result.autonomous,
+                legacyDrained: result.legacyDrained,
+            }, 'autonomous AI follow-up tick complete')
         }
     })
 }

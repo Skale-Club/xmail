@@ -26,7 +26,6 @@ function source(relativePath: string): string {
 describe('outreach entrypoint wiring', () => {
     it.each([
         'src/server/jobs/processOutreachSequences.ts',
-        'src/server/jobs/processFollowUps.ts',
         'src/server/routes/outreach/send-message.ts',
     ])('%s delegates delivery to the durable dispatcher only', (relativePath) => {
         const contents = source(relativePath)
@@ -36,11 +35,20 @@ describe('outreach entrypoint wiring', () => {
         expect(contents).not.toMatch(/\brelayMessage\s*\(/)
     })
 
+    // Phase 23 (AI-03/04): the agentic follow-up job RETIRED its direct-send path. It must NOT call
+    // the shared dispatcher or the low-level sender at all — every autonomous send is a durable
+    // command handed to the single executeInboxSendCommand executor via the automation runtime.
+    it('the autonomous follow-up job has no direct dispatch/sender and delegates to the leased processor', () => {
+        const contents = source('src/server/jobs/processFollowUps.ts')
+        expect(contents).toContain('processDueAutonomousRuns')
+        expect(contents).not.toMatch(/\bdispatchOutreachMessage\s*\(/)
+        expect(contents).not.toMatch(/\bsendThreadedReply\s*\(/)
+        expect(contents).not.toMatch(/\bcreateThreadedDispatchProvider\s*\(/)
+    })
+
     it('uses stable origin-specific idempotency keys', () => {
         expect(source('src/server/jobs/processOutreachSequences.ts'))
             .toContain('campaign:${campaignLead.id}:${emailStep.id}')
-        expect(source('src/server/jobs/processFollowUps.ts'))
-            .toContain('agentic:${cl.id}:${cl.lastReplyMessageId}:${cl.followUpCount + 1}')
         expect(source('src/server/routes/outreach/send-message.ts'))
             .toContain('manual:${requestId}')
     })

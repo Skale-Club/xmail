@@ -1,6 +1,6 @@
 import postgres from 'postgres'
 import path from 'node:path'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
     assertSafeTestDatabaseUrl,
     applyMigrationFile,
@@ -12,11 +12,6 @@ const runGuard = process.env[TEST_DATABASE_GUARD_ENV]
 const testDatabaseUrl = process.env[TEST_DATABASE_URL_ENV]
 const userId = '40000000-0000-4000-8000-000000000001'
 const organizationId = '40000000-0000-4000-8000-000000000002'
-
-vi.mock('../../lib/outreach-followup', () => ({
-    decideFollowUp: vi.fn().mockResolvedValue({ action: 'complete', outcome: 'reply_received' }),
-    enforceGuardrails: (decision: unknown) => decision,
-}))
 
 let sql: ReturnType<typeof postgres>
 let markCompletedCampaigns: () => Promise<void>
@@ -47,7 +42,11 @@ afterAll(async () => {
 })
 
 describe('campaign completion lifecycle', () => {
-    it('keeps an agentic campaign active until its persisted follow-up is cleared', async () => {
+    // Phase 23 (AI-03/04): the direct-send follow-up path is retired. processFollowUps no longer
+    // sends from a legacy next_follow_up_at row — it DRAINS the armed column (no send) so the campaign
+    // can complete, while autonomous sends now flow only through audited, leased runs. The campaign
+    // lifecycle (stay active while a follow-up is armed, then complete once drained) is unchanged.
+    it('keeps an agentic campaign active until its persisted follow-up is drained', async () => {
         const campaignId = '40000000-0000-4000-8000-000000000011'
         const leadId = '40000000-0000-4000-8000-000000000012'
         const campaignLeadId = '40000000-0000-4000-8000-000000000013'
@@ -72,7 +71,8 @@ describe('campaign completion lifecycle', () => {
 
         const { processFollowUps } = await import('../processFollowUps')
         const followUpResult = await processFollowUps()
-        expect(followUpResult.completed).toBe(1)
+        // The legacy row is DRAINED (cleared, never sent); no autonomous run exists for it.
+        expect(followUpResult.legacyDrained).toBe(1)
         const [followedUp] = await sql<{ next_follow_up_at: Date | null }[]>`
             SELECT next_follow_up_at FROM campaign_leads WHERE id = ${campaignLeadId}::uuid
         `

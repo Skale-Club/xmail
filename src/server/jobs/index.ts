@@ -122,8 +122,12 @@ export function startJobs(): void {
         })
     })
 
-    // Process agentic follow-ups every 10 minutes (advisory-locked). Inert unless a campaign
-    // has agentic_followup_enabled = true (P001/P002).
+    // Process autonomous AI follow-ups every 10 minutes (advisory-locked). Phase 23 (AI-03/04)
+    // retired the legacy direct-send path: this cadence now claims audited, leased autonomous runs
+    // from outreach_ai_runs and dispatches each ONLY through the single executeInboxSendCommand
+    // executor (Phase 18 policy-gated), and drains the inert legacy next_follow_up_at queue. It is
+    // inert unless BOTH the organization AND the campaign have opted into autonomy and neither is
+    // paused.
     cron.schedule('*/10 * * * *', () => {
         runFollowUpsProcessorWithLock().catch((err) => {
             const e = err instanceof Error ? err : new Error(String(err))
