@@ -1,4 +1,73 @@
-import type { SequenceStep } from '../../db/schema'
+import type { CampaignLead, Lead, SequenceStep } from '../../db/schema'
+
+export const CAMPAIGN_LEAD_PROGRESS = {
+    new: { terminal: false },
+    contacted: { terminal: false },
+    replied: { terminal: true },
+    interested: { terminal: true },
+    not_interested: { terminal: true },
+    bounced: { terminal: true },
+    unsubscribed: { terminal: true },
+} as const satisfies Record<Lead['status'], { terminal: boolean }>
+
+export const TERMINAL_CAMPAIGN_LEAD_STATUSES = Object.freeze(
+    (Object.entries(CAMPAIGN_LEAD_PROGRESS) as Array<[
+        Lead['status'],
+        (typeof CAMPAIGN_LEAD_PROGRESS)[Lead['status']],
+    ]>)
+        .filter(([, progress]) => progress.terminal)
+        .map(([status]) => status),
+)
+
+const terminalCampaignLeadStatuses = new Set<Lead['status']>(TERMINAL_CAMPAIGN_LEAD_STATUSES)
+
+export function isTerminalCampaignLeadStatus(status: Lead['status']): boolean {
+    return terminalCampaignLeadStatuses.has(status)
+}
+
+export function isCampaignProgressComplete(
+    progress: Array<Pick<CampaignLead, 'status' | 'completedAt'>>,
+): boolean {
+    return progress.length > 0
+        && progress.every((lead) => lead.completedAt != null || isTerminalCampaignLeadStatus(lead.status))
+}
+
+export interface DueWorkCandidate {
+    id: string
+    emailAccountId: string
+    nextScheduledAt: Date
+}
+
+/**
+ * Mirrors the database selector's ROW_NUMBER-per-account ordering. Keeping the
+ * ordering pure makes the fairness contract independently testable.
+ */
+export function selectFairDueCandidates<T extends DueWorkCandidate>(
+    candidates: readonly T[],
+    limit: number,
+): T[] {
+    const accountRank = new Map<string, number>()
+    const orderedWithinAccount = [...candidates].sort((left, right) =>
+        left.emailAccountId.localeCompare(right.emailAccountId)
+        || left.nextScheduledAt.getTime() - right.nextScheduledAt.getTime()
+        || left.id.localeCompare(right.id),
+    )
+    const ranked = orderedWithinAccount.map((candidate) => {
+        const rank = (accountRank.get(candidate.emailAccountId) ?? 0) + 1
+        accountRank.set(candidate.emailAccountId, rank)
+        return { candidate, rank }
+    })
+
+    return ranked
+        .sort((left, right) =>
+            left.rank - right.rank
+            || left.candidate.nextScheduledAt.getTime() - right.candidate.nextScheduledAt.getTime()
+            || left.candidate.emailAccountId.localeCompare(right.candidate.emailAccountId)
+            || left.candidate.id.localeCompare(right.candidate.id),
+        )
+        .slice(0, Math.max(0, limit))
+        .map(({ candidate }) => candidate)
+}
 
 export interface SequenceSchedule {
     timezone: string

@@ -13,7 +13,7 @@ import { createHash } from 'crypto'
 import { performance } from 'node:perf_hooks'
 import { db } from '../../db'
 import { campaigns, sequenceSteps, campaignLeads, leads, emailAccounts, outreachEmails, suppressions } from '../../db/schema'
-import { eq, and, lte, inArray, notInArray, sql } from 'drizzle-orm'
+import { eq, and, inArray, sql } from 'drizzle-orm'
 import {
     sendOutreachEmail,
     isWithinSendWindow,
@@ -27,7 +27,10 @@ import { generateOutreachToken } from '../lib/outreach-tokens'
 import { createLogger, OUTREACH_PROCESSOR_SLOW_MS } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { runWithLock } from '../lib/cron-lock'
-import { resolveSequenceAction } from '../lib/outreach-sequence-state'
+import {
+    resolveSequenceAction,
+    TERMINAL_CAMPAIGN_LEAD_STATUSES,
+} from '../lib/outreach-sequence-state'
 
 const log = createLogger('outreach.processor')
 
@@ -55,6 +58,51 @@ export function getRecentTickLatencies(): readonly number[] {
 }
 
 type SequenceStep = typeof sequenceSteps.$inferSelect
+
+interface DueCampaignLeadIdRow {
+    id: string
+}
+
+function rowsOf<T>(value: unknown): T[] {
+    if (Array.isArray(value)) return value as T[]
+    if (value && typeof value === 'object' && 'rows' in value) {
+        const rows = (value as { rows?: unknown }).rows
+        return Array.isArray(rows) ? rows as T[] : []
+    }
+    return []
+}
+
+async function selectDueCampaignLeadIds(now: Date, limit: number): Promise<string[]> {
+    const terminalStatuses = sql.join(
+        TERMINAL_CAMPAIGN_LEAD_STATUSES.map((status) => sql`${status}`),
+        sql`, `,
+    )
+    const selected = rowsOf<DueCampaignLeadIdRow>(await db.execute(sql`
+        WITH ranked_due AS (
+            SELECT campaign_lead.id,
+                campaign_lead.next_scheduled_at,
+                campaign_lead.assigned_email_account_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY campaign_lead.assigned_email_account_id
+                    ORDER BY campaign_lead.next_scheduled_at ASC, campaign_lead.id ASC
+                ) AS account_rank
+            FROM campaign_leads AS campaign_lead
+            JOIN campaigns AS campaign ON campaign.id = campaign_lead.campaign_id
+            JOIN organizations AS organization ON organization.id = campaign.organization_id
+            JOIN email_accounts AS email_account ON email_account.id = campaign_lead.assigned_email_account_id
+            WHERE campaign_lead.next_scheduled_at <= ${now}
+              AND campaign_lead.status NOT IN (${terminalStatuses})
+              AND campaign.status = 'active'
+              AND organization.outreach_enabled = TRUE
+              AND email_account.status = 'verified'
+        )
+        SELECT id
+        FROM ranked_due
+        ORDER BY account_rank ASC, next_scheduled_at ASC, assigned_email_account_id ASC, id ASC
+        LIMIT ${Math.max(1, limit)}
+    `))
+    return selected.map((row) => row.id)
+}
 
 function selectAbVariant(step: SequenceStep, leadId: string): 'a' | 'b' {
     if (!step.abTestEnabled) return 'a'
@@ -106,12 +154,11 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
     const result = { processed: 0, sent: 0, errors: 0 }
     const PENDING_LEADS_LIMIT = 200
 
-    const pendingLeads = await db.query.campaignLeads.findMany({
-        where: and(
-            lte(campaignLeads.nextScheduledAt, now),
-            notInArray(campaignLeads.status, ['replied', 'bounced', 'unsubscribed'])
-        ),
-        limit: PENDING_LEADS_LIMIT,
+    const selectedIds = await selectDueCampaignLeadIds(now, PENDING_LEADS_LIMIT)
+    if (selectedIds.length === 0) return result
+
+    const hydratedLeads = await db.query.campaignLeads.findMany({
+        where: inArray(campaignLeads.id, selectedIds),
         with: {
             campaign: true,
             lead: true,
@@ -119,16 +166,21 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
             assignedEmailAccount: true
         }
     })
+    const hydratedById = new Map(hydratedLeads.map((lead) => [lead.id, lead]))
+    const pendingLeads = selectedIds.flatMap((id) => {
+        const lead = hydratedById.get(id)
+        return lead ? [lead] : []
+    })
 
-    if (pendingLeads.length === 0) {
-        return result
-    }
+    log.debug({
+        action: 'outreach.processor.work_selected',
+        selected: selectedIds.length,
+        hydrated: pendingLeads.length,
+        hardLimit: PENDING_LEADS_LIMIT,
+    }, 'selected fair due-work batch')
 
-    const campaignIds = [...new Set(pendingLeads.map(cl => cl.campaignId))]
     const campaignsMap = new Map(
-        (await db.query.campaigns.findMany({
-            where: inArray(campaigns.id, campaignIds)
-        })).map(c => [c.id, c])
+        pendingLeads.map((campaignLead) => [campaignLead.campaign.id, campaignLead.campaign]),
     )
 
     const sequenceIds = [...new Set(
