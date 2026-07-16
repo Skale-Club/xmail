@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import postgres from 'postgres'
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -624,5 +625,70 @@ describe('provider-event materialization lifecycle (independent of processed_at)
         } finally {
             await sql.end({ timeout: 1 })
         }
+    })
+})
+
+describe('drizzle mirror stays aligned with migration 041 identifiers', () => {
+    it('declares every foundation table, column, index, and materialization field', async () => {
+        const schema = await readFile(path.join(process.cwd(), 'src', 'db', 'schema.ts'), 'utf8')
+
+        for (const mapping of [
+            // Tables
+            "export const outreachConversations = pgTable('outreach_conversations'",
+            "export const outreachConversationMessages = pgTable('outreach_conversation_messages'",
+            "export const outreachConversationParticipants = pgTable('outreach_conversation_participants'",
+            "export const outreachConversationReads = pgTable('outreach_conversation_reads'",
+            // Conversation columns
+            "threadKey: text('thread_key')",
+            "status: text('status')",
+            "lastMessageId: uuid('last_message_id')",
+            "lastInboundAt: timestamp('last_inbound_at')",
+            "campaignLeadId: uuid('campaign_lead_id')",
+            // Message columns
+            "sourceKey: text('source_key')",
+            "direction: text('direction')",
+            "internetMessageId: text('internet_message_id')",
+            "inReplyTo: text('in_reply_to')",
+            "messageReferences: text('message_references')",
+            "matchStrategy: text('match_strategy')",
+            "hasAttachments: boolean('has_attachments')",
+            // Read-state columns
+            "lastReadMessageId: uuid('last_read_message_id')",
+            "lastReadAt: timestamp('last_read_at')",
+            // Provider-event materialization lifecycle extension
+            "materializationStatus: text('materialization_status')",
+            "materializationLeaseToken: uuid('materialization_lease_token')",
+            "materializationLeaseExpiresAt: timestamp('materialization_lease_expires_at')",
+            "materializationAttempts: integer('materialization_attempts')",
+            "materializationError: text('materialization_error')",
+            "materializedAt: timestamp('materialized_at')",
+            "conversationMessageId: uuid('conversation_message_id')",
+            // Index / constraint identifiers
+            'outreach_conversations_thread_key_unique',
+            'idx_outreach_conversations_list',
+            'outreach_conversation_messages_source_key_unique',
+            'idx_outreach_conversation_messages_thread',
+            'idx_outreach_conversation_messages_internet_message_id',
+            'outreach_conversation_participants_unique',
+            'outreach_conversation_reads_unique',
+            'idx_outreach_provider_events_materialization_claim',
+            'outreach_provider_events_materialized_message_unique',
+            'outreach_provider_events_materialized_requires_message',
+            // Types
+            'OutreachConversation',
+            'OutreachConversationMessage',
+            'OutreachConversationParticipant',
+            'OutreachConversationRead',
+            'OutreachProviderEventMaterializationStatus',
+        ]) {
+            expect(schema, mapping).toContain(mapping)
+        }
+    })
+
+    it('does not reintroduce a Phase 19 provider cursor table', async () => {
+        const schema = await readFile(path.join(process.cwd(), 'src', 'db', 'schema.ts'), 'utf8')
+        // Phase 21 extends outreach_provider_events; it must not fork a second cursor system.
+        const cursorDeclarations = schema.match(/pgTable\('outreach_provider_cursors'/g) ?? []
+        expect(cursorDeclarations).toHaveLength(1)
     })
 })

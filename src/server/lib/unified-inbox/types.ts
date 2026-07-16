@@ -12,38 +12,48 @@
 // invents a second, drifting set of provider/classification strings.
 
 import type {
+    OutreachConversationParticipantRole,
+    OutreachConversationStatus,
+    OutreachMessageDirection,
+    OutreachMessageMatchStrategy,
     OutreachProviderAttachment,
     OutreachProviderEventClassification,
+    OutreachProviderEventMaterializationStatus,
     OutreachProviderName,
 } from '@/db/schema'
 
+// The union types are owned by src/db/schema.ts (the Drizzle mirror of the SQL). We
+// re-export them here so ingestion/API code has one import site for the inbox contracts.
 export type {
+    OutreachConversationParticipantRole,
+    OutreachConversationStatus,
+    OutreachMessageDirection,
+    OutreachMessageMatchStrategy,
     OutreachProviderAttachment,
     OutreachProviderEventClassification,
+    OutreachProviderEventMaterializationStatus,
     OutreachProviderName,
 }
 
 // ------------------------------------------------------------
-// Canonical value sets (single source of truth for CHECK domains)
+// Canonical value sets (runtime lists for the CHECK domains)
 // ------------------------------------------------------------
-// These arrays mirror the CHECK constraints in migration 041 exactly. Keeping the
-// vocabulary here means the ingestion layer and the schema tests share one list
-// instead of restating string literals that could silently diverge from the SQL.
+// These arrays are the runtime enumeration of the same vocabulary the migration 041
+// CHECK constraints enforce. `satisfies` binds each array to the schema-owned union, so
+// adding a value here without adding it to the SQL/schema (or vice versa) fails to
+// compile instead of silently diverging.
 
 /** A normalized message is either incoming to, or outgoing from, the account. */
-export const OUTREACH_MESSAGE_DIRECTIONS = ['inbound', 'outbound'] as const
-export type OutreachMessageDirection = (typeof OUTREACH_MESSAGE_DIRECTIONS)[number]
+export const OUTREACH_MESSAGE_DIRECTIONS = ['inbound', 'outbound'] as const satisfies readonly OutreachMessageDirection[]
 
 /**
  * Conversation lifecycle for the read-only MVP. Archive/snooze/bulk actions are
  * Phase 22 and deliberately absent so the CHECK domain stays small.
  */
-export const OUTREACH_CONVERSATION_STATUSES = ['open', 'closed'] as const
-export type OutreachConversationStatus = (typeof OUTREACH_CONVERSATION_STATUSES)[number]
+export const OUTREACH_CONVERSATION_STATUSES = ['open', 'closed'] as const satisfies readonly OutreachConversationStatus[]
 
 /** Role a participant address plays on a conversation. */
-export const OUTREACH_CONVERSATION_PARTICIPANT_ROLES = ['from', 'to', 'cc', 'bcc', 'reply_to'] as const
-export type OutreachConversationParticipantRole = (typeof OUTREACH_CONVERSATION_PARTICIPANT_ROLES)[number]
+export const OUTREACH_CONVERSATION_PARTICIPANT_ROLES = ['from', 'to', 'cc', 'bcc', 'reply_to'] as const satisfies readonly OutreachConversationParticipantRole[]
 
 /**
  * How a message was threaded onto its conversation. Recorded for auditability of the
@@ -57,8 +67,7 @@ export const OUTREACH_MESSAGE_MATCH_STRATEGIES = [
     'address_heuristic',
     'outbound',
     'none',
-] as const
-export type OutreachMessageMatchStrategy = (typeof OUTREACH_MESSAGE_MATCH_STRATEGIES)[number]
+] as const satisfies readonly OutreachMessageMatchStrategy[]
 
 /**
  * Provider-event materialization lifecycle. This is INDEPENDENT from the Phase 19
@@ -71,9 +80,7 @@ export const OUTREACH_PROVIDER_EVENT_MATERIALIZATION_STATUSES = [
     'processing',
     'materialized',
     'failed',
-] as const
-export type OutreachProviderEventMaterializationStatus =
-    (typeof OUTREACH_PROVIDER_EVENT_MATERIALIZATION_STATUSES)[number]
+] as const satisfies readonly OutreachProviderEventMaterializationStatus[]
 
 // ------------------------------------------------------------
 // Normalized ingestion input

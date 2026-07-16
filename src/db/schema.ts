@@ -1517,6 +1517,14 @@ export type OutreachProviderName = 'smtp' | 'outlook' | 'native'
 export type OutreachProviderEventClassification = 'reply' | 'bounce' | 'auto_reply' | 'other'
 
 /**
+ * Phase 21 (migration 041) materialization lifecycle status. A worker leases a
+ * `pending` (or stale `processing`) event, commits the normalized conversation
+ * message, then flips it to `materialized`; exhausted retries land on `failed`.
+ * Deliberately independent from `processed_at` (classification side effects).
+ */
+export type OutreachProviderEventMaterializationStatus = 'pending' | 'processing' | 'materialized' | 'failed'
+
+/**
  * Bounded, resumable per-account ingestion state. Replaces user-visible read/unread
  * flags as the processing cursor — those are a human's state and mutable from any
  * mail client.
@@ -1586,8 +1594,21 @@ export const outreachProviderEvents = pgTable('outreach_provider_events', {
     headers: jsonb('headers').$type<Record<string, string>>().default({}).notNull(),
     attachments: jsonb('attachments').$type<OutreachProviderAttachment[]>().default([]).notNull(),
     receivedAt: timestamp('received_at').notNull(),
+    // Phase 19 classification/domain-side-effect processing. INDEPENDENT from the
+    // Phase 21 materialization lifecycle below — neither may be reused as the other's claim.
     processedAt: timestamp('processed_at'),
     processingError: text('processing_error'),
+    // ---- Phase 21 (migration 041) materialization lifecycle ----
+    // Whether this staged event has been turned into a normalized conversation message.
+    materializationStatus: text('materialization_status')
+        .$type<OutreachProviderEventMaterializationStatus>().default('pending').notNull(),
+    materializationLeaseToken: uuid('materialization_lease_token'),
+    materializationLeaseExpiresAt: timestamp('materialization_lease_expires_at'),
+    materializationAttempts: integer('materialization_attempts').default(0).notNull(),
+    materializationError: text('materialization_error'),
+    materializedAt: timestamp('materialized_at'),
+    // Composite (id, organization_id) FK lives in SQL; declared here for type-awareness only.
+    conversationMessageId: uuid('conversation_message_id'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -1597,6 +1618,11 @@ export const outreachProviderEvents = pgTable('outreach_provider_events', {
     idxOrgReceived: index('idx_outreach_provider_events_org_received').on(table.organizationId, table.receivedAt),
     idxAccountReceived: index('idx_outreach_provider_events_account_received').on(table.emailAccountId, table.receivedAt),
     idxMessageId: index('idx_outreach_provider_events_message_id').on(table.organizationId, table.messageId),
+    // Materialization claim queue and the one-event-to-one-message link (both partial in SQL).
+    idxMaterializationClaim: index('idx_outreach_provider_events_materialization_claim')
+        .on(table.materializationStatus, table.receivedAt),
+    materializedMessageUnique: uniqueIndex('outreach_provider_events_materialized_message_unique')
+        .on(table.conversationMessageId),
     providerCheck: check(
         'outreach_provider_events_provider_check',
         sql`${table.provider} IN ('smtp', 'outlook', 'native')`,
@@ -1608,6 +1634,22 @@ export const outreachProviderEvents = pgTable('outreach_provider_events', {
     providerMessageIdCheck: check(
         'outreach_provider_events_provider_message_id_check',
         sql`length(btrim(${table.providerMessageId})) > 0`,
+    ),
+    materializationStatusCheck: check(
+        'outreach_provider_events_materialization_status_check',
+        sql`${table.materializationStatus} IN ('pending', 'processing', 'materialized', 'failed')`,
+    ),
+    materializationLeaseCheck: check(
+        'outreach_provider_events_materialization_lease_check',
+        sql`(${table.materializationLeaseToken} IS NULL) = (${table.materializationLeaseExpiresAt} IS NULL)`,
+    ),
+    materializationAttemptsCheck: check(
+        'outreach_provider_events_materialization_attempts_check',
+        sql`${table.materializationAttempts} >= 0`,
+    ),
+    materializedRequiresMessage: check(
+        'outreach_provider_events_materialized_requires_message',
+        sql`${table.materializationStatus} <> 'materialized' OR (${table.materializedAt} IS NOT NULL AND ${table.conversationMessageId} IS NOT NULL)`,
     ),
 }))
 
@@ -1637,3 +1679,256 @@ export type OutreachProviderCursor = typeof outreachProviderCursors.$inferSelect
 export type NewOutreachProviderCursor = typeof outreachProviderCursors.$inferInsert
 export type OutreachProviderEvent = typeof outreachProviderEvents.$inferSelect
 export type NewOutreachProviderEvent = typeof outreachProviderEvents.$inferInsert
+
+// ============================================================
+// Unified Inbox foundation (migration 041, Phase 21 UIF-01)
+// ============================================================
+// TypeScript mirror only — the running schema comes from
+// supabase/migrations/041_unified_inbox_foundation.sql. Composite (id, organization_id)
+// foreign keys, CHECK constraints, partial indexes, and defense-in-depth RLS live there;
+// see CLAUDE.md "Schema & Migration Workflow". A Drizzle declaration never applies a
+// database constraint — the .references() calls below are single-column for
+// type-awareness while the SQL enforces the composite tenant bindings.
+
+export type OutreachConversationStatus = 'open' | 'closed'
+export type OutreachMessageDirection = 'inbound' | 'outbound'
+export type OutreachConversationParticipantRole = 'from' | 'to' | 'cc' | 'bcc' | 'reply_to'
+export type OutreachMessageMatchStrategy =
+    | 'in_reply_to'
+    | 'references'
+    | 'provider_thread'
+    | 'address_heuristic'
+    | 'outbound'
+    | 'none'
+
+/** A normalized address token stored in the message address jsonb arrays. */
+export interface OutreachConversationAddress {
+    address: string
+    name: string | null
+}
+
+/**
+ * Organization-owned thread summary and attribution. `threadKey` is the tenant-unique
+ * thread identity from the normalizer; `lastMessageId` is denormalized for the list view
+ * and its composite FK is added at the end of migration 041 to break the creation cycle.
+ */
+export const outreachConversations = pgTable('outreach_conversations', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    emailAccountId: uuid('email_account_id').references(() => emailAccounts.id).notNull(),
+    leadId: uuid('lead_id').references(() => leads.id),
+    campaignId: uuid('campaign_id').references(() => campaigns.id),
+    campaignLeadId: uuid('campaign_lead_id').references(() => campaignLeads.id),
+    providerThreadId: text('provider_thread_id'),
+    threadKey: text('thread_key').notNull(),
+    normalizedSubject: text('normalized_subject'),
+    status: text('status').$type<OutreachConversationStatus>().default('open').notNull(),
+    lastMessageId: uuid('last_message_id'),
+    lastMessageAt: timestamp('last_message_at'),
+    lastInboundAt: timestamp('last_inbound_at'),
+    lastOutboundAt: timestamp('last_outbound_at'),
+    latestMessagePreview: text('latest_message_preview'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    threadKeyUnique: uniqueIndex('outreach_conversations_thread_key_unique')
+        .on(table.organizationId, table.emailAccountId, table.threadKey),
+    idxList: index('idx_outreach_conversations_list').on(table.organizationId, table.lastMessageAt, table.id),
+    idxAccount: index('idx_outreach_conversations_account').on(table.organizationId, table.emailAccountId, table.lastMessageAt),
+    idxStatus: index('idx_outreach_conversations_status').on(table.organizationId, table.status, table.lastMessageAt),
+    idxUnread: index('idx_outreach_conversations_unread').on(table.organizationId, table.lastInboundAt),
+    idxLead: index('idx_outreach_conversations_lead').on(table.organizationId, table.leadId),
+    idxCampaign: index('idx_outreach_conversations_campaign').on(table.organizationId, table.campaignId),
+    statusCheck: check(
+        'outreach_conversations_status_check',
+        sql`${table.status} IN ('open', 'closed')`,
+    ),
+    threadKeyCheck: check(
+        'outreach_conversations_thread_key_check',
+        sql`length(btrim(${table.threadKey})) > 0`,
+    ),
+    campaignLeadRequiresCampaign: check(
+        'outreach_conversations_campaign_lead_requires_campaign',
+        sql`${table.campaignLeadId} IS NULL OR ${table.campaignId} IS NOT NULL`,
+    ),
+}))
+
+/**
+ * Immutable normalized message record. `sourceKey` is the per-account dedupe identity
+ * (never the RFC Message-ID); provider replay resolves to the same key. RFC threading
+ * fields are indexed but intentionally not unique.
+ */
+export const outreachConversationMessages = pgTable('outreach_conversation_messages', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    conversationId: uuid('conversation_id').references(() => outreachConversations.id).notNull(),
+    emailAccountId: uuid('email_account_id').references(() => emailAccounts.id).notNull(),
+    outreachEmailId: uuid('outreach_email_id').references(() => outreachEmails.id),
+    direction: text('direction').$type<OutreachMessageDirection>().notNull(),
+    provider: text('provider').$type<OutreachProviderName>().notNull(),
+    providerMessageId: text('provider_message_id'),
+    providerThreadId: text('provider_thread_id'),
+    sourceKey: text('source_key').notNull(),
+    internetMessageId: text('internet_message_id'),
+    inReplyTo: text('in_reply_to'),
+    messageReferences: text('message_references'),
+    subject: text('subject'),
+    fromAddress: text('from_address'),
+    fromName: text('from_name'),
+    toAddresses: jsonb('to_addresses').$type<OutreachConversationAddress[]>().default([]).notNull(),
+    ccAddresses: jsonb('cc_addresses').$type<OutreachConversationAddress[]>().default([]).notNull(),
+    bccAddresses: jsonb('bcc_addresses').$type<OutreachConversationAddress[]>().default([]).notNull(),
+    replyToAddresses: jsonb('reply_to_addresses').$type<OutreachConversationAddress[]>().default([]).notNull(),
+    plainBody: text('plain_body'),
+    htmlBody: text('html_body'),
+    headers: jsonb('headers').$type<Record<string, string>>().default({}).notNull(),
+    attachments: jsonb('attachments').$type<OutreachProviderAttachment[]>().default([]).notNull(),
+    hasAttachments: boolean('has_attachments').default(false).notNull(),
+    classification: text('classification').$type<OutreachProviderEventClassification>().default('other').notNull(),
+    matchStrategy: text('match_strategy').$type<OutreachMessageMatchStrategy>(),
+    matchConfidence: text('match_confidence'),
+    sentAt: timestamp('sent_at'),
+    receivedAt: timestamp('received_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+    sourceKeyUnique: uniqueIndex('outreach_conversation_messages_source_key_unique')
+        .on(table.organizationId, table.emailAccountId, table.sourceKey),
+    // SQL (041) indexes on COALESCE(received_at, sent_at, created_at) for thread order;
+    // this Drizzle mirror lists the plain columns since 0.30.4 index().on() takes columns only.
+    idxThread: index('idx_outreach_conversation_messages_thread')
+        .on(table.organizationId, table.conversationId, table.receivedAt, table.id),
+    idxInternetMessageId: index('idx_outreach_conversation_messages_internet_message_id')
+        .on(table.organizationId, table.internetMessageId),
+    idxInReplyTo: index('idx_outreach_conversation_messages_in_reply_to')
+        .on(table.organizationId, table.inReplyTo),
+    idxOutreachEmail: index('idx_outreach_conversation_messages_outreach_email')
+        .on(table.organizationId, table.outreachEmailId),
+    directionCheck: check(
+        'outreach_conversation_messages_direction_check',
+        sql`${table.direction} IN ('inbound', 'outbound')`,
+    ),
+    providerCheck: check(
+        'outreach_conversation_messages_provider_check',
+        sql`${table.provider} IN ('smtp', 'outlook', 'native')`,
+    ),
+    classificationCheck: check(
+        'outreach_conversation_messages_classification_check',
+        sql`${table.classification} IN ('reply', 'bounce', 'auto_reply', 'other')`,
+    ),
+    sourceKeyCheck: check(
+        'outreach_conversation_messages_source_key_check',
+        sql`length(btrim(${table.sourceKey})) > 0`,
+    ),
+    matchStrategyCheck: check(
+        'outreach_conversation_messages_match_strategy_check',
+        sql`${table.matchStrategy} IS NULL OR ${table.matchStrategy} IN ('in_reply_to', 'references', 'provider_thread', 'address_heuristic', 'outbound', 'none')`,
+    ),
+}))
+
+/** Normalized address/role rows per conversation; unique within org/conversation/address/role. */
+export const outreachConversationParticipants = pgTable('outreach_conversation_participants', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    conversationId: uuid('conversation_id').references(() => outreachConversations.id).notNull(),
+    address: text('address').notNull(),
+    name: text('name'),
+    role: text('role').$type<OutreachConversationParticipantRole>().notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+    participantUnique: uniqueIndex('outreach_conversation_participants_unique')
+        .on(table.organizationId, table.conversationId, table.address, table.role),
+    idxAddress: index('idx_outreach_conversation_participants_address')
+        .on(table.organizationId, table.address),
+    roleCheck: check(
+        'outreach_conversation_participants_role_check',
+        sql`${table.role} IN ('from', 'to', 'cc', 'bcc', 'reply_to')`,
+    ),
+    addressCheck: check(
+        'outreach_conversation_participants_address_check',
+        sql`length(btrim(${table.address})) > 0`,
+    ),
+}))
+
+/**
+ * Per-user last-read state. Absence of a row means unread whenever the conversation has an
+ * incoming message; unique within org/conversation/user.
+ */
+export const outreachConversationReads = pgTable('outreach_conversation_reads', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    conversationId: uuid('conversation_id').references(() => outreachConversations.id).notNull(),
+    userId: uuid('user_id').references(() => users.id).notNull(),
+    lastReadMessageId: uuid('last_read_message_id'),
+    lastReadAt: timestamp('last_read_at').defaultNow().notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    readUnique: uniqueIndex('outreach_conversation_reads_unique')
+        .on(table.organizationId, table.conversationId, table.userId),
+    idxUser: index('idx_outreach_conversation_reads_user')
+        .on(table.organizationId, table.userId),
+}))
+
+export const outreachConversationsRelations = relations(outreachConversations, ({ one, many }) => ({
+    organization: one(organizations, {
+        fields: [outreachConversations.organizationId],
+        references: [organizations.id],
+    }),
+    emailAccount: one(emailAccounts, {
+        fields: [outreachConversations.emailAccountId],
+        references: [emailAccounts.id],
+    }),
+    lead: one(leads, {
+        fields: [outreachConversations.leadId],
+        references: [leads.id],
+    }),
+    campaign: one(campaigns, {
+        fields: [outreachConversations.campaignId],
+        references: [campaigns.id],
+    }),
+    messages: many(outreachConversationMessages),
+    participants: many(outreachConversationParticipants),
+    reads: many(outreachConversationReads),
+}))
+
+export const outreachConversationMessagesRelations = relations(outreachConversationMessages, ({ one }) => ({
+    organization: one(organizations, {
+        fields: [outreachConversationMessages.organizationId],
+        references: [organizations.id],
+    }),
+    conversation: one(outreachConversations, {
+        fields: [outreachConversationMessages.conversationId],
+        references: [outreachConversations.id],
+    }),
+    outreachEmail: one(outreachEmails, {
+        fields: [outreachConversationMessages.outreachEmailId],
+        references: [outreachEmails.id],
+    }),
+}))
+
+export const outreachConversationParticipantsRelations = relations(outreachConversationParticipants, ({ one }) => ({
+    conversation: one(outreachConversations, {
+        fields: [outreachConversationParticipants.conversationId],
+        references: [outreachConversations.id],
+    }),
+}))
+
+export const outreachConversationReadsRelations = relations(outreachConversationReads, ({ one }) => ({
+    conversation: one(outreachConversations, {
+        fields: [outreachConversationReads.conversationId],
+        references: [outreachConversations.id],
+    }),
+    user: one(users, {
+        fields: [outreachConversationReads.userId],
+        references: [users.id],
+    }),
+}))
+
+export type OutreachConversation = typeof outreachConversations.$inferSelect
+export type NewOutreachConversation = typeof outreachConversations.$inferInsert
+export type OutreachConversationMessage = typeof outreachConversationMessages.$inferSelect
+export type NewOutreachConversationMessage = typeof outreachConversationMessages.$inferInsert
+export type OutreachConversationParticipant = typeof outreachConversationParticipants.$inferSelect
+export type NewOutreachConversationParticipant = typeof outreachConversationParticipants.$inferInsert
+export type OutreachConversationRead = typeof outreachConversationReads.$inferSelect
+export type NewOutreachConversationRead = typeof outreachConversationReads.$inferInsert
