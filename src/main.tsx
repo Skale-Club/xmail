@@ -78,6 +78,7 @@ const WebhooksPage = React.lazy(() => import('./pages/admin/WebhooksPage'))
 const MessagesPage = React.lazy(() => import('./pages/admin/MessagesPage'))
 
 const OutreachDashboard = React.lazy(() => import('./pages/outreach/OutreachDashboard'))
+const UnifiedInboxPage = React.lazy(() => import('./pages/outreach/UnifiedInboxPage'))
 const CampaignsPage = React.lazy(() => import('./pages/outreach/CampaignsPage'))
 const NewCampaignPage = React.lazy(() => import('./pages/outreach/campaigns/NewCampaignPage'))
 const CampaignDetailPage = React.lazy(() => import('./pages/outreach/campaigns/CampaignDetailPage'))
@@ -514,6 +515,11 @@ function App() {
                                 <Route path="/outreach">
                                     <OutreachCheck>
                                         <PageSuspense><OutreachDashboard /></PageSuspense>
+                                    </OutreachCheck>
+                                </Route>
+                                <Route path="/outreach/unified-inbox">
+                                    <OutreachCheck>
+                                        <PageSuspense><UnifiedInboxPage /></PageSuspense>
                                     </OutreachCheck>
                                 </Route>
                                 <Route path="/outreach/campaigns/new">

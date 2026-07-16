@@ -2,6 +2,7 @@ import React from 'react'
 import { Link, useLocation } from 'wouter'
 import { useAuth } from '../../hooks/useAuth'
 import { useOrganization } from '../../hooks/useOrganization'
+import { useInboxUnreadCount } from '../../hooks/useUnifiedInbox'
 import { useBranding } from '../../lib/branding'
 import { supabase } from '../../lib/supabase'
 import { AppLogo } from '../AppLogo'
@@ -38,13 +39,35 @@ interface NavItem {
 
 const navItems: NavItem[] = [
     { label: 'Dashboard', href: '/outreach', icon: <LayoutDashboard className="w-5 h-5" /> },
+    { label: 'Inbox', href: '/outreach/unified-inbox', icon: <Inbox className="w-5 h-5" /> },
     { label: 'Campaigns', href: '/outreach/campaigns', icon: <Target className="w-5 h-5" /> },
     { label: 'Leads', href: '/outreach/leads', icon: <Users className="w-5 h-5" /> },
-    { label: 'Inboxes', href: '/outreach/inboxes', icon: <Mail className="w-5 h-5" /> },
+    // Renamed from "Inboxes" to disambiguate sender-account management from the unified
+    // Inbox workspace; the /outreach/inboxes URL is retained for link compatibility.
+    { label: 'Sending accounts', href: '/outreach/inboxes', icon: <Mail className="w-5 h-5" /> },
     { label: 'Sequences', href: '/outreach/sequences', icon: <Send className="w-5 h-5" /> },
     { label: 'Analytics', href: '/outreach/analytics', icon: <BarChart3 className="w-5 h-5" /> },
     { label: 'Settings', href: '/outreach/settings', icon: <Settings className="w-5 h-5" /> },
 ]
+
+/** Accessible unread badge for the Inbox nav item. Caps the visual at 99+, keeps the full
+ *  count in the accessible name, and renders nothing while zero/loading. */
+function InboxUnreadBadge() {
+    const { currentOrganization } = useOrganization()
+    const { data: unreadCount } = useInboxUnreadCount(currentOrganization?.id)
+
+    if (!unreadCount || unreadCount <= 0) return null
+    const display = unreadCount > 99 ? '99+' : String(unreadCount)
+
+    return (
+        <span
+            className="ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-primary-foreground"
+            aria-label={`${unreadCount} unread conversations`}
+        >
+            <span aria-hidden="true">{display}</span>
+        </span>
+    )
+}
 
 export function OutreachLayout({ children }: OutreachLayoutProps) {
     const { user } = useAuth()
@@ -167,7 +190,8 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                                     onClick={() => setSidebarOpen(false)}
                                 >
                                     {item.icon}
-                                    {item.label}
+                                    <span>{item.label}</span>
+                                    {item.href === '/outreach/unified-inbox' && <InboxUnreadBadge />}
                                 </Link>
                             ))}
                         </div>
