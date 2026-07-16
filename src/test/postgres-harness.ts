@@ -9,6 +9,16 @@ export const TEST_DATABASE_OVERRIDE_ENV = 'XMAIL_TEST_DATABASE_URL_OVERRIDE'
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', '[::1]', 'localhost'])
 const OUTREACH_TEST_BASELINE_MIGRATIONS = [
     '011_add_outreach_enabled.sql',
+    // email_accounts.provider + outlook_mailbox_id, and the nullable smtp_* columns that
+    // provider='native'/'outlook' rows depend on. The Drizzle snapshot predates all three.
+    '012_add_provider_to_email_accounts.sql',
+    // mailboxes.is_native — what distinguishes a platform mailbox from a connected one.
+    '015_schema_reconciliation.sql',
+    // mailboxes.skip_tls_verify (SEC-02). Drizzle selects every mapped column, so a
+    // mailbox read fails without it.
+    '018_add_mailbox_skip_tls_verify.sql',
+    // mail_folders.uid_validity / uid_next — same reason, on the folder read.
+    '025_add_folder_uid_tracking.sql',
     '021_email_accounts_last_sent_at.sql',
     '022_outreach_emails_sent_at_status_idx.sql',
     '027_outreach_p0_fixes.sql',
