@@ -1728,6 +1728,9 @@ export const outreachConversations = pgTable('outreach_conversations', {
     lastInboundAt: timestamp('last_inbound_at'),
     lastOutboundAt: timestamp('last_outbound_at'),
     latestMessagePreview: text('latest_message_preview'),
+    // Phase 22 (UIX-04): archive is ORTHOGONAL to open/closed status. archivedAt NULL = active.
+    archivedAt: timestamp('archived_at'),
+    archivedByUserId: uuid('archived_by_user_id'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -1739,6 +1742,7 @@ export const outreachConversations = pgTable('outreach_conversations', {
     idxUnread: index('idx_outreach_conversations_unread').on(table.organizationId, table.lastInboundAt),
     idxLead: index('idx_outreach_conversations_lead').on(table.organizationId, table.leadId),
     idxCampaign: index('idx_outreach_conversations_campaign').on(table.organizationId, table.campaignId),
+    idxArchived: index('idx_outreach_conversations_archived').on(table.organizationId, table.archivedAt),
     statusCheck: check(
         'outreach_conversations_status_check',
         sql`${table.status} IN ('open', 'closed')`,
@@ -1932,3 +1936,207 @@ export type OutreachConversationParticipant = typeof outreachConversationPartici
 export type NewOutreachConversationParticipant = typeof outreachConversationParticipants.$inferInsert
 export type OutreachConversationRead = typeof outreachConversationReads.$inferSelect
 export type NewOutreachConversationRead = typeof outreachConversationReads.$inferInsert
+
+// ============================================================
+// Unified Inbox operator workflows (Phase 22 UIX-04 / UIX-05) — migration 042
+// ============================================================
+// Every operator action (label, archive, reminder, snippet, scheduled reply) is a durable,
+// organization-scoped row — never browser state. Tables mirror 042 byte-for-byte on names.
+
+/** Private Supabase Storage bucket for inbox attachments. Configured by migration 042. */
+export const INBOX_ATTACHMENTS_BUCKET = 'inbox-attachments'
+
+export type InboxSendCommandMode = 'reply' | 'reply_all' | 'forward'
+export type InboxSendCommandStatus =
+    | 'draft'
+    | 'scheduled'
+    | 'queued'
+    | 'sending'
+    | 'sent'
+    | 'failed'
+    | 'cancelled'
+    | 'held'
+export type InboxReminderStatus = 'scheduled' | 'notified' | 'cancelled' | 'done'
+export type InboxAttachmentStatus = 'pending' | 'ready' | 'failed' | 'deleted'
+
+/** A recipient snapshot frozen into a send command. */
+export interface InboxRecipient {
+    address: string
+    name?: string | null
+}
+
+/** Organization-owned label. Name is unique case-insensitively within an organization. */
+export const inboxLabels = pgTable('inbox_labels', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    name: text('name').notNull(),
+    color: text('color'),
+    createdByUserId: uuid('created_by_user_id'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    // SQL (042) uses a case-insensitive unique index on (organization_id, lower(name)); the
+    // Drizzle 0.30.4 mirror lists plain columns since uniqueIndex().on() takes columns only.
+    nameCiUnique: uniqueIndex('inbox_labels_org_name_ci_unique').on(table.organizationId, table.name),
+    nameCheck: check('inbox_labels_name_check', sql`length(btrim(${table.name})) > 0 AND length(${table.name}) <= 80`),
+}))
+
+/** Conversation <-> label join. Deleting a label removes only the join, never the conversation. */
+export const inboxConversationLabels = pgTable('inbox_conversation_labels', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    conversationId: uuid('conversation_id').references(() => outreachConversations.id).notNull(),
+    labelId: uuid('label_id').references(() => inboxLabels.id).notNull(),
+    createdByUserId: uuid('created_by_user_id'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+    joinUnique: uniqueIndex('inbox_conversation_labels_unique').on(table.organizationId, table.conversationId, table.labelId),
+    idxLabel: index('idx_inbox_conversation_labels_label').on(table.organizationId, table.labelId),
+}))
+
+/** Per-conversation, per-user due reminder. Absence of a due row means nothing is pending. */
+export const inboxReminders = pgTable('inbox_reminders', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    conversationId: uuid('conversation_id').references(() => outreachConversations.id).notNull(),
+    userId: uuid('user_id').references(() => users.id).notNull(),
+    remindAt: timestamp('remind_at').notNull(),
+    note: text('note'),
+    status: text('status').$type<InboxReminderStatus>().default('scheduled').notNull(),
+    notifiedAt: timestamp('notified_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    idxDue: index('idx_inbox_reminders_due').on(table.remindAt),
+    idxConversation: index('idx_inbox_reminders_conversation').on(table.organizationId, table.conversationId),
+    idxUser: index('idx_inbox_reminders_user').on(table.organizationId, table.userId, table.status),
+    statusCheck: check('inbox_reminders_status_check', sql`${table.status} IN ('scheduled', 'notified', 'cancelled', 'done')`),
+}))
+
+/** Organization-owned reusable reply snippet/macro. Name unique case-insensitively per org. */
+export const inboxSnippets = pgTable('inbox_snippets', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    createdByUserId: uuid('created_by_user_id'),
+    name: text('name').notNull(),
+    body: text('body').notNull(),
+    shortcut: text('shortcut'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    nameCiUnique: uniqueIndex('inbox_snippets_org_name_ci_unique').on(table.organizationId, table.name),
+    idxOrg: index('idx_inbox_snippets_org').on(table.organizationId, table.name),
+    nameCheck: check('inbox_snippets_name_check', sql`length(btrim(${table.name})) > 0 AND length(${table.name}) <= 120`),
+}))
+
+/**
+ * Durable, restart-safe reply/forward send command. Recipients/headers are SNAPSHOTTED at
+ * creation, dispatch is leased + idempotent, and the resulting message/email are linked back.
+ */
+export const inboxSendCommands = pgTable('inbox_send_commands', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    conversationId: uuid('conversation_id').references(() => outreachConversations.id).notNull(),
+    actorUserId: uuid('actor_user_id').references(() => users.id).notNull(),
+    emailAccountId: uuid('email_account_id').references(() => emailAccounts.id).notNull(),
+    sourceMessageId: uuid('source_message_id'),
+    mode: text('mode').$type<InboxSendCommandMode>().notNull(),
+    toRecipients: jsonb('to_recipients').$type<InboxRecipient[]>().default([]).notNull(),
+    ccRecipients: jsonb('cc_recipients').$type<InboxRecipient[]>().default([]).notNull(),
+    bccRecipients: jsonb('bcc_recipients').$type<InboxRecipient[]>().default([]).notNull(),
+    subject: text('subject'),
+    bodyText: text('body_text'),
+    bodyHtml: text('body_html'),
+    inReplyTo: text('in_reply_to'),
+    messageReferences: text('message_references'),
+    attachmentIds: jsonb('attachment_ids').$type<string[]>().default([]).notNull(),
+    status: text('status').$type<InboxSendCommandStatus>().default('scheduled').notNull(),
+    scheduledAt: timestamp('scheduled_at'),
+    dueAt: timestamp('due_at').defaultNow().notNull(),
+    leaseToken: uuid('lease_token'),
+    leaseExpiresAt: timestamp('lease_expires_at'),
+    attempts: integer('attempts').default(0).notNull(),
+    maxAttempts: integer('max_attempts').default(8).notNull(),
+    lastError: text('last_error'),
+    lastPolicyCode: text('last_policy_code'),
+    idempotencyKey: text('idempotency_key').notNull(),
+    resultingConversationMessageId: uuid('resulting_conversation_message_id'),
+    resultingOutreachEmailId: uuid('resulting_outreach_email_id'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    orgIdempotencyUnique: uniqueIndex('inbox_send_commands_org_idempotency_unique').on(table.organizationId, table.idempotencyKey),
+    idxDue: index('idx_inbox_send_commands_due').on(table.dueAt),
+    idxConversation: index('idx_inbox_send_commands_conversation').on(table.organizationId, table.conversationId, table.status),
+    modeCheck: check('inbox_send_commands_mode_check', sql`${table.mode} IN ('reply', 'reply_all', 'forward')`),
+    statusCheck: check(
+        'inbox_send_commands_status_check',
+        sql`${table.status} IN ('draft', 'scheduled', 'queued', 'sending', 'sent', 'failed', 'cancelled', 'held')`,
+    ),
+    leaseCheck: check('inbox_send_commands_lease_check', sql`(${table.leaseToken} IS NULL) = (${table.leaseExpiresAt} IS NULL)`),
+    attemptsCheck: check('inbox_send_commands_attempts_check', sql`${table.attempts} >= 0 AND ${table.maxAttempts} >= 1 AND ${table.attempts} <= ${table.maxAttempts}`),
+}))
+
+/** Attachment metadata + a private Storage object reference. NO binary bytes in Postgres. */
+export const inboxAttachments = pgTable('inbox_attachments', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    sendCommandId: uuid('send_command_id'),
+    createdByUserId: uuid('created_by_user_id'),
+    storageBucket: text('storage_bucket').default(INBOX_ATTACHMENTS_BUCKET).notNull(),
+    storagePath: text('storage_path').notNull(),
+    filename: text('filename').notNull(),
+    mimeType: text('mime_type').notNull(),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).default(0).notNull(),
+    checksum: text('checksum'),
+    status: text('status').$type<InboxAttachmentStatus>().default('pending').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    objectUnique: uniqueIndex('inbox_attachments_object_unique').on(table.storageBucket, table.storagePath),
+    idxCommand: index('idx_inbox_attachments_command').on(table.organizationId, table.sendCommandId),
+    idxStatus: index('idx_inbox_attachments_status').on(table.status, table.createdAt),
+    statusCheck: check('inbox_attachments_status_check', sql`${table.status} IN ('pending', 'ready', 'failed', 'deleted')`),
+    sizeCheck: check('inbox_attachments_size_check', sql`${table.sizeBytes} >= 0 AND ${table.sizeBytes} <= 26214400`),
+}))
+
+export const inboxLabelsRelations = relations(inboxLabels, ({ one, many }) => ({
+    organization: one(organizations, { fields: [inboxLabels.organizationId], references: [organizations.id] }),
+    conversationLabels: many(inboxConversationLabels),
+}))
+
+export const inboxConversationLabelsRelations = relations(inboxConversationLabels, ({ one }) => ({
+    conversation: one(outreachConversations, { fields: [inboxConversationLabels.conversationId], references: [outreachConversations.id] }),
+    label: one(inboxLabels, { fields: [inboxConversationLabels.labelId], references: [inboxLabels.id] }),
+}))
+
+export const inboxRemindersRelations = relations(inboxReminders, ({ one }) => ({
+    conversation: one(outreachConversations, { fields: [inboxReminders.conversationId], references: [outreachConversations.id] }),
+    user: one(users, { fields: [inboxReminders.userId], references: [users.id] }),
+}))
+
+export const inboxSendCommandsRelations = relations(inboxSendCommands, ({ one, many }) => ({
+    organization: one(organizations, { fields: [inboxSendCommands.organizationId], references: [organizations.id] }),
+    conversation: one(outreachConversations, { fields: [inboxSendCommands.conversationId], references: [outreachConversations.id] }),
+    actor: one(users, { fields: [inboxSendCommands.actorUserId], references: [users.id] }),
+    emailAccount: one(emailAccounts, { fields: [inboxSendCommands.emailAccountId], references: [emailAccounts.id] }),
+    attachments: many(inboxAttachments),
+}))
+
+export const inboxAttachmentsRelations = relations(inboxAttachments, ({ one }) => ({
+    organization: one(organizations, { fields: [inboxAttachments.organizationId], references: [organizations.id] }),
+    sendCommand: one(inboxSendCommands, { fields: [inboxAttachments.sendCommandId], references: [inboxSendCommands.id] }),
+}))
+
+export type InboxLabel = typeof inboxLabels.$inferSelect
+export type NewInboxLabel = typeof inboxLabels.$inferInsert
+export type InboxConversationLabel = typeof inboxConversationLabels.$inferSelect
+export type NewInboxConversationLabel = typeof inboxConversationLabels.$inferInsert
+export type InboxReminder = typeof inboxReminders.$inferSelect
+export type NewInboxReminder = typeof inboxReminders.$inferInsert
+export type InboxSnippet = typeof inboxSnippets.$inferSelect
+export type NewInboxSnippet = typeof inboxSnippets.$inferInsert
+export type InboxSendCommand = typeof inboxSendCommands.$inferSelect
+export type NewInboxSendCommand = typeof inboxSendCommands.$inferInsert
+export type InboxAttachment = typeof inboxAttachments.$inferSelect
+export type NewInboxAttachment = typeof inboxAttachments.$inferInsert
