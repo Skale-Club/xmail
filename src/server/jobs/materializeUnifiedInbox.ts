@@ -18,6 +18,7 @@
 import { randomUUID } from 'node:crypto'
 import { createLogger } from '../lib/logger'
 import { materializeProviderEvent, type UnifiedInboxSql } from '../lib/unified-inbox/ingest'
+import { publishInboxEvent } from '../lib/inbox-events'
 
 const log = createLogger('outreach.unifiedInbox')
 
@@ -50,7 +51,9 @@ export interface MaterializeInboxDeps {
      */
     organizationId?: string
     /** Injectable materializer (tests force failures); defaults to the real service. */
-    materialize?: (eventId: string) => Promise<{ inserted: boolean }>
+    materialize?: (eventId: string) => Promise<{ inserted: boolean; organizationId?: string | null; conversationId?: string | null }>
+    /** Injectable fanout publisher (tests assert it is called post-commit); defaults to the in-process bus. */
+    publish?: (event: { organizationId: string; conversationId: string | null }) => void
 }
 
 interface ClaimRow {
@@ -80,6 +83,20 @@ export async function materializeUnifiedInbox(deps: MaterializeInboxDeps = {}): 
     const leaseMinutes = deps.leaseMinutes ?? MATERIALIZE_LEASE_MINUTES
     const organizationId = deps.organizationId ?? null
     const materialize = deps.materialize ?? ((eventId: string) => materializeProviderEvent(eventId, { sql, now }))
+    const publish = deps.publish ?? ((event: { organizationId: string; conversationId: string | null }) => {
+        // Post-commit, organization-scoped fanout of a SIGNAL only (no bodies) so open Unified
+        // Inbox clients invalidate their unread/list/thread caches near-real-time. Best-effort:
+        // a fanout failure must never affect the durable materialization outcome.
+        try {
+            publishInboxEvent({
+                organizationId: event.organizationId,
+                kind: 'conversation.updated',
+                conversationId: event.conversationId,
+                version: now().getTime(),
+                at: now().toISOString(),
+            })
+        } catch { /* fanout is a best-effort side channel; the polling fallback covers misses */ }
+    })
 
     const result: MaterializeInboxResult = { claimed: 0, materialized: 0, duplicates: 0, failed: 0 }
 
@@ -117,8 +134,16 @@ export async function materializeUnifiedInbox(deps: MaterializeInboxDeps = {}): 
 
         try {
             const outcome = await materialize(claim.id)
-            if (outcome.inserted) result.materialized++
-            else result.duplicates++
+            if (outcome.inserted) {
+                result.materialized++
+                // Publish AFTER the materializer's transaction has committed (materializeProviderEvent
+                // resolves post-commit) — a subscriber that invalidates its cache reads committed state.
+                if (outcome.organizationId) {
+                    publish({ organizationId: outcome.organizationId, conversationId: outcome.conversationId ?? null })
+                }
+            } else {
+                result.duplicates++
+            }
         } catch (error) {
             const sanitized = sanitizeError(error)
             if (attempts >= maxAttempts) {

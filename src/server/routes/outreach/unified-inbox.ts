@@ -51,6 +51,14 @@ import {
     deleteInboxAttachment,
     getAttachmentDownloadUrl,
 } from '../../lib/inbox-attachments'
+import {
+    INBOX_SSE_HEADERS,
+    INBOX_SSE_HEARTBEAT_MS,
+    InboxEventCapacityError,
+    formatInboxSseComment,
+    formatInboxSseEvent,
+    subscribeToInboxEvents,
+} from '../../lib/inbox-events'
 
 // ============================================================
 // Unified Inbox read API (Phase 21 UIF-04 / UIF-05)
@@ -222,6 +230,73 @@ router.get('/unread-count', async (req: Request, res: Response) => {
         console.error('Error counting unified inbox unread:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
+})
+
+// GET /events — organization-scoped near-real-time aggregate stream (Phase 22 UIX-06).
+//
+// Bearer auth is required, so the browser CANNOT use `EventSource` (it can't set an
+// Authorization header). It connects with authenticated `fetch` + `ReadableStream` and closes
+// with `AbortController` (locked decision #9). The stream carries ONLY small signals
+// (conversation id/version, kind, unread aggregate, sync-health) — NEVER message bodies,
+// subjects, or addresses. It is scoped by the SAME `requireOutreachRead` + organization
+// predicate as every read endpoint, so it can never leak another org's activity. On client
+// disconnect the subscriber is released and the heartbeat cleared — no leaked intervals/handles.
+router.get('/events', async (req: Request, res: Response) => {
+    const organizationId = await authorizeOrganization(req, res)
+    if (!organizationId) return
+
+    let unsubscribe: (() => void) | null = null
+    try {
+        unsubscribe = subscribeToInboxEvents(organizationId, (event) => {
+            // A write after teardown throws; the error handler below cleans up idempotently.
+            try {
+                res.write(formatInboxSseEvent(event))
+            } catch {
+                cleanup()
+            }
+        })
+    } catch (error) {
+        if (error instanceof InboxEventCapacityError) {
+            res.status(503).json({ error: 'inbox_event_capacity' })
+            return
+        }
+        throw error
+    }
+
+    // Open the stream: SSE headers + an immediate comment so proxies flush and the client
+    // observes a live connection (it switches out of the polling fallback on first bytes).
+    res.status(200)
+    for (const [key, value] of Object.entries(INBOX_SSE_HEADERS)) res.setHeader(key, value)
+    if (typeof res.flushHeaders === 'function') res.flushHeaders()
+    res.write(formatInboxSseComment('connected'))
+
+    const heartbeat = setInterval(() => {
+        try {
+            res.write(formatInboxSseComment('ping'))
+        } catch {
+            cleanup()
+        }
+    }, INBOX_SSE_HEARTBEAT_MS)
+    // Node keeps the process alive for an active timer; the heartbeat must not block shutdown.
+    if (typeof heartbeat.unref === 'function') heartbeat.unref()
+
+    let closed = false
+    function cleanup(): void {
+        if (closed) return
+        closed = true
+        clearInterval(heartbeat)
+        unsubscribe?.()
+        try {
+            res.end()
+        } catch {
+            // Response already torn down — nothing to release.
+        }
+    }
+
+    req.on('close', cleanup)
+    req.on('aborted', cleanup)
+    res.on('close', cleanup)
+    res.on('error', cleanup)
 })
 
 // GET /conversations/:id — full ordered thread with bodies, attribution, participants.

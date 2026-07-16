@@ -72,6 +72,8 @@ export interface MaterializeResult {
     /** `materialized` = first ingestion; `duplicate` = message already existed; `skipped` = event gone. */
     status: 'materialized' | 'duplicate' | 'skipped'
     inserted: boolean
+    /** The owning organization (available post-commit for org-scoped near-real-time fanout). */
+    organizationId: string | null
     conversationId: string | null
     conversationMessageId: string | null
     classification: OutreachProviderEventClassification
@@ -176,6 +178,7 @@ export async function materializeProviderEvent(
             return {
                 status: 'skipped',
                 inserted: false,
+                organizationId: null,
                 conversationId: null,
                 conversationMessageId: null,
                 classification: 'other',
@@ -194,6 +197,7 @@ export async function materializeProviderEvent(
             return {
                 status: 'duplicate',
                 inserted: false,
+                organizationId: event.organization_id,
                 conversationId: existing[0]?.conversation_id ?? null,
                 conversationMessageId: event.conversation_message_id,
                 classification: event.classification,
@@ -355,6 +359,7 @@ export async function materializeProviderEvent(
         return {
             status: inserted ? 'materialized' : 'duplicate',
             inserted,
+            organizationId: event.organization_id,
             conversationId,
             conversationMessageId,
             classification: event.classification,
