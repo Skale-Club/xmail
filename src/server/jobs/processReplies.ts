@@ -12,6 +12,7 @@
  */
 
 import { ImapFlow } from 'imapflow'
+import { simpleParser } from 'mailparser'
 import { db } from '../../db'
 import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, mailFolders, mailMessages } from '../../db/schema'
 import { eq, and, or, isNotNull, sql, gte } from 'drizzle-orm'
@@ -42,10 +43,25 @@ interface EmailAccountWithImap {
 
 interface OutreachEmailWithRelations {
     id: string
+    organizationId: string
     campaignLeadId: string
     campaignId: string
     emailAccountId: string
     leadId: string
+}
+
+const MAX_REPLY_CONTEXT_LENGTH = 20_000
+
+function normalizeInboundMessageId(messageId: string | null | undefined, fallback: string): string {
+    const normalized = messageId?.replace(/[<>]/g, '').trim()
+    return (normalized || fallback).slice(0, 500)
+}
+
+function normalizeReplyText(text: string | null | undefined, html?: string | false | null): string {
+    const source = text?.trim() || (typeof html === 'string'
+        ? html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+        : '')
+    return source.slice(0, MAX_REPLY_CONTEXT_LENGTH)
 }
 
 // P0-06 / audit-2026-07 — advisory lock prevents concurrent runs across Node instances.
@@ -213,19 +229,24 @@ async function processAccountRepliesNative(account: { id: string; email: string 
             }
 
             if (matched) {
+                const replyBody = await db.query.mailMessages.findFirst({
+                    where: eq(mailMessages.id, msg.id),
+                    columns: { plainBody: true, htmlBody: true },
+                })
                 await markAsReplied(
                     matched.outreachEmail.id,
                     matched.outreachEmail.campaignLeadId,
                     matched.outreachEmail.leadId,
                     matched.outreachEmail.campaignId,
                     matched.outreachEmail.emailAccountId,
+                    matched.outreachEmail.organizationId,
+                    {
+                        messageId: normalizeInboundMessageId(msg.messageId, `native:${msg.id}`),
+                        text: normalizeReplyText(replyBody?.plainBody, replyBody?.htmlBody),
+                    },
                 )
                 // P001/P002 — if the campaign opted into agentic follow-up, schedule a
                 // decision instead of only stopping. OFF by default → no behaviour change.
-                await scheduleAgenticFollowUpIfEnabled(
-                    matched.outreachEmail.campaignId,
-                    matched.outreachEmail.campaignLeadId,
-                )
                 replyCount++
                 log.info({
                     action: 'outreach.replies.match',
@@ -308,7 +329,9 @@ async function processAccountReplies(account: EmailAccountWithImap): Promise<num
             for (const uid of uids) {
                 try {
                     const msg = await client.fetchOne(uid.toString(), {
+                        source: true,
                         headers: [
+                            'message-id',
                             'in-reply-to',
                             'references',
                             'from',
@@ -371,19 +394,24 @@ async function processAccountReplies(account: EmailAccountWithImap): Promise<num
                     }
 
                     if (matched) {
+                        const parsed = msg.source ? await simpleParser(msg.source) : null
                         await markAsReplied(
                             matched.outreachEmail.id,
                             matched.outreachEmail.campaignLeadId,
                             matched.outreachEmail.leadId,
                             matched.outreachEmail.campaignId,
                             matched.outreachEmail.emailAccountId,
+                            matched.outreachEmail.organizationId,
+                            {
+                                messageId: normalizeInboundMessageId(parsed?.messageId, `imap:${account.id}:${uid}`),
+                                text: normalizeReplyText(
+                                    parsed?.text,
+                                    typeof parsed?.html === 'string' ? parsed.html : null,
+                                ),
+                            },
                         )
                         // P001/P002 — if the campaign opted into agentic follow-up, schedule a
                         // decision instead of only stopping. OFF by default → no behaviour change.
-                        await scheduleAgenticFollowUpIfEnabled(
-                            matched.outreachEmail.campaignId,
-                            matched.outreachEmail.campaignLeadId,
-                        )
                         replyCount++
                         log.info({
                             action: 'outreach.replies.match',
@@ -486,7 +514,7 @@ export async function matchReplyToOutreach(
 ): Promise<{ outreachEmail: OutreachEmailWithRelations; strategy: 'in_reply_to' | 'references' | 'from_address' } | null> {
     // Tier 1: In-Reply-To exact match.
     if (headers.inReplyTo) {
-        const hit = await findOutreachEmailByMessageId(headers.inReplyTo)
+        const hit = await findOutreachEmailByMessageId(headers.inReplyTo, accountId)
         if (hit) return { outreachEmail: hit, strategy: 'in_reply_to' }
     }
 
@@ -494,7 +522,7 @@ export async function matchReplyToOutreach(
     if (headers.references) {
         const tokens = headers.references.split(/\s+/).filter(Boolean)
         for (const tok of tokens) {
-            const hit = await findOutreachEmailByMessageId(tok)
+            const hit = await findOutreachEmailByMessageId(tok, accountId)
             if (hit) return { outreachEmail: hit, strategy: 'references' }
         }
     }
@@ -511,6 +539,7 @@ export async function matchReplyToOutreach(
         const rows = await db
             .select({
                 id: outreachEmails.id,
+                organizationId: outreachEmails.organizationId,
                 campaignLeadId: outreachEmails.campaignLeadId,
                 campaignId: outreachEmails.campaignId,
                 emailAccountId: outreachEmails.emailAccountId,
@@ -552,31 +581,16 @@ async function markAsAutoReply(outreachEmailId: string): Promise<void> {
 
 // P001/P002 — schedule an agentic follow-up decision for a matched reply, but only if the
 // campaign opted in. Sets next_follow_up_at = now so processFollowUps picks it up next tick.
-async function scheduleAgenticFollowUpIfEnabled(campaignId: string, campaignLeadId: string): Promise<void> {
-    const campaign = await db.query.campaigns.findFirst({
-        where: eq(campaigns.id, campaignId),
-        columns: { agenticFollowupEnabled: true },
-    })
-    if (!campaign?.agenticFollowupEnabled) return
-
-    const now = new Date()
-    await db.update(campaignLeads)
-        .set({ nextFollowUpAt: now, lastReplyAt: now })
-        .where(eq(campaignLeads.id, campaignLeadId))
-
-    log.info({
-        action: 'outreach.followup.scheduled',
-        campaignId,
-        campaignLeadId,
-    }, 'agentic follow-up scheduled for reply')
-}
-
-export async function findOutreachEmailByMessageId(messageId: string): Promise<OutreachEmailWithRelations | null> {
+export async function findOutreachEmailByMessageId(
+    messageId: string,
+    accountId: string,
+): Promise<OutreachEmailWithRelations | null> {
     const cleanMessageId = messageId.replace(/[<>]/g, '').trim()
 
     const result = await db
         .select({
             id: outreachEmails.id,
+            organizationId: outreachEmails.organizationId,
             campaignLeadId: outreachEmails.campaignLeadId,
             campaignId: outreachEmails.campaignId,
             emailAccountId: outreachEmails.emailAccountId,
@@ -584,7 +598,14 @@ export async function findOutreachEmailByMessageId(messageId: string): Promise<O
         })
         .from(outreachEmails)
         .innerJoin(campaignLeads, eq(outreachEmails.campaignLeadId, campaignLeads.id))
-        .where(eq(outreachEmails.messageId, cleanMessageId))
+        .innerJoin(emailAccounts, and(
+            eq(emailAccounts.id, outreachEmails.emailAccountId),
+            eq(emailAccounts.organizationId, outreachEmails.organizationId),
+        ))
+        .where(and(
+            eq(outreachEmails.emailAccountId, accountId),
+            sql`LOWER(${outreachEmails.messageId}) = LOWER(${cleanMessageId})`,
+        ))
         .limit(1)
 
     const row = result[0]
@@ -597,21 +618,37 @@ export async function markAsReplied(
     campaignLeadId: string,
     leadId: string,
     campaignId: string,
-    accountId: string
+    accountId: string,
+    organizationId: string,
+    inbound: { messageId: string; text: string },
 ): Promise<void> {
     const now = new Date()
 
     await Promise.all([
-        db.update(outreachEmails).set({ repliedAt: now }).where(eq(outreachEmails.id, outreachEmailId)),
+        db.update(outreachEmails).set({ repliedAt: now }).where(and(
+            eq(outreachEmails.id, outreachEmailId),
+            eq(outreachEmails.emailAccountId, accountId),
+            eq(outreachEmails.organizationId, organizationId),
+        )),
 
         db
             .update(campaignLeads)
             .set({
                 status: 'replied',
+                nextScheduledAt: null,
                 lastRepliedAt: now,
+                lastReplyAt: now,
+                lastReplyMessageId: inbound.messageId,
+                lastReplyText: inbound.text,
+                nextFollowUpAt: sql`CASE WHEN EXISTS (
+                    SELECT 1 FROM campaigns
+                    WHERE campaigns.id = ${campaignId}
+                      AND campaigns.organization_id = ${organizationId}
+                      AND campaigns.agentic_followup_enabled = TRUE
+                ) THEN ${now} ELSE NULL END`,
                 totalReplies: sql`${campaignLeads.totalReplies} + 1`,
             })
-            .where(eq(campaignLeads.id, campaignLeadId)),
+            .where(and(eq(campaignLeads.id, campaignLeadId), eq(campaignLeads.campaignId, campaignId))),
 
         db
             .update(leads)
@@ -627,14 +664,14 @@ export async function markAsReplied(
             .set({
                 totalReplies: sql`${campaigns.totalReplies} + 1`,
             })
-            .where(eq(campaigns.id, campaignId)),
+            .where(and(eq(campaigns.id, campaignId), eq(campaigns.organizationId, organizationId))),
 
         db
             .update(emailAccounts)
             .set({
                 totalReplies: sql`${emailAccounts.totalReplies} + 1`,
             })
-            .where(eq(emailAccounts.id, accountId)),
+            .where(and(eq(emailAccounts.id, accountId), eq(emailAccounts.organizationId, organizationId))),
     ])
 
     // Notify Xphere — light lookup for lead identity, not already in scope here.
@@ -650,4 +687,11 @@ export async function markAsReplied(
             customFields: lead.customFields,
         })
     }
+
+    log.info({
+        action: 'outreach.followup.reply_context_persisted',
+        campaignId,
+        campaignLeadId,
+        hasReplyText: inbound.text.length > 0,
+    }, 'persisted inbound reply context before agentic scheduling')
 }

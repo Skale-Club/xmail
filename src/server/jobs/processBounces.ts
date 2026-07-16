@@ -213,20 +213,20 @@ export async function findOutreachEmailByRecipient(
     return result || null
 }
 
-async function findOutreachEmailByMessageId(
-    messageId: string
+export async function findBouncedOutreachEmailByMessageId(
+    messageId: string,
+    accountId: string,
+    organizationId: string,
 ): Promise<typeof outreachEmails.$inferSelect | null> {
     const cleanMessageId = messageId.replace(/[<>]/g, '').trim()
-
-    // A bounce/DSN can carry an empty or truncated original Message-Id. Without this guard the
-    // query becomes LIKE '%%', which matches the most recent outreach email and would mark a
-    // completely unrelated lead as bounced. Require enough of an id to identify a message, and
-    // escape LIKE wildcards so a literal % or _ inside the id cannot widen the match.
     if (cleanMessageId.length < 8) return null
-    const escaped = cleanMessageId.replace(/([%_\\])/g, '\\$1')
 
     const result = await db.query.outreachEmails.findFirst({
-        where: sql`LOWER(${outreachEmails.messageId}) LIKE LOWER(${'%' + escaped + '%'}) ESCAPE '\\'`,
+        where: and(
+            eq(outreachEmails.emailAccountId, accountId),
+            eq(outreachEmails.organizationId, organizationId),
+            sql`LOWER(${outreachEmails.messageId}) = LOWER(${cleanMessageId})`,
+        ),
         orderBy: [desc(outreachEmails.sentAt)]
     })
 
@@ -251,7 +251,11 @@ export async function markAsBounced(
             bounceReason: reason,
             updatedAt: now
         })
-        .where(eq(outreachEmails.id, outreachEmailId))
+        .where(and(
+            eq(outreachEmails.id, outreachEmailId),
+            eq(outreachEmails.emailAccountId, accountId),
+            eq(outreachEmails.organizationId, organizationId),
+        ))
 
     await db.update(campaignLeads)
         .set({
@@ -259,7 +263,7 @@ export async function markAsBounced(
             nextScheduledAt: null,
             updatedAt: now
         })
-        .where(eq(campaignLeads.id, campaignLeadId))
+        .where(and(eq(campaignLeads.id, campaignLeadId), eq(campaignLeads.campaignId, campaignId)))
 
     await db.update(leads)
         .set({
@@ -273,14 +277,14 @@ export async function markAsBounced(
             totalBounces: sql`${campaigns.totalBounces} + 1`,
             updatedAt: now
         })
-        .where(eq(campaigns.id, campaignId))
+        .where(and(eq(campaigns.id, campaignId), eq(campaigns.organizationId, organizationId)))
 
     await db.update(emailAccounts)
         .set({
             totalBounces: sql`${emailAccounts.totalBounces} + 1`,
             updatedAt: now
         })
-        .where(eq(emailAccounts.id, accountId))
+        .where(and(eq(emailAccounts.id, accountId), eq(emailAccounts.organizationId, organizationId)))
 
     // Fetch once — used for both the hard-bounce suppression insert below and the
     // Xphere outbound notification.
@@ -418,7 +422,11 @@ export async function processBounces(): Promise<{ processed: number; bounces: nu
                         }
 
                         let outreachEmail = bounceInfo.originalMessageId
-                            ? await findOutreachEmailByMessageId(bounceInfo.originalMessageId)
+                            ? await findBouncedOutreachEmailByMessageId(
+                                bounceInfo.originalMessageId,
+                                account.id,
+                                account.organizationId,
+                            )
                             : null
 
                         if (!outreachEmail) {
@@ -539,7 +547,7 @@ export async function processBounces(): Promise<{ processed: number; bounces: nu
  * processor mis-marks as read first would be skipped here).
  */
 async function processAccountBouncesNative(
-    account: { id: string; email: string }
+    account: { id: string; email: string; organizationId: string }
 ): Promise<{ processed: number; bounces: number; errors: number }> {
     const result = { processed: 0, bounces: 0, errors: 0 }
 
@@ -607,7 +615,11 @@ async function processAccountBouncesNative(
             }
 
             let outreachEmail = bounceInfo.originalMessageId
-                ? await findOutreachEmailByMessageId(bounceInfo.originalMessageId)
+                ? await findBouncedOutreachEmailByMessageId(
+                    bounceInfo.originalMessageId,
+                    account.id,
+                    account.organizationId,
+                )
                 : null
 
             if (!outreachEmail) {
@@ -695,26 +707,22 @@ async function processAccountBouncesNative(
 export async function processBounceFromWebhook(data: {
     recipientEmail: string
     messageId?: string
+    emailAccountId: string
+    organizationId: string
     reason: string
     bounceType: 'hard' | 'soft'
 }): Promise<void> {
-    const { recipientEmail, messageId, reason, bounceType } = data
+    const { recipientEmail, messageId, emailAccountId, organizationId, reason, bounceType } = data
 
     let outreachEmail: typeof outreachEmails.$inferSelect | null = null
 
     if (messageId) {
-        outreachEmail = await findOutreachEmailByMessageId(messageId)
+        outreachEmail = await findBouncedOutreachEmailByMessageId(messageId, emailAccountId, organizationId)
     }
 
     if (!outreachEmail) {
-        const allAccounts = await db.query.emailAccounts.findMany({
-            where: eq(emailAccounts.status, 'verified')
-        })
-
-        for (const account of allAccounts) {
-            outreachEmail = await findOutreachEmailByRecipient(recipientEmail, account.id)
-            if (outreachEmail) break
-        }
+        outreachEmail = await findOutreachEmailByRecipient(recipientEmail, emailAccountId)
+        if (outreachEmail?.organizationId !== organizationId) outreachEmail = null
     }
 
     if (!outreachEmail) {
