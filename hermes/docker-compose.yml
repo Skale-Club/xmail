@@ -16,6 +16,8 @@ services:
     environment:
       HERMES_UID: "10000"
       HERMES_GID: "10000"
+      # Scheduler/cron interpreta horários neste fuso (DST-safe). Operador em Boston/ET.
+      TZ: "America/New_York"
     volumes:
       # Memória persistente do agente (~/.hermes upstream) — sobrevive a deploys.
       - hermes-data:/opt/data

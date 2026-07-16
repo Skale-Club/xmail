@@ -38,6 +38,33 @@ LLM **externo** (sem GPU local) e teto de RAM pra nunca ameaçar o email.
   que também é o `TELEGRAM_HOME_CHANNEL` (notificações/cron caem aí). Polling de saída, sem porta aberta.
 - **CLI:** `docker exec -it hermes hermes chat` (interativo) ou `hermes -z "prompt"` (one-shot).
 
+## Notion + Health Check semanal (adicionado 2026-07-08)
+
+- **MCP do Notion conectado** ao Hermes via servidor stdio oficial
+  (`npx @notionhq/notion-mcp-server`, Node 22 já presente no container),
+  autenticado por um **integration token** do workspace Skale Club. O token vive
+  no `config.yaml` do volume (NÃO neste repo). 24 tools (`API-*`) habilitadas.
+  Adicionado com:
+  ```bash
+  docker exec -e HERMES_ACCEPT_HOOKS=1 -i hermes hermes mcp add notion \
+    --command npx --args @notionhq/notion-mcp-server \
+    --env npm_config_yes=true NOTION_TOKEN=<token>
+  # responda "Y" no prompt "Enable all 24 tools?" (por isso o -i + pipe de Y)
+  ```
+  > `npm_config_yes=true` substitui o `-y` do npx: o argparse do Hermes trata
+  > `-y` como flag dele e quebra (`unrecognized arguments`).
+- **Cron `weekly-health-check`** — `0 8 * * 1` (**segunda 08:00 ET**), entrega no
+  Telegram. Executa o "🩺 Weekly Health Check Protocol" (página do Notion
+  `398b7a68612181d1acd7f23d5b93b9a6`): varre os Active Projects em modo read-only,
+  cria um report em "Project Health Reports" (Backlog & Ideas) e resume no
+  Telegram. Editar: `hermes cron edit f7c84063a699 ...`; testar: `hermes cron run <id>`.
+- **Timezone:** o container roda `TZ=America/New_York` (operador em Boston). O
+  scheduler usa server-local time, então **todos os cron schedules são em ET e
+  DST-safe**. Setado no `docker-compose.yml` (requer `docker compose up -d` pra
+  aplicar; o offset em jobs já existentes só recalcula ao editar o schedule).
+- **Budget:** `agent.max_turns` subido de 60 → 120
+  (`hermes config set agent.max_turns 120`) — a travessia do protocolo é profunda.
+
 ## Decisões de design (pra caber na máquina pequena)
 
 - **Container separado** do xmail (que é rebuildado `--no-cache` a cada deploy) — não dentro dele.
@@ -96,6 +123,16 @@ Edite `/opt/hermes/hermes.env` e `docker compose up -d --force-recreate`.
 4. **Após mudar modelo/fallback, reinicie o container** pra o gateway recarregar.
 5. **Append em arquivo sem newline final gruda linhas.** Ao editar `hermes.env` por
    `>>`, garanta `\n` final (o exemplo já termina com newline).
+6. **Notion: use as tools do Notion, NÃO o browser.** Um prompt dizendo "fetch the
+   page at https://notion.so/…" faz o agente tentar `browser_navigate` (Chrome não
+   instalado — browser automation está off) e falhar com "task is blocked". O prompt
+   do cron referencia a página pelo **ID** e manda usar só as tools `API-*` do Notion.
+7. **O protocolo é pesado pro modelo de fallback.** Com o Kimi caindo no fallback
+   pro `gemini-2.5-flash`, a varredura completa consome muitos turns (buscas do Notion
+   voltam com 100k+ chars e incham o contexto). Mitigações: prompt enxuto (usar
+   `last_edited_time`/metadata e `API-query-data-source` em vez de `get_block_children`
+   de páginas grandes) + `agent.max_turns` folgado. **Melhor ainda: restaurar o Kimi
+   como primário** — ele estava caindo no fallback em toda run de teste (08-jul).
 
 ## Build do zero (referência)
 
