@@ -31,6 +31,7 @@ import {
     createDrizzleInboundEventStore,
     type StoredProviderEvent,
 } from '../lib/outreach-inbound'
+import { scheduleAutonomousFollowUp } from '../lib/inbox-ai-automation-runtime'
 import { ingestOutreachInbound } from '../lib/outreach-inbound-sources'
 import { sqlTimestamp } from '../lib/sql-timestamp'
 import {
@@ -221,6 +222,12 @@ async function handleReplyEvent(event: StoredProviderEvent): Promise<boolean> {
         return false
     }
 
+    const messageId = normalizeInboundMessageId(event.messageId, `event:${event.id}`)
+    // Reply context comes from the durable Phase 21 normalized message when it has been
+    // materialized, falling back to the staged event bodies otherwise. Full bodies are
+    // staged now, so last_reply_text is populated for external accounts either way —
+    // the old IMAP path fetched headers only and left it null.
+    const replyText = await resolveReplyContextText(event)
     await markAsReplied(
         matched.outreachEmail.id,
         matched.outreachEmail.campaignLeadId,
@@ -228,14 +235,7 @@ async function handleReplyEvent(event: StoredProviderEvent): Promise<boolean> {
         matched.outreachEmail.campaignId,
         matched.outreachEmail.emailAccountId,
         matched.outreachEmail.organizationId,
-        {
-            messageId: normalizeInboundMessageId(event.messageId, `event:${event.id}`),
-            // Reply context comes from the durable Phase 21 normalized message when it has been
-            // materialized, falling back to the staged event bodies otherwise. Full bodies are
-            // staged now, so last_reply_text is populated for external accounts either way —
-            // the old IMAP path fetched headers only and left it null.
-            text: await resolveReplyContextText(event),
-        },
+        { messageId, text: replyText },
     )
 
     log.info({
@@ -248,6 +248,22 @@ async function handleReplyEvent(event: StoredProviderEvent): Promise<boolean> {
         leadId: matched.outreachEmail.leadId,
         campaignLeadId: matched.outreachEmail.campaignLeadId,
     }, 'reply matched and marked')
+
+    // Phase 23 (AI-03): schedule an AUDITED, LEASED autonomous follow-up decision from the persisted
+    // inbound reply — but only when effective org+campaign autonomy is enabled (idempotent, never a
+    // send). This replaces the retired direct-send `nextFollowUpAt` path; the compatibility columns
+    // above are retained for rollout only and no longer feed a sender.
+    await scheduleAutonomousFollowUp({
+        organizationId: matched.outreachEmail.organizationId,
+        emailAccountId: matched.outreachEmail.emailAccountId,
+        campaignId: matched.outreachEmail.campaignId,
+        campaignLeadId: matched.outreachEmail.campaignLeadId,
+        leadId: matched.outreachEmail.leadId,
+        provider: event.provider,
+        providerMessageId: event.providerMessageId,
+        triggerRef: messageId,
+        hasInboundBody: replyText.trim().length > 0,
+    })
 
     return true
 }
