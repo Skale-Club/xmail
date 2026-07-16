@@ -29,6 +29,38 @@ const CURSOR_VERSION = 1
 const uuidSchema = z.string().uuid()
 
 /**
+ * Strictly validate a Postgres `timestamp::text` rendering — exactly what
+ * `last_message_at::text` produces for a `timestamp` column: `YYYY-MM-DD HH:MM:SS`
+ * with an optional `.ffffff` fractional part (microsecond precision), a space
+ * separator, and no timezone.
+ *
+ * This is deliberately STRICTER than `Date.parse`. `Date.parse` accepts
+ * calendar-invalid dates by silently rolling them over (`2026-02-30` → Mar 2,
+ * `2027-02-29` → Mar 1), so they parse to a non-NaN Date; but Postgres rejects them
+ * with "date/time field value out of range". A lenient check therefore lets a bad `t`
+ * slip through decode and blow up on the `${t}::timestamp` cast in the query — the
+ * exact self-inflicted 500 this codec exists to prevent. After the shape + numeric
+ * range match, the calendar date is round-tripped through a UTC `Date`: JS rolls an
+ * out-of-range day over, so if any component changes the day-of-month was invalid for
+ * its month/year and the value is rejected.
+ */
+function isPostgresTimestampText(value: string): boolean {
+    const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?$/.exec(value)
+    if (!match) return false
+    const year = Number(match[1])
+    const month = Number(match[2])
+    const day = Number(match[3])
+    const hour = Number(match[4])
+    const minute = Number(match[5])
+    const second = Number(match[6])
+    if (month < 1 || month > 12) return false
+    if (hour > 23 || minute > 59 || second > 59) return false
+    // Time fields are range-gated above; only the day-of-month needs a calendar check.
+    const date = new Date(Date.UTC(year, month - 1, day))
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+}
+
+/**
  * The canonical filter set a conversation list query runs under. Every field that
  * changes which rows (or in which order) the query returns MUST be part of this set
  * so the fingerprint invalidates a mismatched replay.
@@ -135,10 +167,12 @@ export function decodeConversationCursor(
     }
     // The fingerprint is UNKEYED (a client can recompute it for its own filters), so a well-shaped
     // envelope can still carry a `t`/`i` that is a string but not a real timestamp / UUID. Validate
-    // the keyset value shape HERE so the query's `${t}::timestamp` / `${i}::uuid` casts can never
-    // throw downstream — that would surface a self-inflicted 500 instead of the correct 400 the
-    // route already maps ConversationCursorError to. Purely defensive; no cross-tenant impact.
-    if (Number.isNaN(Date.parse(envelope.t))) {
+    // the keyset value shape HERE so the query's `${t}::timestamp` / `${i}::uuid` casts do not throw
+    // downstream on a value this codec let through — that would surface a self-inflicted 500 instead
+    // of the correct 400 the route already maps ConversationCursorError to. The `t` check mirrors
+    // Postgres's calendar semantics (NOT `Date.parse`, which rolls Feb 30 over and would still admit
+    // a value Postgres rejects). Purely defensive; no cross-tenant impact.
+    if (!isPostgresTimestampText(envelope.t)) {
         throw new ConversationCursorError('Invalid cursor timestamp')
     }
     if (!uuidSchema.safeParse(envelope.i).success) {
