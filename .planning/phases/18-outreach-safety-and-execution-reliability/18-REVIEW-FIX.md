@@ -1,86 +1,56 @@
 ---
 status: all_fixed
 phase: 18
-iteration: 1
+iteration: 2
 fix_scope: critical_warning
-findings_in_scope: 7
-fixed: 7
+findings_in_scope: 3
+fixed: 3
 skipped: 0
-critical_fixed: 3
-warning_fixed: 4
+critical_fixed: 0
+warning_fixed: 3
 ---
 
-# Phase 18 Code Review Fix Report
+# Phase 18 Code Review Fix Report — Iteration 2
 
 ## Result
 
-All three critical and four warning findings from `18-REVIEW.md` were fixed without implementing the Phase 19 Graph/MIME parity work. No production database, migration target, provider, or deployment was touched.
+All three warnings remaining after iteration 1 were fixed. The tenant isolation, terminal-state CAS, shared capacity reservation, frozen-payload, and ambiguity guarantees from the first pass remain intact. No production database, migration target, or deployment was touched.
 
 ## Fixed Findings
 
-### CR-01 — Account- and tenant-safe reply/bounce matching
+### WR2-01 — Accepted-send bookkeeping survives a lost progress CAS
 
-- Reply Message-ID and References lookup now requires the active `emailAccountId`, verifies account/outreach organization equality, and uses exact normalized Message-ID equality.
-- Bounce matching now requires both account and organization, removes the global substring `LIKE`, and scopes webhook fallback to the caller-bound account/organization.
-- Reply/bounce mutations guard account, organization, and campaign linkage before changing tenant data.
-- Disposable PostgreSQL coverage creates two tenants with the same Message-ID and proves each matcher can return only the current account's row.
+- Fresh-send bookkeeping is now independent from campaign-lead progress advancement.
+- Account in-tick spacing state, campaign contacted analytics, Xphere sent event, and processor sent count run for every fresh `sent` result even when the terminal-state CAS returns zero rows.
+- The campaign-lead and lead statuses still remain unchanged when a reply, bounce, or unsubscribe wins the race.
+- A unit regression proves the accepted-send callback runs when progress advancement returns `false`.
 
-### CR-02 — Terminal-state preservation after provider completion
+### WR2-02 — Enrollment and completion share campaign-row serialization
 
-- Provider finalization now requires the ledger row to remain queued with dispatch started and the owning lease.
-- Campaign-lead progress uses compare-and-set on the expected sequence step and a nonterminal status.
-- Lead promotion uses compare-and-set from `new`, so a concurrent reply/bounce/unsubscribe cannot regress to `contacted`.
-- A lost progress race is logged and leaves terminal scheduling untouched.
+- Enrollment rejects completed or archived campaigns with stable `409 campaign_enrollment_closed` semantics.
+- Before inserting, enrollment opens a transaction, locks the campaign row with `FOR UPDATE`, rechecks lifecycle status, and rechecks existing enrollment rows.
+- Completion locks active campaign rows in deterministic order and performs its eligibility update in a second statement/READ COMMITTED snapshot after acquiring those locks.
+- A disposable PostgreSQL concurrency test holds the enrollment lock, inserts a pending lead, starts completion concurrently, then proves completion sees the committed lead and leaves the campaign active.
 
-### CR-03 — Atomic shared account capacity
+### WR2-03 — Pending agentic follow-up blocks campaign completion
 
-- Migration 038 and its Drizzle mirror now record capacity reservation/release timestamps.
-- Daily/warm-up capacity and spacing are conditionally reserved in the same PostgreSQL statement that starts dispatch.
-- Explicit rejected failures release capacity idempotently; accepted and ambiguous outcomes retain their reservation.
-- Accepted finalization increments `total_sent` from the ledger transition, removing per-entrypoint counter races.
-- PostgreSQL contention tests prove only one distinct idempotency key can reserve the last daily slot or a shared spacing window.
+- Agentic campaigns remain active while any campaign lead has `next_follow_up_at` pending, including terminal `replied` leads.
+- After the follow-up processor consumes/clears that durable schedule, the next completion pass may complete the campaign.
+- A disposable PostgreSQL integration test executes persisted agentic reply state, completion tick, follow-up tick, and completion tick in order.
 
-### WR-01 — Unknown timeout phase is ambiguous
+## Commit
 
-- `ETIMEDOUT`, `ECONNRESET`, and `ESOCKET` require a positive pre-DATA SMTP command before retry.
-- Missing command/phase evidence is held as ambiguous and has a regression test.
-
-### WR-02 — Retry payload and tracking token are frozen
-
-- Claims return the persisted recipient, subject, bodies, tracking token, threading headers, and A/B variant.
-- Retries send that stored payload rather than newly generated/edited campaign content.
-- The campaign provider consumes the ledger-frozen payload and tracking token.
-- A fail/retry unit scenario proves edited input cannot replace the original durable payload.
-
-### WR-03 — Conditional campaign completion
-
-- Completion is a single conditional `UPDATE ... WHERE EXISTS ... AND NOT EXISTS ... RETURNING` statement using the shared exhaustive terminal-status contract.
-- The previous select-then-update race no longer exists.
-
-### WR-04 — Durable reply context for agentic follow-up
-
-- Native and IMAP reply paths persist a normalized inbound Message-ID and bounded reply body.
-- Reply status, terminal scheduling, reply context, and opt-in follow-up scheduling are written in the same campaign-lead mutation.
-- Agentic scheduling is no longer created without the context required by `processFollowUps`.
-
-## Commits
-
-- `41bf478` — `fix(18): scope inbound outreach events to their account`
-- `bc3f416` — `fix(18): make outreach finalization and capacity atomic`
-- `43d88c4` — `test(18): prove inbound matching tenant isolation`
-- `f0d2b38` — `test(18): cover concurrent account spacing reservation`
-- `412d273` — `chore(18): remove obsolete completion import`
+- `4921984` — `fix(18): coordinate campaign completion lifecycle`
 
 ## Verification Evidence
 
-- Targeted unit suites: **PASS**, 4 files / 49 tests.
-- Dispatch migration and capacity PostgreSQL suite: **PASS**, 5/5.
-- Cross-tenant inbound matching PostgreSQL suite: **PASS**, 2/2.
-- Full `npm run test`: **PASS**, 11 files / 91 tests.
+- Focused scheduling/review/lifecycle suites: **PASS**, 3 files / 31 tests.
+- Campaign lifecycle PostgreSQL suite: **PASS**, 2/2, including real lock contention and follow-up sequencing.
+- Full `npm run test`: **PASS**, 12 files / 94 tests.
 - `npm run build`: **PASS**, Vite client and TypeScript server.
 - `npm run lint`: **PASS**, zero warnings.
 - `git diff --check`: **PASS**.
 
 ## Operational Boundary
 
-Migration 038 was applied only to disposable Testcontainers PostgreSQL databases. Production application of `038_outreach_dispatch_state_machine.sql` remains an explicit operator/deployment action. Outlook Graph ingestion and MIME/header parity remain deferred to Phase 19.
+All PostgreSQL checks ran only in guarded disposable Testcontainers databases. No production migration or deploy was executed. Phase 19 Graph/MIME scope remains untouched.
