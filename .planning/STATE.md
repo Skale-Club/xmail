@@ -44,11 +44,14 @@ Status: ★ MILESTONE v1.4 CODE-COMPLETE ★ — all 6 phases (18-23) implemente
 
 **Every send in the system now flows through the Phase 18 shared delivery policy gate** (campaign, follow-up, manual, and inbox reply/forward). Phase 23 AI automation MUST use that same gate — no autonomous send may bypass it.
 
-**Operator prerequisites accumulated (do NOT auto-apply):**
+**Operator prerequisites — status (updated 2026-07-17):**
 
-- Migrations 038 (dispatch state machine), 039 (provider events/cursors), 040 (outreach product consistency: one-sequence-per-campaign + step CHECKs), 041 (unified inbox foundation: conversations/messages/participants/reads + provider-event materialization lifecycle), and 042 (unified inbox operator workflows: labels/archive/reminders/snippets/send-commands/attachments + one private `inbox-attachments` Storage bucket) are written + tested against disposable Postgres but NOT applied to production. Applying them is a manual deploy step, in ascending order. 040 aborts with actionable diagnostics if legacy multi-sequence data conflicts. 042 configures the private Storage bucket only where a `storage` schema exists.
-- New env vars `XMAIL_SERVICE_USER_ID` + `XMAIL_SERVICE_ORGANIZATION_ID` bind the outreach service key to a principal+org; all three (with `XMAIL_SERVICE_KEY`) must be set in prod or machine auth stays disabled (fails closed). Wired into build-deploy.yml run_app_container() + legacy deploy-hetzner.yml.
-- Outlook Graph sandbox gate (19-04 <verification>) unrun — needs a real Microsoft 365 tenant. Entire Graph surface is mock-verified only.
+- ✅ **DONE — Migrations 038–043 APPLIED to production** (2026-07-17, via a targeted `postgres.js` runner, prepare:false, against the aws-1-us-east-2 pooler). All 14 v1.4 tables + key columns verified present; versions registered in `supabase_migrations.schema_migrations`. Prod had 0 campaigns/0 sequences so 040's merge was a no-op. NOTE: a pre-existing tracking drift remains — migrations 023–037 are applied to the schema but unregistered in `schema_migrations`; left untouched deliberately (do NOT run the naive "apply all pending" runner, it would try to re-run 023–037). The v1.4 apply used an explicit 038–043 whitelist.
+- ✅ **DONE — private `inbox-attachments` Storage bucket** created by migration 042 (verified `public=false`).
+- ✅ **DONE — git aligned**: local `main`, `origin/main`, local `dev`, `origin/dev` all at `656f45d`.
+- ⚠️ **PENDING — app deploy**: the push did NOT trigger Build-and-Deploy because the tip commit carries `[skip ci]`. Production is running the PREVIOUS code against the new (additive, backward-compatible) schema — a safe intermediate state. Deploy is a separate decision.
+- ⏳ New env vars `XMAIL_SERVICE_USER_ID` + `XMAIL_SERVICE_ORGANIZATION_ID` — not set as GitHub secrets; until set, outreach machine auth (Xphere orchestrator) stays disabled (fails closed — safe). Values require the user's actual user/org IDs.
+- ⏳ Outlook Graph sandbox gate (19-04) unrun — needs a real Microsoft 365 tenant. Entire Graph surface is mock-verified only.
 
 > **Progress counters:** the `state` tool derives these from ROADMAP-registered phases
 > only (05-09 + 14-23 = 15 phases, 41 plans, 24 summaries). Phases 10-13 exist under
