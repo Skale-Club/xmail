@@ -1,9 +1,10 @@
 ---
 phase: 23
 phase_name: ai-inbox-automation-and-guardrails
-status: gaps_found
-score: "6/6 AI requirements verified in code + deterministic tests; 1 milestone-gate gap (full test suite is non-deterministic)"
+status: passed
+score: "6/6 AI requirements (AI-01..06); milestone-gate gap resolved — suite deterministic (907/907 ×3). Review critical + minors fixed and re-reviewed."
 verified_at: "2026-07-16T23:18:00Z"
+resolved_at: "2026-07-17T00:05:00Z"
 verifier: gsd-verifier
 gaps:
   - truth: "The milestone acceptance gate `npm run test` passes cleanly and deterministically (23-04 Gate A / 23-EVALS Part A record `898 passed`)."
@@ -166,3 +167,50 @@ Deploy-time only (correctly out of the CI executor's reach): apply migration 043
 
 _Verified: 2026-07-16T23:18:00Z_
 _Verifier: Claude (gsd-verifier) — source inspection + fresh gate runs, not SUMMARY claims_
+
+## Resolution addendum (2026-07-17, post review-fix)
+
+The verifier passed all six AI requirements on code+test evidence but marked the phase `gaps_found` on
+one milestone-gate gap (non-deterministic suite). A parallel 3-lens code review (`23-REVIEW.md`) —
+AI-send-path safety, tenant-isolation/audit-redaction, requirements verification — additionally found
+**1 critical + 4 minor** (the tenant-isolation lens found ZERO). All blocking items are now fixed and
+independently re-reviewed (both CONFIRMED FIXED at root cause, no new blockers):
+
+- **C-1 (critical) — the `max_autonomous_follow_ups` per-thread ceiling was inoperative.** It read
+  `campaign_leads.follow_up_count`, which the 23-03 refactor left un-incremented, so any positive cap
+  was silently unlimited — every inbound prospect reply could spawn another autonomous AI send. Fixed:
+  the count is now derived from `countAutonomousSends` — a tenant-scoped COUNT of `outreach_ai_runs`
+  that genuinely dispatched (`run_kind='autonomous' AND status='completed' AND action='draft' AND
+  send_command_id IS NOT NULL`, set at exactly one place: the executor's sent/duplicate branch). The
+  re-review confirmed it advances exactly once per real send, is replay-safe, excludes the in-flight
+  run, is org+lead scoped, cannot be influenced by the model, and that `max=0` blocks / `max=2` blocks
+  the 3rd. A `.db` test drives N genuine sends through the real counting path and proves the (N+1)th is
+  `no_action` (and that `follow_up_count` stays 0 — the direct RED against the old code). No new send
+  path; the single-delivery-path invariant is intact.
+- **G-1 (gap) — the full suite was non-deterministic** (a Phase 20 suite depended on a sibling suite's
+  migration 024). Fixed at root by adding `024_outreach_settings.sql` to the global test baseline, so
+  the run is order-independent. Verified 907/907 identical across 3 runs (with observed file
+  reordering).
+- **M-1** — the `attribution_mismatch` guard is now live on the suggestion path (stamps org/conversation
+  from the DB row). **M-2** — `reloadAutonomy` is a required dep (the pre-dispatch pause recheck can't
+  be silently skipped). **M-4** — the source-guard test now also proves the AI automation modules import
+  no direct provider/dispatch primitive. **M-3** (within-org idempotency-key reuse) deferred as a
+  documented low-priority within-tenant quirk.
+
+Two new low-severity, non-blocking observations from the re-review, accepted as known:
+1. A narrow crash-window over-count edge inherent to any count-based limiter — a run that dispatched
+   but crashed before `completeAiRun` is briefly uncounted; self-heals because runs are processed
+   oldest-first and a later run's inbound trigger postdates the send past the 60s lease. Vastly
+   narrower than the original unbounded bug.
+2. The behavioral ceiling test uses a hand-rolled `resolveRun` mirroring production plus a source-lock
+   on the real wiring, rather than driving `resolveAutonomousRun` end-to-end. Current code traced
+   correct.
+
+**Fresh gates after fixes:** `npm run test` **907 passed (56 files)**, identical across 3 runs
+(deterministic); build exit 0; lint 0 warnings; client and server `tsc --noEmit` both clean.
+
+Phase 23 status is therefore **passed**. This is the final phase — milestone v1.4 (phases 18-23) is
+code-complete. Remaining work is the manual production deploy (apply migrations 038→043 in order,
+provision the private Storage bucket, set the service-principal env vars, run the Outlook Graph sandbox
+gate, and the two-tenant/provider/restart + live-provider-send UAT rows), which is deliberately not
+auto-applied.

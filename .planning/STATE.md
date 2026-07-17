@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 23 (AI Inbox Automation and Guardrails) — IMPLEMENTED (4/4 plans), in phase-gate review (FINAL phase of milestone v1.4)
-Plan: 4 of 4 complete (23-01 AI foundation+migration 043, 23-02 no-send suggestion endpoint, 23-03 retired legacy direct-send/leased autonomous dispatch, 23-04 opt-in controls+audit history+adversarial eval suite+milestone UAT; 898/898 tests)
+Phase: 23 (AI Inbox Automation and Guardrails) — COMPLETE + VERIFIED (FINAL phase). Milestone v1.4 is CODE-COMPLETE.
+Plan: 4 of 4 complete (23-01 AI foundation+migration 043, 23-02 no-send suggestion endpoint, 23-03 retired legacy direct-send/leased autonomous dispatch, 23-04 opt-in controls+audit history+adversarial eval suite+milestone UAT). 3-lens review: tenant-isolation clean, 1 critical (autonomous follow-up cap was inoperative) + 4 minor all fixed and re-reviewed; 907/907 tests deterministic.
 Phase 22 (Unified Inbox Operator Experience) — COMPLETE + VERIFIED (UIX-01..06, 19/19 must-haves; 3-lens review 1 critical + 6 warnings all fixed and re-reviewed; 700/700 tests deterministic)
 Phase 21 (Unified Inbox Foundation) — COMPLETE + VERIFIED (UIF-01..05, 43/43 must-haves; 3-lens review 0 critical + 3 warnings all fixed and re-reviewed; 527/527 tests deterministic)
 Phase 20 (Outreach Product and API Consistency) — COMPLETE + VERIFIED (CONS-01..07; security + data-migration reviews clean; verifier found 1 blocking gap + 5 non-blocking, all fixed and re-reviewed clean; 422/422 tests)
@@ -36,7 +36,7 @@ Phase 19 (Provider Parity and Deliverability) — COMPLETE + VERIFIED (PROV-01..
 Phase 18 (Outreach Safety and Execution Reliability) — COMPLETE + VERIFIED (6/6 requirements, 94/94 tests)
 Milestone: v1.4 (Reliable Outreach + Unified Inbox) — **planned**
 All 4 phase codebases (10-13) merged (commit `3b2cc41`).
-Status: Phases 18-22 COMPLETE + VERIFIED; Phase 23 (final) code complete (898 tests, deterministic) and in 3-lens review (AI-send-path-safety / tenant-isolation-audit / verification). This is the last gate of milestone v1.4.
+Status: ★ MILESTONE v1.4 CODE-COMPLETE ★ — all 6 phases (18-23) implemented, reviewed (3-lens adversarial per phase), and verified. Full suite 907/907, deterministic. What remains is the manual production deploy (see Resume point), which is NOT auto-applied.
 
 **Also this session:** made the Vitest postgres project a deterministic gate (commit a87ee0b) — root-level fileParallelism:false + container max_connections=300 + a suite that self-applies its migration. This fixed the flaky deadlocks/timeouts that dogged phases 19-20 reviews.
 
