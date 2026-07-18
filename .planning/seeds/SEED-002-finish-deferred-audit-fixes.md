@@ -1,89 +1,100 @@
 ---
 id: SEED-002
-status: mostly-superseded
+status: dormant
 planted: 2026-07-15
-updated: 2026-07-15
+updated: 2026-07-18
 planted_during: v1.4 — Outreach Hardening (planning)
-trigger_when: A security-hardening pass, OR opportunistically when already working in the named files. The original outreach-reliability trigger is largely spent — see "What v1.4 already did".
-scope: Small
+trigger_when: A security/reliability hardening pass, OR opportunistically when already working in the named files, OR when outreach un-parks (a few items need a live campaign). Testable-now items (P1-11, P1-16, MX fail-open, env one-liners) need no campaign.
+scope: Medium
 ---
 
-# SEED-002: Residual system-audit fixes (most now done by v1.4)
+# SEED-002: Harvest still-open system-audit findings
 
 ## Status — read this first
 
-This seed was planted on 2026-07-15 with six deferred items. Since then the **v1.4 milestone
-(phases 18–23) landed and superseded most of it** — phase 18 rebuilt the outreach send path as a
-lease-based dispatch state machine (migration `038_outreach_dispatch_state_machine.sql`, a Vitest
-+ Postgres test harness), which is exactly the runtime-testable footing whose absence caused the
-deferral. So the "wait for a live campaign" framing is spent for the reliability items.
+The audit branch `origin/claude/system-error-analysis-9k0pyj` (report `docs/auditoria-sistema-2026-07.md`,
+2026-07-09) was **fully re-verified against `main` on 2026-07-18** by 5 parallel agents, one per
+subsystem. This seed now carries the *verified* map, not guesses. Result across ~31 P0–P2 findings:
+**~10 FIXED · 2 OBSOLETE · 3 PARTIAL · ~16 OPEN.**
 
-What's left is a **small residual tail** plus an **untriaged security list** that no v1.4 phase
-touched. Verified item-by-item against the v1.4-complete tree (local `main` at commit `5b6f396`).
+**Do NOT merge the source branch** — stale (forked 2026-07-08 pre-v1.4, ~210 commits behind, 13
+conflicting files, migration `032` collides with main's `032`). Its value is the diagnostic report +
+the `c2d4432` mail-tls diff as reference. Harvest the open items by re-implementing on current main.
 
-## What v1.4 already did (do NOT redo)
+## Already FIXED by v1.4 / branch-1 merge (do NOT redo)
 
-- **Item 1 — stuck lead after send failure: DONE.** `processOutreachSequences.ts` no longer uses
-  `onConflictDoNothing`; it reschedules via `dispatchResult.nextAttemptAt` and the lease states
-  (`in_progress` / `lost_lease`). The claim/retry rewrite this seed asked for was done properly.
-- **Item 3 — follow-up wrote no `outreach_emails` row: DONE.** `processFollowUps.ts` was
-  refactored to dispatch through the shared executor; every follow-up is now a durable command
-  with `origin='agentic'` (`src/server/lib/outreach-delivery-policy.ts`), so it gets a row.
+P0-1 branding auth bypass · P0-2 idempotency unique indexes (migrations 035/037/038) · P0-4 dev-branch
+deploy (`branches:[main]`) · P1-6 click-tracking open-redirect (token HMAC-bound) · P1-7 587 From
+spoofing · P1-10 webhook SSRF-via-redirect (`redirect:'manual'`) · P1-13 template XSS (EmailHtmlViewer
+sandbox) · suppression case-insensitivity · reply-match Message-ID brackets · **`/o/u/check` PII
+endpoint — closed 2026-07-18 by merging branch `feat/magical-moore-f49987` into main**.
 
-## What still survives
+**OBSOLETE (mechanism rewritten in v1.4, bug gone):** stuck-lead-after-failure (dispatch state machine,
+migration 038) · processBounces whole-inbox rescan (now cursor over `outreach_provider_events`).
 
-**1. Soft-bounce still kills the lead (async DSN path) — LIKELY OPEN, verify first.**
-`processBounces.ts markAsBounced` still sets `campaign_leads.status='bounced'` (a comment there
-even notes a soft bounce writes no suppression row). The v1.4 dispatch retry model handles
-**send-time** temporary failures, but an **asynchronous** soft DSN (mailbox-full/greylist arriving
-after a "successful" send) appears to still route into `markAsBounced` and permanently kill the
-lead. Confirm whether soft DSNs are now diverted to a reschedule before touching `markAsBounced`;
-if not, thread `bounceType` through and reschedule on soft. Product decision: soft-retry ceiling.
-File: `src/server/jobs/processBounces.ts` (`markAsBounced`, `bounceType` classifier ~line 50).
+## STILL OPEN — the actual work (ranked)
 
-**2. Mail TLS reload / SNI — not covered by any phase.**
-`src/server/lib/mail-tls.ts` caches certs with no hot-reload. Low value (frequent redeploys pick
-up renewed certs) vs. real risk (touches live IMAP 993 / SMTP 587 TLS). Do as a focused change
-with an explicit TLS-handshake test. Note: phase 18-03's plan verifies migrations with
-`psql $DATABASE_URL -f ...`, but **psql is not installed on this box** — use the postgres.js
-approach (see `xmail-applying-migrations` memory) if you touch that path.
+### Testable NOW (no live campaign needed)
+1. **P1-11 — `trust proxy:1` + port 9001 internet-published** (`src/server/index.ts:43`). Direct
+   connection to 9001 lets the client set `X-Forwarded-For` → `req.ip`, rotating the `authLimiter`
+   key per request → **unlimited login brute-force**. Limiter was even weakened 5→10. *Highest live
+   severity.* Fix = bind 9001 to loopback/Traefik-only, or pin `trust proxy` to the proxy subnet +
+   spoof-resistant limiter key.
+2. **P1-16 — `mail_messages` unique index = ACTIVE silent mail-loss.** SQL enforces
+   `(mailbox_id, remote_uid)` (`006_mail_tables.sql`) but v1.4 allocates UID **per-folder**
+   (`src/server/lib/folder-counts.ts`, each folder starts at 1). A Sent uid=1 collides with an Inbox
+   uid=1 in the same mailbox → `onConflictDoNothing` (smtp-server/mx-server store paths) **silently
+   drops** the 2nd message. `schema.ts` declares `(folder_id, remote_uid)` which no SQL creates.
+   Fix = migration: drop old index, `CREATE UNIQUE INDEX ... (folder_id, remote_uid) WHERE remote_uid IS NOT NULL`.
+   (psql is NOT installed — apply via postgres.js, see `xmail-applying-migrations` memory.)
+3. **P0-3 residual — `processQueue.ts` double-send.** Outreach jobs now use `runWithLock` + the 038
+   exactly-once ledger (FIXED), but the `deliveries` transactional sender still uses only an in-memory
+   `running` boolean + non-atomic `findMany`. Blue-green overlap can double-send. Fix = atomic
+   `UPDATE…SET status='sending'…RETURNING` claim.
+4. **P2 MX fail-open** (`src/server/lib/mail-auth.ts:78` returns `null` on exception; `mx-server.ts`
+   treats null as clean → INBOX, no DMARC). Fix = null → softfail/quarantine.
 
-**3. Migration runner breaks on CONCURRENTLY — not covered.**
-`scripts/apply-pending-migrations.mjs` wraps everything in one transaction, so `CREATE INDEX
-CONCURRENTLY` fails. Not run by the deploy; migrations are applied via a standalone postgres.js
-script. Fix only if this runner becomes part of the pipeline.
+### Env / infra one-liners (add to `run_app_container` in `.github/workflows/build-deploy.yml`)
+- **P1-8** `BASE_URL` unset → tracked `/api/messages` emit dead `localhost` links (or fall back to `FRONTEND_URL`).
+- **P1-17** `MICROSOFT_CLIENT_ID/SECRET/REDIRECT_URI` unset → all `/api/outlook` OAuth 500s.
+- **P1-9** deploy health gate polls `/health` (liveness) not `/health/ready` (DB+auth). Point it at the latter.
 
-**4. Frontend cosmetic — not covered.**
-`src/lib/mock-data.ts` is a dead unimported file; `EmailDetailPage.tsx` has inline mock
-scaffolding that never triggers for real UUIDs; client-side → server-side search is an
-enhancement, not a bug. No user-facing defect. Touch only if already in that area. (Phases 21–23
-reworked the unified inbox but did not remove these.)
+### Needs a live outreach campaign to test (outreach is parked — see [[xmail-outreach-sending-domain]])
+- **Soft bounce kills the lead** (`processBounces.ts markAsBounced`): `bounceType` is classified then
+  **discarded**; always sets terminal `bounced`. Thread `bounceType`, reschedule soft with backoff. STILL REAL.
+- **Header injection in native send** (`src/server/routes/mail/send.ts`): no CRLF strip on
+  `subject`/`inReplyTo`/`references`/recipient `name` (Zod only checks max). Add `.regex(/^[^\r\n]*$/)`.
 
-## Untriaged security items — highest residual value
+### Other verified-open
+- **P1-14 mail-api global logout on any 401** (`src/lib/mail-api.ts` → `lib/api.ts handleUnauthorized`
+  hard `signOut()`, no refresh). Fix = route through `src/lib/api-client.ts` (refresh-on-401).
+- **Mail TLS cert cached forever** (`src/server/lib/mail-tls.ts`, `resetMailTLSCache` has no caller).
+  Branch commit `c2d4432` already implemented SNICallback + hourly refresh — use as reference.
+- **viewer-can-send** (`src/server/routes/messages.ts` POST — membership check but no role guard).
+- **Password-reset targets platform-admins** (`src/server/routes/users.ts:490` — no `targetUser.isAdmin`
+  guard, min length 6 vs 8 elsewhere).
+- **Auth-cache no invalidation** (`src/server/lib/auth-cache.ts` — 60s stale token after logout/delete/pw-change).
+- **Relay failures swallowed as success** (smtp-server.ts + send.ts native paths return 250/success on relay throw).
+- **PARTIAL — pagination clamp** done everywhere except `src/server/routes/outreach/campaigns.ts:1059`
+  (`GET /:id/leads` still `parseInt||N`).
+- **Low reach — route-matcher SSRF** (`route-matcher.ts:278` unguarded `fetch(cfg.url)`) — but the routes
+  API can't create `http_endpoints` rows, so only legacy/direct-DB data reaches it.
 
-These were flagged by the audit branch but **never individually verified**, and no v1.4 phase
-addressed them. Re-verify each against the current `5b6f396` tree before acting (the codebase
-moved a lot):
+## Reproducibility cluster (prod fine, clean rebuild breaks — DR/restore landmine, same root cause)
 
-- MX fail-open in `src/server/mx-server.ts`
-- SSRF in `src/server/lib/route-matcher.ts` `deliverViaRoutes`
-- viewer-can-send in `src/server/routes/messages.ts`
-- unauthenticated PII endpoint in `src/server/routes/unsubscribe.ts`
-- password-reset guard in `src/server/routes/users.ts`
-
-## Already shipped from this audit (do NOT redo)
-
-XSS in template preview (EmailHtmlViewer), webhook SSRF-via-redirect (`redirect:'manual'`), 587
-cross-tenant From spoofing, bounce `LIKE '%%'` guard, `.dockerignore` `.env.*`, migrations 036 &
-037, the `PATCH /system/branding` auth bypass, IMAP `UID EXPUNGE`, and (via v1.4) items 1 & 3
-above.
+`supabase/migrations/` is NOT self-sufficient to build a DB; prod was seeded via old `db:push` and
+migrations only `ALTER…IF EXISTS`. Three symptoms:
+- **P0-5** `server_id`→`organization_id` never reconciled in SQL (`drizzle/0000_dear_wolverine.sql`
+  still server-scoped; core tables lack `organization_id` there).
+- **P1-15** migration runner `scripts/apply-pending-migrations.mjs` wraps each file in a txn → breaks on
+  `022`'s `CREATE INDEX CONCURRENTLY` (masked only because 022 is already applied). Not on the deploy path.
+- **email_provider enum** never `CREATE TYPE`d in migrations (012 makes it VARCHAR; 032 `ALTER TYPE`
+  would hard-fail on a fresh DB).
+Consider one "migrations self-sufficiency / DR rebuild" phase to retire `drizzle/0000` and make a clean
+replay work end-to-end.
 
 ## Notes
 
-**Do NOT merge the source branch `origin/claude/system-error-analysis-9k0pyj` wholesale.** It is
-stale (pre-outreach, ~50 files, migration number collisions) and its audit map errs roughly 1 in
-3 — two of its own headline "critical" findings were already false or already fixed on inspection.
-Verify every remaining item against current `main` first.
-
-See project memory `xmail-deferred-audit-backlog` for the condensed list, and
-`xmail-outreach-sending-domain` for why outreach is parked.
+Verified against `main` post-branch-1-merge (local commit `a1b955b`). Condensed live list in project
+memory [[xmail-deferred-audit-backlog]]. The audit map historically errs ~1 in 3 — the 2026-07-18 pass
+already filtered that out, but re-confirm any single finding before shipping its fix.
