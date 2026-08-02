@@ -64,6 +64,8 @@ interface IMAPSession {
     selectedFolderId: string | null
     selectedReadOnly: boolean
     selectedUidValidity: number
+    selectedMessages: LightMailMessage[]
+    selectedSync: Promise<void>
     buffer: Buffer
     pendingLiteral: PendingLiteral | null
     pendingAuth: PendingAuth | null
@@ -173,16 +175,13 @@ const IMAP_LIGHT_COLUMNS = {
 /** Ordered, payload-free view of a folder — the basis for IMAP sequence numbers. */
 async function loadFolderMessages(
     folderId: string,
-    opts: { includeDeleted?: boolean } = {}
 ): Promise<LightMailMessage[]> {
-    const where = opts.includeDeleted
-        ? eq(mailMessages.folderId, folderId)
-        : and(eq(mailMessages.folderId, folderId), eq(mailMessages.isDeleted, false))
-
     return db.query.mailMessages.findMany({
-        where,
+        where: eq(mailMessages.folderId, folderId),
         columns: IMAP_LIGHT_COLUMNS,
-        orderBy: [asc(mailMessages.receivedAt)],
+        // Sequence numbers are positions in the selected mailbox. UIDs are
+        // monotonically allocated, so UID order is the stable server order.
+        orderBy: [asc(mailMessages.remoteUid), asc(mailMessages.receivedAt)],
     })
 }
 
@@ -424,17 +423,72 @@ function parseSequenceSet(set: string, max: number): number[] {
 async function countFolderMessages(folderId: string): Promise<number> {
     const rows = await db.select({ c: sql<number>`count(*)::int` })
         .from(mailMessages)
-        .where(and(
-            eq(mailMessages.folderId, folderId),
-            eq(mailMessages.isDeleted, false)
-        ))
+        .where(eq(mailMessages.folderId, folderId))
     return rows[0]?.c ?? 0
+}
+
+function sameFlags(a: LightMailMessage, b: LightMailMessage): boolean {
+    return a.isRead === b.isRead
+        && a.isStarred === b.isStarred
+        && a.isDeleted === b.isDeleted
+        && a.isDraft === b.isDraft
+}
+
+/**
+ * Reconciles a selected-mailbox snapshot with the database. IMAP forbids a
+ * server from announcing a lower EXISTS value: removals must be reported as
+ * EXPUNGE, while flag mutations are unsolicited FETCH responses.
+ */
+async function syncSelectedMailbox(session: IMAPSession): Promise<void> {
+    if (session.state !== 'selected' || !session.selectedFolderId) return
+
+    const previous = session.selectedMessages
+    const current = await loadFolderMessages(session.selectedFolderId)
+    const currentById = new Map(current.map(message => [message.id, message]))
+
+    for (let index = previous.length - 1; index >= 0; index--) {
+        if (!currentById.has(previous[index].id)) {
+            sendLine(session.socket, `* ${index + 1} EXPUNGE`)
+        }
+    }
+
+    const previousById = new Map(previous.map(message => [message.id, message]))
+    for (let index = 0; index < current.length; index++) {
+        const old = previousById.get(current[index].id)
+        if (old && !sameFlags(old, current[index])) {
+            sendLine(session.socket, `* ${index + 1} FETCH (FLAGS ${flagsToIMAP(current[index])})`)
+        }
+    }
+
+    const added = current.filter(message => !previousById.has(message.id)).length
+    if (added > 0) {
+        sendLine(session.socket, `* ${current.length} EXISTS`)
+        sendLine(session.socket, `* ${added} RECENT`)
+    }
+
+    session.selectedMessages = current
+    session.knownMessageCount = current.length
+}
+
+function queueSelectedSync(session: IMAPSession): Promise<void> {
+    const next = session.selectedSync.then(() => syncSelectedMailbox(session))
+    session.selectedSync = next.catch(() => undefined)
+    return next
+}
+
+function updateSelectedSnapshot(
+    session: IMAPSession,
+    messageId: string,
+    updates: Partial<LightMailMessage>,
+) {
+    const selected = session.selectedMessages.find(message => message.id === messageId)
+    if (selected) Object.assign(selected, updates)
 }
 
 // ─── Capability ──────────────────────────────────────────────────────────────
 
 function capabilities(session: IMAPSession): string {
-    const caps = ['IMAP4rev1', 'LITERAL+', 'IDLE', 'UIDPLUS']
+    const caps = ['IMAP4rev1', 'LITERAL+', 'IDLE', 'UIDPLUS', 'MOVE', 'UNSELECT']
     if (session.state === 'not_authenticated') {
         caps.push('AUTH=PLAIN', 'AUTH=LOGIN')
         if (!session.isTLS && getMailTLSOptions()) caps.push('STARTTLS')
@@ -463,13 +517,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
     // Thunderbird uses NOOP and CHECK to poll for new mail when not in IDLE.
     if (cmd === 'NOOP' || cmd === 'CHECK') {
         if (session.state === 'selected' && session.selectedFolderId) {
-            const newCount = await countFolderMessages(session.selectedFolderId)
-            if (newCount !== session.knownMessageCount) {
-                const delta = Math.max(0, newCount - session.knownMessageCount)
-                sendLine(socket, `* ${newCount} EXISTS`)
-                sendLine(socket, `* ${delta} RECENT`)
-                session.knownMessageCount = newCount
-            }
+            await queueSelectedSync(session)
         }
         sendLine(socket, `${tag} OK ${cmd} completed`)
         return
@@ -646,21 +694,17 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         session.selectedReadOnly = cmd === 'EXAMINE'
         session.selectedUidValidity = folder.uidValidity || 1
 
-        const msgs = await db.query.mailMessages.findMany({
-            where: and(
-                eq(mailMessages.folderId, folder.id),
-                eq(mailMessages.isDeleted, false)
-            ),
-            columns: { isRead: true },
-        })
+        const msgs = await loadFolderMessages(folder.id)
         const total = msgs.length
         const unseen = msgs.filter(m => !m.isRead).length
+        session.selectedMessages = msgs
         session.knownMessageCount = total
 
         sendLine(socket, `* ${total} EXISTS`)
         sendLine(socket, '* 0 RECENT')
-        if (unseen > 0) {
-            sendLine(socket, `* OK [UNSEEN ${total - unseen + 1}] Message ${total - unseen + 1} is the first unseen`)
+        const firstUnseen = msgs.findIndex(m => !m.isRead) + 1
+        if (unseen > 0 && firstUnseen > 0) {
+            sendLine(socket, `* OK [UNSEEN ${firstUnseen}] Message ${firstUnseen} is the first unseen`)
         }
         sendLine(socket, `* OK [UIDVALIDITY ${session.selectedUidValidity}] UIDs valid`)
         sendLine(socket, `* OK [UIDNEXT ${folder.uidNext || total + 1}] Predicted next UID`)
@@ -749,6 +793,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
                     await db.update(mailMessages)
                         .set({ isRead: true, updatedAt: new Date() })
                         .where(eq(mailMessages.id, msg.id))
+                    updateSelectedSnapshot(session, msg.id, { isRead: true })
                     updated = true
                 }
             }
@@ -801,6 +846,7 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
             await db.update(mailMessages)
                 .set(updates)
                 .where(eq(mailMessages.id, msg.id))
+            updateSelectedSnapshot(session, msg.id, updates)
 
             if (!silent) {
                 const updated = { ...msg, ...updates }
@@ -822,37 +868,18 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
     // ── EXPUNGE ──
     if (cmd === 'EXPUNGE') {
         if (session.selectedReadOnly) { sendLine(socket, `${tag} NO Folder is read-only`); return }
-        // Ordered list of ALL messages (so we can compute sequence numbers);
-        // then walk from high to low, deleting and emitting EXPUNGE for each flagged.
-        const allMsgs = await loadFolderMessages(session.selectedFolderId!, { includeDeleted: true })
-
-        // IMAP sequence numbers are 1-based, counting only messages visible in
-        // the current SELECT session (non-deleted). Since the current SELECT
-        // returned only non-deleted messages, compute seqnums on that subset.
-        const visible = allMsgs.filter(m => !m.isDeleted)
-        const flaggedForDeletion = allMsgs.filter(m => m.isDeleted)
-
-        // Messages still in the visible set that will be removed (by STORE
-        // earlier in same session) have already had isDeleted=true set, so
-        // they are in `flaggedForDeletion` and not in `visible`.
-        // But if they came in via \Deleted flag and are also in `visible`
-        // list (unlikely given our query), handle them explicitly.
-
-        // Walk descending by position-in-visible so sequence numbers stay
-        // stable as we emit them.
-        for (let i = visible.length - 1; i >= 0; i--) {
-            const msg = visible[i]
+        // \Deleted remains in the selected view until this command. Walk from
+        // high to low so every emitted sequence number stays valid.
+        const allMsgs = await loadFolderMessages(session.selectedFolderId!)
+        for (let i = allMsgs.length - 1; i >= 0; i--) {
+            const msg = allMsgs[i]
             if (!msg.isDeleted) continue
             await db.delete(mailMessages).where(eq(mailMessages.id, msg.id))
             sendLine(socket, `* ${i + 1} EXPUNGE`)
         }
 
-        // Remove any messages that were already marked deleted outside of SELECT
-        // visibility — no EXPUNGE response needed since client didn't see them.
-        for (const msg of flaggedForDeletion) {
-            if (visible.find(v => v.id === msg.id)) continue
-            await db.delete(mailMessages).where(eq(mailMessages.id, msg.id))
-        }
+        session.selectedMessages = allMsgs.filter(message => !message.isDeleted)
+        session.knownMessageCount = session.selectedMessages.length
 
         await recomputeFolderCounts(session.selectedFolderId!)
         emitFolderChange({
@@ -866,6 +893,39 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
     }
 
     // ── SEARCH ──
+    // CLOSE expunges every \Deleted message without sending untagged EXPUNGE
+    // responses. UNSELECT leaves all flags untouched. Both leave selected state.
+    if (cmd === 'CLOSE' || cmd === 'UNSELECT') {
+        if (session.state !== 'selected' || !session.selectedFolderId) {
+            sendLine(socket, `${tag} NO No mailbox selected`)
+            return
+        }
+
+        const folderId = session.selectedFolderId
+        const mailboxId = session.selectedMailboxId!
+        if (cmd === 'CLOSE') {
+            if (session.selectedReadOnly) { sendLine(socket, `${tag} NO Folder is read-only`); return }
+            const deleted = await db.query.mailMessages.findMany({
+                where: and(eq(mailMessages.folderId, folderId), eq(mailMessages.isDeleted, true)),
+                columns: { id: true },
+            })
+            if (deleted.length > 0) {
+                await db.delete(mailMessages).where(inArray(mailMessages.id, deleted.map(message => message.id)))
+                await recomputeFolderCounts(folderId)
+                emitFolderChange({ folderId, mailboxId, kind: 'expunge' })
+            }
+        }
+
+        session.state = 'authenticated'
+        session.selectedMailboxId = null
+        session.selectedFolderId = null
+        session.selectedReadOnly = false
+        session.selectedMessages = []
+        session.knownMessageCount = 0
+        sendLine(socket, `${tag} OK ${cmd} completed`)
+        return
+    }
+
     if (cmd === 'SEARCH') {
         const msgs = await loadFolderMessages(session.selectedFolderId!)
 
@@ -918,6 +978,8 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         const payloads = await loadMessagePayloads(
             seqNums.map(n => msgs[n - 1]?.id).filter((id): id is string => !!id)
         )
+        const sourceUids: number[] = []
+        const copiedUids: number[] = []
         for (const seqNum of seqNums) {
             const msg = msgs[seqNum - 1]
             if (!msg) continue
@@ -941,21 +1003,42 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
                 hasAttachments: msg.hasAttachments,
                 attachments: payload?.attachments as object[],
                 isRead: msg.isRead,
+                isStarred: msg.isStarred,
+                isDeleted: msg.isDeleted,
                 isDraft: msg.isDraft,
                 remoteUid: newUid,
                 remoteDate: msg.remoteDate,
-                receivedAt: new Date(),
-            }).onConflictDoNothing()
+                receivedAt: msg.receivedAt,
+                size: msg.size,
+            })
+            sourceUids.push(msg.remoteUid ?? seqNum)
+            copiedUids.push(newUid)
         }
 
         await recomputeFolderCounts(destFolder.id)
         emitFolderChange({ folderId: destFolder.id, mailboxId: companion.id, kind: 'new' })
 
-        sendLine(socket, `${tag} OK COPY completed`)
+        sendLine(socket, `${tag} OK [COPYUID ${destFolder.uidValidity || 1} ${sourceUids.join(',')} ${copiedUids.join(',')}] COPY completed`)
         return
     }
 
     // ── UID ──
+    if (cmd === 'MOVE') {
+        const match = args.match(/^(\S+)\s+"?([^"\s]+)"?$/)
+        if (!match) { sendLine(socket, `${tag} BAD MOVE syntax error`); return }
+        const [, sequenceSet, destination] = match
+        const messages = await loadFolderMessages(session.selectedFolderId!)
+        const sourceUids = parseSequenceSet(sequenceSet, messages.length)
+            .map(sequence => messages[sequence - 1]?.remoteUid)
+            .filter((uid): uid is number => uid != null)
+        if (sourceUids.length === 0) {
+            sendLine(socket, `${tag} OK MOVE completed`)
+            return
+        }
+        await handleUidCommand(session, tag, 'MOVE', `${sourceUids.join(',')} "${destination}"`, 'MOVE')
+        return
+    }
+
     if (cmd === 'UID') {
         const spaceIdx = args.indexOf(' ')
         if (spaceIdx === -1) { sendLine(socket, `${tag} BAD UID syntax error`); return }
@@ -973,20 +1056,11 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
         }
         sendLine(socket, '+ idling')
         session.idleTag = tag
-        session.knownMessageCount = await countFolderMessages(session.selectedFolderId)
 
         const listener = async (payload: MailEventPayload) => {
             if (payload.folderId !== session.selectedFolderId) return
             try {
-                const newCount = await countFolderMessages(session.selectedFolderId!)
-                if (newCount !== session.knownMessageCount) {
-                    const delta = Math.max(0, newCount - session.knownMessageCount)
-                    // RFC 3501: send EXISTS then RECENT so clients (e.g. Thunderbird)
-                    // know there are new messages to fetch.
-                    sendLine(session.socket, `* ${newCount} EXISTS`)
-                    sendLine(session.socket, `* ${delta} RECENT`)
-                    session.knownMessageCount = newCount
-                }
+                await queueSelectedSync(session)
             } catch (err) {
                 console.error('[IMAP] IDLE listener error:', err)
             }
@@ -1064,7 +1138,13 @@ async function completeAuthLoginPassword(session: IMAPSession, b64: string) {
 
 // ─── UID command dispatch ─────────────────────────────────────────────────────
 
-async function handleUidCommand(session: IMAPSession, tag: string, subCmd: string, subArgs: string) {
+async function handleUidCommand(
+    session: IMAPSession,
+    tag: string,
+    subCmd: string,
+    subArgs: string,
+    completionCommand = `UID ${subCmd}`,
+) {
     const socket = session.socket
 
     if (session.state !== 'selected' || !session.selectedFolderId) {
@@ -1112,6 +1192,7 @@ async function handleUidCommand(session: IMAPSession, tag: string, subCmd: strin
                     await db.update(mailMessages)
                         .set({ isRead: true, updatedAt: new Date() })
                         .where(eq(mailMessages.id, msg.id))
+                    updateSelectedSnapshot(session, msg.id, { isRead: true })
                 }
             }
             await recomputeFolderCounts(session.selectedFolderId!)
@@ -1146,6 +1227,7 @@ async function handleUidCommand(session: IMAPSession, tag: string, subCmd: strin
                 updates.isDraft = flags.includes('\\DRAFT')
             }
             await db.update(mailMessages).set(updates).where(eq(mailMessages.id, msg.id))
+            updateSelectedSnapshot(session, msg.id, updates)
             if (!silent) {
                 const updated = { ...msg, ...updates }
                 sendLine(socket, `* ${seqNum} FETCH (UID ${msg.remoteUid ?? seqNum} FLAGS ${flagsToIMAP(updated as typeof msg)})`)
@@ -1199,11 +1281,14 @@ async function handleUidCommand(session: IMAPSession, tag: string, subCmd: strin
                 hasAttachments: msg.hasAttachments,
                 attachments: payload?.attachments as object[],
                 isRead: msg.isRead,
+                isStarred: msg.isStarred,
+                isDeleted: msg.isDeleted,
                 isDraft: msg.isDraft,
                 remoteUid: newUid,
                 remoteDate: msg.remoteDate,
-                receivedAt: new Date(),
-            }).onConflictDoNothing()
+                receivedAt: msg.receivedAt,
+                size: msg.size,
+            })
             copiedUids.push(newUid)
             srcUids.push(msg.remoteUid ?? 0)
         }
@@ -1212,6 +1297,95 @@ async function handleUidCommand(session: IMAPSession, tag: string, subCmd: strin
 
         const uidValidity = destFolder.uidValidity || 1
         sendLine(socket, `${tag} OK [COPYUID ${uidValidity} ${srcUids.join(',')} ${copiedUids.join(',')}] UID COPY completed`)
+        return
+    }
+
+    if (subCmd === 'MOVE') {
+        if (session.selectedReadOnly) { sendLine(socket, `${tag} NO Folder is read-only`); return }
+        const match = subArgs.match(/^(\S+)\s+"?([^"\s]+)"?$/)
+        if (!match) { sendLine(socket, `${tag} BAD UID MOVE syntax error`); return }
+        const [, uidSet, destFolderName] = match
+
+        const destFolder = await db.query.mailFolders.findFirst({
+            where: and(
+                eq(mailFolders.mailboxId, session.selectedMailboxId!),
+                eq(mailFolders.remoteId, destFolderName),
+            ),
+        })
+        if (!destFolder) { sendLine(socket, `${tag} NO [TRYCREATE] No such mailbox`); return }
+        if (destFolder.id === session.selectedFolderId) {
+            sendLine(socket, `${tag} NO Source and destination mailboxes are the same`)
+            return
+        }
+
+        const moveEntries = uidSetToEntries(uidSet)
+        const payloads = await loadMessagePayloads(moveEntries.map(entry => entry.msg.id))
+
+        const moved = await db.transaction(async (tx) => {
+            const destinationUids: number[] = []
+
+            for (const { msg } of moveEntries) {
+                const [allocated] = await tx.update(mailFolders)
+                    .set({ uidNext: sql`${mailFolders.uidNext} + 1`, updatedAt: new Date() })
+                    .where(eq(mailFolders.id, destFolder.id))
+                    .returning({ next: mailFolders.uidNext })
+                if (!allocated) throw new Error(`Destination folder ${destFolder.id} disappeared during MOVE`)
+                const newUid = allocated.next - 1
+                const payload = payloads.get(msg.id)
+
+                await tx.insert(mailMessages).values({
+                    mailboxId: msg.mailboxId,
+                    folderId: destFolder.id,
+                    messageId: msg.messageId,
+                    inReplyTo: msg.inReplyTo,
+                    references: msg.references,
+                    subject: msg.subject,
+                    fromAddress: msg.fromAddress,
+                    fromName: msg.fromName,
+                    toAddresses: msg.toAddresses as object[],
+                    ccAddresses: msg.ccAddresses as object[],
+                    bccAddresses: msg.bccAddresses as object[],
+                    plainBody: payload?.plainBody ?? null,
+                    htmlBody: payload?.htmlBody ?? null,
+                    headers: payload?.headers as object,
+                    hasAttachments: msg.hasAttachments,
+                    attachments: payload?.attachments as object[],
+                    isRead: msg.isRead,
+                    isStarred: msg.isStarred,
+                    isDeleted: false,
+                    isDraft: msg.isDraft,
+                    remoteUid: newUid,
+                    remoteDate: msg.remoteDate,
+                    receivedAt: msg.receivedAt,
+                    size: msg.size,
+                })
+                destinationUids.push(newUid)
+            }
+
+            if (moveEntries.length > 0) {
+                await tx.delete(mailMessages).where(inArray(mailMessages.id, moveEntries.map(entry => entry.msg.id)))
+            }
+            return destinationUids
+        })
+
+        for (const { seqNum } of [...moveEntries].sort((a, b) => b.seqNum - a.seqNum)) {
+            sendLine(socket, `* ${seqNum} EXPUNGE`)
+        }
+        const movedIds = new Set(moveEntries.map(({ msg }) => msg.id))
+        session.selectedMessages = msgs.filter(message => !movedIds.has(message.id))
+        session.knownMessageCount = session.selectedMessages.length
+
+        await recomputeFolderCounts(session.selectedFolderId!)
+        await recomputeFolderCounts(destFolder.id)
+        emitFolderChange({
+            folderId: session.selectedFolderId!,
+            mailboxId: session.selectedMailboxId!,
+            kind: 'expunge',
+        })
+        emitFolderChange({ folderId: destFolder.id, mailboxId: session.selectedMailboxId!, kind: 'new' })
+
+        const sourceUids = moveEntries.map(({ msg }) => msg.remoteUid ?? 0)
+        sendLine(socket, `${tag} OK [COPYUID ${destFolder.uidValidity || 1} ${sourceUids.join(',')} ${moved.join(',')}] ${completionCommand} completed`)
         return
     }
 
@@ -1247,25 +1421,22 @@ async function handleUidCommand(session: IMAPSession, tag: string, subCmd: strin
         const set = subArgs.trim()
         if (!set) { sendLine(socket, `${tag} BAD UID EXPUNGE requires a UID set`); return }
 
-        // The default listing hides isDeleted rows, so load including deleted and size the
-        // sequence set's `*` against the largest UID actually present (deleted included).
-        const withDeleted = await loadFolderMessages(session.selectedFolderId!, { includeDeleted: true })
+        // Size `*` against the largest UID in the selected mailbox.
+        const withDeleted = await loadFolderMessages(session.selectedFolderId!)
         let maxUidAll = maxUid
         for (const m of withDeleted) { if ((m.remoteUid ?? 0) > maxUidAll) maxUidAll = m.remoteUid ?? 0 }
         const targetUids = new Set(parseSequenceSet(set, maxUidAll || 1))
 
-        let removed = 0
-        for (const msg of withDeleted) {
-            if (!msg.isDeleted) continue
-            if (msg.remoteUid == null || !targetUids.has(msg.remoteUid)) continue
-            await db.delete(mailMessages).where(eq(mailMessages.id, msg.id))
-            removed++
-        }
+        const removed = withDeleted
+            .map((msg, index) => ({ msg, seqNum: index + 1 }))
+            .filter(({ msg }) => msg.isDeleted && msg.remoteUid != null && targetUids.has(msg.remoteUid))
+            .sort((a, b) => b.seqNum - a.seqNum)
 
-        // Mirror plain EXPUNGE: this server drops \Deleted rows from the visible sequence space
-        // the moment they are flagged, so there is no stable seqnum to emit per removal; the
-        // client resyncs off the updated counts. Recompute + notify only when something changed.
-        if (removed > 0) {
+        if (removed.length > 0) {
+            await db.delete(mailMessages).where(inArray(mailMessages.id, removed.map(({ msg }) => msg.id)))
+            for (const { seqNum } of removed) sendLine(socket, `* ${seqNum} EXPUNGE`)
+            session.selectedMessages = withDeleted.filter(message => !removed.some(({ msg }) => msg.id === message.id))
+            session.knownMessageCount = session.selectedMessages.length
             await recomputeFolderCounts(session.selectedFolderId!)
             emitFolderChange({
                 folderId: session.selectedFolderId!,
@@ -1553,6 +1724,8 @@ function handleConnection(socket: IMAPSocket, isTLS: boolean) {
         selectedFolderId: null,
         selectedReadOnly: false,
         selectedUidValidity: 1,
+        selectedMessages: [],
+        selectedSync: Promise.resolve(),
         buffer: Buffer.alloc(0),
         pendingLiteral: null,
         pendingAuth: null,

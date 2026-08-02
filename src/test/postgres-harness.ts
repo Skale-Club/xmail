@@ -34,6 +34,10 @@ const OUTREACH_TEST_BASELINE_MIGRATIONS = [
     '034_outreach_agentic_followup.sql',
     '035_outreach_reproducibility_and_reply_index.sql',
     '036_email_accounts_case_insensitive_unique.sql',
+    // IMAP UIDs are scoped to a folder, not to an entire mailbox. The old Drizzle
+    // bootstrap predates that correction and otherwise prevents COPY/MOVE between
+    // folders whenever the destination happens to allocate the same numeric UID.
+    '044_fix_mail_message_uid_scope.sql',
 ] as const
 
 export interface TestDatabaseGuardOptions {
