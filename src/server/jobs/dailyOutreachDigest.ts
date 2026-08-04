@@ -24,6 +24,7 @@ import {
     computeByOrgMetrics,
     computeTopBouncingCampaigns,
     buildAlerts,
+    computeAgentOpsMetrics,
 } from '../lib/outreach-metrics'
 
 const log = createLogger('outreach.digest')
@@ -39,10 +40,11 @@ export async function dailyOutreachDigest(): Promise<DailyDigestResult> {
     const t0 = performance.now()
 
     try {
-        const [overall, byOrg, topBouncingCampaigns] = await Promise.all([
+        const [overall, byOrg, topBouncingCampaigns, agentOps] = await Promise.all([
             computeOverallMetrics(startedAt),
             computeByOrgMetrics(startedAt),
             computeTopBouncingCampaigns(startedAt),
+            computeAgentOpsMetrics(startedAt),
         ])
 
         const alerts = buildAlerts(overall, byOrg, topBouncingCampaigns, startedAt)
@@ -77,6 +79,7 @@ export async function dailyOutreachDigest(): Promise<DailyDigestResult> {
                 status: o.status,
             })),
             topBouncingCampaigns,
+            agentOps,
             alerts,
             summary: {
                 healthyOrgs: byOrg.filter((o) => o.status === 'healthy').length,

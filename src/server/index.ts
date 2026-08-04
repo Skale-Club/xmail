@@ -20,6 +20,7 @@ import systemRoutes from './routes/system'
 import trackRoutes from './routes/track'
 import templateRoutes from './routes/templates'
 import outreachRoutes from './routes/outreach'
+import agentOutreachRoutes from './routes/agent-outreach'
 import outreachHealthRoutes from './routes/admin/outreach-health'
 import integrationsRoutes from './routes/integrations'
 import healthEmailRoutes from './routes/health-email'
@@ -276,6 +277,7 @@ app.use('/api/routes', routeRoutes)
 app.use('/api/system', systemRoutes)
 app.use('/api/templates', templateRoutes)
 app.use('/api/outreach', outreachRoutes)
+app.use('/api/agent/outreach', agentOutreachRoutes)
 // Phase 17 — platform-admin observability endpoints (GET /api/admin/outreach/health).
 // JWT auth is applied by the /api middleware above; the route handler additionally
 // gates on isPlatformAdmin so non-admin users get 403 instead of 200.

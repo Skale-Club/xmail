@@ -38,6 +38,9 @@ const OUTREACH_TEST_BASELINE_MIGRATIONS = [
     // bootstrap predates that correction and otherwise prevents COPY/MOVE between
     // folders whenever the destination happens to allocate the same numeric UID.
     '044_fix_mail_message_uid_scope.sql',
+    // The event outbox is used by existing reply/bounce suites after every terminal transition.
+    // Migration 045 has no dependency on the later unified-inbox migrations and is idempotent.
+    '045_outreach_agent_gateway.sql',
 ] as const
 
 export interface TestDatabaseGuardOptions {
@@ -232,6 +235,41 @@ async function installCampaignsAiAutonomousColumn(target: MigrationTarget): Prom
 }
 
 /**
+ * Drizzle selects every mapped column, including columns introduced by 046-048. Replaying those
+ * full feature migrations in the generic baseline would violate historical order: migration 046
+ * relies on composite constraints created by 041, while several suites own and reapply 041.
+ * Install only the mapped columns here; dedicated suites still apply 046-049 in canonical order
+ * and verify their constraints, indexes, foreign keys and RLS policies.
+ */
+async function installCurrentOutreachMappedColumns(target: MigrationTarget): Promise<void> {
+    assertSafeTestDatabaseUrl(target.databaseUrl, target)
+    const sql = postgres(target.databaseUrl, { max: 1, prepare: false, onnotice: () => {} })
+    try {
+        await sql.unsafe(`
+            ALTER TABLE public.campaigns ADD COLUMN IF NOT EXISTS activation_approval_id uuid;
+            ALTER TABLE public.campaigns ADD COLUMN IF NOT EXISTS paused_at timestamp;
+            ALTER TABLE public.campaigns ADD COLUMN IF NOT EXISTS paused_reason text;
+
+            ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS email_verification_status text NOT NULL DEFAULT 'unknown';
+            ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS email_verification_provider text;
+            ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS email_verified_at timestamp;
+            ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS icp_score integer;
+            ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS icp_tier text;
+            ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS icp_score_breakdown jsonb NOT NULL DEFAULT '{}'::jsonb;
+            ALTER TABLE public.leads ADD COLUMN IF NOT EXISTS enriched_at timestamp;
+
+            ALTER TABLE public.outreach_settings ADD COLUMN IF NOT EXISTS deliverability_guard_enabled boolean NOT NULL DEFAULT true;
+            ALTER TABLE public.outreach_settings ADD COLUMN IF NOT EXISTS bounce_rate_limit_percent integer NOT NULL DEFAULT 5;
+            ALTER TABLE public.outreach_settings ADD COLUMN IF NOT EXISTS bounce_rate_min_sample integer NOT NULL DEFAULT 20;
+            ALTER TABLE public.outreach_settings ADD COLUMN IF NOT EXISTS unsubscribe_rate_limit_percent integer NOT NULL DEFAULT 2;
+            ALTER TABLE public.outreach_settings ADD COLUMN IF NOT EXISTS unsubscribe_rate_min_sample integer NOT NULL DEFAULT 50;
+        `)
+    } finally {
+        await sql.end({ timeout: 1 })
+    }
+}
+
+/**
  * outreach_ai_runs (migration 043) is read by the Phase 23 autonomous processor, which the campaign
  * follow-up job (`processFollowUps` → `processDueAutonomousRuns`) queries on every tick. Any campaign-
  * lifecycle suite that drives that job therefore needs the table to EXIST, or its `SELECT` fails with
@@ -315,6 +353,7 @@ export async function applyHandWrittenMigrations(
     for (const migrationFile of OUTREACH_TEST_BASELINE_MIGRATIONS) {
         await executeSqlFile(target, path.join(migrationsDir, migrationFile))
     }
+    await installCurrentOutreachMappedColumns(target)
 
     // Canonical campaigns column from 043 (see note above) — applied inline because the full file
     // has dependencies the generic baseline does not seed.

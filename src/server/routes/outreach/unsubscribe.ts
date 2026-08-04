@@ -313,12 +313,13 @@ export async function processUnsubscribe(campaignLeadId: string, campaignId: str
     // above on an already-unsubscribed lead makes this fire only on the first unsubscribe, so a
     // replayed one-click POST never re-notifies. Suppression + status writes are NOT gated.
     if (campaign && await shouldNotifyOutreachEvent(campaign.organizationId, 'unsubscribe')) {
-        sendXphereOutreachEvent('unsubscribed', {
+        await sendXphereOutreachEvent('unsubscribed', {
             email: lead.email,
             campaign_id: campaignId,
             lead_id: lead.id,
+            campaign_lead_id: campaignLead.id,
             customFields: lead.customFields,
-        })
+        }, campaign.organizationId)
     }
 
     return { success: true, lead }

@@ -20,7 +20,13 @@ const PIXEL = Buffer.from(
 
 // Notify Xphere of an outreach open/click event. Fire-and-forget — never
 // awaited by callers, must not add latency to the pixel/redirect response.
-async function notifyXphereOfOutreachEvent(event: 'opened' | 'clicked', campaignId: string, campaignLeadId: string) {
+async function notifyXphereOfOutreachEvent(
+    event: 'opened' | 'clicked',
+    campaignId: string,
+    campaignLeadId: string,
+    organizationId: string,
+    outreachEmailId: string,
+) {
     try {
         const campaignLead = await db.query.campaignLeads.findFirst({
             where: eq(campaignLeads.id, campaignLeadId),
@@ -29,12 +35,13 @@ async function notifyXphereOfOutreachEvent(event: 'opened' | 'clicked', campaign
         })
         if (!campaignLead?.lead) return
 
-        sendXphereOutreachEvent(event, {
+        await sendXphereOutreachEvent(event, {
             email: campaignLead.lead.email,
             campaign_id: campaignId,
             lead_id: campaignLead.leadId,
+            outreach_email_id: outreachEmailId,
             customFields: campaignLead.lead.customFields,
-        })
+        }, organizationId)
     } catch {
         // Best-effort only — never let Xphere notification break tracking.
     }
@@ -92,7 +99,13 @@ router.get('/open/:token', async (req: Request, res: Response) => {
                 emailAccountId: outreachEmail.emailAccountId,
             }, 'open recorded')
             if (outreachEmail.campaignId && outreachEmail.campaignLeadId) {
-                void notifyXphereOfOutreachEvent('opened', outreachEmail.campaignId, outreachEmail.campaignLeadId)
+                void notifyXphereOfOutreachEvent(
+                    'opened',
+                    outreachEmail.campaignId,
+                    outreachEmail.campaignLeadId,
+                    outreachEmail.organizationId,
+                    outreachEmail.id,
+                )
             }
             return
         }
@@ -214,7 +227,13 @@ router.get('/click/:token', async (req: Request, res: Response) => {
                 targetUrl,
             }, 'click recorded')
             if (outreachEmail.campaignId && outreachEmail.campaignLeadId) {
-                void notifyXphereOfOutreachEvent('clicked', outreachEmail.campaignId, outreachEmail.campaignLeadId)
+                void notifyXphereOfOutreachEvent(
+                    'clicked',
+                    outreachEmail.campaignId,
+                    outreachEmail.campaignLeadId,
+                    outreachEmail.organizationId,
+                    outreachEmail.id,
+                )
             }
             return
         }

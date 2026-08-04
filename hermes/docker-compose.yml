@@ -21,6 +21,8 @@ services:
     volumes:
       # Memória persistente do agente (~/.hermes upstream) — sobrevive a deploys.
       - hermes-data:/opt/data
+      # Gateway MCP local e sem dependencias externas para a API escopada do Xmail.
+      - ./xmail-mcp:/opt/xmail-mcp:ro
     # --- Guard-rails de recurso: o Hermes NUNCA pode derrubar o email por OOM ---
     mem_limit: 1g          # teto duro de RAM (sobra ~2.7 GB + swap pro resto)
     memswap_limit: 2g      # 1 GB RAM + até 1 GB swap de folga sob pressão

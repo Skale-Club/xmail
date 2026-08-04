@@ -24,6 +24,7 @@ import {
     X,
     Building2,
     ChevronDown,
+    Bot,
 } from 'lucide-react'
 
 import { ModeToggle } from '../mode-toggle'
@@ -43,6 +44,7 @@ const navItems: NavItem[] = [
     { label: 'Inbox', href: '/outreach/unified-inbox', icon: <Inbox className="w-5 h-5" /> },
     { label: 'Campaigns', href: '/outreach/campaigns', icon: <Target className="w-5 h-5" /> },
     { label: 'Leads', href: '/outreach/leads', icon: <Users className="w-5 h-5" /> },
+    { label: 'Agent ops', href: '/outreach/agent-ops', icon: <Bot className="w-5 h-5" /> },
     // Renamed from "Inboxes" to disambiguate sender-account management from the unified
     // Inbox workspace; the /outreach/inboxes URL is retained for link compatibility.
     { label: 'Sending accounts', href: '/outreach/inboxes', icon: <Mail className="w-5 h-5" /> },

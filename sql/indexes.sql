@@ -224,3 +224,106 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaign_leads_next_scheduled
 
 -- NOTE: IDX-02 (idx_messages_org_status) and IDX-05 (idx_messages_token)
 -- are defined in the Core tables section above.
+
+-- =============================================================================
+-- Agent gateway + durable outreach events (migration 045)
+-- =============================================================================
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS campaigns_agent_draft_idempotency_unique
+    ON campaigns (organization_id, agent_credential_id, agent_idempotency_key);
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS outreach_agent_credentials_key_prefix_unique
+    ON outreach_agent_credentials (key_prefix);
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS outreach_agent_credentials_key_hash_unique
+    ON outreach_agent_credentials (key_hash);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_agent_credentials_organization
+    ON outreach_agent_credentials (organization_id, created_at DESC);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_agent_audit_org_created
+    ON outreach_agent_audit_log (organization_id, created_at DESC);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_agent_audit_credential_created
+    ON outreach_agent_audit_log (credential_id, created_at DESC);
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS outreach_event_outbox_sequence_unique
+    ON outreach_event_outbox (sequence_number);
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS outreach_event_outbox_deduplication_unique
+    ON outreach_event_outbox (organization_id, deduplication_key);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_event_outbox_org_sequence
+    ON outreach_event_outbox (organization_id, sequence_number);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_event_outbox_xphere_pending
+    ON outreach_event_outbox (xphere_next_attempt_at, sequence_number)
+    WHERE xphere_delivery_enabled = true AND xphere_delivered_at IS NULL AND xphere_attempts < 10;
+
+-- =============================================================================
+-- Provider-neutral prospecting pipeline (migration 046)
+-- =============================================================================
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS leads_id_organization_unique
+    ON leads (id, organization_id);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_leads_org_icp_score
+    ON leads (organization_id, icp_score DESC) WHERE icp_score IS NOT NULL;
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS outreach_icp_profiles_one_default_per_org
+    ON outreach_icp_profiles (organization_id) WHERE is_default = true;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospecting_runs_org_created
+    ON prospecting_runs (organization_id, created_at DESC);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospecting_runs_status
+    ON prospecting_runs (status, updated_at);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospect_candidates_run_score
+    ON prospect_candidates (run_id, score DESC, created_at);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospect_candidates_org_email
+    ON prospect_candidates (organization_id, lower(email)) WHERE email IS NOT NULL;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospect_candidates_run_status
+    ON prospect_candidates (run_id, status, score DESC);
+
+-- =============================================================================
+-- Durable human action approvals (migration 047)
+-- =============================================================================
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_action_approvals_org_status
+    ON outreach_action_approvals (organization_id, status, requested_at DESC);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_action_approvals_resource
+    ON outreach_action_approvals (organization_id, action_kind, resource_id, requested_at DESC);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_action_approvals_expiry
+    ON outreach_action_approvals (status, expires_at)
+    WHERE status IN ('requested', 'approved');
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospecting_runs_enrichment_approval
+    ON prospecting_runs (enrichment_approval_id) WHERE enrichment_approval_id IS NOT NULL;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_activation_approval
+    ON campaigns (activation_approval_id) WHERE activation_approval_id IS NOT NULL;
+
+-- =============================================================================
+-- Deliverability circuit breaker (migration 048)
+-- =============================================================================
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_emails_campaign_sent
+    ON outreach_emails (campaign_id, sent_at DESC) WHERE sent_at IS NOT NULL;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_paused_reason
+    ON campaigns (organization_id, paused_reason, paused_at DESC) WHERE paused_reason IS NOT NULL;
+
+-- =============================================================================
+-- Auditable AI prospect assessments (migration 049)
+-- =============================================================================
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospect_ai_assessments_candidate_created
+    ON prospect_ai_assessments (candidate_id, created_at DESC);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospect_ai_assessments_org_recommendation
+    ON prospect_ai_assessments (organization_id, recommendation, confidence DESC, created_at DESC);

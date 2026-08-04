@@ -117,7 +117,7 @@ type CampaignActivationIssue = SequenceValidationIssue | {
     message: string
 }
 
-async function validateCampaignReadyForActivation(campaignId: string, organizationId: string): Promise<CampaignActivationIssue[]> {
+export async function validateCampaignReadyForActivation(campaignId: string, organizationId: string): Promise<CampaignActivationIssue[]> {
     const issues: CampaignActivationIssue[] = []
 
     // One database-enforced canonical sequence per campaign (Phase 20). Resolve it through the
@@ -637,6 +637,11 @@ router.put('/:id', async (req: Request, res: Response) => {
                 })
             }
             updateData.startedAt = new Date()
+            updateData.pausedAt = null
+            updateData.pausedReason = null
+        } else if (validatedData.status === 'paused' && campaign.status !== 'paused') {
+            updateData.pausedAt = new Date()
+            updateData.pausedReason = 'human'
         } else if (validatedData.status === 'completed' && campaign.status !== 'completed') {
             updateData.completedAt = new Date()
         }

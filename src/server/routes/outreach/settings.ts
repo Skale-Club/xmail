@@ -36,6 +36,13 @@ const updateSettingsSchema = z.object({
         notifyOnBounce: z.boolean().optional(),
         notifyOnUnsubscribe: z.boolean().optional(),
     }).optional(),
+    deliverability: z.object({
+        guardEnabled: z.boolean().optional(),
+        bounceRateLimitPercent: z.number().int().min(1).max(100).optional(),
+        bounceRateMinSample: z.number().int().min(10).max(10_000).optional(),
+        unsubscribeRateLimitPercent: z.number().int().min(1).max(100).optional(),
+        unsubscribeRateMinSample: z.number().int().min(10).max(10_000).optional(),
+    }).optional(),
 })
 
 // GET /api/outreach/settings?organizationId=
@@ -109,6 +116,15 @@ router.patch('/', async (req: Request, res: Response) => {
             if (n.notifyOnReply !== undefined) updateValues.notifyOnReply = n.notifyOnReply
             if (n.notifyOnBounce !== undefined) updateValues.notifyOnBounce = n.notifyOnBounce
             if (n.notifyOnUnsubscribe !== undefined) updateValues.notifyOnUnsubscribe = n.notifyOnUnsubscribe
+        }
+
+        if (validatedData.deliverability) {
+            const d = validatedData.deliverability
+            if (d.guardEnabled !== undefined) updateValues.deliverabilityGuardEnabled = d.guardEnabled
+            if (d.bounceRateLimitPercent !== undefined) updateValues.bounceRateLimitPercent = d.bounceRateLimitPercent
+            if (d.bounceRateMinSample !== undefined) updateValues.bounceRateMinSample = d.bounceRateMinSample
+            if (d.unsubscribeRateLimitPercent !== undefined) updateValues.unsubscribeRateLimitPercent = d.unsubscribeRateLimitPercent
+            if (d.unsubscribeRateMinSample !== undefined) updateValues.unsubscribeRateMinSample = d.unsubscribeRateMinSample
         }
 
         // UPSERT: insert defaults + overrides on first save, or update the existing row.

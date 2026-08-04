@@ -5,7 +5,8 @@ import {
     Globe,
     Bell,
     Save,
-    RefreshCw
+    RefreshCw,
+    ShieldAlert
 } from 'lucide-react'
 import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { Button } from '../../components/ui/button'
@@ -41,6 +42,13 @@ interface OutreachSettings {
         notifyOnReply: boolean
         notifyOnBounce: boolean
         notifyOnUnsubscribe: boolean
+    }
+    deliverability: {
+        guardEnabled: boolean
+        bounceRateLimitPercent: number
+        bounceRateMinSample: number
+        unsubscribeRateLimitPercent: number
+        unsubscribeRateMinSample: number
     }
 }
 
@@ -138,6 +146,13 @@ export function SettingsPage() {
         setFormData(prev => ({
             ...prev,
             notifications: { ...prev.notifications!, [key]: value }
+        }))
+    }
+
+    const updateDeliverability = (key: keyof OutreachSettings['deliverability'], value: number | boolean) => {
+        setFormData(prev => ({
+            ...prev,
+            deliverability: { ...prev.deliverability!, [key]: value }
         }))
     }
 
@@ -315,6 +330,43 @@ export function SettingsPage() {
                                         value={formData.sending?.warmupDays || 21}
                                         onChange={(e) => updateSending('warmupDays', parseInt(e.target.value))}
                                     />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Notification Settings */}
+                <div className="bg-card rounded-lg border border-border">
+                    <div className="p-4 border-b border-border">
+                        <div className="flex items-center gap-2">
+                            <ShieldAlert className="w-5 h-5 text-amber-500" />
+                            <h3 className="font-semibold text-foreground">Deliverability circuit breaker</h3>
+                        </div>
+                    </div>
+                    <div className="p-4 space-y-4">
+                        <label className="flex items-start gap-3 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                className="mt-1 rounded border-gray-300"
+                                checked={formData.deliverability?.guardEnabled ?? true}
+                                onChange={(e) => updateDeliverability('guardEnabled', e.target.checked)}
+                            />
+                            <span><span className="block text-sm font-medium text-foreground">Pause unhealthy active campaigns automatically</span><span className="block text-xs text-muted-foreground">A paused campaign requires human review before it can resume.</span></span>
+                        </label>
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                            <div className="rounded-lg border border-border/70 bg-muted/25 p-4">
+                                <p className="mb-3 text-sm font-medium text-foreground">Bounce guard</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div><Label htmlFor="bounceLimit">Rate limit (%)</Label><Input id="bounceLimit" type="number" min={1} max={100} className="mt-1" value={formData.deliverability?.bounceRateLimitPercent ?? 5} onChange={(e) => updateDeliverability('bounceRateLimitPercent', Number(e.target.value))} /></div>
+                                    <div><Label htmlFor="bounceSample">Minimum sends</Label><Input id="bounceSample" type="number" min={10} max={10000} className="mt-1" value={formData.deliverability?.bounceRateMinSample ?? 20} onChange={(e) => updateDeliverability('bounceRateMinSample', Number(e.target.value))} /></div>
+                                </div>
+                            </div>
+                            <div className="rounded-lg border border-border/70 bg-muted/25 p-4">
+                                <p className="mb-3 text-sm font-medium text-foreground">Unsubscribe guard</p>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div><Label htmlFor="unsubscribeLimit">Rate limit (%)</Label><Input id="unsubscribeLimit" type="number" min={1} max={100} className="mt-1" value={formData.deliverability?.unsubscribeRateLimitPercent ?? 2} onChange={(e) => updateDeliverability('unsubscribeRateLimitPercent', Number(e.target.value))} /></div>
+                                    <div><Label htmlFor="unsubscribeSample">Minimum sends</Label><Input id="unsubscribeSample" type="number" min={10} max={10000} className="mt-1" value={formData.deliverability?.unsubscribeRateMinSample ?? 50} onChange={(e) => updateDeliverability('unsubscribeRateMinSample', Number(e.target.value))} /></div>
                                 </div>
                             </div>
                         </div>

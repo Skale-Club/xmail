@@ -74,6 +74,27 @@ LLM **externo** (sem GPU local) e teto de RAM pra nunca ameaçar o email.
 - `mem_limit: 1g` + `memswap_limit: 2g` + `cpus: 1.0` — guard-rail: o Hermes nunca derruba o email por OOM.
 - Rede default bridge, **sem portas publicadas** → isolado do xmail.
 
+## Xmail outreach MCP
+
+O Hermes usa o gateway versionado em `xmail-mcp/server.mjs`, montado como
+`/opt/xmail-mcp/server.mjs`. Ele autentica com uma credencial exclusiva e escopada; nunca coloque
+`XMAIL_SERVICE_KEY` no Hermes.
+
+Depois de aplicar a migration 045 e criar a credencial pela API administrativa do Xmail, adicione
+`XMAIL_AGENT_API_URL` e `XMAIL_AGENT_KEY` ao `hermes.env`, recrie o container e registre o MCP:
+
+```bash
+docker compose up -d --force-recreate
+docker exec -it hermes hermes mcp add xmail \
+  --command node --args /opt/xmail-mcp/server.mjs
+```
+
+As tools permitem leitura, busca Apollo sem consumo de créditos, scoring/listagem de candidatos,
+importação limitada, criação de rascunho, pausa e consumo de eventos. Enriquecimento pago fica fora
+do MCP até passar por aprovação durável no Xmail.
+Não existe tool de ativação nem envio direto. O contrato completo e o rollout estão em
+`docs/outreach-hermes-architecture.md`.
+
 ## Operação
 
 ```bash

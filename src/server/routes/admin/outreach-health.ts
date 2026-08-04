@@ -34,6 +34,7 @@ import {
     OUTREACH_BOUNCE_WARN_1H,
     OUTREACH_BOUNCE_ERROR_24H,
     OUTREACH_PROCESSOR_SLOW_MS,
+    computeAgentOpsMetrics,
 } from '../../lib/outreach-metrics'
 
 const router = Router()
@@ -54,13 +55,23 @@ router.get('/health', async (req: Request, res: Response) => {
     const t0 = performance.now()
 
     try {
-        const [overall, byOrg, topBouncingCampaigns] = await Promise.all([
+        const [overall, byOrg, topBouncingCampaigns, agentOps] = await Promise.all([
             computeOverallMetrics(now),
             computeByOrgMetrics(now),
             computeTopBouncingCampaigns(now),
+            computeAgentOpsMetrics(now),
         ])
 
         const alerts = buildAlerts(overall, byOrg, topBouncingCampaigns, now)
+        if (agentOps.stuckExecutingApprovals > 0) {
+            alerts.push({ severity: 'critical', kind: 'stuck_agent_approvals', message: `${agentOps.stuckExecutingApprovals} paid action approval(s) have been executing for more than 15 minutes; inspect before retrying.`, since: now.toISOString() })
+        }
+        if (agentOps.failedXphereDeliveries > 0) {
+            alerts.push({ severity: 'critical', kind: 'failed_xphere_events', message: `${agentOps.failedXphereDeliveries} Xphere event(s) exhausted delivery retries.`, since: now.toISOString() })
+        }
+        if (agentOps.failedProspectingRuns24h > 0) {
+            alerts.push({ severity: 'warning', kind: 'failed_prospecting_runs', message: `${agentOps.failedProspectingRuns24h} prospecting run(s) failed in the last 24 hours.`, since: now.toISOString() })
+        }
 
         const latencyMs = Math.round(performance.now() - t0)
         log.info({
@@ -75,6 +86,7 @@ router.get('/health', async (req: Request, res: Response) => {
             overall,
             byOrg,
             topBouncingCampaigns,
+            agentOps,
             alerts,
             thresholds: {
                 bounceWarn1h: OUTREACH_BOUNCE_WARN_1H,

@@ -5,6 +5,9 @@ import campaignsRouter from './campaigns'
 import settingsRouter from './settings'
 import sendMessageRouter from './send-message'
 import unifiedInboxRouter from './unified-inbox'
+import agentCredentialsRouter from './agent-credentials'
+import approvalsRouter from './approvals'
+import prospectingRouter from './prospecting'
 
 const router = Router()
 
@@ -33,5 +36,12 @@ router.use('/send-message', sendMessageRouter)
 
 // Unified Inbox read API (Phase 21 UIF-04/05): list/detail/unread/read-state
 router.use('/unified-inbox', unifiedInboxRouter)
+
+// Human-admin management for capability-scoped Hermes/agent credentials.
+router.use('/agent-credentials', agentCredentialsRouter)
+
+// Human-only approval queue for agent-proposed costly/destructive actions.
+router.use('/approvals', approvalsRouter)
+router.use('/prospecting', prospectingRouter)
 
 export default router

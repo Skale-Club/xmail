@@ -317,12 +317,13 @@ export async function markAsBounced(
     // guarantees this runs only on the transition into 'bounced', so a replayed DSN cannot
     // re-notify even when the policy is enabled.
     if (lead && await shouldNotifyOutreachEvent(organizationId, 'bounce')) {
-        sendXphereOutreachEvent('bounced', {
+        await sendXphereOutreachEvent('bounced', {
             email: lead.email,
             campaign_id: campaignId,
             lead_id: leadId,
+            outreach_email_id: outreachEmailId,
             customFields: lead.customFields,
-        })
+        }, organizationId)
     }
 
     log.info({

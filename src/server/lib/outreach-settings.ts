@@ -33,6 +33,12 @@ export interface ResolvedOutreachSettings {
     notifyOnReply: boolean
     notifyOnBounce: boolean
     notifyOnUnsubscribe: boolean
+    // deliverability circuit breaker
+    deliverabilityGuardEnabled: boolean
+    bounceRateLimitPercent: number
+    bounceRateMinSample: number
+    unsubscribeRateLimitPercent: number
+    unsubscribeRateMinSample: number
 }
 
 export const OUTREACH_SETTINGS_DEFAULTS: ResolvedOutreachSettings = {
@@ -49,6 +55,11 @@ export const OUTREACH_SETTINGS_DEFAULTS: ResolvedOutreachSettings = {
     notifyOnReply: true,
     notifyOnBounce: true,
     notifyOnUnsubscribe: false,
+    deliverabilityGuardEnabled: true,
+    bounceRateLimitPercent: 5,
+    bounceRateMinSample: 20,
+    unsubscribeRateLimitPercent: 2,
+    unsubscribeRateMinSample: 50,
 }
 
 /**
@@ -74,6 +85,11 @@ export async function resolveOutreachSettings(organizationId: string): Promise<R
         notifyOnReply: row.notifyOnReply,
         notifyOnBounce: row.notifyOnBounce,
         notifyOnUnsubscribe: row.notifyOnUnsubscribe,
+        deliverabilityGuardEnabled: row.deliverabilityGuardEnabled,
+        bounceRateLimitPercent: row.bounceRateLimitPercent,
+        bounceRateMinSample: row.bounceRateMinSample,
+        unsubscribeRateLimitPercent: row.unsubscribeRateLimitPercent,
+        unsubscribeRateMinSample: row.unsubscribeRateMinSample,
     }
 }
 
@@ -114,6 +130,13 @@ export function toApiOutreachSettings(s: ResolvedOutreachSettings) {
             notifyOnReply: s.notifyOnReply,
             notifyOnBounce: s.notifyOnBounce,
             notifyOnUnsubscribe: s.notifyOnUnsubscribe,
+        },
+        deliverability: {
+            guardEnabled: s.deliverabilityGuardEnabled,
+            bounceRateLimitPercent: s.bounceRateLimitPercent,
+            bounceRateMinSample: s.bounceRateMinSample,
+            unsubscribeRateLimitPercent: s.unsubscribeRateLimitPercent,
+            unsubscribeRateMinSample: s.unsubscribeRateMinSample,
         },
     }
 }

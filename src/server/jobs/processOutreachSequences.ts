@@ -351,12 +351,13 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                     if (!campaignLead.firstContactedAt) {
                         await incrementCampaignStats(campaign.id, 'leadsContacted')
                     }
-                    sendXphereOutreachEvent('sent', {
+                    await sendXphereOutreachEvent('sent', {
                         email: lead.email,
                         campaign_id: campaign.id,
                         lead_id: lead.id,
+                        outreach_email_id: dispatchResult.rowId,
                         customFields: lead.customFields,
-                    })
+                    }, campaign.organizationId)
                     result.sent++
                 },
                 advanceProgress: () => advanceCampaignLeadAfterDispatch(campaignLead, sequenceAction, sentAt),

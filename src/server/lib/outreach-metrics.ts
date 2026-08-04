@@ -74,6 +74,19 @@ export interface HealthAlert {
     since: string  // ISO timestamp
 }
 
+export interface AgentOpsMetrics {
+    activeCredentials: number
+    pendingApprovals: number
+    failedApprovals24h: number
+    stuckExecutingApprovals: number
+    prospectingRuns24h: number
+    failedProspectingRuns24h: number
+    candidatesDiscovered24h: number
+    maximumCreditsRecorded24h: number
+    pendingOutboxEvents: number
+    failedXphereDeliveries: number
+}
+
 // -------------------------------------------------------------------------
 // Helpers
 // -------------------------------------------------------------------------
@@ -156,6 +169,39 @@ export async function computeOverallMetrics(now: Date = new Date()): Promise<Ove
         activeCampaigns: Number(activeCampaignsRows[0]?.c ?? 0),
         activeEmailAccounts: Number(activeAccountsRows[0]?.c ?? 0),
         failedEmailAccounts: Number(failedAccountsRows[0]?.c ?? 0),
+    }
+}
+
+export async function computeAgentOpsMetrics(now: Date = new Date()): Promise<AgentOpsMetrics> {
+    const cutoff24h = new Date(now.getTime() - ONE_DAY_MS).toISOString()
+    const stuckBefore = new Date(now.getTime() - 15 * 60_000).toISOString()
+    const rawRows = await db.execute(sql`
+        SELECT
+            (SELECT count(*) FROM outreach_agent_credentials
+                WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ${now.toISOString()})) AS active_credentials,
+            (SELECT count(*) FROM outreach_action_approvals WHERE status = 'requested') AS pending_approvals,
+            (SELECT count(*) FROM outreach_action_approvals WHERE status = 'failed' AND updated_at >= ${cutoff24h}) AS failed_approvals_24h,
+            (SELECT count(*) FROM outreach_action_approvals WHERE status = 'executing' AND execution_started_at < ${stuckBefore}) AS stuck_executing_approvals,
+            (SELECT count(*) FROM prospecting_runs WHERE created_at >= ${cutoff24h}) AS prospecting_runs_24h,
+            (SELECT count(*) FROM prospecting_runs WHERE status = 'failed' AND updated_at >= ${cutoff24h}) AS failed_prospecting_runs_24h,
+            (SELECT count(*) FROM prospect_candidates WHERE created_at >= ${cutoff24h}) AS candidates_discovered_24h,
+            (SELECT coalesce(sum(consumed_credit_estimate), 0) FROM prospecting_runs WHERE updated_at >= ${cutoff24h}) AS maximum_credits_recorded_24h,
+            (SELECT count(*) FROM outreach_event_outbox WHERE xphere_delivery_enabled = true AND xphere_delivered_at IS NULL AND xphere_attempts < 10) AS pending_outbox_events,
+            (SELECT count(*) FROM outreach_event_outbox WHERE xphere_delivery_enabled = true AND xphere_delivered_at IS NULL AND xphere_attempts >= 10) AS failed_xphere_deliveries
+    `)
+    const row = rowsOf<Record<string, string | number | null>>(rawRows)[0] ?? {}
+    const n = (key: string) => Number(row[key] ?? 0)
+    return {
+        activeCredentials: n('active_credentials'),
+        pendingApprovals: n('pending_approvals'),
+        failedApprovals24h: n('failed_approvals_24h'),
+        stuckExecutingApprovals: n('stuck_executing_approvals'),
+        prospectingRuns24h: n('prospecting_runs_24h'),
+        failedProspectingRuns24h: n('failed_prospecting_runs_24h'),
+        candidatesDiscovered24h: n('candidates_discovered_24h'),
+        maximumCreditsRecorded24h: n('maximum_credits_recorded_24h'),
+        pendingOutboxEvents: n('pending_outbox_events'),
+        failedXphereDeliveries: n('failed_xphere_deliveries'),
     }
 }
 

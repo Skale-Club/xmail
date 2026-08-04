@@ -553,12 +553,13 @@ export async function markAsReplied(
         columns: { email: true, customFields: true },
     })
     if (lead && !wasAlreadyReplied && await shouldNotifyOutreachEvent(organizationId, 'reply')) {
-        sendXphereOutreachEvent('replied', {
+        await sendXphereOutreachEvent('replied', {
             email: lead.email,
             campaign_id: campaignId,
             lead_id: leadId,
+            outreach_email_id: outreachEmailId,
             customFields: lead.customFields,
-        })
+        }, organizationId)
     }
 
     log.info({

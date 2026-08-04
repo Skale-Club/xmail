@@ -20,6 +20,7 @@ import {
     timingSafeEqualStr,
 } from './service-auth'
 import { SERVICE_ORGANIZATION_HEADER, SERVICE_PRINCIPAL_HEADER } from './outreach-access'
+import { authenticateOutreachAgent, stripAgentHeaders } from './agent-auth'
 
 // SEC — each entry binds a METHOD to a path. Matching on path alone would make a route
 // public for writes just because it is public for reads (see the branding write bypass note
@@ -44,11 +45,21 @@ export function createApiAuthMiddleware(): RequestHandler {
         // verified. Strip any client-supplied copies so they can never be forged.
         delete req.headers[SERVICE_PRINCIPAL_HEADER]
         delete req.headers[SERVICE_ORGANIZATION_HEADER]
+        stripAgentHeaders(req)
 
         if (PUBLIC_ROUTES.some((r) => r.method === req.method && r.path === path)) {
             return next()
         }
         if (req.method === 'GET' && PUBLIC_GET_PREFIXES.some((p) => path.startsWith(p))) {
+            return next()
+        }
+
+        // Capability-scoped machine auth for Hermes and future agents. It is deliberately
+        // isolated under /api/agent/outreach: a valid agent token can never enter the broad
+        // human/service outreach router.
+        if (path === '/api/agent/outreach' || path.startsWith('/api/agent/outreach/')) {
+            const result = await authenticateOutreachAgent(req)
+            if (!result.ok) return res.status(result.status).json({ error: result.error })
             return next()
         }
 

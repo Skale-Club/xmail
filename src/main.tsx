@@ -89,6 +89,7 @@ const SequencesPage = React.lazy(() => import('./pages/outreach/SequencesPage'))
 const NewSequencePage = React.lazy(() => import('./pages/outreach/sequences/NewSequencePage'))
 const OutreachAnalyticsPage = React.lazy(() => import('./pages/outreach/AnalyticsPage'))
 const OutreachSettingsPage = React.lazy(() => import('./pages/outreach/SettingsPage'))
+const AgentOpsPage = React.lazy(() => import('./pages/outreach/AgentOpsPage'))
 
 const InboxPage = React.lazy(() => import('./pages/mail/InboxPage'))
 const SentPage = React.lazy(() => import('./pages/mail/SentPage'))
@@ -575,6 +576,11 @@ function App() {
                                 <Route path="/outreach/settings">
                                     <OutreachCheck>
                                         <PageSuspense><OutreachSettingsPage /></PageSuspense>
+                                    </OutreachCheck>
+                                </Route>
+                                <Route path="/outreach/agent-ops">
+                                    <OutreachCheck>
+                                        <PageSuspense><AgentOpsPage /></PageSuspense>
                                     </OutreachCheck>
                                 </Route>
 

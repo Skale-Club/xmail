@@ -740,6 +740,15 @@ export const leads = pgTable('leads', {
     // Source tracking
     source: text('source'),
     leadListId: uuid('lead_list_id').references(() => leadLists.id),
+    // Provider-neutral enrichment and ICP qualification (migration 046)
+    emailVerificationStatus: text('email_verification_status')
+        .$type<'unknown' | 'verified' | 'likely' | 'unavailable' | 'invalid'>().default('unknown').notNull(),
+    emailVerificationProvider: text('email_verification_provider'),
+    emailVerifiedAt: timestamp('email_verified_at'),
+    icpScore: integer('icp_score'),
+    icpTier: text('icp_tier').$type<'a' | 'b' | 'c' | 'disqualified'>(),
+    icpScoreBreakdown: jsonb('icp_score_breakdown').$type<Record<string, unknown>>().default({}).notNull(),
+    enrichedAt: timestamp('enriched_at'),
     // Engagement tracking
     totalEmailsSent: integer('total_emails_sent').default(0).notNull(),
     totalOpens: integer('total_opens').default(0).notNull(),
@@ -757,6 +766,10 @@ export const leads = pgTable('leads', {
     orgEmailUnique: uniqueIndex('lead_org_email_unique').on(table.organizationId, table.email),
     idxLeadsOrganizationId: index('idx_leads_organization_id').on(table.organizationId),
     idxLeadsLeadListId: index('idx_leads_lead_list_id').on(table.leadListId),
+    idxOrgIcpScore: index('idx_leads_org_icp_score').on(table.organizationId, table.icpScore),
+    emailVerificationStatusCheck: check('leads_email_verification_status_check', sql`${table.emailVerificationStatus} IN ('unknown', 'verified', 'likely', 'unavailable', 'invalid')`),
+    icpScoreCheck: check('leads_icp_score_check', sql`${table.icpScore} IS NULL OR (${table.icpScore} >= 0 AND ${table.icpScore} <= 100)`),
+    icpTierCheck: check('leads_icp_tier_check', sql`${table.icpTier} IS NULL OR ${table.icpTier} IN ('a', 'b', 'c', 'disqualified')`),
 }))
 
 // Campaigns
@@ -786,6 +799,11 @@ export const campaigns = pgTable('campaigns', {
     // EFFECTIVE autonomy is the INTERSECTION of this flag AND outreach_ai_settings.autonomous_enabled
     // AND a clear org kill switch AND the Phase 18 delivery policy. This flag alone never sends.
     aiAutonomousEnabled: boolean('ai_autonomous_enabled').default(false).notNull(),
+    // Agent-created drafts are idempotent per credential. The SQL migration owns the FK to
+    // outreach_agent_credentials because that table is declared later in this TypeScript file.
+    agentCredentialId: uuid('agent_credential_id'),
+    agentIdempotencyKey: text('agent_idempotency_key'),
+    activationApprovalId: uuid('activation_approval_id'),
     // Statistics (cached)
     totalLeads: integer('total_leads').default(0).notNull(),
     leadsContacted: integer('leads_contacted').default(0).notNull(),
@@ -797,10 +815,17 @@ export const campaigns = pgTable('campaigns', {
     // Timestamps
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),
+    pausedAt: timestamp('paused_at'),
+    pausedReason: text('paused_reason').$type<'human' | 'agent' | 'bounce_rate' | 'unsubscribe_rate'>(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
     idxCampaignsOrganizationId: index('idx_campaigns_organization_id').on(table.organizationId),
+    agentDraftIdempotencyUnique: uniqueIndex('campaigns_agent_draft_idempotency_unique').on(
+        table.organizationId,
+        table.agentCredentialId,
+        table.agentIdempotencyKey,
+    ),
 }))
 
 // Sequences (email sequences for campaigns)
@@ -1028,6 +1053,12 @@ export const outreachSettings = pgTable('outreach_settings', {
     notifyOnBounce: boolean('notify_on_bounce').default(true).notNull(),
     notifyOnUnsubscribe: boolean('notify_on_unsubscribe').default(false).notNull(),
     weeklyReport: boolean('weekly_report').default(true).notNull(),
+    // Automatic circuit breaker (migration 048)
+    deliverabilityGuardEnabled: boolean('deliverability_guard_enabled').default(true).notNull(),
+    bounceRateLimitPercent: integer('bounce_rate_limit_percent').default(5).notNull(),
+    bounceRateMinSample: integer('bounce_rate_min_sample').default(20).notNull(),
+    unsubscribeRateLimitPercent: integer('unsubscribe_rate_limit_percent').default(2).notNull(),
+    unsubscribeRateMinSample: integer('unsubscribe_rate_min_sample').default(50).notNull(),
     // meta
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -2262,3 +2293,318 @@ export type OutreachAiSettings = typeof outreachAiSettings.$inferSelect
 export type NewOutreachAiSettings = typeof outreachAiSettings.$inferInsert
 export type OutreachAiRun = typeof outreachAiRuns.$inferSelect
 export type NewOutreachAiRun = typeof outreachAiRuns.$inferInsert
+
+// ============================================================
+// Agent gateway + durable outreach events (Phase 25/26) — migration 045
+// ============================================================
+
+export const OUTREACH_AGENT_SCOPES = [
+    'outreach:read',
+    'prospects:search',
+    'prospects:enrich',
+    'prospects:assess',
+    'prospects:write',
+    'campaigns:draft',
+    'campaigns:request_activation',
+    'campaigns:pause',
+    'approvals:read',
+    'events:read',
+] as const
+
+export type OutreachAgentScope = typeof OUTREACH_AGENT_SCOPES[number]
+
+/**
+ * Machine credentials for Hermes and future outreach agents. Only a SHA-256 token hash is
+ * persisted; the clear-text token is returned once at creation time. Every credential is bound
+ * to one organization, one human principal and an explicit scope allow-list.
+ */
+export const outreachAgentCredentials = pgTable('outreach_agent_credentials', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    principalUserId: uuid('principal_user_id').references(() => users.id, { onDelete: 'restrict' }).notNull(),
+    createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'restrict' }).notNull(),
+    name: text('name').notNull(),
+    keyPrefix: text('key_prefix').notNull(),
+    keyHash: text('key_hash').notNull(),
+    scopes: jsonb('scopes').$type<OutreachAgentScope[]>().default([]).notNull(),
+    eventCursor: bigint('event_cursor', { mode: 'number' }).default(0).notNull(),
+    expiresAt: timestamp('expires_at'),
+    revokedAt: timestamp('revoked_at'),
+    lastUsedAt: timestamp('last_used_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    keyPrefixUnique: uniqueIndex('outreach_agent_credentials_key_prefix_unique').on(table.keyPrefix),
+    keyHashUnique: uniqueIndex('outreach_agent_credentials_key_hash_unique').on(table.keyHash),
+    idxOrganization: index('idx_outreach_agent_credentials_organization').on(table.organizationId, table.createdAt),
+    eventCursorNonNegative: check('outreach_agent_credentials_event_cursor_non_negative', sql`${table.eventCursor} >= 0`),
+}))
+
+/** Append-only audit trail for all agent mutations and event acknowledgements. */
+export const outreachAgentAuditLog = pgTable('outreach_agent_audit_log', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    credentialId: uuid('credential_id').references(() => outreachAgentCredentials.id, { onDelete: 'set null' }),
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    action: text('action').notNull(),
+    resourceType: text('resource_type'),
+    resourceId: text('resource_id'),
+    requestId: text('request_id'),
+    outcome: text('outcome').default('success').notNull(),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+    idxOrganizationCreated: index('idx_outreach_agent_audit_org_created').on(table.organizationId, table.createdAt),
+    idxCredentialCreated: index('idx_outreach_agent_audit_credential_created').on(table.credentialId, table.createdAt),
+    outcomeCheck: check('outreach_agent_audit_outcome_check', sql`${table.outcome} IN ('success', 'denied', 'failed')`),
+}))
+
+/**
+ * Canonical durable event stream. `sequenceNumber` is the stable polling cursor. Xphere delivery
+ * has its own retry lifecycle; Hermes and other agents consume independently via credential cursors.
+ */
+export const outreachEventOutbox = pgTable('outreach_event_outbox', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sequenceNumber: bigint('sequence_number', { mode: 'number' })
+        .default(sql`nextval('outreach_event_outbox_sequence_number_seq')`).notNull(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    deduplicationKey: text('deduplication_key').notNull(),
+    eventType: text('event_type').notNull(),
+    schemaVersion: integer('schema_version').default(1).notNull(),
+    aggregateType: text('aggregate_type').notNull(),
+    aggregateId: text('aggregate_id').notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
+    occurredAt: timestamp('occurred_at').defaultNow().notNull(),
+    xphereDeliveryEnabled: boolean('xphere_delivery_enabled').default(true).notNull(),
+    xphereDeliveredAt: timestamp('xphere_delivered_at'),
+    xphereAttempts: integer('xphere_attempts').default(0).notNull(),
+    xphereNextAttemptAt: timestamp('xphere_next_attempt_at').defaultNow().notNull(),
+    xphereLastError: text('xphere_last_error'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+    sequenceUnique: uniqueIndex('outreach_event_outbox_sequence_unique').on(table.sequenceNumber),
+    deduplicationUnique: uniqueIndex('outreach_event_outbox_deduplication_unique').on(table.organizationId, table.deduplicationKey),
+    idxOrganizationSequence: index('idx_outreach_event_outbox_org_sequence').on(table.organizationId, table.sequenceNumber),
+    idxXpherePending: index('idx_outreach_event_outbox_xphere_pending').on(table.xphereDeliveredAt, table.xphereNextAttemptAt),
+    schemaVersionPositive: check('outreach_event_outbox_schema_version_positive', sql`${table.schemaVersion} >= 1`),
+    attemptsNonNegative: check('outreach_event_outbox_attempts_non_negative', sql`${table.xphereAttempts} >= 0`),
+}))
+
+export type OutreachAgentCredential = typeof outreachAgentCredentials.$inferSelect
+export type NewOutreachAgentCredential = typeof outreachAgentCredentials.$inferInsert
+export type OutreachAgentAuditEntry = typeof outreachAgentAuditLog.$inferSelect
+export type NewOutreachAgentAuditEntry = typeof outreachAgentAuditLog.$inferInsert
+export type OutreachEventOutboxEntry = typeof outreachEventOutbox.$inferSelect
+export type NewOutreachEventOutboxEntry = typeof outreachEventOutbox.$inferInsert
+
+// ============================================================
+// Durable action approvals (Phase 28) — migration 047
+// ============================================================
+
+export type OutreachApprovalActionKind = 'prospect_enrichment' | 'campaign_activation'
+export type OutreachApprovalStatus = 'requested' | 'approved' | 'rejected' | 'executing' | 'executed' | 'failed' | 'expired' | 'cancelled'
+
+export const outreachActionApprovals = pgTable('outreach_action_approvals', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    requesterAgentCredentialId: uuid('requester_agent_credential_id').references(() => outreachAgentCredentials.id, { onDelete: 'restrict' }),
+    requesterUserId: uuid('requester_user_id').references(() => users.id, { onDelete: 'restrict' }).notNull(),
+    reviewerUserId: uuid('reviewer_user_id').references(() => users.id, { onDelete: 'restrict' }),
+    actionKind: text('action_kind').$type<OutreachApprovalActionKind>().notNull(),
+    resourceType: text('resource_type').notNull(),
+    resourceId: text('resource_id').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    status: text('status').$type<OutreachApprovalStatus>().default('requested').notNull(),
+    requestPayload: jsonb('request_payload').$type<Record<string, unknown>>().default({}).notNull(),
+    maximumCreditCost: integer('maximum_credit_cost').default(0).notNull(),
+    reviewNote: text('review_note'),
+    requestedAt: timestamp('requested_at').defaultNow().notNull(),
+    reviewedAt: timestamp('reviewed_at'),
+    executionStartedAt: timestamp('execution_started_at'),
+    executedAt: timestamp('executed_at'),
+    expiresAt: timestamp('expires_at').default(sql`now() + interval '24 hours'`).notNull(),
+    failureReason: text('failure_reason'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    orgIdempotencyUnique: uniqueIndex('outreach_action_approvals_org_idempotency_unique').on(
+        table.organizationId,
+        table.requesterAgentCredentialId,
+        table.actionKind,
+        table.idempotencyKey,
+    ),
+    idxOrgStatus: index('idx_outreach_action_approvals_org_status').on(table.organizationId, table.status, table.requestedAt),
+    idxResource: index('idx_outreach_action_approvals_resource').on(table.organizationId, table.actionKind, table.resourceId, table.requestedAt),
+    actionCheck: check('outreach_action_approvals_action_check', sql`${table.actionKind} IN ('prospect_enrichment', 'campaign_activation')`),
+    statusCheck: check('outreach_action_approvals_status_check', sql`${table.status} IN ('requested', 'approved', 'rejected', 'executing', 'executed', 'failed', 'expired', 'cancelled')`),
+    creditCheck: check('outreach_action_approvals_credit_nonnegative', sql`${table.maximumCreditCost} >= 0`),
+}))
+
+export const outreachActionApprovalsRelations = relations(outreachActionApprovals, ({ one }) => ({
+    organization: one(organizations, { fields: [outreachActionApprovals.organizationId], references: [organizations.id] }),
+    requesterAgentCredential: one(outreachAgentCredentials, { fields: [outreachActionApprovals.requesterAgentCredentialId], references: [outreachAgentCredentials.id] }),
+    requesterUser: one(users, { fields: [outreachActionApprovals.requesterUserId], references: [users.id], relationName: 'approvalRequester' }),
+    reviewerUser: one(users, { fields: [outreachActionApprovals.reviewerUserId], references: [users.id], relationName: 'approvalReviewer' }),
+}))
+
+export type OutreachActionApproval = typeof outreachActionApprovals.$inferSelect
+export type NewOutreachActionApproval = typeof outreachActionApprovals.$inferInsert
+
+// ============================================================
+// Provider-neutral prospecting pipeline (Phase 27) — migration 046
+// ============================================================
+
+export type ProspectProviderName = 'apollo'
+export type ProspectingRunStatus = 'pending' | 'searching' | 'discovered' | 'enriching' | 'ready' | 'imported' | 'failed'
+export type ProspectCandidateStatus = 'discovered' | 'enriched' | 'qualified' | 'imported' | 'rejected' | 'failed'
+export type ProspectEmailStatus = 'unknown' | 'verified' | 'likely' | 'unavailable' | 'invalid'
+export type ProspectScoreTier = 'a' | 'b' | 'c' | 'disqualified'
+
+export const outreachIcpProfiles = pgTable('outreach_icp_profiles', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    isDefault: boolean('is_default').default(false).notNull(),
+    qualificationThreshold: integer('qualification_threshold').default(60).notNull(),
+    criteria: jsonb('criteria').$type<Record<string, unknown>>().default({}).notNull(),
+    createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'restrict' }).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    orgNameUnique: uniqueIndex('outreach_icp_profiles_org_name_unique').on(table.organizationId, table.name),
+    oneDefaultPerOrg: uniqueIndex('outreach_icp_profiles_one_default_per_org').on(table.organizationId)
+        .where(sql`${table.isDefault} = true`),
+    thresholdCheck: check('outreach_icp_profiles_threshold_check', sql`${table.qualificationThreshold} BETWEEN 0 AND 100`),
+}))
+
+export const prospectingRuns = pgTable('prospecting_runs', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    agentCredentialId: uuid('agent_credential_id').references(() => outreachAgentCredentials.id, { onDelete: 'restrict' }),
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'restrict' }).notNull(),
+    icpProfileId: uuid('icp_profile_id').references(() => outreachIcpProfiles.id, { onDelete: 'restrict' }),
+    provider: text('provider').$type<ProspectProviderName>().notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    status: text('status').$type<ProspectingRunStatus>().default('pending').notNull(),
+    searchFilters: jsonb('search_filters').$type<Record<string, unknown>>().default({}).notNull(),
+    scoringCriteria: jsonb('scoring_criteria').$type<Record<string, unknown>>().default({}).notNull(),
+    qualificationThreshold: integer('qualification_threshold').default(60).notNull(),
+    requestedLimit: integer('requested_limit').default(25).notNull(),
+    providerPage: integer('provider_page').default(1).notNull(),
+    discoveredCount: integer('discovered_count').default(0).notNull(),
+    enrichedCount: integer('enriched_count').default(0).notNull(),
+    importedCount: integer('imported_count').default(0).notNull(),
+    rejectedCount: integer('rejected_count').default(0).notNull(),
+    approvedCreditCeiling: integer('approved_credit_ceiling').default(0).notNull(),
+    consumedCreditEstimate: integer('consumed_credit_estimate').default(0).notNull(),
+    enrichmentApprovalId: uuid('enrichment_approval_id').references(() => outreachActionApprovals.id, { onDelete: 'restrict' }),
+    lastError: text('last_error'),
+    startedAt: timestamp('started_at'),
+    completedAt: timestamp('completed_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    orgIdempotencyUnique: uniqueIndex('prospecting_runs_org_idempotency_unique').on(table.organizationId, table.provider, table.idempotencyKey),
+    idxOrgCreated: index('idx_prospecting_runs_org_created').on(table.organizationId, table.createdAt),
+    idxStatus: index('idx_prospecting_runs_status').on(table.status, table.updatedAt),
+    providerCheck: check('prospecting_runs_provider_check', sql`${table.provider} IN ('apollo')`),
+    statusCheck: check('prospecting_runs_status_check', sql`${table.status} IN ('pending', 'searching', 'discovered', 'enriching', 'ready', 'imported', 'failed')`),
+    limitCheck: check('prospecting_runs_limit_check', sql`${table.requestedLimit} BETWEEN 1 AND 100`),
+    thresholdCheck: check('prospecting_runs_threshold_check', sql`${table.qualificationThreshold} BETWEEN 0 AND 100`),
+}))
+
+export const prospectCandidates = pgTable('prospect_candidates', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    runId: uuid('run_id').references(() => prospectingRuns.id, { onDelete: 'cascade' }).notNull(),
+    provider: text('provider').$type<ProspectProviderName>().notNull(),
+    externalPersonId: text('external_person_id').notNull(),
+    firstName: text('first_name'),
+    lastName: text('last_name'),
+    title: text('title'),
+    seniority: text('seniority'),
+    linkedinUrl: text('linkedin_url'),
+    location: text('location'),
+    companyName: text('company_name'),
+    companyDomain: text('company_domain'),
+    companyIndustry: text('company_industry'),
+    companyEmployeeCount: integer('company_employee_count'),
+    email: text('email'),
+    emailStatus: text('email_status').$type<ProspectEmailStatus>().default('unknown').notNull(),
+    score: integer('score').default(0).notNull(),
+    scoreTier: text('score_tier').$type<ProspectScoreTier>().default('disqualified').notNull(),
+    scoreBreakdown: jsonb('score_breakdown').$type<Record<string, unknown>>().default({}).notNull(),
+    status: text('status').$type<ProspectCandidateStatus>().default('discovered').notNull(),
+    rawPayload: jsonb('raw_payload').$type<Record<string, unknown>>().default({}).notNull(),
+    leadId: uuid('lead_id').references(() => leads.id, { onDelete: 'restrict' }),
+    enrichedAt: timestamp('enriched_at'),
+    importedAt: timestamp('imported_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    runExternalUnique: uniqueIndex('prospect_candidates_run_external_unique').on(table.runId, table.provider, table.externalPersonId),
+    idxRunScore: index('idx_prospect_candidates_run_score').on(table.runId, table.score, table.createdAt),
+    idxRunStatus: index('idx_prospect_candidates_run_status').on(table.runId, table.status, table.score),
+    scoreCheck: check('prospect_candidates_score_check', sql`${table.score} BETWEEN 0 AND 100`),
+    statusCheck: check('prospect_candidates_status_check', sql`${table.status} IN ('discovered', 'enriched', 'qualified', 'imported', 'rejected', 'failed')`),
+    emailStatusCheck: check('prospect_candidates_email_status_check', sql`${table.emailStatus} IN ('unknown', 'verified', 'likely', 'unavailable', 'invalid')`),
+}))
+
+export type ProspectAiRecommendation = 'qualified' | 'review' | 'rejected'
+
+export const prospectAiAssessments = pgTable('prospect_ai_assessments', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    candidateId: uuid('candidate_id').references(() => prospectCandidates.id, { onDelete: 'cascade' }).notNull(),
+    agentCredentialId: uuid('agent_credential_id').references(() => outreachAgentCredentials.id, { onDelete: 'restrict' }).notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    modelProvider: text('model_provider').notNull(),
+    modelName: text('model_name').notNull(),
+    schemaVersion: integer('schema_version').default(1).notNull(),
+    candidateInputHash: text('candidate_input_hash').notNull(),
+    recommendation: text('recommendation').$type<ProspectAiRecommendation>().notNull(),
+    confidence: integer('confidence').notNull(),
+    rationale: text('rationale').notNull(),
+    personalization: jsonb('personalization').$type<Record<string, unknown>>().default({}).notNull(),
+    evidenceFields: jsonb('evidence_fields').$type<string[]>().default([]).notNull(),
+    riskFlags: jsonb('risk_flags').$type<string[]>().default([]).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+    idempotencyUnique: uniqueIndex('prospect_ai_assessments_idempotency_unique').on(
+        table.organizationId,
+        table.agentCredentialId,
+        table.candidateId,
+        table.idempotencyKey,
+    ),
+    idxCandidateCreated: index('idx_prospect_ai_assessments_candidate_created').on(table.candidateId, table.createdAt),
+    idxOrgRecommendation: index('idx_prospect_ai_assessments_org_recommendation').on(table.organizationId, table.recommendation, table.confidence, table.createdAt),
+    recommendationCheck: check('prospect_ai_assessments_recommendation_check', sql`${table.recommendation} IN ('qualified', 'review', 'rejected')`),
+    confidenceCheck: check('prospect_ai_assessments_confidence_check', sql`${table.confidence} BETWEEN 0 AND 100`),
+}))
+
+export const prospectingRunsRelations = relations(prospectingRuns, ({ one, many }) => ({
+    organization: one(organizations, { fields: [prospectingRuns.organizationId], references: [organizations.id] }),
+    agentCredential: one(outreachAgentCredentials, { fields: [prospectingRuns.agentCredentialId], references: [outreachAgentCredentials.id] }),
+    icpProfile: one(outreachIcpProfiles, { fields: [prospectingRuns.icpProfileId], references: [outreachIcpProfiles.id] }),
+    candidates: many(prospectCandidates),
+}))
+
+export const prospectCandidatesRelations = relations(prospectCandidates, ({ one }) => ({
+    run: one(prospectingRuns, { fields: [prospectCandidates.runId], references: [prospectingRuns.id] }),
+    lead: one(leads, { fields: [prospectCandidates.leadId], references: [leads.id] }),
+}))
+
+export const prospectAiAssessmentsRelations = relations(prospectAiAssessments, ({ one }) => ({
+    candidate: one(prospectCandidates, { fields: [prospectAiAssessments.candidateId], references: [prospectCandidates.id] }),
+    agentCredential: one(outreachAgentCredentials, { fields: [prospectAiAssessments.agentCredentialId], references: [outreachAgentCredentials.id] }),
+}))
+
+export type OutreachIcpProfile = typeof outreachIcpProfiles.$inferSelect
+export type NewOutreachIcpProfile = typeof outreachIcpProfiles.$inferInsert
+export type ProspectingRun = typeof prospectingRuns.$inferSelect
+export type NewProspectingRun = typeof prospectingRuns.$inferInsert
+export type ProspectCandidate = typeof prospectCandidates.$inferSelect
+export type NewProspectCandidate = typeof prospectCandidates.$inferInsert
+export type ProspectAiAssessment = typeof prospectAiAssessments.$inferSelect
+export type NewProspectAiAssessment = typeof prospectAiAssessments.$inferInsert

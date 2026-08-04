@@ -10,6 +10,10 @@ import { runMaterializerWithLock } from './materializeUnifiedInbox'
 import { runInboxCommandsWithLock } from './processInboxCommands'
 import { cleanupExpiredAttachments } from '../lib/inbox-attachments'
 import { logAutonomousAutomationStatus } from '../lib/inbox-ai-automation-runtime'
+import { runOutreachEventDeliveryWithLock } from './deliverOutreachEvents'
+import { runOutreachEventReconciliationWithLock } from './reconcileOutreachEvents'
+import { runDeliverabilityGuardrailsWithLock } from './enforceDeliverabilityGuardrails'
+import { runApprovalExpiryWithLock } from './expireOutreachApprovals'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
 import { createLogger } from '../lib/logger'
@@ -166,6 +170,47 @@ export function startJobs(): void {
         })
     })
 
+    // Phase 29: stop active campaigns when statistically meaningful 24h bounce/unsubscribe
+    // rates cross the organization's configured circuit-breaker thresholds.
+    cron.schedule('*/10 * * * *', () => {
+        runDeliverabilityGuardrailsWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.deliverabilityGuard_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'deliverability guard failed')
+        })
+    })
+
+    cron.schedule('*/5 * * * *', () => {
+        runApprovalExpiryWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({ action: 'outreach.jobs.approvalExpiry_failed', error: { message: e.message, stack: e.stack } }, 'approval expiry failed')
+        })
+    })
+
+    cron.schedule('*/5 * * * *', () => {
+        runOutreachEventReconciliationWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.reconcileOutreachEvents_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'reconcileOutreachEvents failed')
+        })
+    })
+
+    // Phase 26 — durable Xphere adapter. Domain events are committed to the outbox by their
+    // producers; this retrying consumer is independent from Hermes polling.
+    cron.schedule('* * * * *', () => {
+        runOutreachEventDeliveryWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.deliverOutreachEvents_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'deliverOutreachEvents failed')
+        })
+    })
+
     // Phase 22 — storage hygiene: prune abandoned Unified Inbox attachment uploads (expired
     // intents AND never-bound `ready` orphans) daily so their objects don't leak in the private
     // bucket. Global reaper (no org scope needed); the isNull(sendCommandId) + 24h TTL guard keeps
@@ -186,7 +231,7 @@ export function startJobs(): void {
 
     log.info({
         action: 'outreach.jobs.scheduler_ready',
-        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, followups=10min, unifiedInbox=5min, inboxCommands=1min, cleanupInboxAttachments=daily-3:30am',
+        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am',
     }, 'scheduler ready')
 
     // Phase 23 (AI-03): log the GLOBAL autonomous-automation kill-control posture once at startup
