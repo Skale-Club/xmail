@@ -9,6 +9,7 @@ import { EmailHtmlViewer } from '../../components/mail/EmailHtmlViewer'
 import { EmailMessageHeader } from '../../components/mail/EmailMessageHeader'
 import { EmailThreadView } from '../../components/mail/EmailThread'
 import { EmailThread, ThreadMessage } from '../../lib/email-threading'
+import { getSenderAuthStatus } from '../../lib/mail-auth-status'
 import {
     ArrowLeft,
     Star,
@@ -217,7 +218,8 @@ export default function EmailDetailPage() {
                         size: `${Math.round(a.size / 1024)} KB`,
                         type: a.mimeType
                     })),
-                    messageId: emailItem.id
+                    messageId: emailItem.id,
+                    headers: apiMessage.message.headers
                 }],
                 participants: [{ ...emailItem.from }, ...emailItem.to],
                 lastMessageAt: emailItem.date,
@@ -622,6 +624,7 @@ function SingleEmailView({
                         onStar={onStar}
                         emailDarkMode={emailDarkMode}
                         onToggleEmailDarkMode={() => setEmailDarkMode(!emailDarkMode)}
+                        authStatus={getSenderAuthStatus(message.headers)}
                     />
 
                     <div className="mt-4">

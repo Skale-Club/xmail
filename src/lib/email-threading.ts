@@ -26,6 +26,9 @@ export interface ThreadMessage {
     attachments?: { name: string; size: string; type: string }[]
     inReplyTo?: string
     messageId: string
+    // Raw inbound headers (when available) — used to derive the sender-authentication
+    // (SPF/DKIM/DMARC) indicator. See src/lib/mail-auth-status.ts.
+    headers?: Record<string, string>
 }
 
 export function groupEmailsIntoThreads(emails: EmailItem[]): Map<string, EmailItem[]> {

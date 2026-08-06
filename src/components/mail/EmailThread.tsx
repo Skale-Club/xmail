@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { ThreadMessage, EmailThread, getThreadParticipants } from '../../lib/email-threading'
 import { EmailHtmlViewer } from './EmailHtmlViewer'
+import { SenderAuthBadge } from './SenderAuthBadge'
+import { getSenderAuthStatus } from '../../lib/mail-auth-status'
 import { getAvatarColor, getInitials } from '../../lib/utils'
 import {
     ChevronDown,
@@ -162,6 +164,7 @@ function ThreadMessageCard({
 }: ThreadMessageCardProps) {
     const avatarColor = getAvatarColor(message.from.email)
     const initials = getInitials(message.from.name || message.from.email)
+    const authStatus = getSenderAuthStatus(message.headers)
     const [emailDarkMode, setEmailDarkMode] = useState(false)
 
     useEffect(() => {
@@ -196,6 +199,7 @@ function ThreadMessageCard({
                                 <span className={`truncate ${!message.read ? 'font-semibold text-foreground' : 'text-foreground/80'}`}>
                                     {message.from.name || message.from.email}
                                 </span>
+                                {authStatus && <SenderAuthBadge status={authStatus} className="flex-shrink-0" />}
                                 {isExpanded ? (
                                     <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" />
                                 ) : (
