@@ -304,7 +304,7 @@ function policySnapshot(overrides: Partial<DeliveryPolicySnapshot> = {}): Delive
             sendStartTime: '00:00',
             sendEndTime: '23:59',
         },
-        lead: { id: LEAD, organizationId: ORG, email: PROSPECT, unsubscribedAt: null },
+        lead: { id: LEAD, organizationId: ORG, email: PROSPECT, unsubscribedAt: null, emailVerificationStatus: 'verified' },
         suppressed: false,
         ...overrides,
     }
@@ -383,7 +383,7 @@ describe('EVAL: pre-model control gates never create a run or a send', () => {
 describe('EVAL: every terminal policy denial is proven by the REAL policy evaluator', () => {
     it.each([
         ['suppressed', policySnapshot({ suppressed: true }), 'recipient_suppressed'],
-        ['unsubscribe', policySnapshot({ lead: { id: LEAD, organizationId: ORG, email: PROSPECT, unsubscribedAt: new Date('2026-07-01T00:00:00Z') } }), 'lead_unsubscribed'],
+        ['unsubscribe', policySnapshot({ lead: { id: LEAD, organizationId: ORG, email: PROSPECT, unsubscribedAt: new Date('2026-07-01T00:00:00Z'), emailVerificationStatus: 'verified' } }), 'lead_unsubscribed'],
         ['org_paused', policySnapshot({ organization: { id: ORG, outreachEnabled: false } }), 'organization_disabled'],
         ['campaign_paused', policySnapshot({ campaign: { id: CAMPAIGN, organizationId: ORG, status: 'paused', timezone: 'UTC', sendOnWeekends: true, sendStartTime: '00:00', sendEndTime: '23:59' } }), 'campaign_inactive'],
         ['exhausted_daily', policySnapshot({ account: { ...policySnapshot().account!, currentDailySent: 100, dailySendLimit: 100 } }), 'daily_limit_exhausted'],

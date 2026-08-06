@@ -37,6 +37,7 @@ function snapshot(overrides: Partial<DeliveryPolicySnapshot> = {}): DeliveryPoli
             organizationId: 'org-1',
             email: 'lead@example.com',
             unsubscribedAt: null,
+            emailVerificationStatus: 'verified',
         },
         suppressed: false,
         ...overrides,
@@ -86,6 +87,29 @@ describe('evaluateOutreachDeliveryPolicy', () => {
 
         expect(decision).toEqual({ allowed: false, code: 'recipient_suppressed' })
     })
+
+    it('rejects a lead whose email verification status is invalid', async () => {
+        const decision = await evaluateOutreachDeliveryPolicy(input('campaign'), {
+            loadSnapshot: async () => snapshot({
+                lead: { ...snapshot().lead!, emailVerificationStatus: 'invalid' },
+            }),
+        })
+
+        expect(decision).toEqual({ allowed: false, code: 'recipient_email_invalid' })
+    })
+
+    it.each(['unknown', 'likely'] as const)(
+        'allows a lead whose email verification status is %s',
+        async (emailVerificationStatus) => {
+            const decision = await evaluateOutreachDeliveryPolicy(input('campaign'), {
+                loadSnapshot: async () => snapshot({
+                    lead: { ...snapshot().lead!, emailVerificationStatus },
+                }),
+            })
+
+            expect(decision.allowed).toBe(true)
+        },
+    )
 
     it('returns the next UTC reset for warm-up exhaustion', async () => {
         const decision = await evaluateOutreachDeliveryPolicy(input('campaign'), {

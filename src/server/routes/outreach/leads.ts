@@ -5,6 +5,7 @@ import { leads, leadLists } from '../../../db/schema'
 import { eq, and, or, sql, ilike, inArray, asc, desc, type SQL } from 'drizzle-orm'
 import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-access'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
+import { mapEmailVerificationCustomFields, resolveLeadVerificationFields } from '../../lib/email-verification-mapping'
 
 const router = Router()
 
@@ -349,9 +350,16 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Lead with this email already exists' })
         }
 
+        // Contract mapping (verification-gates step 1): map Xphere's customFields verification
+        // signals (email_status/email_verified_at/email_verification_provider) onto the existing
+        // emailVerificationStatus/emailVerificationProvider/emailVerifiedAt columns, falling back
+        // to the free MX pre-filter only when no status was supplied.
+        const verificationFields = await resolveLeadVerificationFields(validatedData.email, validatedData.customFields)
+
         const [newLead] = await db.insert(leads).values({
             organizationId,
             ...validatedData,
+            ...verificationFields,
         }).returning()
 
         // Update lead list count
@@ -422,6 +430,22 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
 
         // Filter out duplicates
         const newLeads = validatedData.leads.filter(l => !existingEmails.has(l.email))
+        const duplicateLeads = validatedData.leads.filter(l => existingEmails.has(l.email))
+
+        // Update-if-exists (verification-gates step 1): a re-import of an already-known lead
+        // (e.g. Xphere re-syncing after enrichment finishes) should still be able to upgrade its
+        // verification status. Only touches the verification columns, only when the resync
+        // actually carries an explicit, recognized email_status — never runs the MX pre-filter
+        // here, since that's a passive guess and re-flagging an existing lead off a bare MX
+        // lookup (rather than a real signal) is a stronger, more surprising side effect than
+        // simply leaving it as previously imported.
+        await Promise.all(duplicateLeads.map(async (lead) => {
+            const verification = mapEmailVerificationCustomFields(lead.customFields)
+            if (Object.keys(verification).length === 0) return
+            await db.update(leads)
+                .set({ ...verification, updatedAt: new Date() })
+                .where(and(eq(leads.organizationId, organizationId), eq(leads.email, lead.email)))
+        }))
 
         if (newLeads.length === 0) {
             // Not an error for orchestration callers (e.g. Xphere enrolling prospects):
@@ -435,12 +459,21 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
             })
         }
 
+        // Contract mapping (verification-gates step 1): map Xphere's customFields verification
+        // signals onto the existing verification columns, falling back to the free MX pre-filter
+        // (step 4) only when no email_status was supplied.
+        const newLeadsWithVerification = await Promise.all(newLeads.map(async (lead) => ({
+            lead,
+            verification: await resolveLeadVerificationFields(lead.email, lead.customFields),
+        })))
+
         // Insert new leads
         const insertedLeads = await db.insert(leads).values(
-            newLeads.map(lead => ({
+            newLeadsWithVerification.map(({ lead, verification }) => ({
                 organizationId,
                 ...lead,
                 leadListId: validatedData.leadListId || lead.leadListId,
+                ...verification,
             }))
         ).returning()
 

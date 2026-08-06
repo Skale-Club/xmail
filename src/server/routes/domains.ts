@@ -1,41 +1,13 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import { promises as dnsPromises } from 'node:dns'
 import { db } from '../../db'
 import { domains, organizations, organizationUsers } from '../../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
 import { isPlatformAdmin } from '../lib/admin'
-
-const resolver = new dnsPromises.Resolver()
-resolver.setServers((process.env.DNS_SERVERS || '8.8.8.8,1.1.1.1').split(','))
+import { resolveMx, resolveTxt, resolveCname } from '../lib/dns-resolver'
 
 const MAIL_HOST = process.env.MAIL_HOST || 'mx.skaleclub.com'
-
-async function resolveTxt(hostname: string): Promise<string[]> {
-    try {
-        const records = await resolver.resolveTxt(hostname)
-        return records.map((chunks) => chunks.join(''))
-    } catch {
-        return []
-    }
-}
-
-async function resolveMx(hostname: string): Promise<{ exchange: string; priority: number }[]> {
-    try {
-        return await resolver.resolveMx(hostname)
-    } catch {
-        return []
-    }
-}
-
-async function resolveCname(hostname: string): Promise<string[]> {
-    try {
-        return await resolver.resolveCname(hostname)
-    } catch {
-        return []
-    }
-}
 
 const router = Router()
 
