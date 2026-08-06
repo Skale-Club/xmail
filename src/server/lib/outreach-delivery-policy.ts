@@ -17,6 +17,7 @@ export type DeliveryPolicyCode =
     | 'account_not_verified'
     | 'lead_unsubscribed'
     | 'recipient_suppressed'
+    | 'recipient_email_invalid'
     | 'outside_send_window'
     | 'daily_limit_exhausted'
     | 'warmup_limit_exhausted'
@@ -67,7 +68,7 @@ export type CampaignPolicySnapshot = Pick<
 
 export type LeadPolicySnapshot = Pick<
     typeof leads.$inferSelect,
-    'id' | 'organizationId' | 'email' | 'unsubscribedAt'
+    'id' | 'organizationId' | 'email' | 'unsubscribedAt' | 'emailVerificationStatus'
 >
 
 export interface DeliveryPolicySnapshot {
@@ -235,6 +236,14 @@ export function evaluateOutreachDeliverySnapshot(
     if (snapshot.suppressed) {
         return { allowed: false, code: 'recipient_suppressed' }
     }
+    // Send-time safety net (verification-gates step 3): a lead whose email was determined
+    // invalid (Xphere import mapping or the MX pre-filter) must never be dispatched to, even if
+    // it slipped past the enrollment-time gate (e.g. it was 'unknown'/'likely' at enrollment and
+    // was downgraded afterwards). 'unknown' and 'likely' are deliberately NOT blocked here — only
+    // a confirmed 'invalid' status stops a send.
+    if (lead?.emailVerificationStatus === 'invalid') {
+        return { allowed: false, code: 'recipient_email_invalid' }
+    }
 
     if (campaign && !isWithinCampaignWindow(campaign, now)) {
         return {
@@ -316,6 +325,7 @@ export async function loadOutreachDeliverySnapshot(
                     organizationId: true,
                     email: true,
                     unsubscribedAt: true,
+                    emailVerificationStatus: true,
                 },
             })
             : undefined,

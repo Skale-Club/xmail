@@ -264,6 +264,7 @@ const ALLOWED_SNAPSHOT: DeliveryPolicySnapshot = {
         organizationId: ORGANIZATION_ID,
         email: INPUT.to,
         unsubscribedAt: null,
+        emailVerificationStatus: 'verified',
     },
     suppressed: false,
 }

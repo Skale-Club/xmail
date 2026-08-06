@@ -39,6 +39,8 @@ interface BulkImportResponse {
 interface EnrollResponse {
     added: number
     existing: number
+    skipped_invalid?: number
+    unverified_count?: number
 }
 
 interface LeadList {
@@ -212,9 +214,15 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
             )
             const result = (await res.json()) as EnrollResponse
 
+            const skippedInvalid = result.skipped_invalid ?? 0
+            const notes = [
+                result.existing > 0 ? `${result.existing} already in campaign` : null,
+                skippedInvalid > 0 ? `${skippedInvalid} skipped (invalid email)` : null,
+            ].filter(Boolean)
+
             toast({
                 title: `Added ${result.added} lead${result.added === 1 ? '' : 's'}`,
-                description: result.existing > 0 ? `${result.existing} already in campaign (skipped)` : undefined,
+                description: notes.length > 0 ? `${notes.join(', ')} (skipped)` : undefined,
                 variant: 'success',
             })
 

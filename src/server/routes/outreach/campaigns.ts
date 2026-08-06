@@ -1230,15 +1230,45 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
 
         const existingLeadIds = new Set(existingCampaignLeads.map(cl => cl.leadId))
 
-        // Filter out existing leads
-        const newLeadIds = requestedLeadIds.filter(id => !existingLeadIds.has(id))
+        // Verification gate (verification-gates step 2): close the asymmetry with the agent
+        // enrollment endpoint (agent-outreach.ts enroll-draft), which already excludes leads
+        // whose emailVerificationStatus isn't 'verified'/'likely'. This human/UI endpoint is
+        // deliberately looser — legacy and manually-imported leads are legitimately 'unknown'
+        // and must keep flowing — so it blocks ONLY the confirmed-bad 'invalid' status and
+        // reports a breakdown instead of hard-requiring verification.
+        const invalidLeadIds = new Set(
+            leadsList.filter((lead) => lead.emailVerificationStatus === 'invalid').map((lead) => lead.id),
+        )
+
+        // Filter out existing + invalid leads
+        const newLeadIds = requestedLeadIds.filter(id => !existingLeadIds.has(id) && !invalidLeadIds.has(id))
+
+        // Diagnostic breakdown: how many of the requested (non-invalid) leads don't have a
+        // confirmed-good email yet. Informational only — 'unknown'/'likely' are still enrolled.
+        const unverifiedCount = leadsList.filter((lead) => (
+            !invalidLeadIds.has(lead.id)
+            && lead.emailVerificationStatus !== 'verified'
+            && lead.emailVerificationStatus !== 'likely'
+        )).length
+
+        const enrollmentBreakdown = (insertedLeadIds: Set<string>) => {
+            let added = 0
+            let existing = 0
+            let skippedInvalid = 0
+            for (const id of requestedLeadIds) {
+                if (insertedLeadIds.has(id)) added++
+                else if (invalidLeadIds.has(id)) skippedInvalid++
+                else existing++
+            }
+            return { added, existing, skipped_invalid: skippedInvalid, unverified_count: unverifiedCount }
+        }
 
         if (newLeadIds.length === 0) {
             // Not an error for orchestration callers (e.g. Xphere enrolling prospects):
-            // every submitted lead is already in the campaign. Idempotent retries must
-            // succeed rather than fail with a 400 — see leads.ts bulk-import for the
-            // matching fix.
-            return res.status(200).json({ added: 0, existing: existingLeadIds.size, campaignLeads: [] })
+            // every submitted lead is already in the campaign (or invalid). Idempotent
+            // retries must succeed rather than fail with a 400 — see leads.ts bulk-import
+            // for the matching fix.
+            return res.status(200).json({ ...enrollmentBreakdown(new Set()), campaignLeads: [] })
         }
 
         // Enroll onto the campaign's single canonical sequence (Phase 20) — no first-row
@@ -1303,8 +1333,7 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
         })
 
         res.status(201).json({
-            added: insertedCampaignLeads.length,
-            existing: requestedLeadIds.length - insertedCampaignLeads.length,
+            ...enrollmentBreakdown(new Set(insertedCampaignLeads.map((cl) => cl.leadId))),
             campaignLeads: insertedCampaignLeads,
         })
     } catch (error) {

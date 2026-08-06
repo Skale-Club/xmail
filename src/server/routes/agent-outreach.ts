@@ -19,6 +19,7 @@ import { agentHasScope, getAgentPrincipal, type AgentPrincipal } from '../lib/ag
 import { writeAgentAudit } from '../lib/agent-audit'
 import { resolveOutreachSettings } from '../lib/outreach-settings'
 import { publishOutreachEvent } from '../lib/xphere-events'
+import { resolveLeadVerificationFields } from '../lib/email-verification-mapping'
 import agentProspectingRouter from './agent-prospecting'
 import agentApprovalsRouter from './agent-approvals'
 import agentAssessmentsRouter from './agent-assessments'
@@ -156,11 +157,20 @@ router.post('/prospects/import', async (req, res) => {
 
         const uniqueByEmail = new Map(input.prospects.map((prospect) => [prospect.email, prospect]))
         const uniqueProspects = [...uniqueByEmail.values()]
-        const inserted = await db.insert(leads).values(uniqueProspects.map((prospect) => ({
+        // Contract mapping (verification-gates step 1): map customFields verification signals
+        // onto the existing verification columns, falling back to the free MX pre-filter (step 4)
+        // only when no email_status was supplied. Duplicates are skipped via onConflictDoNothing
+        // as before — this only affects the insert path.
+        const prospectsWithVerification = await Promise.all(uniqueProspects.map(async (prospect) => ({
+            prospect,
+            verification: await resolveLeadVerificationFields(prospect.email, prospect.customFields),
+        })))
+        const inserted = await db.insert(leads).values(prospectsWithVerification.map(({ prospect, verification }) => ({
             organizationId: principal.organizationId,
             ...prospect,
             source: input.source,
             leadListId: input.leadListId,
+            ...verification,
         }))).onConflictDoNothing().returning()
         const resolved = await db.query.leads.findMany({
             where: and(
