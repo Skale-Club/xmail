@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { PaginationControls } from '../../components/ui/PaginationControls'
+import { LeadVerificationBadge, type LeadEmailVerificationStatus } from '../../components/outreach/LeadVerificationBadge'
 import { apiFetch, apiRequest } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
 import { toast } from '../../components/ui/toaster'
@@ -37,6 +38,9 @@ interface Lead {
     totalClicks: number
     totalReplies: number
     createdAt: string
+    emailVerificationStatus: LeadEmailVerificationStatus
+    emailVerificationProvider: string | null
+    emailVerifiedAt: string | null
 }
 
 interface LeadList {
@@ -99,7 +103,14 @@ function LeadRow({ lead, onDelete }: { lead: Lead; onDelete: (id: string) => voi
                     </div>
                     <div>
                         <p className="font-medium text-foreground">{fullName}</p>
-                        <p className="text-sm text-muted-foreground">{lead.email}</p>
+                        <div className="flex items-center gap-2">
+                            <p className="text-sm text-muted-foreground">{lead.email}</p>
+                            <LeadVerificationBadge
+                                status={lead.emailVerificationStatus}
+                                verifiedAt={lead.emailVerifiedAt}
+                                provider={lead.emailVerificationProvider}
+                            />
+                        </div>
                     </div>
                 </div>
             </td>

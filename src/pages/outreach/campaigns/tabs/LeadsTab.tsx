@@ -2,6 +2,7 @@ import React from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, X, Mail, AlertCircle } from 'lucide-react'
 import { PaginationControls } from '../../../../components/ui/PaginationControls'
+import { LeadVerificationBadge, type LeadEmailVerificationStatus } from '../../../../components/outreach/LeadVerificationBadge'
 import { apiFetch, apiRequest } from '../../../../lib/api-client'
 import { toast } from '../../../../components/ui/toaster'
 
@@ -22,6 +23,9 @@ interface CampaignLead {
         firstName: string | null
         lastName: string | null
         companyName: string | null
+        emailVerificationStatus: LeadEmailVerificationStatus
+        emailVerificationProvider: string | null
+        emailVerifiedAt: string | null
     }
 }
 
@@ -321,7 +325,16 @@ function LeadsTab({ campaignId, organizationId }: LeadsTabProps) {
                                         .join(' ')
                                     return (
                                         <tr key={cl.id} className="border-t border-border hover:bg-muted/30">
-                                            <td className="px-4 py-3 text-sm text-foreground">{cl.lead.email}</td>
+                                            <td className="px-4 py-3 text-sm text-foreground">
+                                                <div className="flex items-center gap-2">
+                                                    <span>{cl.lead.email}</span>
+                                                    <LeadVerificationBadge
+                                                        status={cl.lead.emailVerificationStatus}
+                                                        verifiedAt={cl.lead.emailVerifiedAt}
+                                                        provider={cl.lead.emailVerificationProvider}
+                                                    />
+                                                </div>
+                                            </td>
                                             <td className="px-4 py-3 text-sm text-muted-foreground">{fullName || '—'}</td>
                                             <td className="px-4 py-3 text-sm text-muted-foreground">{cl.lead.companyName ?? '—'}</td>
                                             <td className="px-4 py-3">

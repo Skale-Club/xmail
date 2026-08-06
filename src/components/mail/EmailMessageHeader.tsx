@@ -1,5 +1,7 @@
 import { Archive, Inbox, Mail, MailOpen, ShieldAlert, Star, Trash2, Sun, Moon } from 'lucide-react'
 import { cn, getAvatarColor, getInitials } from '../../lib/utils'
+import { SenderAuthBadge } from './SenderAuthBadge'
+import type { SenderAuthStatus } from '../../lib/mail-auth-status'
 
 interface EmailParticipant {
     name?: string | null
@@ -24,6 +26,7 @@ interface EmailMessageHeaderProps {
     archiveIcon?: 'archive' | 'inbox'
     emailDarkMode?: boolean
     onToggleEmailDarkMode?: () => void
+    authStatus?: SenderAuthStatus
 }
 
 export function EmailMessageHeader({
@@ -44,6 +47,7 @@ export function EmailMessageHeader({
     archiveIcon = 'archive',
     emailDarkMode,
     onToggleEmailDarkMode,
+    authStatus,
 }: EmailMessageHeaderProps) {
     const avatarColor = getAvatarColor(from.email)
     const initials = getInitials(from.name || from.email)
@@ -61,8 +65,9 @@ export function EmailMessageHeader({
                 {initials}
             </div>
             <div className="min-w-0 self-center">
-                <p className="text-sm font-semibold leading-tight text-foreground truncate">
-                    {from.name || from.email}
+                <p className="flex items-center gap-1.5 text-sm font-semibold leading-tight text-foreground truncate">
+                    <span className="truncate">{from.name || from.email}</span>
+                    {authStatus && <SenderAuthBadge status={authStatus} className="flex-shrink-0" />}
                 </p>
                 <p className="text-xs leading-tight text-muted-foreground truncate">
                     To: {recipientLabel}
