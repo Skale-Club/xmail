@@ -16,8 +16,8 @@ export function SenderAuthBadge({ status, className }: SenderAuthBadgeProps) {
         return (
             <span
                 className={`inline-flex items-center text-green-600 dark:text-green-400 ${className || ''}`}
-                title="Remetente verificado — SPF/DKIM/DMARC aprovados"
-                aria-label="Remetente verificado"
+                title="Verified sender — SPF/DKIM/DMARC passed"
+                aria-label="Verified sender"
             >
                 <ShieldCheck className="h-3.5 w-3.5" />
             </span>
@@ -28,8 +28,8 @@ export function SenderAuthBadge({ status, className }: SenderAuthBadgeProps) {
         return (
             <span
                 className={`inline-flex items-center text-red-600 dark:text-red-400 ${className || ''}`}
-                title="Falha na autenticação do remetente — possível phishing"
-                aria-label="Falha na autenticação do remetente"
+                title="Sender authentication failed — possible phishing"
+                aria-label="Sender authentication failed"
             >
                 <ShieldAlert className="h-3.5 w-3.5" />
             </span>

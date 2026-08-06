@@ -22,29 +22,29 @@ const STATUS_CONFIG: Record<
     { label: string; icon: React.ComponentType<{ className?: string }>; className: string; tooltip?: string }
 > = {
     verified: {
-        label: 'Verificado',
+        label: 'Verified',
         icon: CheckCircle2,
         className: 'border-transparent bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
     },
     likely: {
-        label: 'Provável',
+        label: 'Likely',
         icon: ShieldQuestion,
         className: 'border-transparent bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
-        tooltip: 'Catch-all ou não confirmado — enviável, com risco.',
+        tooltip: 'Catch-all or unconfirmed — sendable, with risk.',
     },
     invalid: {
-        label: 'Inválido',
+        label: 'Invalid',
         icon: XCircle,
         className: 'border-transparent bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
-        tooltip: 'Bloqueado — não será enviado.',
+        tooltip: 'Blocked — will not be sent.',
     },
     unavailable: {
-        label: 'Indisponível',
+        label: 'Unavailable',
         icon: MinusCircle,
         className: 'border-transparent bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300',
     },
     unknown: {
-        label: 'Não verificado',
+        label: 'Not verified',
         icon: HelpCircle,
         className: '',
     },
@@ -64,9 +64,9 @@ export function LeadVerificationBadge({ status, verifiedAt, provider, className 
     const tooltipParts: string[] = []
     if (config.tooltip) tooltipParts.push(config.tooltip)
     if (verifiedAt) {
-        tooltipParts.push(`Verificado em ${formatDate(verifiedAt, APP_CONSTANTS.DATE_FORMATS.DISPLAY_WITH_TIME)}`)
+        tooltipParts.push(`Verified on ${formatDate(verifiedAt, APP_CONSTANTS.DATE_FORMATS.DISPLAY_WITH_TIME)}`)
     }
-    if (provider) tooltipParts.push(`Fonte: ${provider}`)
+    if (provider) tooltipParts.push(`Source: ${provider}`)
     const tooltip = tooltipParts.length > 0 ? tooltipParts.join(' — ') : undefined
 
     return (
