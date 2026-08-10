@@ -1,6 +1,7 @@
 import { queryClient } from '../../db'
 import { runWithLock } from '../lib/cron-lock'
 import { createLogger } from '../lib/logger'
+import { sqlTimestampValue } from '../lib/sql-timestamp'
 import { publishOutreachEvent } from '../lib/xphere-events'
 
 const log = createLogger('outreach.approvals.expiry')
@@ -14,11 +15,12 @@ interface ExpiredApprovalRow {
 }
 
 export async function expireOutreachApprovals(now: Date = new Date()): Promise<number> {
+    const nowIso = sqlTimestampValue(now)
     const expired = await queryClient<ExpiredApprovalRow[]>`
         UPDATE outreach_action_approvals
-        SET status = 'expired', updated_at = ${now}
+        SET status = 'expired', updated_at = ${nowIso}
         WHERE status IN ('requested', 'approved')
-          AND expires_at <= ${now}
+          AND expires_at <= ${nowIso}
         RETURNING id::text,
             organization_id::text AS "organizationId",
             action_kind AS "actionKind",

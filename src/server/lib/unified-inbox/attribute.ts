@@ -16,6 +16,7 @@
 import type { OutreachMessageMatchStrategy, OutreachProviderName } from '@/db/schema'
 import type { UnifiedInboxSql } from './ingest'
 import { deriveThreadKey, leadThreadKey, rfcThreadKey } from './normalize'
+import { sqlTimestampValue } from '../sql-timestamp'
 
 export type MatchConfidence = 'high' | 'medium' | 'low'
 
@@ -185,7 +186,7 @@ export async function attributeConversation(
               AND oe.email_account_id = ${account}
               AND LOWER(l.email) = LOWER(${input.fromAddress})
               AND oe.sent_at IS NOT NULL
-              AND oe.sent_at >= ${cutoff}
+              AND oe.sent_at >= ${sqlTimestampValue(cutoff)}
             ORDER BY oe.sent_at DESC
         `
         // A lead is unique per (organization, email), so recent outbound resolves ONE lead.

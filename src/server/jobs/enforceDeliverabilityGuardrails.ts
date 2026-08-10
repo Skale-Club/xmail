@@ -1,6 +1,7 @@
 import { queryClient } from '../../db'
 import { runWithLock } from '../lib/cron-lock'
 import { createLogger } from '../lib/logger'
+import { sqlTimestampValue } from '../lib/sql-timestamp'
 import { publishOutreachEvent } from '../lib/xphere-events'
 import { evaluateDeliverabilityTrip, type CampaignHealthRow, type DeliverabilityTrip } from '../lib/deliverability-guard'
 
@@ -9,6 +10,8 @@ const log = createLogger('outreach.deliverability.guard')
 /** Pause active campaigns whose 24-hour metrics cross organization-configured safety limits. */
 export async function enforceDeliverabilityGuardrails(now: Date = new Date()): Promise<DeliverabilityTrip[]> {
     const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1_000)
+    const nowIso = sqlTimestampValue(now)
+    const cutoffIso = sqlTimestampValue(cutoff)
     const rows = await queryClient<CampaignHealthRow[]>`
         SELECT
             campaign.id::text AS "campaignId",
@@ -23,7 +26,7 @@ export async function enforceDeliverabilityGuardrails(now: Date = new Date()): P
         FROM campaigns AS campaign
         JOIN outreach_emails AS email
           ON email.campaign_id = campaign.id
-         AND email.sent_at >= ${cutoff}
+         AND email.sent_at >= ${cutoffIso}
         LEFT JOIN outreach_settings AS setting ON setting.organization_id = campaign.organization_id
         WHERE campaign.status = 'active'
           AND coalesce(setting.deliverability_guard_enabled, true) = true
@@ -42,9 +45,9 @@ export async function enforceDeliverabilityGuardrails(now: Date = new Date()): P
         const [paused] = await queryClient<{ id: string }[]>`
             UPDATE campaigns
             SET status = 'paused',
-                paused_at = ${now},
+                paused_at = ${nowIso},
                 paused_reason = ${trip.reason},
-                updated_at = ${now}
+                updated_at = ${nowIso}
             WHERE id = ${trip.campaignId}::uuid
               AND organization_id = ${trip.organizationId}::uuid
               AND status = 'active'

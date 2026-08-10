@@ -340,6 +340,8 @@ describe('executeInboxSendCommand: policy denial preserves the draft', () => {
         expect(finalize.query).not.toContain("status = 'failed'")
         // The policy code is recorded so the operator sees WHY it was deferred.
         expect(finalize.params).toContain('organization_disabled')
+        expect(finalize.params.some((value) => value instanceof Date)).toBe(false)
+        expect(finalize.params).toContain('2026-07-16T13:00:00.000Z')
     })
 
     it('routes the send through the injected policy-gated dispatcher exactly once', async () => {

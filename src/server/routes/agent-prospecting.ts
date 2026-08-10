@@ -16,6 +16,7 @@ import { writeAgentAudit } from '../lib/agent-audit'
 import { createProspectProvider, MAX_APOLLO_CREDITS_PER_PERSON } from '../lib/prospecting/apollo'
 import { scoreProspect } from '../lib/prospecting/scoring'
 import { PROSPECT_SENIORITIES, type NormalizedProspect, type ProspectScoringCriteria } from '../lib/prospecting/types'
+import { sqlTimestamp } from '../lib/sql-timestamp'
 import { publishOutreachEvent } from '../lib/xphere-events'
 
 const router = Router()
@@ -352,7 +353,7 @@ router.post('/searches/:id/enrich', async (req, res) => {
                     eq(outreachActionApprovals.id, approval.id),
                     eq(outreachActionApprovals.organizationId, principal.organizationId),
                     eq(outreachActionApprovals.status, 'approved'),
-                    sql`${outreachActionApprovals.expiresAt} > ${now}`,
+                    sql`${outreachActionApprovals.expiresAt} > ${sqlTimestamp(now)}`,
                 )).returning({ id: outreachActionApprovals.id })
                 if (!approvalClaim) throw new Error('approval_claim_failed')
                 const [runClaim] = await tx.update(prospectingRuns).set({

@@ -29,6 +29,7 @@ import {
 import type { OutreachAttachmentInput } from './outreach-provider'
 import type { InboxSendCommandMode, InboxRecipient } from '../../db/schema'
 import type { InboxSendCommandDto } from './inbox-operator'
+import { sqlTimestampValue } from './sql-timestamp'
 
 const log = createLogger('outreach.inboxCommands')
 
@@ -130,7 +131,7 @@ async function defaultDispatch(
 }
 
 /** All finalize writes are guarded by the claimed lease token — an expired/cancelled command is left untouched. */
-type SqlParam = string | number | Date | null
+type SqlParam = string | number | null
 
 async function finalize(
     sql: InboxSql,
@@ -171,7 +172,7 @@ async function reschedule(
         command,
         `status = 'scheduled', due_at = $1, attempts = GREATEST(attempts + (${attemptDelta}), 0),
          lease_token = NULL, lease_expires_at = NULL, last_policy_code = $2, last_error = $3`,
-        { dueAt, policyCode: opts.policyCode ?? null, error: opts.error ?? null },
+        { dueAt: sqlTimestampValue(dueAt), policyCode: opts.policyCode ?? null, error: opts.error ?? null },
     )
 }
 

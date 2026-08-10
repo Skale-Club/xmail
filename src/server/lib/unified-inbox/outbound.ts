@@ -18,6 +18,7 @@
  */
 import type { UnifiedInboxSql } from './ingest'
 import type { OutreachProviderName } from '@/db/schema'
+import { sqlTimestampValue } from '../sql-timestamp'
 import {
     bodyPreview,
     generatedThreadKey,
@@ -235,7 +236,7 @@ export async function materializeOutboundEmail(
                 ${JSON.stringify(toAddressesJson)}::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
                 ${email.plain_body}, ${email.html_body},
                 '{}'::jsonb, '[]'::jsonb, FALSE,
-                'other', 'outbound', NULL, ${email.sent_at}
+                'other', 'outbound', NULL, ${sqlTimestampValue(email.sent_at)}
             )
             ON CONFLICT (organization_id, email_account_id, source_key) DO NOTHING
             RETURNING id

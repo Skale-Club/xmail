@@ -10,6 +10,7 @@ import {
 } from './outreach-delivery-policy'
 import { createLogger } from './logger'
 import type { OutreachAttachmentInput } from './outreach-provider'
+import { sqlTimestampValue } from './sql-timestamp'
 
 const dispatchLog = createLogger('outreach.dispatch')
 
@@ -367,6 +368,8 @@ export function createSqlDispatchRepository(
     return {
         async claim(input, context) {
             const queryClient = await getClient()
+            const nowIso = sqlTimestampValue(context.now)
+            const leaseExpiresAtIso = sqlTimestampValue(context.leaseExpiresAt)
 
             await queryClient`
                 UPDATE outreach_emails AS outreach_email
@@ -375,12 +378,12 @@ export function createSqlDispatchRepository(
                     lease_expires_at = NULL,
                     next_attempt_at = NULL,
                     last_error_code = 'ambiguous_stale_lease',
-                    updated_at = ${context.now}
+                    updated_at = ${nowIso}
                 WHERE organization_id = ${input.organizationId}
                   AND idempotency_key = ${input.idempotencyKey}
                   AND status = 'queued'
                   AND dispatch_started_at IS NOT NULL
-                  AND (lease_expires_at IS NULL OR lease_expires_at <= ${context.now})
+                  AND (lease_expires_at IS NULL OR lease_expires_at <= ${nowIso})
             `
 
             const claimedRows = await queryClient`
@@ -395,8 +398,8 @@ export function createSqlDispatchRepository(
                     ${input.campaignId ?? null}, ${input.campaignLeadId ?? null}, ${input.sequenceStepId ?? null}, ${input.emailAccountId},
                     ${input.trackingToken ?? null}, ${input.subject}, ${input.text ?? null}, ${input.html ?? null},
                     ${input.inReplyTo ?? null}, ${input.references ?? null}, ${input.abVariant ?? null}, 'queued',
-                    0, ${Math.max(1, input.maxAttempts ?? 3)}, ${context.leaseToken}::uuid, ${context.leaseExpiresAt},
-                    ${context.now}, ${context.now}
+                    0, ${Math.max(1, input.maxAttempts ?? 3)}, ${context.leaseToken}::uuid, ${leaseExpiresAtIso},
+                    ${nowIso}, ${nowIso}
                 )
                 ON CONFLICT (organization_id, idempotency_key) DO UPDATE SET
                     status = 'queued',
@@ -408,12 +411,12 @@ export function createSqlDispatchRepository(
                 WHERE (
                     outreach_emails.status = 'queued'
                     AND outreach_emails.dispatch_started_at IS NULL
-                    AND (outreach_emails.lease_expires_at IS NULL OR outreach_emails.lease_expires_at <= ${context.now})
+                    AND (outreach_emails.lease_expires_at IS NULL OR outreach_emails.lease_expires_at <= ${nowIso})
                 ) OR (
                     outreach_emails.status = 'failed'
                     AND outreach_emails.attempt_count < outreach_emails.max_attempts
                     AND outreach_emails.next_attempt_at IS NOT NULL
-                    AND outreach_emails.next_attempt_at <= ${context.now}
+                    AND outreach_emails.next_attempt_at <= ${nowIso}
                 )
                 RETURNING id,
                     status::text AS status,
@@ -478,19 +481,20 @@ export function createSqlDispatchRepository(
 
         async startDispatch(claim, now, capacity) {
             const queryClient = await getClient()
+            const nowIso = sqlTimestampValue(now)
             const rows = await queryClient`
                 WITH reserved_account AS (
                     UPDATE email_accounts
                     SET current_daily_sent = current_daily_sent + 1,
-                        last_sent_at = ${now},
-                        updated_at = ${now}
+                        last_sent_at = ${nowIso},
+                        updated_at = ${nowIso}
                     WHERE id = ${capacity.account.id}::uuid
                       AND organization_id = ${capacity.account.organizationId}::uuid
                       AND status = 'verified'
                       AND current_daily_sent < ${capacity.dailyLimit}
                       AND (
                           last_sent_at IS NULL
-                          OR last_sent_at <= ${now} - (${Math.max(0, capacity.account.minMinutesBetweenEmails)} * INTERVAL '1 minute')
+                          OR last_sent_at <= ${nowIso} - (${Math.max(0, capacity.account.minMinutesBetweenEmails)} * INTERVAL '1 minute')
                       )
                       AND EXISTS (
                           SELECT 1 FROM outreach_emails
@@ -498,25 +502,25 @@ export function createSqlDispatchRepository(
                             AND lease_token = ${claim.leaseToken}::uuid
                             AND status = 'queued'
                             AND dispatch_started_at IS NULL
-                            AND lease_expires_at > ${now}
+                            AND lease_expires_at > ${nowIso}
                             AND attempt_count < max_attempts
                             AND (capacity_reserved_at IS NULL OR capacity_released_at IS NOT NULL)
                       )
                     RETURNING id
                 )
                 UPDATE outreach_emails AS outreach_email
-                SET dispatch_started_at = ${now},
-                    last_attempt_at = ${now},
+                SET dispatch_started_at = ${nowIso},
+                    last_attempt_at = ${nowIso},
                     attempt_count = attempt_count + 1,
-                    capacity_reserved_at = ${now},
+                    capacity_reserved_at = ${nowIso},
                     capacity_released_at = NULL,
-                    updated_at = ${now}
+                    updated_at = ${nowIso}
                 FROM reserved_account
                 WHERE outreach_email.id = ${claim.rowId}::uuid
                   AND outreach_email.lease_token = ${claim.leaseToken}::uuid
                   AND outreach_email.status = 'queued'
                   AND outreach_email.dispatch_started_at IS NULL
-                  AND outreach_email.lease_expires_at > ${now}
+                  AND outreach_email.lease_expires_at > ${nowIso}
                   AND outreach_email.attempt_count < outreach_email.max_attempts
                   AND outreach_email.email_account_id = reserved_account.id
                   AND (outreach_email.capacity_reserved_at IS NULL OR outreach_email.capacity_released_at IS NOT NULL)
@@ -528,6 +532,7 @@ export function createSqlDispatchRepository(
 
         async releaseClaim(claim, code, now) {
             const queryClient = await getClient()
+            const nowIso = sqlTimestampValue(now)
             const rows = await queryClient`
                 UPDATE outreach_emails
                 SET status = 'queued',
@@ -536,7 +541,7 @@ export function createSqlDispatchRepository(
                     dispatch_started_at = NULL,
                     next_attempt_at = NULL,
                     last_error_code = ${`policy_${code}`},
-                    updated_at = ${now}
+                    updated_at = ${nowIso}
                 WHERE id = ${claim.rowId}::uuid
                   AND lease_token = ${claim.leaseToken}::uuid
                   AND dispatch_started_at IS NULL
@@ -547,6 +552,7 @@ export function createSqlDispatchRepository(
 
         async finalizeSent(claim, result, now) {
             const queryClient = await getClient()
+            const nowIso = sqlTimestampValue(now)
             const rows = await queryClient`
                 WITH finalized AS (
                 UPDATE outreach_emails
@@ -554,12 +560,12 @@ export function createSqlDispatchRepository(
                     message_id = ${result.messageId ?? null},
                     plain_body = COALESCE(${result.finalText ?? null}, plain_body),
                     html_body = COALESCE(${result.finalHtml ?? null}, html_body),
-                    sent_at = ${now},
+                    sent_at = ${nowIso},
                     next_attempt_at = NULL,
                     lease_token = NULL,
                     lease_expires_at = NULL,
                     last_error_code = NULL,
-                    updated_at = ${now}
+                    updated_at = ${nowIso}
                 WHERE id = ${claim.rowId}::uuid
                   AND lease_token = ${claim.leaseToken}::uuid
                   AND status = 'queued'
@@ -568,7 +574,7 @@ export function createSqlDispatchRepository(
                 ), counted AS (
                     UPDATE email_accounts
                     SET total_sent = total_sent + 1,
-                        updated_at = ${now}
+                        updated_at = ${nowIso}
                     FROM finalized
                     WHERE email_accounts.id = finalized.email_account_id
                     RETURNING email_accounts.id
@@ -580,21 +586,23 @@ export function createSqlDispatchRepository(
 
         async finalizeFailure(claim, input) {
             const queryClient = await getClient()
+            const nowIso = sqlTimestampValue(input.now)
+            const nextAttemptAtIso = sqlTimestampValue(input.nextAttemptAt)
             const rows = await queryClient`
                 WITH finalized AS (
                 UPDATE outreach_emails
                 SET status = ${input.status}::message_status,
-                    next_attempt_at = ${input.nextAttemptAt},
+                    next_attempt_at = ${nextAttemptAtIso},
                     lease_token = NULL,
                     lease_expires_at = NULL,
                     dispatch_started_at = CASE WHEN ${input.status} = 'failed' THEN NULL ELSE dispatch_started_at END,
                     last_error_code = ${input.failure.code},
                     bounce_reason = ${input.failure.message},
                     capacity_released_at = CASE
-                        WHEN ${input.status} = 'failed' THEN ${input.now}
+                        WHEN ${input.status} = 'failed' THEN ${nowIso}
                         ELSE capacity_released_at
                     END,
-                    updated_at = ${input.now}
+                    updated_at = ${nowIso}
                 WHERE id = ${claim.rowId}::uuid
                   AND lease_token = ${claim.leaseToken}::uuid
                   AND status = 'queued'
@@ -604,7 +612,7 @@ export function createSqlDispatchRepository(
                 ), released AS (
                     UPDATE email_accounts
                     SET current_daily_sent = GREATEST(current_daily_sent - 1, 0),
-                        updated_at = ${input.now}
+                        updated_at = ${nowIso}
                     FROM finalized
                     WHERE email_accounts.id = finalized.email_account_id
                       AND finalized.release_capacity

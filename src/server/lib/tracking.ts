@@ -3,6 +3,7 @@ import { signTrackedUrl } from './outreach-tokens'
 import { db } from '../../db'
 import { webhooks, webhookRequests, organizationUsers, userNotifications } from '../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
+import { sqlTimestamp } from './sql-timestamp'
 
 // CLN-04 — see audit L5. Cap stored webhook response bodies so a chatty endpoint
 // can't blow up the webhook_requests table. Exported for testability.
@@ -115,7 +116,7 @@ export async function incrementStat(organizationId: string, field: StatField): P
     try {
         await db.execute(sql`
             INSERT INTO statistics (id, organization_id, date, ${sql.raw(col)})
-            VALUES (gen_random_uuid(), ${organizationId}, ${today}, 1)
+            VALUES (gen_random_uuid(), ${organizationId}, ${sqlTimestamp(today)}, 1)
             ON CONFLICT (organization_id, date)
             DO UPDATE SET ${sql.raw(col)} = statistics.${sql.raw(col)} + 1
         `)

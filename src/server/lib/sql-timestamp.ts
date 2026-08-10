@@ -1,5 +1,12 @@
 import { sql } from 'drizzle-orm'
 
+/** Serialize a timestamp for postgres-js tagged templates and `unsafe` parameters. */
+export function sqlTimestampValue(value: Date): string
+export function sqlTimestampValue(value: Date | null): string | null
+export function sqlTimestampValue(value: Date | null): string | null {
+    return value?.toISOString() ?? null
+}
+
 /**
  * Bind a Date into a raw `sql` template.
  *
@@ -19,5 +26,5 @@ import { sql } from 'drizzle-orm'
  * Use this anywhere a Date meets a raw sql template.
  */
 export function sqlTimestamp(value: Date) {
-    return sql`${value.toISOString()}::timestamp`
+    return sql`${sqlTimestampValue(value)}::timestamp`
 }

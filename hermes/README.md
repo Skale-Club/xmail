@@ -65,6 +65,12 @@ LLM **externo** (sem GPU local) e teto de RAM pra nunca ameaçar o email.
 - **Budget:** `agent.max_turns` subido de 60 → 120
   (`hermes config set agent.max_turns 120`) — a travessia do protocolo é profunda.
 
+> **Atualização 2026-08-10:** o `weekly-health-check` foi pausado para eliminar seu
+> consumo recorrente. O backup diário `hermes-memories-backup` roda
+> `scripts/hermes-backup.sh` em modo `no-agent`. O serviço systemd
+> `hermes-provider-switch-notifier` observa ativações de fallback no log do Hermes e
+> avisa o canal pessoal do Telegram, inclusive quando o OpenRouter entra em uso.
+
 ## Decisões de design (pra caber na máquina pequena)
 
 - **Container separado** do xmail (que é rebuildado `--no-cache` a cada deploy) — não dentro dele.

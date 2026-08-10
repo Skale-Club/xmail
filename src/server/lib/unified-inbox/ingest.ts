@@ -23,6 +23,7 @@ import type {
 } from '@/db/schema'
 import { attributeConversation, type MatchConfidence } from './attribute'
 import type { OutreachMessageMatchStrategy } from './types'
+import { sqlTimestampValue } from '../sql-timestamp'
 import {
     bodyPreview,
     buildSourceKey,
@@ -288,7 +289,7 @@ export async function materializeProviderEvent(
                 ${JSON.stringify(toAddresses)}::jsonb, ${JSON.stringify(ccAddresses)}::jsonb, '[]'::jsonb, '[]'::jsonb,
                 ${event.text_body}, ${event.html_body},
                 ${JSON.stringify(safeHeaders)}::jsonb, ${JSON.stringify(attachments)}::jsonb, ${hasAttachments},
-                ${event.classification}, ${attribution.matchStrategy}, ${attribution.matchConfidence}, ${event.received_at}
+                ${event.classification}, ${attribution.matchStrategy}, ${attribution.matchConfidence}, ${sqlTimestampValue(event.received_at)}
             )
             ON CONFLICT (organization_id, email_account_id, source_key) DO NOTHING
             RETURNING id
@@ -347,7 +348,7 @@ export async function materializeProviderEvent(
         await tx`
             UPDATE outreach_provider_events SET
                 materialization_status = 'materialized',
-                materialized_at = ${now()},
+                materialized_at = ${sqlTimestampValue(now())},
                 conversation_message_id = ${conversationMessageId},
                 materialization_lease_token = NULL,
                 materialization_lease_expires_at = NULL,

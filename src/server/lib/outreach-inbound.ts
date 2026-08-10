@@ -30,6 +30,7 @@ import type {
     OutreachProviderEventClassification,
     OutreachProviderName,
 } from '../../db/schema'
+import { sqlTimestampValue } from './sql-timestamp'
 
 // ============================================================
 // Normalized message
@@ -587,7 +588,7 @@ export function createSqlInboundEventStore(
                     ${input.subject}, ${input.textBody}, ${input.htmlBody},
                     ${JSON.stringify(input.headers)}::jsonb,
                     ${JSON.stringify(input.attachments)}::jsonb,
-                    ${input.receivedAt}
+                    ${sqlTimestampValue(input.receivedAt)}
                 )
                 ON CONFLICT (organization_id, email_account_id, provider, provider_message_id)
                 DO NOTHING
@@ -624,7 +625,7 @@ export function createSqlInboundEventStore(
                     last_success_at, last_error, last_error_at, retry_at, updated_at
                 )
                 SELECT organization_id, id, ${provider}, ${next.deltaCursor},
-                       ${next.uidValidity}, ${next.lastUid}, ${next.lastReceivedAt},
+                       ${next.uidValidity}, ${next.lastUid}, ${sqlTimestampValue(next.lastReceivedAt)},
                        ${next.lastProviderMessageId}, now(), NULL, NULL, NULL, now()
                 FROM email_accounts
                 WHERE id = ${emailAccountId}
@@ -734,7 +735,7 @@ export function createSqlInboundEventStore(
                 UPDATE outreach_provider_cursors
                 SET last_error = ${input.error},
                     last_error_at = now(),
-                    retry_at = ${input.retryAt},
+                    retry_at = ${sqlTimestampValue(input.retryAt)},
                     updated_at = now()
                 WHERE email_account_id = ${emailAccountId} AND provider = ${provider}
             `

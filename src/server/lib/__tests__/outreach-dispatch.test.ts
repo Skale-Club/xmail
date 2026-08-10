@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DeliveryPolicyDecision } from '../outreach-delivery-policy'
 import {
     calculateDispatchBackoff,
+    createSqlDispatchRepository,
     createStableOutreachMessageId,
     decideExistingDispatch,
     dispatchOutreachMessage,
@@ -10,6 +11,7 @@ import {
     type DispatchClaimed,
     type DispatchOutreachInput,
     type DispatchRepository,
+    type DispatchSqlClient,
     type ProviderDispatchResult,
 } from '../outreach-dispatch'
 
@@ -404,5 +406,55 @@ describe('dispatchOutreachMessage', () => {
             rowId: claimed().rowId,
         })
         expect(materializeOutbound).not.toHaveBeenCalled()
+    })
+})
+
+describe('SQL dispatch timestamp parameters', () => {
+    it('never hands Date objects directly to postgres-js', async () => {
+        const boundValues: unknown[][] = []
+        const sqlClient: DispatchSqlClient = async (_strings, ...values) => {
+            boundValues.push(values)
+            return [{
+                id: claimed().rowId,
+                leaseToken: claimed().leaseToken,
+                attemptCount: 1,
+                maxAttempts: 3,
+                toAddress: INPUT.to,
+                subject: INPUT.subject,
+                plainBody: INPUT.text,
+                htmlBody: null,
+                trackingToken: INPUT.trackingToken,
+            }]
+        }
+        const repo = createSqlDispatchRepository(async () => sqlClient)
+        const dispatchClaim = claimed()
+
+        await repo.claim(INPUT, {
+            now: NOW,
+            leaseToken: dispatchClaim.leaseToken,
+            leaseExpiresAt: new Date(NOW.getTime() + 60_000),
+        })
+        await repo.startDispatch(dispatchClaim, NOW, { account: ALLOWED.account, dailyLimit: 50 })
+        await repo.releaseClaim(dispatchClaim, 'account_spacing', NOW)
+        await repo.finalizeSent(dispatchClaim, {
+            success: true,
+            acceptance: 'accepted',
+            messageId: '<provider-id@example.com>',
+        }, NOW)
+        await repo.finalizeFailure(dispatchClaim, {
+            status: 'failed',
+            failure: {
+                code: 'provider_503',
+                classification: 'transient',
+                acceptance: 'rejected',
+                retryable: true,
+                message: 'temporary failure',
+            },
+            nextAttemptAt: new Date(NOW.getTime() + 60_000),
+            now: NOW,
+        })
+
+        expect(boundValues.flat().some((value) => value instanceof Date)).toBe(false)
+        expect(boundValues.flat()).toContain(NOW.toISOString())
     })
 })

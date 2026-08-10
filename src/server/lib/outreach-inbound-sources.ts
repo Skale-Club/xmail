@@ -102,7 +102,7 @@ export async function createNativeInboundSource(account: {
                     // one timestamp, so `>` alone would skip the rest of that instant and
                     // `>=` would re-read them forever.
                     after
-                        ? sql`(${orderKey}, ${mailMessages.id}::text) > (${after}::timestamp, ${afterId ?? ''}::text)`
+                        ? sql`(${orderKey}, ${mailMessages.id}::text) > (${sqlTimestamp(after)}, ${afterId ?? ''}::text)`
                         : undefined,
                     // Never filtered by isRead: the human's read state is not our cursor.
                 ),

@@ -8,6 +8,7 @@ import type { DeliveryPolicyCode } from '../lib/outreach-delivery-policy'
 import { dispatchOutreachMessage, type DispatchResult } from '../lib/outreach-dispatch'
 import { createCampaignDispatchProvider } from '../lib/outreach-dispatch-provider'
 import { createLogger, OUTREACH_PROCESSOR_SLOW_MS } from '../lib/logger'
+import { sqlTimestamp } from '../lib/sql-timestamp'
 import {
     resolveSequenceAction,
     TERMINAL_CAMPAIGN_LEAD_STATUSES,
@@ -73,7 +74,7 @@ async function selectDueCampaignLeadIds(now: Date, limit: number): Promise<strin
             JOIN campaigns AS campaign ON campaign.id = campaign_lead.campaign_id
             JOIN organizations AS organization ON organization.id = campaign.organization_id
             JOIN email_accounts AS email_account ON email_account.id = campaign_lead.assigned_email_account_id
-            WHERE campaign_lead.next_scheduled_at <= ${now}
+            WHERE campaign_lead.next_scheduled_at <= ${sqlTimestamp(now)}
               AND campaign_lead.status NOT IN (${terminalStatuses})
               AND campaign.status = 'active'
               AND organization.outreach_enabled = TRUE

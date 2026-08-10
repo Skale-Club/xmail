@@ -1,0 +1,20 @@
+[Unit]
+Description=Hermes provider fallback Telegram notifier
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/hermes/hermes.env
+ExecStart=/usr/bin/python3 /opt/hermes/scripts/provider-switch-notifier.py --log /var/lib/docker/volumes/hermes_hermes-data/_data/logs/agent.log --state /opt/hermes/.provider-switch-notifier-state.json
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/hermes
+
+[Install]
+WantedBy=multi-user.target
