@@ -95,28 +95,98 @@ function InboxCard({ account, onVerify, onDelete }: {
 }) {
     const [showMenu, setShowMenu] = React.useState(false)
     const status = statusConfig[account.status] || statusConfig.pending
-    const dailyUsage = (account.sentToday / account.dailyLimit) * 100
+    const dailyUsage = account.dailyLimit > 0
+        ? (account.sentToday / account.dailyLimit) * 100
+        : 0
+    const warmupProgress = Math.min(Math.max(account.warmupProgress, 0), 100)
 
     return (
-        <div className="bg-card rounded-lg border border-border p-4">
-            <div className="flex items-start justify-between mb-3">
-                <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                        <Mail className="w-5 h-5 text-primary" />
+        <div className="group w-full rounded-xl border border-border bg-card px-5 py-4 transition-colors hover:border-primary/30 hover:bg-accent/20">
+            <div className="grid gap-5 lg:grid-cols-[minmax(260px,1.55fr)_minmax(190px,1fr)_minmax(190px,1fr)_auto] lg:items-center">
+                {/* Account identity */}
+                <div className="flex min-w-0 items-center gap-3.5">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary/15 bg-primary/10">
+                        <Mail className="h-5 w-5 text-primary" />
                     </div>
-                    <div>
-                        <p className="font-medium text-foreground">{account.email}</p>
-                        {account.displayName && (
-                            <p className="text-sm text-muted-foreground">{account.displayName}</p>
-                        )}
+                    <div className="min-w-0">
+                        <p className="truncate font-semibold text-foreground" title={account.email}>
+                            {account.email}
+                        </p>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                            <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium ${status.color}`}>
+                                {status.icon}
+                                {status.label}
+                            </span>
+                            <span className="text-xs capitalize text-muted-foreground">{account.provider}</span>
+                            {account.displayName && (
+                                <span className="truncate text-xs text-muted-foreground">· {account.displayName}</span>
+                            )}
+                        </div>
                     </div>
                 </div>
-                <div className="relative">
+
+                {/* Daily usage */}
+                <div className="min-w-0">
+                    <div className="mb-2 flex items-end justify-between gap-3">
+                        <div>
+                            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Daily usage</p>
+                            <p className="mt-0.5 text-sm text-foreground">
+                                <span className="font-semibold">{account.sentToday}</span>
+                                <span className="text-muted-foreground"> of {account.dailyLimit} sent</span>
+                            </p>
+                        </div>
+                        <span className="text-xs font-medium tabular-nums text-muted-foreground">
+                            {Math.round(Math.min(dailyUsage, 100))}%
+                        </span>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                        <div
+                            className={`h-full rounded-full transition-[width] duration-500 ${dailyUsage >= 90 ? 'bg-red-500' : dailyUsage >= 70 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                            style={{ width: `${Math.min(dailyUsage, 100)}%` }}
+                        />
+                    </div>
+                </div>
+
+                {/* Warm-up progress */}
+                <div className="min-w-0">
+                    {account.warmupEnabled ? (
+                        <>
+                            <div className="mb-2 flex items-end justify-between gap-3">
+                                <div>
+                                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Warm-up</p>
+                                    <p className="mt-0.5 text-sm text-foreground">
+                                        <span className="font-semibold">Day {account.warmupDay}</span>
+                                        <span className="text-muted-foreground"> · gradual ramp</span>
+                                    </p>
+                                </div>
+                                <span className="text-xs font-medium tabular-nums text-muted-foreground">
+                                    {Math.round(warmupProgress)}%
+                                </span>
+                            </div>
+                            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                                <div
+                                    className="h-full rounded-full bg-primary transition-[width] duration-500"
+                                    style={{ width: `${warmupProgress}%` }}
+                                />
+                            </div>
+                        </>
+                    ) : (
+                        <div className="rounded-lg border border-dashed border-border px-3 py-2.5">
+                            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Warm-up</p>
+                            <p className="mt-0.5 text-sm text-muted-foreground">Disabled</p>
+                        </div>
+                    )}
+                </div>
+
+                {/* Actions */}
+                <div className="relative flex justify-end border-t border-border pt-3 lg:border-0 lg:pt-0">
                     <button
                         onClick={() => setShowMenu(!showMenu)}
-                        className="p-1 rounded hover:bg-accent"
+                        className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        aria-label={`Actions for ${account.email}`}
+                        aria-expanded={showMenu}
                     >
-                        <MoreVertical className="w-5 h-5 text-gray-400" />
+                        <MoreVertical className="h-5 w-5" />
                     </button>
                     {showMenu && (
                         <>
@@ -146,60 +216,6 @@ function InboxCard({ account, onVerify, onDelete }: {
                             </div>
                         </>
                     )}
-                </div>
-            </div>
-
-            <div className="flex items-center gap-2 mb-3">
-                <span className={`px-2 py-1 text-xs font-medium rounded-full flex items-center gap-1 ${status.color}`}>
-                    {status.icon}
-                    {status.label}
-                </span>
-                <span className="text-xs text-muted-foreground capitalize">{account.provider}</span>
-            </div>
-
-            {/* Daily Usage */}
-            <div className="mb-3">
-                <div className="flex items-center justify-between text-sm mb-1">
-                    <span className="text-muted-foreground">Daily Usage</span>
-                    <span className="text-foreground font-medium">
-                        {account.sentToday} / {account.dailyLimit}
-                    </span>
-                </div>
-                <div className="w-full bg-muted rounded-full h-2">
-                    <div
-                        className={`h-2 rounded-full ${dailyUsage >= 90 ? 'bg-red-500' : dailyUsage >= 70 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                        style={{ width: `${Math.min(dailyUsage, 100)}%` }}
-                    />
-                </div>
-            </div>
-
-            {/* Warmup Progress */}
-            {account.warmupEnabled && (
-                <div className="mb-3">
-                    <div className="flex items-center justify-between text-sm mb-1">
-                        <span className="text-muted-foreground">Warmup Progress</span>
-                        <span className="text-foreground font-medium">
-                            Day {account.warmupDay}
-                        </span>
-                    </div>
-                    <div className="w-full bg-muted rounded-full h-2">
-                        <div
-                            className="h-2 rounded-full bg-primary"
-                            style={{ width: `${account.warmupProgress}%` }}
-                        />
-                    </div>
-                </div>
-            )}
-
-            {/* Stats */}
-            <div className="grid grid-cols-2 gap-2 pt-3 border-t border-border">
-                <div className="text-center">
-                    <p className="text-lg font-semibold text-foreground">{account.sentToday}</p>
-                    <p className="text-xs text-muted-foreground">Sent Today</p>
-                </div>
-                <div className="text-center">
-                    <p className="text-lg font-semibold text-foreground">{account.dailyLimit}</p>
-                    <p className="text-xs text-muted-foreground">Daily Limit</p>
                 </div>
             </div>
         </div>
@@ -351,24 +367,27 @@ export function InboxesPage() {
 
                 {/* Inbox List */}
                 {isLoading ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div className="space-y-3">
                         {[...Array(3)].map((_, i) => (
-                            <div key={i} className="bg-card rounded-lg border border-border p-4 animate-pulse">
-                                <div className="flex items-center gap-3 mb-3">
-                                    <div className="w-10 h-10 bg-muted rounded-full"></div>
-                                    <div className="flex-1">
-                                        <div className="h-4 bg-muted rounded w-2/3 mb-1"></div>
-                                        <div className="h-3 bg-muted rounded w-1/2"></div>
+                            <div key={i} className="w-full animate-pulse rounded-xl border border-border bg-card px-5 py-4">
+                                <div className="grid gap-5 lg:grid-cols-[minmax(260px,1.55fr)_minmax(190px,1fr)_minmax(190px,1fr)_auto] lg:items-center">
+                                    <div className="flex items-center gap-3.5">
+                                        <div className="h-11 w-11 rounded-xl bg-muted" />
+                                        <div className="min-w-0 flex-1">
+                                            <div className="mb-2 h-4 w-2/3 rounded bg-muted" />
+                                            <div className="h-3 w-1/2 rounded bg-muted" />
+                                        </div>
                                     </div>
+                                    <div className="h-8 rounded bg-muted" />
+                                    <div className="h-8 rounded bg-muted" />
+                                    <div className="h-8 w-8 justify-self-end rounded-lg bg-muted" />
                                 </div>
-                                <div className="h-2 bg-muted rounded mb-3"></div>
-                                <div className="h-2 bg-muted rounded w-3/4"></div>
                             </div>
                         ))}
                     </div>
                 ) : accountsData?.accounts && accountsData.accounts.length > 0 ? (
                     <>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div className="space-y-3">
                         {accountsData.accounts.map((account) => (
                             <InboxCard
                                 key={account.id}
