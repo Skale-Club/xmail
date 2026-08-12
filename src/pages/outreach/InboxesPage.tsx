@@ -29,6 +29,8 @@ interface EmailAccount {
     displayName: string | null
     status: 'pending' | 'verified' | 'failed' | 'paused'
     provider: string
+    mailboxProvider?: string
+    smtpHost?: string | null
     dailyLimit: number
     sentToday: number
     warmupEnabled: boolean
@@ -88,6 +90,59 @@ const statusConfig: Record<string, { color: string; icon: React.ReactNode; label
     },
 }
 
+function GoogleProviderIcon() {
+    return (
+        <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+            <path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.4-.18-2.07H12v3.92h5.38a4.6 4.6 0 0 1-2 3.02v2.55h3.24c1.9-1.75 2.98-4.32 2.98-7.42Z" />
+            <path fill="#34A853" d="M12 22c2.7 0 4.97-.9 6.62-2.35l-3.24-2.55c-.9.6-2.05.96-3.38.96-2.61 0-4.82-1.76-5.61-4.13H3.04v2.63A10 10 0 0 0 12 22Z" />
+            <path fill="#FBBC05" d="M6.39 13.93A6.02 6.02 0 0 1 6.07 12c0-.67.12-1.32.32-1.93V7.44H3.04A10 10 0 0 0 2 12c0 1.61.38 3.13 1.04 4.56l3.35-2.63Z" />
+            <path fill="#EA4335" d="M12 5.94c1.47 0 2.78.5 3.82 1.49l2.87-2.87A9.6 9.6 0 0 0 12 2a10 10 0 0 0-8.96 5.44l3.35 2.63C7.18 7.7 9.39 5.94 12 5.94Z" />
+        </svg>
+    )
+}
+
+function MicrosoftProviderIcon() {
+    return (
+        <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+            <path fill="#F25022" d="M2 2h9.5v9.5H2z" />
+            <path fill="#7FBA00" d="M12.5 2H22v9.5h-9.5z" />
+            <path fill="#00A4EF" d="M2 12.5h9.5V22H2z" />
+            <path fill="#FFB900" d="M12.5 12.5H22V22h-9.5z" />
+        </svg>
+    )
+}
+
+function providerIdentity(account: EmailAccount): {
+    label: string
+    icon: React.ReactNode
+    containerClass: string
+} {
+    const smtpHost = account.smtpHost?.toLowerCase() ?? ''
+    const isGoogle = smtpHost.includes('gmail.com') || account.mailboxProvider === 'icemail'
+
+    if (isGoogle) {
+        return {
+            label: 'Google',
+            icon: <GoogleProviderIcon />,
+            containerClass: 'border-slate-200 bg-white dark:border-white/15 dark:bg-white',
+        }
+    }
+
+    if (account.provider === 'outlook') {
+        return {
+            label: 'Microsoft',
+            icon: <MicrosoftProviderIcon />,
+            containerClass: 'border-slate-200 bg-white dark:border-white/15 dark:bg-white',
+        }
+    }
+
+    return {
+        label: account.provider === 'native' ? 'Xmail' : 'SMTP',
+        icon: <Mail className="h-5 w-5 text-primary" />,
+        containerClass: 'border-primary/15 bg-primary/10',
+    }
+}
+
 function InboxCard({ account, onVerify, onDelete }: {
     account: EmailAccount
     onVerify: (id: string) => void
@@ -95,6 +150,7 @@ function InboxCard({ account, onVerify, onDelete }: {
 }) {
     const [showMenu, setShowMenu] = React.useState(false)
     const status = statusConfig[account.status] || statusConfig.pending
+    const identity = providerIdentity(account)
     const dailyUsage = account.dailyLimit > 0
         ? (account.sentToday / account.dailyLimit) * 100
         : 0
@@ -105,8 +161,12 @@ function InboxCard({ account, onVerify, onDelete }: {
             <div className="grid gap-5 lg:grid-cols-[minmax(260px,1.55fr)_minmax(190px,1fr)_minmax(190px,1fr)_auto] lg:items-center">
                 {/* Account identity */}
                 <div className="flex min-w-0 items-center gap-3.5">
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary/15 bg-primary/10">
-                        <Mail className="h-5 w-5 text-primary" />
+                    <div
+                        className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border shadow-sm ${identity.containerClass}`}
+                        title={`${identity.label} account`}
+                        aria-label={`${identity.label} account`}
+                    >
+                        {identity.icon}
                     </div>
                     <div className="min-w-0">
                         <p className="truncate font-semibold text-foreground" title={account.email}>
@@ -117,7 +177,7 @@ function InboxCard({ account, onVerify, onDelete }: {
                                 {status.icon}
                                 {status.label}
                             </span>
-                            <span className="text-xs capitalize text-muted-foreground">{account.provider}</span>
+                            <span className="text-xs font-medium text-muted-foreground">{identity.label}</span>
                             {account.displayName && (
                                 <span className="truncate text-xs text-muted-foreground">· {account.displayName}</span>
                             )}
