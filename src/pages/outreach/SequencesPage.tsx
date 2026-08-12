@@ -119,9 +119,9 @@ async function saveCampaignSequence(params: {
 
 // A campaign has exactly one canonical sequence (Phase 20, CONS-01). "Deleting" a sequence is
 // meaningless — a campaign always retains its sequence, and the backend refuses the destructive
-// legacy delete (409). So this card is read-only; the step set is edited via the New Sequence
+// legacy delete (409). So this row is read-only; the step set is edited via the New Sequence
 // dialog, which does a history-safe transactional replace.
-function SequenceCard({
+function SequenceRow({
     sequence,
     stepsCount,
 }: {
@@ -129,27 +129,40 @@ function SequenceCard({
     stepsCount: number
 }) {
     return (
-        <div className="rounded-lg border border-border bg-card p-4">
-            <div className="flex items-start justify-between">
-                <div className="flex-1">
-                    <h3 className="font-medium text-foreground">{sequence.name}</h3>
-                    <div className="mt-1 flex items-center gap-2">
-                        <span className={`rounded-full px-2 py-0.5 text-xs ${sequence.isActive
-                            ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
-                            : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
-                            }`}>
-                            {sequence.isActive ? 'Active' : 'Inactive'}
-                        </span>
-                        <span className="text-sm text-muted-foreground">{stepsCount} steps</span>
+        <article className="group w-full rounded-xl border border-border bg-card px-5 py-4 transition-colors hover:border-primary/30 hover:bg-accent/20">
+            <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center lg:grid-cols-[minmax(0,1fr)_minmax(160px,0.35fr)_110px_120px]">
+                <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                        <Mail className="h-5 w-5" aria-hidden="true" />
                     </div>
-                    {sequence.campaign?.name && (
-                        <p className="mt-2 text-sm text-muted-foreground">
-                            Campaign: {sequence.campaign.name}
+                    <div className="min-w-0">
+                        <h3 className="truncate font-semibold text-foreground">{sequence.name}</h3>
+                        <p className="mt-0.5 truncate text-sm text-muted-foreground">
+                            {sequence.description || 'Automated email follow-up sequence'}
                         </p>
-                    )}
+                    </div>
+                </div>
+
+                <div className="min-w-0 sm:text-right lg:text-left">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Campaign</p>
+                    <p className="mt-1 truncate text-sm text-foreground">{sequence.campaign?.name || 'Unassigned'}</p>
+                </div>
+
+                <div className="sm:text-right lg:text-left">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Steps</p>
+                    <p className="mt-1 text-sm font-medium tabular-nums text-foreground">{stepsCount}</p>
+                </div>
+
+                <div className="sm:text-right lg:text-left">
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${sequence.isActive
+                        ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
+                        : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                        }`}>
+                        {sequence.isActive ? 'Active' : 'Inactive'}
+                    </span>
                 </div>
             </div>
-        </div>
+        </article>
     )
 }
 
@@ -452,19 +465,23 @@ export function SequencesPage() {
                 </div>
 
                 {isLoading ? (
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+                    <div className="space-y-3">
                         {[...Array(6)].map((_, i) => (
-                            <div key={i} className="rounded-lg border border-border bg-card p-4 animate-pulse">
-                                <div className="mb-2 h-5 w-2/3 rounded bg-gray-200 dark:bg-gray-700" />
-                                <div className="h-4 w-1/3 rounded bg-gray-200 dark:bg-gray-700" />
+                            <div key={i} className="flex w-full animate-pulse items-center gap-4 rounded-xl border border-border bg-card px-5 py-4">
+                                <div className="h-10 w-10 shrink-0 rounded-lg bg-muted" />
+                                <div className="flex-1 space-y-2">
+                                    <div className="h-4 w-1/3 rounded bg-muted" />
+                                    <div className="h-3 w-1/2 rounded bg-muted" />
+                                </div>
+                                <div className="hidden h-4 w-24 rounded bg-muted sm:block" />
                             </div>
                         ))}
                     </div>
                 ) : sequencesData?.sequences && sequencesData.sequences.length > 0 ? (
                     <>
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+                    <div className="space-y-3">
                         {sequencesData.sequences.map((sequence) => (
-                            <SequenceCard
+                            <SequenceRow
                                 key={sequence.id}
                                 sequence={sequence}
                                 stepsCount={sequence.steps?.length || 0}
