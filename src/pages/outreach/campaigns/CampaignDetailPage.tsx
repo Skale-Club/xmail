@@ -17,6 +17,7 @@ export interface Campaign {
     name: string
     description: string | null
     status: 'draft' | 'active' | 'paused' | 'completed' | 'archived'
+    contentLanguage: string
     totalLeads: number
     leadsContacted: number
     totalOpens: number

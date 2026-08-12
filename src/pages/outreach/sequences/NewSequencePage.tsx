@@ -1,7 +1,7 @@
 import React from 'react'
 import { useLocation, useParams } from 'wouter'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Save, Clock, Mail, Trash2 } from 'lucide-react'
+import { ArrowLeft, Save, Clock, Mail, Trash2, Split, Sparkles } from 'lucide-react'
 import { OutreachLayout } from '../../../components/outreach/OutreachLayout'
 import { toast } from '../../../components/ui/toaster'
 import { apiFetch } from '../../../lib/api-client'
@@ -13,6 +13,10 @@ interface Step {
     delayHours: number
     subject: string
     htmlBody: string
+    subjectB: string
+    htmlBodyB: string
+    abTestEnabled: boolean
+    abTestPercentage: number
 }
 
 interface CanonicalStep {
@@ -23,6 +27,11 @@ interface CanonicalStep {
     subject: string | null
     htmlBody: string | null
     plainBody: string | null
+    subjectB: string | null
+    htmlBodyB: string | null
+    plainBodyB: string | null
+    abTestEnabled: boolean
+    abTestPercentage: number | null
 }
 
 interface SequenceResponse {
@@ -34,7 +43,18 @@ interface SequenceResponse {
 }
 
 function makeEmptyStep(order: number): Step {
-    return { id: crypto.randomUUID(), type: 'email', order, delayHours: 0, subject: '', htmlBody: '' }
+    return {
+        id: crypto.randomUUID(),
+        type: 'email',
+        order,
+        delayHours: 0,
+        subject: '',
+        htmlBody: '',
+        subjectB: '',
+        htmlBodyB: '',
+        abTestEnabled: false,
+        abTestPercentage: 50,
+    }
 }
 
 export function NewSequencePage() {
@@ -67,6 +87,10 @@ export function NewSequencePage() {
                 delayHours: step.delayHours,
                 subject: step.subject ?? '',
                 htmlBody: step.htmlBody ?? step.plainBody ?? '',
+                subjectB: step.subjectB ?? '',
+                htmlBodyB: step.htmlBodyB ?? step.plainBodyB ?? '',
+                abTestEnabled: step.abTestEnabled,
+                abTestPercentage: step.abTestPercentage ?? 50,
             }))
         setSteps(loaded.length > 0 ? loaded : [makeEmptyStep(1)])
     }, [data])
@@ -80,7 +104,11 @@ export function NewSequencePage() {
                 order: prev.length + 1,
                 delayHours: type === 'delay' ? 72 : 0,
                 subject: '',
-                htmlBody: ''
+                htmlBody: '',
+                subjectB: '',
+                htmlBodyB: '',
+                abTestEnabled: false,
+                abTestPercentage: 50,
             }
         ])
     }
@@ -108,6 +136,10 @@ export function NewSequencePage() {
                             delayHours: step.delayHours,
                             subject: step.subject,
                             htmlBody: step.htmlBody,
+                            subjectB: step.abTestEnabled ? step.subjectB : undefined,
+                            htmlBodyB: step.abTestEnabled ? step.htmlBodyB : undefined,
+                            abTestEnabled: step.abTestEnabled,
+                            abTestPercentage: step.abTestPercentage,
                         }
                 ),
             }
@@ -142,8 +174,22 @@ export function NewSequencePage() {
             toast({ title: 'Each email step needs a subject and a message body', variant: 'destructive' })
             return
         }
+        const invalidVariant = steps.some(s => s.type === 'email' && s.abTestEnabled && (!s.subjectB.trim() || !s.htmlBodyB.trim()))
+        if (invalidVariant) {
+            toast({ title: 'Each enabled B variant needs a subject and message body', variant: 'destructive' })
+            return
+        }
         saveMutation.mutate({ name, steps })
     }
+
+    const appendBodyToken = (stepId: string, field: 'htmlBody' | 'htmlBodyB', token: string) => {
+        const step = steps.find(item => item.id === stepId)
+        if (!step || step[field].includes(token)) return
+        const separator = step[field].trim() ? '\n\n' : ''
+        updateStep(stepId, { [field]: `${step[field]}${separator}${token}` })
+    }
+
+    const firstEmailIndex = steps.findIndex(step => step.type === 'email')
 
     return (
         <OutreachLayout>
@@ -219,8 +265,44 @@ export function NewSequencePage() {
                                     </div>
                                 ) : (
                                     <div className="space-y-4">
+                                        {index === firstEmailIndex && (
+                                            <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+                                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                    <div>
+                                                        <p className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                                                            <Sparkles className="h-4 w-4 text-primary" /> Website personalization
+                                                        </p>
+                                                        <p className="mt-1 text-xs text-muted-foreground">
+                                                            Insert the two-sentence website insight supplied by Xphere in the campaign language.
+                                                        </p>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => appendBodyToken(step.id, 'htmlBody', '{{websiteInsight}}')}
+                                                        className="shrink-0 rounded-lg border border-primary/30 bg-background px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/10"
+                                                    >
+                                                        {step.htmlBody.includes('{{websiteInsight}}') ? 'Insight added' : 'Add website insight'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                                            <span className="font-medium text-muted-foreground">Personalization:</span>
+                                            {['{{firstName}}', '{{companyName}}', '{{websiteInsight}}'].map(token => (
+                                                <button
+                                                    key={token}
+                                                    type="button"
+                                                    onClick={() => appendBodyToken(step.id, 'htmlBody', token)}
+                                                    className="rounded-md bg-muted px-2 py-1 font-mono text-foreground hover:bg-accent"
+                                                >
+                                                    {token}
+                                                </button>
+                                            ))}
+                                        </div>
+
                                         <div>
-                                            <label className="mb-1 block text-sm font-medium text-foreground">Subject</label>
+                                            <label className="mb-1 block text-sm font-medium text-foreground">Variant A subject</label>
                                             <input
                                                 type="text"
                                                 value={step.subject}
@@ -230,7 +312,7 @@ export function NewSequencePage() {
                                             />
                                         </div>
                                         <div>
-                                            <label className="mb-1 block text-sm font-medium text-foreground">Message Body</label>
+                                            <label className="mb-1 block text-sm font-medium text-foreground">Variant A message</label>
                                             <textarea
                                                 value={step.htmlBody}
                                                 onChange={(e) => updateStep(step.id, { htmlBody: e.target.value })}
@@ -238,6 +320,76 @@ export function NewSequencePage() {
                                                 placeholder="Hi {{firstName}}, ..."
                                                 className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
                                             />
+                                        </div>
+
+                                        <div className="rounded-xl border border-border bg-muted/20 p-4">
+                                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                <div>
+                                                    <p className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                                                        <Split className="h-4 w-4 text-primary" /> A/B test
+                                                    </p>
+                                                    <p className="mt-1 text-xs text-muted-foreground">
+                                                        Leads are assigned deterministically, so retries always keep the same variant.
+                                                    </p>
+                                                </div>
+                                                <label className="inline-flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={step.abTestEnabled}
+                                                        onChange={(e) => updateStep(step.id, { abTestEnabled: e.target.checked })}
+                                                        className="h-4 w-4 rounded border-border accent-primary"
+                                                    />
+                                                    Enable variant B
+                                                </label>
+                                            </div>
+
+                                            {step.abTestEnabled && (
+                                                <div className="mt-4 space-y-4 border-t border-border pt-4">
+                                                    <div className="grid gap-3 sm:grid-cols-[1fr_150px] sm:items-end">
+                                                        <div>
+                                                            <label className="mb-1 block text-sm font-medium text-foreground">Variant B subject</label>
+                                                            <input
+                                                                type="text"
+                                                                value={step.subjectB}
+                                                                onChange={(e) => updateStep(step.id, { subjectB: e.target.value })}
+                                                                placeholder="Alternative subject line"
+                                                                className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label className="mb-1 block text-sm font-medium text-foreground">Variant A share</label>
+                                                            <select
+                                                                value={step.abTestPercentage}
+                                                                onChange={(e) => updateStep(step.id, { abTestPercentage: Number(e.target.value) })}
+                                                                className="w-full rounded-lg border border-border bg-background px-3 py-2 focus:border-primary focus:outline-none"
+                                                            >
+                                                                <option value={50}>50% / 50%</option>
+                                                                <option value={70}>70% / 30%</option>
+                                                                <option value={80}>80% / 20%</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <div className="mb-1 flex items-center justify-between gap-3">
+                                                            <label className="block text-sm font-medium text-foreground">Variant B message</label>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => appendBodyToken(step.id, 'htmlBodyB', '{{websiteInsight}}')}
+                                                                className="text-xs font-medium text-primary hover:underline"
+                                                            >
+                                                                Add website insight
+                                                            </button>
+                                                        </div>
+                                                        <textarea
+                                                            value={step.htmlBodyB}
+                                                            onChange={(e) => updateStep(step.id, { htmlBodyB: e.target.value })}
+                                                            rows={5}
+                                                            placeholder="Alternative message using the same factual personalization"
+                                                            className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
+                                                        />
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 )}

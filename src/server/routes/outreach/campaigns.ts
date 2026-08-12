@@ -39,6 +39,7 @@ function resultRows<T>(value: unknown): T[] {
 const createCampaignSchema = z.object({
     name: z.string().min(1, 'Name is required').max(100),
     description: z.string().optional(),
+    contentLanguage: z.string().regex(/^[a-z]{2}(?:-[A-Z]{2})?$/).optional(),
     fromName: z.string().optional(),
     replyToEmail: z.string().email().optional(),
     timezone: z.string().optional(),
@@ -52,6 +53,7 @@ const createCampaignSchema = z.object({
 const updateCampaignSchema = z.object({
     name: z.string().min(1).max(100).optional(),
     description: z.string().optional(),
+    contentLanguage: z.string().regex(/^[a-z]{2}(?:-[A-Z]{2})?$/).optional(),
     fromName: z.string().optional(),
     replyToEmail: z.string().email().optional(),
     timezone: z.string().optional(),
@@ -559,6 +561,7 @@ router.post('/', async (req: Request, res: Response) => {
         const campaignValues = {
             name: validatedData.name,
             description: validatedData.description,
+            contentLanguage: validatedData.contentLanguage ?? 'en',
             fromName: validatedData.fromName,
             replyToEmail: validatedData.replyToEmail,
             timezone: validatedData.timezone ?? settings.defaultTimezone,

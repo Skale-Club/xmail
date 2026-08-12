@@ -432,18 +432,33 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
         const newLeads = validatedData.leads.filter(l => !existingEmails.has(l.email))
         const duplicateLeads = validatedData.leads.filter(l => existingEmails.has(l.email))
 
-        // Update-if-exists (verification-gates step 1): a re-import of an already-known lead
-        // (e.g. Xphere re-syncing after enrichment finishes) should still be able to upgrade its
-        // verification status. Only touches the verification columns, only when the resync
-        // actually carries an explicit, recognized email_status — never runs the MX pre-filter
-        // here, since that's a passive guess and re-flagging an existing lead off a bare MX
-        // lookup (rather than a real signal) is a stronger, more surprising side effect than
-        // simply leaving it as previously imported.
+        // Update-if-exists: orchestration re-imports are enrichment syncs, not no-ops. Merge new
+        // custom fields (for example Xphere's multilingual websiteInsights) and refresh any
+        // explicitly supplied profile fields without erasing existing values. Verification still
+        // updates only when the re-import carries a recognized explicit status.
         await Promise.all(duplicateLeads.map(async (lead) => {
             const verification = mapEmailVerificationCustomFields(lead.customFields)
-            if (Object.keys(verification).length === 0) return
+            const profile = {
+                ...(lead.firstName !== undefined ? { firstName: lead.firstName } : {}),
+                ...(lead.lastName !== undefined ? { lastName: lead.lastName } : {}),
+                ...(lead.companyName !== undefined ? { companyName: lead.companyName } : {}),
+                ...(lead.companySize !== undefined ? { companySize: lead.companySize } : {}),
+                ...(lead.industry !== undefined ? { industry: lead.industry } : {}),
+                ...(lead.title !== undefined ? { title: lead.title } : {}),
+                ...(lead.website !== undefined ? { website: lead.website } : {}),
+                ...(lead.linkedinUrl !== undefined ? { linkedinUrl: lead.linkedinUrl } : {}),
+                ...(lead.phone !== undefined ? { phone: lead.phone } : {}),
+                ...(lead.location !== undefined ? { location: lead.location } : {}),
+            }
             await db.update(leads)
-                .set({ ...verification, updatedAt: new Date() })
+                .set({
+                    ...profile,
+                    ...verification,
+                    ...(lead.customFields ? {
+                        customFields: sql`COALESCE(${leads.customFields}, '{}'::jsonb) || ${JSON.stringify(lead.customFields)}::jsonb`,
+                    } : {}),
+                    updatedAt: new Date(),
+                })
                 .where(and(eq(leads.organizationId, organizationId), eq(leads.email, lead.email)))
         }))
 

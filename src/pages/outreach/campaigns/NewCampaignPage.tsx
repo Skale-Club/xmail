@@ -28,6 +28,7 @@ export function NewCampaignPage() {
     const queryClient = useQueryClient()
     const [name, setName] = React.useState('')
     const [description, setDescription] = React.useState('')
+    const [contentLanguage, setContentLanguage] = React.useState('en')
     const [fromEmailAccountId, setFromEmailAccountId] = React.useState<string>('')
 
     const { data: accountsData, isLoading: accountsLoading } = useQuery({
@@ -51,6 +52,7 @@ export function NewCampaignPage() {
                     body: JSON.stringify({
                         name: name.trim(),
                         description: description.trim() || undefined,
+                        contentLanguage,
                         // NOTE: from_email_account_id is collected but NOT in createCampaignSchema today;
                         // the backend stores assignment per-campaign-lead, not per-campaign.
                         // We capture it here for future use AND so the user knows which inbox the
@@ -120,6 +122,21 @@ export function NewCampaignPage() {
                                 placeholder="Optional notes about audience or goal"
                                 className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
                             />
+                        </div>
+                        <div>
+                            <label className="mb-1 block text-sm font-medium text-foreground">Email language</label>
+                            <select
+                                value={contentLanguage}
+                                onChange={(e) => setContentLanguage(e.target.value)}
+                                className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
+                            >
+                                <option value="en">English</option>
+                                <option value="pt-BR">Portuguese (Brazil)</option>
+                                <option value="es">Spanish</option>
+                            </select>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                                Template tokens stay in English; personalized values render in this language.
+                            </p>
                         </div>
                         <div>
                             <label className="mb-1 block text-sm font-medium text-foreground">Default sending inbox</label>

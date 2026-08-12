@@ -99,6 +99,21 @@ describe('sequencePayloadSchema', () => {
         }).success).toBe(true)
     })
 
+    it('requires complete Variant B content only when A/B testing is enabled', () => {
+        expect(service.sequencePayloadSchema.safeParse({
+            steps: [{
+                type: 'email', subject: 'Hello A', plainBody: 'Body A',
+                abTestEnabled: true, subjectB: '', plainBodyB: '',
+            }],
+        }).success).toBe(false)
+        expect(service.sequencePayloadSchema.safeParse({
+            steps: [{
+                type: 'email', subject: 'Hello A', plainBody: 'Body A',
+                abTestEnabled: true, subjectB: 'Hello B', plainBodyB: 'Body B',
+            }],
+        }).success).toBe(true)
+    })
+
     it('forbids sendable content on non-email steps', () => {
         expect(service.sequencePayloadSchema.safeParse({
             steps: [{ type: 'delay', delayHours: 24, subject: 'sneaky' }],

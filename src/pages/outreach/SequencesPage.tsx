@@ -75,6 +75,11 @@ interface DraftStep {
     subject: string
     htmlBody: string
     plainBody: string
+    subjectB: string
+    htmlBodyB: string
+    plainBodyB: string
+    abTestEnabled: boolean
+    abTestPercentage: number
 }
 
 const createDraftStep = (stepOrder: number, type: 'email' | 'delay' = 'email'): DraftStep => ({
@@ -85,6 +90,11 @@ const createDraftStep = (stepOrder: number, type: 'email' | 'delay' = 'email'): 
     subject: '',
     htmlBody: '',
     plainBody: '',
+    subjectB: '',
+    htmlBodyB: '',
+    plainBodyB: '',
+    abTestEnabled: false,
+    abTestPercentage: 50,
 })
 
 async function saveCampaignSequence(params: {
@@ -107,6 +117,11 @@ async function saveCampaignSequence(params: {
                     subject: step.subject,
                     htmlBody: step.htmlBody,
                     plainBody: step.plainBody || undefined,
+                    subjectB: step.abTestEnabled ? step.subjectB : undefined,
+                    htmlBodyB: step.abTestEnabled ? step.htmlBodyB : undefined,
+                    plainBodyB: step.abTestEnabled && step.plainBodyB ? step.plainBodyB : undefined,
+                    abTestEnabled: step.abTestEnabled,
+                    abTestPercentage: step.abTestPercentage,
                 }
         ),
     }
@@ -233,6 +248,12 @@ function NewSequenceDialog({
         const hasInvalidEmailStep = steps.some(step => step.type === 'email' && (!step.subject.trim() || !step.htmlBody.trim()))
         if (hasInvalidEmailStep) {
             toast({ title: 'Each email step needs a subject and message', variant: 'destructive' })
+            return
+        }
+        const hasInvalidVariant = steps.some(step => step.type === 'email' && step.abTestEnabled
+            && (!step.subjectB.trim() || (!step.htmlBodyB.trim() && !step.plainBodyB.trim())))
+        if (hasInvalidVariant) {
+            toast({ title: 'Each enabled B variant needs a subject and message', variant: 'destructive' })
             return
         }
 
@@ -374,6 +395,45 @@ function NewSequenceDialog({
                                                         placeholder="Hi {{firstName}}, ..."
                                                         className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
                                                     />
+                                                </div>
+                                                <div className="rounded-lg border border-border bg-muted/20 p-3">
+                                                    <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={step.abTestEnabled}
+                                                            onChange={(e) => updateStep(step.id, { abTestEnabled: e.target.checked })}
+                                                            className="h-4 w-4 rounded accent-primary"
+                                                        />
+                                                        Enable Variant B
+                                                    </label>
+                                                    {step.abTestEnabled && (
+                                                        <div className="mt-3 space-y-3 border-t border-border pt-3">
+                                                            <div className="grid gap-3 md:grid-cols-[1fr_150px]">
+                                                                <input
+                                                                    value={step.subjectB}
+                                                                    onChange={(e) => updateStep(step.id, { subjectB: e.target.value })}
+                                                                    placeholder="Variant B subject"
+                                                                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
+                                                                />
+                                                                <select
+                                                                    value={step.abTestPercentage}
+                                                                    onChange={(e) => updateStep(step.id, { abTestPercentage: Number(e.target.value) })}
+                                                                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
+                                                                >
+                                                                    <option value={50}>50% / 50%</option>
+                                                                    <option value={70}>70% / 30%</option>
+                                                                    <option value={80}>80% / 20%</option>
+                                                                </select>
+                                                            </div>
+                                                            <textarea
+                                                                value={step.htmlBodyB}
+                                                                onChange={(e) => updateStep(step.id, { htmlBodyB: e.target.value })}
+                                                                rows={5}
+                                                                placeholder="Variant B message — use {{websiteInsight}} for the site analysis"
+                                                                className="w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-sm text-foreground"
+                                                            />
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </>
                                         )}

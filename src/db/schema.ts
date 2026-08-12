@@ -781,6 +781,8 @@ export const campaigns = pgTable('campaigns', {
     description: text('description'),
     // Settings
     status: campaignStatusEnum('status').default('draft').notNull(),
+    // BCP-47 language used to resolve multilingual personalization fields.
+    contentLanguage: text('content_language').default('en').notNull(),
     // Sender settings
     fromName: text('from_name'),
     replyToEmail: text('reply_to_email'),

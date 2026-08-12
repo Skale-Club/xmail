@@ -26,6 +26,8 @@ type LeadForTemplate = {
 // can be derived from `lead` belongs in BUILTIN_VARIABLES instead.
 export interface TemplateContext {
     unsubscribeUrl?: string
+    /** Campaign BCP-47 language used for multilingual custom-field maps. */
+    contentLanguage?: string
 }
 
 // Options controlling how substituted values are rendered.
@@ -116,6 +118,23 @@ export function interpolateTemplate(
     return template.replace(VARIABLE_REGEX, (_match, variableName: string) => {
         // Context-provided values (internally generated, e.g. the unsubscribe URL) — not escaped.
         if (variableName === 'unsubscribeUrl') return context.unsubscribeUrl ?? ''
+
+        // `websiteInsight` is a stable English token whose VALUE is multilingual.
+        // Xphere supplies websiteInsights as { en, pt, es, ... }; the campaign
+        // chooses the language at send time so the same lead can safely appear in
+        // campaigns written in different languages.
+        if (variableName.toLowerCase() === 'websiteinsight') {
+            const raw = lead.customFields?.websiteInsights
+            if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+                const insights = raw as Record<string, unknown>
+                const requested = context.contentLanguage || 'en'
+                const base = requested.split('-')[0]
+                const value = insights[requested] ?? insights[base] ?? insights.en
+                return value != null ? escape(String(value)) : ''
+            }
+            const legacy = lead.customFields?.websiteInsight
+            return legacy != null ? escape(String(legacy)) : ''
+        }
 
         // Built-in lead fields (case-insensitive).
         const lowerName = variableName.toLowerCase()

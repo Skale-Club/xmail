@@ -79,6 +79,22 @@ export const sequencePayloadSchema = z
                         message: 'Email steps require a plain-text or HTML body',
                     })
                 }
+                if (step.abTestEnabled) {
+                    if (!step.subjectB?.trim()) {
+                        ctx.addIssue({
+                            code: z.ZodIssueCode.custom,
+                            path: ['steps', index, 'subjectB'],
+                            message: 'Enabled A/B tests require a Variant B subject',
+                        })
+                    }
+                    if (!step.plainBodyB?.trim() && !step.htmlBodyB?.trim()) {
+                        ctx.addIssue({
+                            code: z.ZodIssueCode.custom,
+                            path: ['steps', index, 'plainBodyB'],
+                            message: 'Enabled A/B tests require a Variant B body',
+                        })
+                    }
+                }
             }
         })
     })
