@@ -90,7 +90,12 @@ export default defineConfig(({ mode }) => {
                     ],
                 },
                 workbox: {
-                    globPatterns: ['**/*.{js,css,html,svg,woff2}'],
+                    // The app is server-backed and cannot operate offline. Keep immutable,
+                    // content-hashed assets in the precache, but always load document
+                    // navigations from the network so a deploy cannot leave an open browser
+                    // pinned to an old index.html and its old lazy chunks.
+                    globPatterns: ['**/*.{js,css,svg,woff2}'],
+                    navigateFallback: null,
                     // Drop precaches from prior builds so old chunk hashes
                     // can't be served after a deploy. Combined with
                     // skipWaiting + clientsClaim this means a new SW
@@ -99,10 +104,6 @@ export default defineConfig(({ mode }) => {
                     cleanupOutdatedCaches: true,
                     skipWaiting: true,
                     clientsClaim: true,
-                    // Never cache the API response shells themselves with
-                    // the precache; only the runtimeCaching entry below
-                    // applies.
-                    navigateFallbackDenylist: [/^\/api\//],
                     runtimeCaching: [
                         {
                             urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/'),

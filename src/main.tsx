@@ -64,6 +64,21 @@ if ('serviceWorker' in navigator) {
     })
 }
 
+// Long-lived admin tabs should discover a new deployment without waiting for the
+// browser's throttled service-worker update cycle. The controllerchange listener above
+// reloads the page after the new worker takes control.
+if ('serviceWorker' in navigator) {
+    const updateServiceWorker = () => {
+        void navigator.serviceWorker.ready
+            .then((registration) => registration.update())
+            .catch(() => { /* best-effort; retry on the next signal */ })
+    }
+
+    window.addEventListener('load', updateServiceWorker)
+    window.addEventListener('focus', updateServiceWorker)
+    window.setInterval(updateServiceWorker, 5 * 60 * 1000)
+}
+
 const Login = React.lazy(() => import('./pages/Login'))
 
 const AdminDashboard = React.lazy(() => import('./pages/admin/AdminDashboard'))
