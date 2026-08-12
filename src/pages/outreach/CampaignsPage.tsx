@@ -80,30 +80,49 @@ function CampaignCard({ campaign, onStatusChange, onDelete }: {
     }
 
     return (
-        <div className="bg-card rounded-lg border border-border p-4 hover:border-border transition-colors">
-            <div className="flex items-start justify-between mb-3">
-                <div className="flex-1">
-                    <Link
-                        href={`/outreach/campaigns/${campaign.id}`}
-                        className="font-semibold text-foreground hover:text-primary"
-                    >
-                        {campaign.name}
-                    </Link>
-                    <div className="flex items-center gap-2 mt-1">
-                        <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${statusColors[campaign.status]}`}>
-                            {campaign.status}
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                            Created {new Date(campaign.createdAt).toLocaleDateString()}
-                        </span>
+        <div className="group w-full rounded-xl border border-border bg-card px-5 py-4 transition-colors hover:border-primary/30 hover:bg-accent/20">
+            <div className="grid gap-5 lg:grid-cols-[minmax(280px,1.6fr)_minmax(420px,1.8fr)_auto] lg:items-center">
+                {/* Campaign identity */}
+                <div className="flex min-w-0 items-center gap-3.5">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary/15 bg-primary/10">
+                        <Target className="h-5 w-5 text-primary" aria-hidden="true" />
+                    </div>
+                    <div className="min-w-0">
+                        <Link
+                            href={`/outreach/campaigns/${campaign.id}`}
+                            className="block truncate font-semibold text-foreground transition-colors hover:text-primary"
+                            title={campaign.name}
+                        >
+                            {campaign.name}
+                        </Link>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                            <span className={`rounded-full px-2 py-1 text-xs font-medium capitalize ${statusColors[campaign.status]}`}>
+                                {campaign.status}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                                Created {new Date(campaign.createdAt).toLocaleDateString()}
+                            </span>
+                        </div>
                     </div>
                 </div>
-                <div className="relative">
+
+                {/* Campaign metrics */}
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <CampaignMetric icon={<Users className="h-4 w-4" />} label="Leads" value={campaign.totalLeads} />
+                    <CampaignMetric icon={<Mail className="h-4 w-4" />} label="Sent" value={campaign.emailsSent ?? 0} />
+                    <CampaignMetric icon={<TrendingUp className="h-4 w-4" />} label="Opens" value={`${(campaign.openRate ?? 0).toFixed(1)}%`} />
+                    <CampaignMetric icon={<Target className="h-4 w-4" />} label="Replies" value={`${(campaign.replyRate ?? 0).toFixed(1)}%`} />
+                </div>
+
+                {/* Actions */}
+                <div className="relative flex justify-end border-t border-border pt-3 lg:border-0 lg:pt-0">
                     <button
                         onClick={() => setShowMenu(!showMenu)}
-                        className="p-1 rounded hover:bg-accent"
+                        className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        aria-label={`Actions for ${campaign.name}`}
+                        aria-expanded={showMenu}
                     >
-                        <MoreVertical className="w-5 h-5 text-muted-foreground" />
+                        <MoreVertical className="h-5 w-5" />
                     </button>
                     {showMenu && (
                         <>
@@ -153,37 +172,22 @@ function CampaignCard({ campaign, onStatusChange, onDelete }: {
                     )}
                 </div>
             </div>
+        </div>
+    )
+}
 
-            <div className="grid grid-cols-4 gap-4 mt-4">
-                <div className="text-center">
-                    <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-                        <Users className="w-4 h-4" />
-                    </div>
-                    <p className="text-lg font-semibold text-foreground">{campaign.totalLeads}</p>
-                    <p className="text-xs text-muted-foreground">Leads</p>
-                </div>
-                <div className="text-center">
-                    <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-                        <Mail className="w-4 h-4" />
-                    </div>
-                    <p className="text-lg font-semibold text-foreground">{campaign.emailsSent ?? 0}</p>
-                    <p className="text-xs text-muted-foreground">Sent</p>
-                </div>
-                <div className="text-center">
-                    <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-                        <TrendingUp className="w-4 h-4" />
-                    </div>
-                    <p className="text-lg font-semibold text-foreground">{(campaign.openRate ?? 0).toFixed(1)}%</p>
-                    <p className="text-xs text-muted-foreground">Opens</p>
-                </div>
-                <div className="text-center">
-                    <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-                        <Target className="w-4 h-4" />
-                    </div>
-                    <p className="text-lg font-semibold text-foreground">{(campaign.replyRate ?? 0).toFixed(1)}%</p>
-                    <p className="text-xs text-muted-foreground">Replies</p>
-                </div>
+function CampaignMetric({ icon, label, value }: {
+    icon: React.ReactNode
+    label: string
+    value: React.ReactNode
+}) {
+    return (
+        <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                {icon}
+                <span>{label}</span>
             </div>
+            <p className="mt-1 text-base font-semibold tabular-nums text-foreground">{value}</p>
         </div>
     )
 }
@@ -292,25 +296,30 @@ export function CampaignsPage() {
 
                 {/* Campaign List */}
                 {isLoading ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {[...Array(6)].map((_, i) => (
-                            <div key={i} className="bg-card rounded-lg border border-border p-4 animate-pulse">
-                                <div className="h-5 bg-muted rounded w-2/3 mb-2"></div>
-                                <div className="h-4 bg-muted rounded w-1/3 mb-4"></div>
-                                <div className="grid grid-cols-4 gap-4">
-                                    {[...Array(4)].map((_, j) => (
-                                        <div key={j} className="text-center">
-                                            <div className="h-6 bg-muted rounded mx-auto w-12 mb-1"></div>
-                                            <div className="h-3 bg-muted rounded mx-auto w-8"></div>
+                    <div className="space-y-3">
+                        {[...Array(4)].map((_, i) => (
+                            <div key={i} className="w-full animate-pulse rounded-xl border border-border bg-card px-5 py-4">
+                                <div className="grid gap-5 lg:grid-cols-[minmax(280px,1.6fr)_minmax(420px,1.8fr)_auto] lg:items-center">
+                                    <div className="flex items-center gap-3.5">
+                                        <div className="h-11 w-11 rounded-xl bg-muted" />
+                                        <div className="min-w-0 flex-1">
+                                            <div className="mb-2 h-4 w-2/3 rounded bg-muted" />
+                                            <div className="h-3 w-1/2 rounded bg-muted" />
                                         </div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                                    {[...Array(4)].map((_, j) => (
+                                            <div key={j} className="h-14 rounded-lg bg-muted" />
                                     ))}
+                                    </div>
+                                    <div className="h-8 w-8 justify-self-end rounded-lg bg-muted" />
                                 </div>
                             </div>
                         ))}
                     </div>
                 ) : data?.campaigns && data.campaigns.length > 0 ? (
                     <>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div className="space-y-3">
                         {data.campaigns.map((campaign) => (
                             <CampaignCard
                                 key={campaign.id}
