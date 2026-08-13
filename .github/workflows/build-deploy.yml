@@ -183,6 +183,7 @@ jobs:
                 -e XMAIL_SERVICE_ORGANIZATION_ID="${{ secrets.XMAIL_SERVICE_ORGANIZATION_ID }}" \
                 -e XPHERE_EVENTS_URL="${{ secrets.XPHERE_EVENTS_URL }}" \
                 -e XPHERE_EVENTS_API_KEY="${{ secrets.XPHERE_EVENTS_API_KEY }}" \
+                -e APOLLO_API_KEY="${{ secrets.APOLLO_API_KEY }}" \
                 --label "traefik.enable=${TRAEFIK_ENABLED}" \
                 --label "traefik.docker.network=coolify" \
                 --label "traefik.http.routers.${NAME}.rule=Host(\`mail.skale.club\`)" \

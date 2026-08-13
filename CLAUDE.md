@@ -97,9 +97,11 @@ npm run dev:server       # Express server with tsx watch only
 npm run build            # Build both client and server
 npm start                # Run production build (node dist/server/index.js)
 npm run lint             # ESLint (strict, zero warnings)
-npm run db:generate      # Generate Drizzle migrations
-npm run db:push          # Push schema to database
-npm run db:studio        # Open Drizzle Studio
+npm test                 # Vitest (single run); npm run test:watch for watch mode
+npm run db:studio        # Open Drizzle Studio (read-only)
+npm run db:indexes       # Apply sql/indexes.sql (CREATE INDEX CONCURRENTLY)
+npm run db:rls           # Run the RLS migration script
+npm run db:audit         # Audit schema drift between schema.ts and the DB
 ```
 
 ## Architecture Notes
@@ -193,11 +195,17 @@ All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql
 - **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/0000_dear_wolverine.sql`. The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
 - **Do NOT add Drizzle relations / constraints expecting them to apply automatically.** The TS-side schema is for type information; the DB side comes from the SQL migration.
 
-**Numbering convention:** Migrations are sequential integers (`001` through `019` as of 2026-05-16; `020_consolidate_rls.sql` is the next planned). When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+**Numbering convention:** Migrations are sequential integers. As of 2026-08-13 the highest applied is `050_campaign_content_language.sql`, so the next free number is `051`. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+
+**Two numbers must never collide.** `scripts/apply-pending-migrations.mjs` keys the ledger on the numeric prefix alone, so two files sharing a prefix register as one version and the second is silently skipped forever. A `032_reconcile_unique_indexes.sql` once collided with `032_add_native_email_provider.sql`; it was deleted on 2026-08-13 because `035` already creates the same index idempotently and transaction-safely. Do not reintroduce a duplicate prefix.
+
+**Applying:** `DATABASE_URL=... node scripts/apply-pending-migrations.mjs` applies everything pending and records it in `supabase_migrations.schema_migrations`. Two caveats:
+- The runner wraps each file in a transaction, so **a migration must not contain `CREATE INDEX CONCURRENTLY`** — that fails inside a transaction block. Put concurrent index builds in `sql/indexes.sql` and apply with `npm run db:indexes`.
+- A file carrying its own `BEGIN;`/`COMMIT;` commits the runner's outer transaction early, so the ledger insert lands outside it. Harmless for idempotent migrations, but it means a file is not atomic with its own ledger row.
 
 ## Key Constraints
 
-- No testing framework is currently configured
+- Tests run on Vitest (`npm test`); ~69 `*.test.ts` files live alongside the code they cover, plus `*.db.test.ts` integration tests that need a reachable `DATABASE_URL`
 - Registration endpoint is intentionally disabled (403)
 - Express 5 is beta — uses `req.query` instead of `req.params` in some places
 - Vite proxies `/api` requests to the backend in dev mode
