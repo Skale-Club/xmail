@@ -43,4 +43,29 @@ describe('Hermes prospect assessment guardrails', () => {
         expect(prospectAssessmentInputSchema.parse({ ...valid, recommendation: 'review', confidence: 20 }))
             .toMatchObject({ recommendation: 'review', confidence: 20 })
     })
+
+    it('promptTokens/completionTokens are optional and absent by default', () => {
+        const parsed = prospectAssessmentInputSchema.parse(valid)
+        expect(parsed.promptTokens).toBeUndefined()
+        expect(parsed.completionTokens).toBeUndefined()
+    })
+
+    it('accepts non-negative integer promptTokens/completionTokens', () => {
+        const parsed = prospectAssessmentInputSchema.parse({ ...valid, promptTokens: 512, completionTokens: 128 })
+        expect(parsed).toMatchObject({ promptTokens: 512, completionTokens: 128 })
+    })
+
+    it('accepts zero token counts', () => {
+        const parsed = prospectAssessmentInputSchema.parse({ ...valid, promptTokens: 0, completionTokens: 0 })
+        expect(parsed).toMatchObject({ promptTokens: 0, completionTokens: 0 })
+    })
+
+    it('rejects a negative promptTokens/completionTokens', () => {
+        expect(() => prospectAssessmentInputSchema.parse({ ...valid, promptTokens: -1 })).toThrow()
+        expect(() => prospectAssessmentInputSchema.parse({ ...valid, completionTokens: -1 })).toThrow()
+    })
+
+    it('rejects a non-integer promptTokens/completionTokens', () => {
+        expect(() => prospectAssessmentInputSchema.parse({ ...valid, promptTokens: 1.5 })).toThrow()
+    })
 })

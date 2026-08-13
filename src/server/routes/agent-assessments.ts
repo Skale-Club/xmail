@@ -5,7 +5,10 @@ import { db } from '../../db'
 import { prospectAiAssessments, prospectCandidates, type OutreachAgentScope } from '../../db/schema'
 import { agentHasScope, getAgentPrincipal, type AgentPrincipal } from '../lib/agent-auth'
 import { writeAgentAudit } from '../lib/agent-audit'
+import { recordCost } from '../lib/outreach-costs'
 import { hashProspectAssessmentInput, prospectAssessmentInputSchema } from '../lib/prospecting/assessment'
+import { buildAssessmentCostDedupKey } from '../lib/prospecting/cost-dedup'
+import { recordRunEvents, RUN_EVENT_CODES, type RecordRunEventInput } from '../lib/prospecting/journey'
 import { publishOutreachEvent } from '../lib/xphere-events'
 
 const router = Router()
@@ -49,6 +52,8 @@ router.post('/prospecting/candidates/:id/assessments', async (req, res) => {
             personalization: input.personalization,
             evidenceFields: input.evidenceFields,
             riskFlags: input.riskFlags,
+            promptTokens: input.promptTokens ?? null,
+            completionTokens: input.completionTokens ?? null,
         }).onConflictDoNothing({
             target: [
                 prospectAiAssessments.organizationId,
@@ -66,6 +71,45 @@ router.post('/prospecting/candidates/:id/assessments', async (req, res) => {
             ),
         })
         if (!assessment) throw new Error('Idempotent assessment conflict could not be resolved')
+
+        const assessEvents: RecordRunEventInput[] = [{
+            organizationId: principal.organizationId,
+            runId: candidate.runId,
+            candidateId: candidate.id,
+            code: RUN_EVENT_CODES.assess.RECORDED,
+            detail: { assessmentId: assessment.id, recommendation: assessment.recommendation, confidence: assessment.confidence },
+        }]
+        if (assessment.recommendation === 'rejected') {
+            assessEvents.push({
+                organizationId: principal.organizationId,
+                runId: candidate.runId,
+                candidateId: candidate.id,
+                code: RUN_EVENT_CODES.assess.REJECTED,
+                detail: { assessmentId: assessment.id },
+            })
+        }
+        await recordRunEvents(db, assessEvents)
+
+        // Read the persisted token counts (not `input`) so a replay of an idempotent
+        // request bills the same figure the original call recorded, rather than whatever
+        // the replaying caller happened to pass this time.
+        if (assessment.promptTokens !== null && assessment.completionTokens !== null) {
+            await recordCost(db, {
+                organizationId: principal.organizationId,
+                category: 'llm_tokens',
+                basis: 'actual',
+                quantity: assessment.promptTokens + assessment.completionTokens,
+                unit: 'token',
+                provider: assessment.modelProvider,
+                model: assessment.modelName,
+                assessmentId: assessment.id,
+                // Stable across retries: an assessment row is itself already idempotent per
+                // (organizationId, agentCredentialId, candidateId, idempotencyKey), so its id
+                // uniquely identifies this logical assessment operation.
+                dedupKey: buildAssessmentCostDedupKey(assessment.id),
+            })
+        }
+
         await writeAgentAudit({
             principal,
             request: req,
