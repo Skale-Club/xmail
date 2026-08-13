@@ -6,6 +6,7 @@ import {
     boolean,
     integer,
     bigint,
+    numeric,
     jsonb,
     pgEnum,
     uniqueIndex,
@@ -2461,6 +2462,7 @@ export type ProspectingRunStatus = 'pending' | 'searching' | 'discovered' | 'enr
 export type ProspectCandidateStatus = 'discovered' | 'enriched' | 'qualified' | 'imported' | 'rejected' | 'failed'
 export type ProspectEmailStatus = 'unknown' | 'verified' | 'likely' | 'unavailable' | 'invalid'
 export type ProspectScoreTier = 'a' | 'b' | 'c' | 'disqualified'
+export type ProspectImportedAs = 'created' | 'existing'
 
 export const outreachIcpProfiles = pgTable('outreach_icp_profiles', {
     id: uuid('id').primaryKey().defaultRandom(),
@@ -2501,6 +2503,14 @@ export const prospectingRuns = pgTable('prospecting_runs', {
     approvedCreditCeiling: integer('approved_credit_ceiling').default(0).notNull(),
     consumedCreditEstimate: integer('consumed_credit_estimate').default(0).notNull(),
     enrichmentApprovalId: uuid('enrichment_approval_id').references(() => outreachActionApprovals.id, { onDelete: 'restrict' }),
+    // Phase 31 (migration 051): stated pre-run hypothesis and measured post-send outcome rollup.
+    hypothesis: jsonb('hypothesis').$type<Record<string, unknown>>().default({}).notNull(),
+    outcomeEmailed: integer('outcome_emailed').default(0).notNull(),
+    outcomeReplied: integer('outcome_replied').default(0).notNull(),
+    outcomePositiveReplied: integer('outcome_positive_replied').default(0).notNull(),
+    outcomeBounced: integer('outcome_bounced').default(0).notNull(),
+    outcomeUnsubscribed: integer('outcome_unsubscribed').default(0).notNull(),
+    outcomeLastMeasuredAt: timestamp('outcome_last_measured_at'),
     lastError: text('last_error'),
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),
@@ -2514,6 +2524,8 @@ export const prospectingRuns = pgTable('prospecting_runs', {
     statusCheck: check('prospecting_runs_status_check', sql`${table.status} IN ('pending', 'searching', 'discovered', 'enriching', 'ready', 'imported', 'failed')`),
     limitCheck: check('prospecting_runs_limit_check', sql`${table.requestedLimit} BETWEEN 1 AND 100`),
     thresholdCheck: check('prospecting_runs_threshold_check', sql`${table.qualificationThreshold} BETWEEN 0 AND 100`),
+    hypothesisObject: check('prospecting_runs_hypothesis_object', sql`jsonb_typeof(${table.hypothesis}) = 'object'`),
+    outcomeCountsCheck: check('prospecting_runs_outcome_counts_check', sql`${table.outcomeEmailed} >= 0 AND ${table.outcomeReplied} >= 0 AND ${table.outcomePositiveReplied} >= 0 AND ${table.outcomeBounced} >= 0 AND ${table.outcomeUnsubscribed} >= 0`),
 }))
 
 export const prospectCandidates = pgTable('prospect_candidates', {
@@ -2542,6 +2554,8 @@ export const prospectCandidates = pgTable('prospect_candidates', {
     leadId: uuid('lead_id').references(() => leads.id, { onDelete: 'restrict' }),
     enrichedAt: timestamp('enriched_at'),
     importedAt: timestamp('imported_at'),
+    // Phase 31 (migration 051): whether import created a new lead or matched an existing one.
+    importedAs: text('imported_as').$type<ProspectImportedAs>(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -2551,6 +2565,7 @@ export const prospectCandidates = pgTable('prospect_candidates', {
     scoreCheck: check('prospect_candidates_score_check', sql`${table.score} BETWEEN 0 AND 100`),
     statusCheck: check('prospect_candidates_status_check', sql`${table.status} IN ('discovered', 'enriched', 'qualified', 'imported', 'rejected', 'failed')`),
     emailStatusCheck: check('prospect_candidates_email_status_check', sql`${table.emailStatus} IN ('unknown', 'verified', 'likely', 'unavailable', 'invalid')`),
+    importedAsCheck: check('prospect_candidates_imported_as_check', sql`${table.importedAs} IS NULL OR ${table.importedAs} IN ('created', 'existing')`),
 }))
 
 export type ProspectAiRecommendation = 'qualified' | 'review' | 'rejected'
@@ -2571,6 +2586,9 @@ export const prospectAiAssessments = pgTable('prospect_ai_assessments', {
     personalization: jsonb('personalization').$type<Record<string, unknown>>().default({}).notNull(),
     evidenceFields: jsonb('evidence_fields').$type<string[]>().default([]).notNull(),
     riskFlags: jsonb('risk_flags').$type<string[]>().default([]).notNull(),
+    // Phase 31 (migration 051): token accounting, feeds outreach_cost_entries (category llm_tokens).
+    promptTokens: integer('prompt_tokens'),
+    completionTokens: integer('completion_tokens'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
     idempotencyUnique: uniqueIndex('prospect_ai_assessments_idempotency_unique').on(
@@ -2585,11 +2603,111 @@ export const prospectAiAssessments = pgTable('prospect_ai_assessments', {
     confidenceCheck: check('prospect_ai_assessments_confidence_check', sql`${table.confidence} BETWEEN 0 AND 100`),
 }))
 
+// ============================================================
+// Prospecting run journey + outreach cost ledger (Phase 31) — migration 051
+// ============================================================
+
+export type ProspectingRunEventPhase = 'search' | 'score' | 'enrich' | 'assess' | 'import' | 'outcome'
+export type ProspectingRunEventLevel = 'info' | 'warn' | 'error'
+
+/** Append-only narrative of a prospecting run: one namespaced, ordered event per phase transition. */
+export const prospectingRunEvents = pgTable('prospecting_run_events', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    runId: uuid('run_id').references(() => prospectingRuns.id, { onDelete: 'cascade' }).notNull(),
+    candidateId: uuid('candidate_id').references(() => prospectCandidates.id, { onDelete: 'cascade' }),
+    sequenceNumber: bigint('sequence_number', { mode: 'number' })
+        .default(sql`nextval('prospecting_run_events_sequence_number_seq')`).notNull(),
+    phase: text('phase').$type<ProspectingRunEventPhase>().notNull(),
+    level: text('level').$type<ProspectingRunEventLevel>().default('info').notNull(),
+    code: text('code').notNull(),
+    summary: text('summary'),
+    detail: jsonb('detail').$type<Record<string, unknown>>().default({}).notNull(),
+    occurredAt: timestamp('occurred_at').defaultNow().notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+    sequenceUnique: uniqueIndex('prospecting_run_events_sequence_unique').on(table.sequenceNumber),
+    idxRunSequence: index('idx_prospecting_run_events_run_sequence').on(table.runId, table.sequenceNumber),
+    idxOrgCodeOccurred: index('idx_prospecting_run_events_org_code_occurred').on(table.organizationId, table.code, table.occurredAt),
+    idxOrgRunPhase: index('idx_prospecting_run_events_org_run_phase').on(table.organizationId, table.runId, table.phase),
+    phaseCheck: check('prospecting_run_events_phase_check', sql`${table.phase} IN ('search', 'score', 'enrich', 'assess', 'import', 'outcome')`),
+    levelCheck: check('prospecting_run_events_level_check', sql`${table.level} IN ('info', 'warn', 'error')`),
+    codeCheck: check('prospecting_run_events_code_check', sql`length(btrim(${table.code})) > 0`),
+    detailObject: check('prospecting_run_events_detail_object', sql`jsonb_typeof(${table.detail}) = 'object'`),
+}))
+
+export type OutreachCostCategory = 'apollo_credits' | 'llm_tokens' | 'inbox_subscription' | 'domain' | 'infrastructure'
+export type OutreachCostUnit = 'credit' | 'token' | 'month' | 'year'
+export type OutreachCostBasis = 'actual' | 'estimated' | 'amortized'
+
+/** Price book. A NULL organization_id row is the platform default rate for its category/provider/model. */
+export const outreachCostRates = pgTable('outreach_cost_rates', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }),
+    category: text('category').$type<OutreachCostCategory>().notNull(),
+    unit: text('unit').$type<OutreachCostUnit>().notNull(),
+    provider: text('provider'),
+    model: text('model'),
+    // USD micros (1e-6 USD) — per-token/per-credit prices round to zero in cents.
+    unitCostMicros: bigint('unit_cost_micros', { mode: 'number' }).notNull(),
+    currency: text('currency').default('usd').notNull(),
+    validFrom: timestamp('valid_from').defaultNow().notNull(),
+    validTo: timestamp('valid_to'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    idxCategoryProviderModelValid: index('idx_outreach_cost_rates_category_provider_model_valid').on(table.category, table.provider, table.model, table.validFrom),
+    categoryCheck: check('outreach_cost_rates_category_check', sql`${table.category} IN ('apollo_credits', 'llm_tokens', 'inbox_subscription', 'domain', 'infrastructure')`),
+    unitCheck: check('outreach_cost_rates_unit_check', sql`${table.unit} IN ('credit', 'token', 'month', 'year')`),
+    unitCostNonNegative: check('outreach_cost_rates_unit_cost_nonnegative', sql`${table.unitCostMicros} >= 0`),
+}))
+
+/**
+ * Append-only cost ledger. unit_cost_micros and amount_micros are frozen at write time —
+ * a later outreach_cost_rates change never rewrites the historical cost of a past entry.
+ */
+export const outreachCostEntries = pgTable('outreach_cost_entries', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    occurredAt: timestamp('occurred_at').defaultNow().notNull(),
+    category: text('category').$type<OutreachCostCategory>().notNull(),
+    basis: text('basis').$type<OutreachCostBasis>().notNull(),
+    quantity: numeric('quantity', { precision: 20, scale: 4 }).notNull(),
+    unit: text('unit').$type<OutreachCostUnit>().notNull(),
+    unitCostMicros: bigint('unit_cost_micros', { mode: 'number' }).notNull(),
+    amountMicros: bigint('amount_micros', { mode: 'number' }).notNull(),
+    currency: text('currency').default('usd').notNull(),
+    rateId: uuid('rate_id').references(() => outreachCostRates.id, { onDelete: 'set null' }),
+    provider: text('provider'),
+    model: text('model'),
+    runId: uuid('run_id').references(() => prospectingRuns.id, { onDelete: 'set null' }),
+    campaignId: uuid('campaign_id').references(() => campaigns.id, { onDelete: 'set null' }),
+    emailAccountId: uuid('email_account_id').references(() => emailAccounts.id, { onDelete: 'set null' }),
+    aiRunId: uuid('ai_run_id'),
+    assessmentId: uuid('assessment_id'),
+    dedupKey: text('dedup_key').notNull(),
+    detail: jsonb('detail').$type<Record<string, unknown>>().default({}).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+    orgDedupUnique: uniqueIndex('outreach_cost_entries_org_dedup_unique').on(table.organizationId, table.dedupKey),
+    idxOrgOccurred: index('idx_outreach_cost_entries_org_occurred').on(table.organizationId, table.occurredAt),
+    idxOrgCategoryOccurred: index('idx_outreach_cost_entries_org_category_occurred').on(table.organizationId, table.category, table.occurredAt),
+    idxRun: index('idx_outreach_cost_entries_run').on(table.runId).where(sql`${table.runId} IS NOT NULL`),
+    categoryCheck: check('outreach_cost_entries_category_check', sql`${table.category} IN ('apollo_credits', 'llm_tokens', 'inbox_subscription', 'domain', 'infrastructure')`),
+    basisCheck: check('outreach_cost_entries_basis_check', sql`${table.basis} IN ('actual', 'estimated', 'amortized')`),
+    unitCheck: check('outreach_cost_entries_unit_check', sql`${table.unit} IN ('credit', 'token', 'month', 'year')`),
+    quantityNonNegative: check('outreach_cost_entries_quantity_nonnegative', sql`${table.quantity} >= 0`),
+    amountNonNegative: check('outreach_cost_entries_amount_nonnegative', sql`${table.amountMicros} >= 0`),
+    detailObject: check('outreach_cost_entries_detail_object', sql`jsonb_typeof(${table.detail}) = 'object'`),
+}))
+
 export const prospectingRunsRelations = relations(prospectingRuns, ({ one, many }) => ({
     organization: one(organizations, { fields: [prospectingRuns.organizationId], references: [organizations.id] }),
     agentCredential: one(outreachAgentCredentials, { fields: [prospectingRuns.agentCredentialId], references: [outreachAgentCredentials.id] }),
     icpProfile: one(outreachIcpProfiles, { fields: [prospectingRuns.icpProfileId], references: [outreachIcpProfiles.id] }),
     candidates: many(prospectCandidates),
+    events: many(prospectingRunEvents),
+    costEntries: many(outreachCostEntries),
 }))
 
 export const prospectCandidatesRelations = relations(prospectCandidates, ({ one }) => ({
@@ -2601,6 +2719,32 @@ export const prospectAiAssessmentsRelations = relations(prospectAiAssessments, (
     candidate: one(prospectCandidates, { fields: [prospectAiAssessments.candidateId], references: [prospectCandidates.id] }),
     agentCredential: one(outreachAgentCredentials, { fields: [prospectAiAssessments.agentCredentialId], references: [outreachAgentCredentials.id] }),
 }))
+
+export const prospectingRunEventsRelations = relations(prospectingRunEvents, ({ one }) => ({
+    organization: one(organizations, { fields: [prospectingRunEvents.organizationId], references: [organizations.id] }),
+    run: one(prospectingRuns, { fields: [prospectingRunEvents.runId], references: [prospectingRuns.id] }),
+    candidate: one(prospectCandidates, { fields: [prospectingRunEvents.candidateId], references: [prospectCandidates.id] }),
+}))
+
+export const outreachCostRatesRelations = relations(outreachCostRates, ({ one, many }) => ({
+    organization: one(organizations, { fields: [outreachCostRates.organizationId], references: [organizations.id] }),
+    entries: many(outreachCostEntries),
+}))
+
+export const outreachCostEntriesRelations = relations(outreachCostEntries, ({ one }) => ({
+    organization: one(organizations, { fields: [outreachCostEntries.organizationId], references: [organizations.id] }),
+    rate: one(outreachCostRates, { fields: [outreachCostEntries.rateId], references: [outreachCostRates.id] }),
+    run: one(prospectingRuns, { fields: [outreachCostEntries.runId], references: [prospectingRuns.id] }),
+    campaign: one(campaigns, { fields: [outreachCostEntries.campaignId], references: [campaigns.id] }),
+    emailAccount: one(emailAccounts, { fields: [outreachCostEntries.emailAccountId], references: [emailAccounts.id] }),
+}))
+
+export type ProspectingRunEvent = typeof prospectingRunEvents.$inferSelect
+export type NewProspectingRunEvent = typeof prospectingRunEvents.$inferInsert
+export type OutreachCostRate = typeof outreachCostRates.$inferSelect
+export type NewOutreachCostRate = typeof outreachCostRates.$inferInsert
+export type OutreachCostEntry = typeof outreachCostEntries.$inferSelect
+export type NewOutreachCostEntry = typeof outreachCostEntries.$inferInsert
 
 export type OutreachIcpProfile = typeof outreachIcpProfiles.$inferSelect
 export type NewOutreachIcpProfile = typeof outreachIcpProfiles.$inferInsert
