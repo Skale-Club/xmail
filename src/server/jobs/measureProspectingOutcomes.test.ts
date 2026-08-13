@@ -1,0 +1,201 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+/**
+ * Pure unit tests — no DB. `queryClient` is mocked (both the run-listing SELECT and the
+ * batched UPDATE...RETURNING), and `recordRunEvents` is mocked so journey-event assertions
+ * don't touch drizzle's `db`. Follows the sibling job-test placement convention from
+ * src/server/jobs/enforceDeliverabilityGuardrails.test.ts and
+ * src/server/jobs/amortizeSubscriptionCosts.test.ts.
+ */
+
+const queryClientMock = vi.hoisted(() => vi.fn())
+const recordRunEventsMock = vi.hoisted(() => vi.fn())
+
+vi.mock('../../db', () => ({ db: {}, queryClient: queryClientMock }))
+vi.mock('../lib/prospecting/journey', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../lib/prospecting/journey')>()
+    return { ...actual, recordRunEvents: recordRunEventsMock }
+})
+
+import { aggregateRunOutcomes, measureProspectingOutcomes } from './measureProspectingOutcomes'
+import { RUN_EVENT_CODES } from '../lib/prospecting/journey'
+
+function sourceRow(overrides: Partial<Parameters<typeof aggregateRunOutcomes>[0][number]> = {}) {
+    return {
+        runId: 'run-1',
+        organizationId: 'org-1',
+        importedAs: 'created' as const,
+        leadId: 'lead-1',
+        leadStatus: 'contacted',
+        sentAt: null,
+        repliedAt: null,
+        bouncedAt: null,
+        unsubscribedAt: null,
+        ...overrides,
+    }
+}
+
+function runSnapshot(overrides: Partial<{
+    id: string
+    organizationId: string
+    outcomeEmailed: number
+    outcomeReplied: number
+    outcomePositiveReplied: number
+    outcomeBounced: number
+    outcomeUnsubscribed: number
+}> = {}) {
+    return {
+        id: 'run-1',
+        organizationId: 'org-1',
+        outcomeEmailed: 0,
+        outcomeReplied: 0,
+        outcomePositiveReplied: 0,
+        outcomeBounced: 0,
+        outcomeUnsubscribed: 0,
+        ...overrides,
+    }
+}
+
+beforeEach(() => {
+    queryClientMock.mockReset()
+    recordRunEventsMock.mockReset()
+})
+
+describe('aggregateRunOutcomes', () => {
+    it('excludes candidates with imported_as = existing', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ importedAs: 'existing', sentAt: '2026-08-01T00:00:00.000Z' }),
+        ])
+        expect(result.get('run-1')).toBeUndefined()
+    })
+
+    it('excludes candidates with imported_as = null (pre-migration rows)', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ importedAs: null, sentAt: '2026-08-01T00:00:00.000Z' }),
+        ])
+        expect(result.get('run-1')).toBeUndefined()
+    })
+
+    it('counts a lead once even when it has several sent emails', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ sentAt: '2026-08-01T00:00:00.000Z' }),
+            sourceRow({ sentAt: '2026-08-05T00:00:00.000Z' }),
+            sourceRow({ sentAt: '2026-08-10T00:00:00.000Z' }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ outcomeEmailed: 1 })
+    })
+
+    it('does not count a lead that was imported but never emailed', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ sentAt: null }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ outcomeEmailed: 0 })
+    })
+
+    it('only counts outcomePositiveReplied for leads whose status is interested', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ leadId: 'lead-interested', leadStatus: 'interested', repliedAt: '2026-08-01T00:00:00.000Z' }),
+            sourceRow({ leadId: 'lead-replied-only', leadStatus: 'replied', repliedAt: '2026-08-01T00:00:00.000Z' }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ outcomeReplied: 2, outcomePositiveReplied: 1 })
+    })
+
+    it('attributes rows to distinct runs independently', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ runId: 'run-1', leadId: 'lead-a', sentAt: '2026-08-01T00:00:00.000Z' }),
+            sourceRow({ runId: 'run-2', leadId: 'lead-b', bouncedAt: '2026-08-01T00:00:00.000Z' }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ outcomeEmailed: 1, outcomeBounced: 0 })
+        expect(result.get('run-2')).toMatchObject({ outcomeEmailed: 0, outcomeBounced: 1 })
+    })
+})
+
+describe('measureProspectingOutcomes', () => {
+    it('does not throw when the run-listing query fails', async () => {
+        queryClientMock.mockRejectedValueOnce(new Error('db unreachable'))
+
+        await expect(measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))).resolves.toEqual({
+            examined: 0, updated: 0,
+        })
+        expect(recordRunEventsMock).not.toHaveBeenCalled()
+    })
+
+    it('does not throw when the source-rows query fails', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot()])
+            .mockRejectedValueOnce(new Error('db unreachable'))
+
+        await expect(measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))).resolves.toEqual({
+            examined: 1, updated: 0,
+        })
+        expect(recordRunEventsMock).not.toHaveBeenCalled()
+    })
+
+    it('does not throw when the batched update query fails', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot()])
+            .mockResolvedValueOnce([])
+            .mockRejectedValueOnce(new Error('db unreachable'))
+
+        await expect(measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))).resolves.toEqual({
+            examined: 1, updated: 0,
+        })
+        expect(recordRunEventsMock).not.toHaveBeenCalled()
+    })
+
+    it('does nothing (no update query, no events) when there are no imported runs', async () => {
+        queryClientMock.mockResolvedValueOnce([])
+
+        const summary = await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(summary).toEqual({ examined: 0, updated: 0 })
+        expect(queryClientMock).toHaveBeenCalledTimes(1)
+        expect(recordRunEventsMock).not.toHaveBeenCalled()
+    })
+
+    it('emits an outcome.emailed event when outcomeEmailed changes', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 0 })])
+            .mockResolvedValueOnce([sourceRow({ sentAt: '2026-08-01T00:00:00.000Z' })])
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 1 })])
+
+        const summary = await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(summary).toEqual({ examined: 1, updated: 1 })
+        expect(recordRunEventsMock).toHaveBeenCalledTimes(1)
+        const events = recordRunEventsMock.mock.calls[0][1]
+        expect(events).toEqual([
+            expect.objectContaining({ code: RUN_EVENT_CODES.outcome.EMAILED, runId: 'run-1', organizationId: 'org-1' }),
+        ])
+        expect(events[0].detail).toMatchObject({ outcomeEmailed: 1 })
+    })
+
+    it('does not emit any journey event when counters are identical to the previous measurement', async () => {
+        const unchanged = runSnapshot({ outcomeEmailed: 3, outcomeReplied: 1, outcomePositiveReplied: 1, outcomeBounced: 0, outcomeUnsubscribed: 0 })
+        queryClientMock
+            .mockResolvedValueOnce([unchanged])
+            .mockResolvedValueOnce([
+                sourceRow({ leadId: 'lead-a', leadStatus: 'interested', sentAt: '2026-08-01T00:00:00.000Z', repliedAt: '2026-08-02T00:00:00.000Z' }),
+                sourceRow({ leadId: 'lead-b', sentAt: '2026-08-01T00:00:00.000Z' }),
+                sourceRow({ leadId: 'lead-c', sentAt: '2026-08-01T00:00:00.000Z' }),
+            ])
+            .mockResolvedValueOnce([unchanged])
+
+        const summary = await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(summary).toEqual({ examined: 1, updated: 1 })
+        expect(recordRunEventsMock).not.toHaveBeenCalled()
+    })
+
+    it('defaults a run with zero attributable candidates to zero counters (still updated, no events)', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot()])
+            .mockResolvedValueOnce([sourceRow({ importedAs: 'existing', sentAt: '2026-08-01T00:00:00.000Z' })])
+            .mockResolvedValueOnce([runSnapshot()])
+
+        const summary = await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(summary).toEqual({ examined: 1, updated: 1 })
+        expect(recordRunEventsMock).not.toHaveBeenCalled()
+    })
+})

@@ -15,6 +15,7 @@ import {
 import { agentHasScope, getAgentPrincipal, type AgentPrincipal } from '../lib/agent-auth'
 import { writeAgentAudit } from '../lib/agent-audit'
 import { recordCost } from '../lib/outreach-costs'
+import { emptyAdvisory, loadAdvisory } from '../lib/prospecting/advisory'
 import { createProspectProvider, MAX_APOLLO_CREDITS_PER_PERSON } from '../lib/prospecting/apollo'
 import { buildEnrichmentCostDedupKey } from '../lib/prospecting/cost-dedup'
 import { normalizeLeadEmail, resolveImportedAs } from '../lib/prospecting/email-normalization'
@@ -264,12 +265,29 @@ router.post('/searches', async (req, res) => {
             deduplicationKey: `prospecting.search_completed:${created.id}`,
             payload: { run_id: created.id, provider: input.provider, discovered_count: candidates.inserted.length },
         })
+        // Prior-run learning, folded directly into this response rather than a separate
+        // "insights" endpoint the agent would have to remember to call. Advisory
+        // computation must never break or delay the run itself: the run and its
+        // candidates are already committed above, so a failure here only degrades this
+        // additive field, never the run's own outcome.
+        let advisory
+        try {
+            advisory = await loadAdvisory(db, {
+                organizationId: principal.organizationId,
+                searchFilters: input.filters,
+                excludeRunId: created.id,
+            })
+        } catch (advisoryError) {
+            console.error('Agent prospecting advisory failed:', advisoryError instanceof Error ? advisoryError.message : advisoryError)
+            advisory = emptyAdvisory()
+        }
         res.status(201).json({
             run: candidates.run,
             candidates: candidates.inserted,
             totalAvailable: search.totalAvailable,
             idempotentReplay: false,
             enrichmentRequiredForContactData: true,
+            advisory,
         })
     } catch (error) {
         if (runId) {
