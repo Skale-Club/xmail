@@ -102,7 +102,7 @@ overlapping windows, and that tie-break is what keeps the answer unambiguous.
 | --- | --- |
 | `inbox_subscription` | icemail, USD 2.50/inbox/month. 5 inboxes ⇒ **USD 12.50/month**, posted by the monthly amortization job |
 | `lead_source` | provider-agnostic (renamed from `apollo_credits` in migration 054 — the real production source is xcraper/Apify, not Apollo). An xcraper run posts its **actual** reported cost via `amountMicrosOverride`, not a rate-book estimate; Apollo enrichment still posts an estimated ceiling and remains otherwise unpriced |
-| `email_verification` | not yet priced |
+| `email_verification` | MillionVerifier, **placeholder** at USD 0.0005/credit (migration 055). A rounded list price, not a confirmed purchase — published tiers span ~8× and stacking bonuses lower the effective rate further. **Quantity must be credits the provider reports as consumed, not emails submitted**: MillionVerifier charges only for conclusive results, never for risky (unknown/catch-all) ones |
 | `llm_tokens` | rate not yet seeded; Kimi is a flat plan (`amortized`, ~0 marginal), the OpenRouter fallback is per-token |
 | `domain`, `infrastructure` | not yet priced |
 
