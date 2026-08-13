@@ -38,6 +38,46 @@ LLM **externo** (sem GPU local) e teto de RAM pra nunca ameaçar o email.
   que também é o `TELEGRAM_HOME_CHANNEL` (notificações/cron caem aí). Polling de saída, sem porta aberta.
 - **CLI:** `docker exec -it hermes hermes chat` (interativo) ou `hermes -z "prompt"` (one-shot).
 
+## Papel: orquestrador do Active Prospect System (verificado 2026-08-13)
+
+O Hermes não é só um assistente de chat — ele **orquestra o pipeline de prospecção**
+inteiro (a memória do agente registra: "EU disparo as ações, não peço pro Vanildo
+fazer no navegador"):
+
+1. Vanildo pede no Telegram ("vamos prospectar X em Y").
+2. Hermes chama `POST $XCRAPER_SERVICE_URL/scrape` (xcraper em
+   `https://xcraper.skale.club/api/service`, autenticado por `XCRAPER_SERVICE_KEY`
+   no `hermes.env`) e faz poll de `/scrape/<id>` a cada ~20s até `completed`.
+3. O xcraper (Apify/Google Maps) faz **auto-push pro Xphere** como prospects
+   (`source=xcraper`, `lifecycle_stage=prospect`); o **Website Analyzer do Xphere**
+   roda sozinho em quem tem domínio (audit + screenshots + lead_score +
+   websiteInsights multilíngue).
+4. Hermes tria os resultados e recomenda; **Vanildo aprova só o sensível**
+   (prospect→lead, disparo de outreach; preview de website é manual only).
+5. Outreach: via MCP do **Xphere** — `xmail_outreach_status` (lista campanhas/inboxes)
+   e `prospects_enroll_in_campaign` (enrola E ativa; dry-run por padrão, só executa
+   com `confirmed:true` após aprovação explícita no Telegram).
+
+### MCPs conectados (4)
+
+| Nome | Transporte | Papel |
+|---|---|---|
+| `xphere` | `https://xphere.app/api/mcp` | prospects, Website Analyzer, enrollment/ativação de campanha |
+| `skaleclub` | `https://skale.club/mcp` | site/serviços Skale Club |
+| `notion` | stdio `npx @notionhq/notion-mcp-server` | workspace Skale Club |
+| `xmail` | stdio `node /opt/xmail-mcp/server.mjs` | gateway escopado `/api/agent/outreach/*` |
+
+> A fronteira de segurança descrita em `docs/outreach-hermes-architecture.md`
+> (sem ativação, sem envio) vale **apenas para o gateway do xmail**. Pelo MCP do
+> Xphere o Hermes consegue enrolar e ativar campanhas — o gate ali é o
+> `confirmed:true` + aprovação humana no chat, não uma restrição de capability.
+
+### Crons ativos (2026-08)
+
+- `hermes-memories-backup` — 02:00 ET diário, `scripts/hermes-backup.sh`, modo no-agent.
+- `email-verification-credits` — 09:00 ET diário, `verification-credits.py`, modo no-agent.
+- `weekly-health-check` — **pausado** desde 2026-08-10 (custo recorrente).
+
 ## Notion + Health Check semanal (adicionado 2026-07-08)
 
 - **MCP do Notion conectado** ao Hermes via servidor stdio oficial

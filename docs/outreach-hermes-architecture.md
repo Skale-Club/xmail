@@ -21,6 +21,17 @@ There is no agent endpoint to activate a campaign or dispatch mail. Human activa
 send continue through the existing campaign validation, suppression, idempotency and dispatcher
 policy gates.
 
+> **Scope of this boundary (production reality, verified 2026-08-13).** Everything above
+> describes the **Xmail agent gateway only**. In production Hermes also carries three other
+> MCPs (`xphere`, `skaleclub`, `notion`) plus direct xcraper service credentials, and acts as
+> the orchestrator of the whole prospecting pipeline (see `hermes/README.md`). In particular,
+> Xphere's MCP tool `prospects_enroll_in_campaign` **can enroll prospects and activate an
+> Xmail campaign** through Xphere's service-key path — its gate is a `confirmed:true`
+> parameter granted after explicit human approval in chat (dry-run otherwise), not a missing
+> capability. The invariant that holds across all paths is narrower than this document
+> originally implied: Hermes never talks to SMTP or the dispatcher directly, and every send
+> still passes Xmail's campaign validation, suppression and verification gates.
+
 ## Event flow
 
 ```mermaid
