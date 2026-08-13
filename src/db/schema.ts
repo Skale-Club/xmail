@@ -2457,7 +2457,10 @@ export type NewOutreachActionApproval = typeof outreachActionApprovals.$inferIns
 // Provider-neutral prospecting pipeline (Phase 27) — migration 046
 // ============================================================
 
-export type ProspectProviderName = 'apollo'
+// Phase 32 (migration 054): 'xcraper' is the actual production lead source (Google Maps
+// via Apify, relayed through Xphere). 'apollo' has never run in production but is kept
+// as a possible future provider — see migration 054's header comment.
+export type ProspectProviderName = 'apollo' | 'xcraper'
 export type ProspectingRunStatus = 'pending' | 'searching' | 'discovered' | 'enriching' | 'ready' | 'imported' | 'failed'
 export type ProspectCandidateStatus = 'discovered' | 'enriched' | 'qualified' | 'imported' | 'rejected' | 'failed'
 export type ProspectEmailStatus = 'unknown' | 'verified' | 'likely' | 'unavailable' | 'invalid'
@@ -2520,7 +2523,7 @@ export const prospectingRuns = pgTable('prospecting_runs', {
     orgIdempotencyUnique: uniqueIndex('prospecting_runs_org_idempotency_unique').on(table.organizationId, table.provider, table.idempotencyKey),
     idxOrgCreated: index('idx_prospecting_runs_org_created').on(table.organizationId, table.createdAt),
     idxStatus: index('idx_prospecting_runs_status').on(table.status, table.updatedAt),
-    providerCheck: check('prospecting_runs_provider_check', sql`${table.provider} IN ('apollo')`),
+    providerCheck: check('prospecting_runs_provider_check', sql`${table.provider} IN ('apollo', 'xcraper')`),
     statusCheck: check('prospecting_runs_status_check', sql`${table.status} IN ('pending', 'searching', 'discovered', 'enriching', 'ready', 'imported', 'failed')`),
     limitCheck: check('prospecting_runs_limit_check', sql`${table.requestedLimit} BETWEEN 1 AND 100`),
     thresholdCheck: check('prospecting_runs_threshold_check', sql`${table.qualificationThreshold} BETWEEN 0 AND 100`),
@@ -2566,6 +2569,7 @@ export const prospectCandidates = pgTable('prospect_candidates', {
     statusCheck: check('prospect_candidates_status_check', sql`${table.status} IN ('discovered', 'enriched', 'qualified', 'imported', 'rejected', 'failed')`),
     emailStatusCheck: check('prospect_candidates_email_status_check', sql`${table.emailStatus} IN ('unknown', 'verified', 'likely', 'unavailable', 'invalid')`),
     importedAsCheck: check('prospect_candidates_imported_as_check', sql`${table.importedAs} IS NULL OR ${table.importedAs} IN ('created', 'existing')`),
+    providerCheck: check('prospect_candidates_provider_check', sql`${table.provider} IN ('apollo', 'xcraper')`),
 }))
 
 export type ProspectAiRecommendation = 'qualified' | 'review' | 'rejected'
@@ -2636,8 +2640,13 @@ export const prospectingRunEvents = pgTable('prospecting_run_events', {
     detailObject: check('prospecting_run_events_detail_object', sql`jsonb_typeof(${table.detail}) = 'object'`),
 }))
 
-export type OutreachCostCategory = 'apollo_credits' | 'llm_tokens' | 'inbox_subscription' | 'domain' | 'infrastructure'
-export type OutreachCostUnit = 'credit' | 'token' | 'month' | 'year'
+// Phase 32 (migration 054): 'apollo_credits' was renamed to the provider-agnostic
+// 'lead_source' (the `provider` column, e.g. 'apollo'/'apify', already carries the vendor
+// distinction) and 'email_verification' was added as its own category. 'result' was added
+// as a unit because Apify (the actual production lead source) bills per scraped result,
+// not per credit — see migration 054's header comment.
+export type OutreachCostCategory = 'lead_source' | 'email_verification' | 'llm_tokens' | 'inbox_subscription' | 'domain' | 'infrastructure'
+export type OutreachCostUnit = 'credit' | 'token' | 'month' | 'year' | 'result'
 export type OutreachCostBasis = 'actual' | 'estimated' | 'amortized'
 
 /** Price book. A NULL organization_id row is the platform default rate for its category/provider/model. */
@@ -2657,8 +2666,8 @@ export const outreachCostRates = pgTable('outreach_cost_rates', {
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
     idxCategoryProviderModelValid: index('idx_outreach_cost_rates_category_provider_model_valid').on(table.category, table.provider, table.model, table.validFrom),
-    categoryCheck: check('outreach_cost_rates_category_check', sql`${table.category} IN ('apollo_credits', 'llm_tokens', 'inbox_subscription', 'domain', 'infrastructure')`),
-    unitCheck: check('outreach_cost_rates_unit_check', sql`${table.unit} IN ('credit', 'token', 'month', 'year')`),
+    categoryCheck: check('outreach_cost_rates_category_check', sql`${table.category} IN ('lead_source', 'email_verification', 'llm_tokens', 'inbox_subscription', 'domain', 'infrastructure')`),
+    unitCheck: check('outreach_cost_rates_unit_check', sql`${table.unit} IN ('credit', 'token', 'month', 'year', 'result')`),
     unitCostNonNegative: check('outreach_cost_rates_unit_cost_nonnegative', sql`${table.unitCostMicros} >= 0`),
 }))
 
@@ -2693,9 +2702,9 @@ export const outreachCostEntries = pgTable('outreach_cost_entries', {
     idxOrgOccurred: index('idx_outreach_cost_entries_org_occurred').on(table.organizationId, table.occurredAt),
     idxOrgCategoryOccurred: index('idx_outreach_cost_entries_org_category_occurred').on(table.organizationId, table.category, table.occurredAt),
     idxRun: index('idx_outreach_cost_entries_run').on(table.runId).where(sql`${table.runId} IS NOT NULL`),
-    categoryCheck: check('outreach_cost_entries_category_check', sql`${table.category} IN ('apollo_credits', 'llm_tokens', 'inbox_subscription', 'domain', 'infrastructure')`),
+    categoryCheck: check('outreach_cost_entries_category_check', sql`${table.category} IN ('lead_source', 'email_verification', 'llm_tokens', 'inbox_subscription', 'domain', 'infrastructure')`),
     basisCheck: check('outreach_cost_entries_basis_check', sql`${table.basis} IN ('actual', 'estimated', 'amortized')`),
-    unitCheck: check('outreach_cost_entries_unit_check', sql`${table.unit} IN ('credit', 'token', 'month', 'year')`),
+    unitCheck: check('outreach_cost_entries_unit_check', sql`${table.unit} IN ('credit', 'token', 'month', 'year', 'result')`),
     quantityNonNegative: check('outreach_cost_entries_quantity_nonnegative', sql`${table.quantity} >= 0`),
     amountNonNegative: check('outreach_cost_entries_amount_nonnegative', sql`${table.amountMicros} >= 0`),
     detailObject: check('outreach_cost_entries_detail_object', sql`jsonb_typeof(${table.detail}) = 'object'`),

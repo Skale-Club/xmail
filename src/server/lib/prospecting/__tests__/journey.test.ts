@@ -51,8 +51,8 @@ describe('RUN_EVENT_CODES phase mapping', () => {
                 checked += 1
             }
         }
-        // 5 + 3 + 5 + 2 + 3 + 4 = 22 codes across the six phases.
-        expect(checked).toBe(22)
+        // 5 + 3 + 5 + 2 + 4 + 4 = 23 codes across the six phases.
+        expect(checked).toBe(23)
     })
 
     it('codes are frozen and cannot be mutated', () => {
@@ -89,6 +89,7 @@ describe('defaultLevelForCode', () => {
         RUN_EVENT_CODES.import.LEAD_CREATED,
         RUN_EVENT_CODES.import.LEAD_EXISTING,
         RUN_EVENT_CODES.import.SKIPPED_INELIGIBLE,
+        RUN_EVENT_CODES.import.EXTERNAL_RUN_REGISTERED,
         RUN_EVENT_CODES.outcome.EMAILED,
         RUN_EVENT_CODES.outcome.REPLIED,
         RUN_EVENT_CODES.outcome.BOUNCED,

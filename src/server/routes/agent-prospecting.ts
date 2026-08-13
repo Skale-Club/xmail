@@ -473,6 +473,16 @@ router.post('/searches/:id/enrich', async (req, res) => {
         })
 
         try {
+            // Phase 32 (migration 054) widened prospecting_runs.provider to also allow
+            // 'xcraper', but createProspectProvider only ever implements Apollo — an
+            // 'xcraper' run is registered directly as already 'imported' (see
+            // routes/outreach/prospecting.ts's /external-runs) and so can never reach
+            // 'discovered'/'ready' status to get here in practice. This guard narrows the
+            // type for createProspectProvider and turns that invariant into an explicit
+            // runtime check instead of a silent cast.
+            if (run.provider !== 'apollo') {
+                throw new Error(`Unsupported prospect provider for enrichment: ${run.provider}`)
+            }
             const provider = createProspectProvider(run.provider)
             const result = await provider.enrich(pending.map((candidate) => candidate.externalPersonId))
             if (result.maximumCreditEstimate > approval.maximumCreditCost) {
@@ -536,7 +546,10 @@ router.post('/searches/:id/enrich', async (req, res) => {
                 // e.g. via account/usage APIs) may post a correcting entry against this one.
                 await recordCost(tx, {
                     organizationId: principal.organizationId,
-                    category: 'apollo_credits',
+                    // Phase 32 (migration 054): 'apollo_credits' was renamed to the
+                    // provider-agnostic 'lead_source' — this call's `provider: 'apollo'`
+                    // below already carries the vendor distinction.
+                    category: 'lead_source',
                     basis: 'estimated',
                     quantity: result.maximumCreditEstimate,
                     unit: 'credit',

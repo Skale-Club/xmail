@@ -65,6 +65,12 @@ export const RUN_EVENT_CODES = Object.freeze({
         LEAD_CREATED: 'import.lead_created',
         LEAD_EXISTING: 'import.lead_existing',
         SKIPPED_INELIGIBLE: 'import.skipped_ineligible',
+        // Phase 32 (migration 054): an externally-run prospecting run (e.g. xcraper/Apify,
+        // registered via POST /api/outreach/prospecting/external-runs) was recorded after
+        // the fact — the run already completed and imported leads outside xmail's own
+        // search/score/enrich flow, so none of the other import.* codes (which describe a
+        // single candidate's fate during xmail-driven import) fit.
+        EXTERNAL_RUN_REGISTERED: 'import.external_run_registered',
     }),
     outcome: Object.freeze({
         EMAILED: 'outcome.emailed',

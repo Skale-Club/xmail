@@ -145,6 +145,20 @@ export interface RecordCostInput {
     dedupKey: string
     occurredAt?: Date
     detail?: Record<string, unknown>
+    /**
+     * Use when the caller already knows the ACTUAL total cost of this unit of work (e.g. a
+     * provider like Apify reports back what a scrape run really cost), rather than a
+     * quantity to be priced against the local price book. When set, `amountMicros` is
+     * taken verbatim from this value instead of `round(quantity * unitCostMicros)` — a
+     * provider that reports its own actual spend is a better source of truth than any
+     * local rate row, and the ledger must not overwrite that known figure with an
+     * estimate. `unitCostMicros` is still derived (round(amountMicrosOverride / quantity),
+     * or 0 when quantity is 0) purely so the per-unit figure stays meaningful for
+     * reporting; it is never used to compute `amountMicros` in this path. `rate_missing`
+     * is deliberately NOT set even though no price-book rate is resolved/used — the cost
+     * isn't missing, it's just not sourced from the price book.
+     */
+    amountMicrosOverride?: number
 }
 
 export interface RecordCostResult {
@@ -168,6 +182,10 @@ export interface RecordCostResult {
  * - If no rate is found, still writes the entry with unitCostMicros=0, amountMicros=0
  *   and detail.rate_missing=true, so unpriced usage is visible in the ledger rather than
  *   silently dropped.
+ * - If `amountMicrosOverride` is set, the price book is not consulted at all: the caller
+ *   already knows the actual total cost (e.g. a provider like Apify reporting back what a
+ *   run really cost), which is a better source than any local rate, so it is written
+ *   verbatim instead of being estimated. See `RecordCostInput.amountMicrosOverride`.
  * - Never throws: telemetry/accounting must not be able to break the caller's actual
  *   work. A failure is caught, logged, and returned as an unwritten result.
  */
@@ -179,22 +197,37 @@ export async function recordCost(db: DbClient, input: RecordCostInput): Promise<
         }
 
         const occurredAt = input.occurredAt ?? new Date()
-        const rate = await resolveRate(db, {
-            organizationId: input.organizationId,
-            category: input.category,
-            unit: input.unit,
-            provider: input.provider ?? null,
-            model: input.model ?? null,
-            at: occurredAt,
-        })
 
-        const rateMissing = rate === null
-        const unitCostMicros = rate ? rate.unitCostMicros : 0
-        const amountMicros = rateMissing ? 0 : Math.round(quantity * unitCostMicros)
+        let rate: OutreachCostRate | null = null
+        let rateMissing = false
+        let unitCostMicros: number
+        let amountMicros: number
+        let detail: Record<string, unknown>
 
-        const detail = rateMissing
-            ? { ...(input.detail ?? {}), rate_missing: true }
-            : (input.detail ?? {})
+        if (input.amountMicrosOverride !== undefined) {
+            // Provider-reported actual cost: never resolve/consult the price book, and never
+            // invent a unit price — unitCostMicros here is derived purely for reporting.
+            amountMicros = input.amountMicrosOverride
+            unitCostMicros = quantity > 0 ? Math.round(amountMicros / quantity) : 0
+            detail = { ...(input.detail ?? {}), cost_source: 'provider_reported' }
+        } else {
+            rate = await resolveRate(db, {
+                organizationId: input.organizationId,
+                category: input.category,
+                unit: input.unit,
+                provider: input.provider ?? null,
+                model: input.model ?? null,
+                at: occurredAt,
+            })
+
+            rateMissing = rate === null
+            unitCostMicros = rate ? rate.unitCostMicros : 0
+            amountMicros = rateMissing ? 0 : Math.round(quantity * unitCostMicros)
+
+            detail = rateMissing
+                ? { ...(input.detail ?? {}), rate_missing: true }
+                : (input.detail ?? {})
+        }
 
         const inserted = await db
             .insert(outreachCostEntries)

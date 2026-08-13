@@ -153,7 +153,7 @@ describe('resolveRate', () => {
 
         const resolved = await resolveRate(db, {
             organizationId: 'org-1',
-            category: 'apollo_credits',
+            category: 'lead_source',
             unit: 'credit',
             at: AT,
         })
@@ -248,6 +248,89 @@ describe('recordCost', () => {
 
         expect(result.written).toBe(false)
         expect(result.error).toBeInstanceOf(Error)
+    })
+
+    describe('amountMicrosOverride (provider-reported actual cost)', () => {
+        it('uses the override verbatim as amountMicros instead of quantity * rate, and never queries the price book', async () => {
+            const { db, select, values } = fakeDb({ rateRows: [rateRow({ unitCostMicros: 999_999 })] })
+
+            const result = await recordCost(db, costInput({
+                category: 'lead_source',
+                unit: 'result',
+                provider: 'apify',
+                quantity: 40,
+                amountMicrosOverride: 215_300,
+            }))
+
+            expect(select).not.toHaveBeenCalled()
+            expect(result.written).toBe(true)
+            expect(result.amountMicros).toBe(215_300)
+            // unitCostMicros is derived from the override, never from the (unused) rate row.
+            expect(result.unitCostMicros).toBe(Math.round(215_300 / 40))
+            expect(values).toHaveBeenCalledWith(expect.objectContaining({
+                amountMicros: 215_300,
+                rateId: null,
+            }))
+        })
+
+        it('converts a USD cost to micros correctly (0.2153 USD -> 215300 micros)', async () => {
+            const { db, values } = fakeDb()
+            const costUsd = 0.2153
+            const amountMicrosOverride = Math.round(costUsd * 1_000_000)
+
+            const result = await recordCost(db, costInput({
+                category: 'lead_source',
+                unit: 'result',
+                provider: 'apify',
+                quantity: 25,
+                amountMicrosOverride,
+            }))
+
+            expect(amountMicrosOverride).toBe(215_300)
+            expect(result.amountMicros).toBe(215_300)
+            expect(values).toHaveBeenCalledWith(expect.objectContaining({ amountMicros: 215_300 }))
+        })
+
+        it('derives unitCostMicros as round(amountMicrosOverride / quantity)', async () => {
+            const { db } = fakeDb()
+
+            // 100 / 3 = 33.33... -> rounds to 33
+            const result = await recordCost(db, costInput({ quantity: 3, amountMicrosOverride: 100 }))
+
+            expect(result.unitCostMicros).toBe(33)
+            expect(result.amountMicros).toBe(100)
+        })
+
+        it('sets unitCostMicros to 0 (not NaN/Infinity) when quantity is 0', async () => {
+            const { db, values } = fakeDb()
+
+            const result = await recordCost(db, costInput({ quantity: 0, amountMicrosOverride: 50_000 }))
+
+            expect(result.unitCostMicros).toBe(0)
+            expect(result.amountMicros).toBe(50_000)
+            expect(values).toHaveBeenCalledWith(expect.objectContaining({ unitCostMicros: 0, amountMicros: 50_000 }))
+        })
+
+        it('never sets detail.rate_missing, and instead sets detail.cost_source = provider_reported', async () => {
+            const { db, values } = fakeDb()
+
+            await recordCost(db, costInput({ amountMicrosOverride: 12_345, detail: { runId: 'run-1' } }))
+
+            expect(values).toHaveBeenCalledWith(expect.objectContaining({
+                detail: { runId: 'run-1', cost_source: 'provider_reported' },
+            }))
+            const [[insertedRow]] = values.mock.calls
+            expect((insertedRow as Record<string, unknown>).detail).not.toHaveProperty('rate_missing')
+        })
+
+        it('still dedupes via onConflictDoNothing (idempotent replay never double-bills)', async () => {
+            const { db } = fakeDb({ conflict: true })
+
+            const result = await recordCost(db, costInput({ amountMicrosOverride: 215_300 }))
+
+            expect(result.written).toBe(false)
+            expect(result.entry).toBeNull()
+        })
     })
 })
 

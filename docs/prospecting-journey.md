@@ -101,7 +101,8 @@ overlapping windows, and that tie-break is what keeps the answer unambiguous.
 | Category | Status |
 | --- | --- |
 | `inbox_subscription` | icemail, USD 2.50/inbox/month. 5 inboxes ⇒ **USD 12.50/month**, posted by the monthly amortization job |
-| `apollo_credits` | **deliberately unpriced** — pending the real plan cost |
+| `lead_source` | provider-agnostic (renamed from `apollo_credits` in migration 054 — the real production source is xcraper/Apify, not Apollo). An xcraper run posts its **actual** reported cost via `amountMicrosOverride`, not a rate-book estimate; Apollo enrichment still posts an estimated ceiling and remains otherwise unpriced |
+| `email_verification` | not yet priced |
 | `llm_tokens` | rate not yet seeded; Kimi is a flat plan (`amortized`, ~0 marginal), the OpenRouter fallback is per-token |
 | `domain`, `infrastructure` | not yet priced |
 
