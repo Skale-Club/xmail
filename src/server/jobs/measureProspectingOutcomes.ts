@@ -9,21 +9,38 @@ const log = createLogger('outreach.prospecting.measure_outcomes')
 /**
  * Phase 31 follow-up — closes the feedback loop from prospecting run to outreach outcome.
  *
- * RECOMPUTE, DO NOT INCREMENT: every pass reads the current source-of-truth tables
- * (prospect_candidates -> leads -> campaign_leads -> outreach_emails) and overwrites each
- * run's outcome_* counters with a freshly computed total. It does NOT consume the event
- * outbox and keeps NO cursor. Recomputation is idempotent and self-healing — a missed or
- * replayed event can never corrupt the totals, and there is no cursor position to lose.
- * Prospecting runs are few (one row per prospecting search, not per lead or per email), so
- * the cost of recomputing from scratch on every 6-hourly tick is trivial compared to the
- * correctness gained.
+ * RECOMPUTE, DO NOT INCREMENT: every pass reads the current source-of-truth tables and
+ * overwrites each run's outcome_* counters with a freshly computed total. It does NOT
+ * consume the event outbox and keeps NO cursor. Recomputation is idempotent and
+ * self-healing — a missed or replayed event can never corrupt the totals, and there is no
+ * cursor position to lose. Prospecting runs are few (one row per prospecting search, not
+ * per lead or per email), so the cost of recomputing from scratch on every 6-hourly tick is
+ * trivial compared to the correctness gained.
  *
- * ATTRIBUTION RULE (the crux): only candidates with imported_as = 'created' are credited to
- * a run. A candidate with imported_as = 'existing' resolved to a lead some EARLIER run
- * already sourced — crediting it here would let two runs claim the same human and inflate
- * both runs' numbers. Candidates with imported_as IS NULL (rows imported before this column
- * existed, migration 051) are ALSO excluded, for the identical reason: we cannot prove those
- * rows were new leads rather than matches against an existing one.
+ * TWO ATTRIBUTION PATHS (Phase 32 follow-up): a run's attributable leads are the UNION of
+ *   (a) prospect_candidates -> leads -> campaign_leads -> outreach_emails, for candidates
+ *       with imported_as = 'created' — the Apollo/agent-prospecting.ts path, which has never
+ *       run in production.
+ *   (b) leads -> campaign_leads -> outreach_emails, where leads.custom_fields->>'source_run_id'
+ *       equals the run's idempotency_key — the real production path: xcraper scrapes leads,
+ *       Xphere calls POST /api/outreach/leads/bulk-import (never touching prospect_candidates
+ *       at all) stamping custom_fields.source_run_id, and separately calls POST
+ *       /external-runs to register the run itself. Without path (b) every real run's
+ *       outcome_* counters stay 0 forever and cost-per-reply is cost / 0.
+ * A lead reachable via both paths (or via path (a) more than once) is counted exactly ONCE —
+ * see aggregateRunOutcomes below, which dedupes per (runId, leadId) regardless of which
+ * attribution path produced the row.
+ *
+ * ATTRIBUTION RULE for path (a) (the crux of the original job): only candidates with
+ * imported_as = 'created' are credited to a run. A candidate with imported_as = 'existing'
+ * resolved to a lead some EARLIER run already sourced — crediting it here would let two runs
+ * claim the same human and inflate both runs' numbers. Candidates with imported_as IS NULL
+ * (rows imported before this column existed, migration 051) are ALSO excluded, for the
+ * identical reason: we cannot prove those rows were new leads rather than matches against an
+ * existing one. Path (b) has an analogous first-touch rule enforced at write time instead of
+ * read time: POST /leads/bulk-import (leads.ts) only ever sets custom_fields.source_run_id
+ * once per lead and never lets a later re-import overwrite it, so every row this job reads
+ * from path (b) is already the first (and only) run that can claim that lead.
  */
 
 // ============================================================
@@ -35,6 +52,11 @@ const log = createLogger('outreach.prospecting.measure_outcomes')
 interface RunOutcomeSourceRow {
     runId: string
     organizationId: string
+    // Which attribution path (see the module doc comment above) produced this row. The
+    // `imported_as` filter below only applies to the 'candidate' path — the 'custom_field'
+    // path has no prospect_candidates row at all, so importedAs is always null for it and is
+    // not consulted.
+    attributionPath: 'candidate' | 'custom_field'
     importedAs: 'created' | 'existing' | null
     leadId: string | null
     leadStatus: string | null
@@ -61,13 +83,21 @@ const ZERO_COUNTERS: RunOutcomeCounters = {
 }
 
 /**
- * Reduces raw joined (candidate x outreach-email) rows into per-run outcome counters.
+ * Reduces raw joined (candidate|custom-field x outreach-email) rows into per-run outcome
+ * counters.
  *
- * - Excludes any row whose `importedAs` is not exactly 'created' (covers both 'existing'
- *   and null) — see the attribution-rule comment above.
+ * - For `attributionPath === 'candidate'` rows, excludes any row whose `importedAs` is not
+ *   exactly 'created' (covers both 'existing' and null) — see the attribution-rule comment
+ *   above. `attributionPath === 'custom_field'` rows are never filtered on `importedAs` —
+ *   the SQL that produces them already scoped the join to this run's idempotency_key and
+ *   organization, and the first-touch write-time rule in leads.ts (bulk-import) guarantees
+ *   only one run can ever be the source_run_id for a given lead.
  * - Excludes rows with no `leadId` (candidate never resolved to a lead).
  * - Dedupes by (runId, leadId) so a lead with several sent/replied outreach_emails rows is
- *   still counted once per metric — DISTINCT-lead semantics, not row-count semantics.
+ *   still counted once per metric — DISTINCT-lead semantics, not row-count semantics. This
+ *   dedup is also what collapses a lead reachable via BOTH attribution paths down to a
+ *   single counted lead: both rows land under the same (runId, leadId) key and merge into
+ *   one LeadState.
  * - `outcomeEmailed` only counts leads with at least one `sentAt` — a lead that was
  *   imported but never emailed contributes to no counter, keeping the denominator honest.
  * - `outcomePositiveReplied` additionally requires the lead's current `status === 'interested'`.
@@ -84,7 +114,7 @@ export function aggregateRunOutcomes(rows: RunOutcomeSourceRow[]): Map<string, R
     const leadsByRun = new Map<string, Map<string, LeadState>>()
 
     for (const row of rows) {
-        if (row.importedAs !== 'created') continue
+        if (row.attributionPath === 'candidate' && row.importedAs !== 'created') continue
         if (!row.leadId) continue
 
         let leads = leadsByRun.get(row.runId)
@@ -210,9 +240,12 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
     let sourceRows: RunOutcomeSourceRow[]
     try {
         sourceRows = await queryClient<RunOutcomeSourceRow[]>`
+            -- Path (a): Apollo/agent-prospecting.ts — candidate rows explicitly created by a
+            -- prospecting run. Never run in production, but kept for completeness/parity.
             SELECT
                 pr.id::text AS "runId",
                 pr.organization_id::text AS "organizationId",
+                'candidate'::text AS "attributionPath",
                 pc.imported_as AS "importedAs",
                 pc.lead_id::text AS "leadId",
                 l.status::text AS "leadStatus",
@@ -223,6 +256,32 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
             FROM prospecting_runs pr
             JOIN prospect_candidates pc ON pc.run_id = pr.id
             LEFT JOIN leads l ON l.id = pc.lead_id
+            LEFT JOIN campaign_leads cl ON cl.lead_id = l.id
+            LEFT JOIN outreach_emails oe ON oe.campaign_lead_id = cl.id
+            WHERE pr.status = 'imported'
+
+            UNION ALL
+
+            -- Path (b): the real production path — xcraper/Xphere leads that were never
+            -- routed through prospect_candidates at all. A lead is attributed to this run
+            -- when its custom_fields.source_run_id (stamped by POST /leads/bulk-import,
+            -- first-touch only — see leads.ts) matches this run's idempotency_key, scoped to
+            -- the same organization so a stray/duplicate key in another tenant can't match.
+            SELECT
+                pr.id::text AS "runId",
+                pr.organization_id::text AS "organizationId",
+                'custom_field'::text AS "attributionPath",
+                NULL::text AS "importedAs",
+                l.id::text AS "leadId",
+                l.status::text AS "leadStatus",
+                oe.sent_at AS "sentAt",
+                oe.replied_at AS "repliedAt",
+                oe.bounced_at AS "bouncedAt",
+                oe.unsubscribed_at AS "unsubscribedAt"
+            FROM prospecting_runs pr
+            JOIN leads l
+                ON l.organization_id = pr.organization_id
+                AND l.custom_fields ->> 'source_run_id' = pr.idempotency_key
             LEFT JOIN campaign_leads cl ON cl.lead_id = l.id
             LEFT JOIN outreach_emails oe ON oe.campaign_lead_id = cl.id
             WHERE pr.status = 'imported'

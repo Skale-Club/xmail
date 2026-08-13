@@ -24,6 +24,7 @@ function sourceRow(overrides: Partial<Parameters<typeof aggregateRunOutcomes>[0]
     return {
         runId: 'run-1',
         organizationId: 'org-1',
+        attributionPath: 'candidate' as const,
         importedAs: 'created' as const,
         leadId: 'lead-1',
         leadStatus: 'contacted',
@@ -33,6 +34,13 @@ function sourceRow(overrides: Partial<Parameters<typeof aggregateRunOutcomes>[0]
         unsubscribedAt: null,
         ...overrides,
     }
+}
+
+/** A path-(b) row: xcraper/Xphere lead attributed via custom_fields.source_run_id, never
+ * routed through prospect_candidates. `importedAs` is always null on this path — the SQL
+ * that produces it already scoped the match to the run's idempotency_key. */
+function customFieldRow(overrides: Partial<Parameters<typeof aggregateRunOutcomes>[0][number]> = {}) {
+    return sourceRow({ attributionPath: 'custom_field', importedAs: null, ...overrides })
 }
 
 function runSnapshot(overrides: Partial<{
@@ -107,6 +115,61 @@ describe('aggregateRunOutcomes', () => {
         ])
         expect(result.get('run-1')).toMatchObject({ outcomeEmailed: 1, outcomeBounced: 0 })
         expect(result.get('run-2')).toMatchObject({ outcomeEmailed: 0, outcomeBounced: 1 })
+    })
+
+    // ------------------------------------------------------------
+    // Phase 32 follow-up: custom_fields.source_run_id attribution path (real production
+    // path — xcraper/Xphere leads never touch prospect_candidates at all).
+    // ------------------------------------------------------------
+
+    it('counts a lead attributed only via custom_fields.source_run_id (no prospect_candidates row)', () => {
+        const result = aggregateRunOutcomes([
+            customFieldRow({ leadId: 'lead-cf', sentAt: '2026-08-01T00:00:00.000Z' }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ outcomeEmailed: 1 })
+    })
+
+    it('counts a lead reachable via BOTH the candidate path and the custom_fields path exactly once', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ leadId: 'lead-both', importedAs: 'created', sentAt: '2026-08-01T00:00:00.000Z' }),
+            customFieldRow({ leadId: 'lead-both', repliedAt: '2026-08-02T00:00:00.000Z' }),
+        ])
+        // One lead, one count each for emailed and replied — not two.
+        expect(result.get('run-1')).toMatchObject({ outcomeEmailed: 1, outcomeReplied: 1 })
+    })
+
+    it('does not credit a run with a lead whose source_run_id names a different run', () => {
+        // The SQL join already scopes each custom_field row to the run whose
+        // idempotency_key matched — a lead sourced by run-2 never produces a row under
+        // run-1 in the first place. Simulate that: the lead only ever appears attributed
+        // to run-2, and run-1's aggregate must have no trace of it.
+        const result = aggregateRunOutcomes([
+            customFieldRow({ runId: 'run-2', leadId: 'lead-elsewhere', sentAt: '2026-08-01T00:00:00.000Z' }),
+        ])
+        expect(result.get('run-1')).toBeUndefined()
+        expect(result.get('run-2')).toMatchObject({ outcomeEmailed: 1 })
+    })
+
+    it('excludes a custom_field row with no leadId', () => {
+        const result = aggregateRunOutcomes([
+            customFieldRow({ leadId: null, sentAt: '2026-08-01T00:00:00.000Z' }),
+        ])
+        expect(result.get('run-1')).toBeUndefined()
+    })
+
+    it('does not count a custom_field-attributed lead that was imported but never emailed', () => {
+        const result = aggregateRunOutcomes([
+            customFieldRow({ leadId: 'lead-cf-no-email', sentAt: null }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ outcomeEmailed: 0 })
+    })
+
+    it('only counts outcomePositiveReplied for a custom_field-attributed lead whose status is interested', () => {
+        const result = aggregateRunOutcomes([
+            customFieldRow({ leadId: 'lead-cf-interested', leadStatus: 'interested', repliedAt: '2026-08-01T00:00:00.000Z' }),
+            customFieldRow({ leadId: 'lead-cf-replied-only', leadStatus: 'replied', repliedAt: '2026-08-01T00:00:00.000Z' }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ outcomeReplied: 2, outcomePositiveReplied: 1 })
     })
 })
 
