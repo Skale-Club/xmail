@@ -51,8 +51,8 @@ describe('RUN_EVENT_CODES phase mapping', () => {
                 checked += 1
             }
         }
-        // 5 + 3 + 5 + 2 + 4 + 4 = 23 codes across the six phases.
-        expect(checked).toBe(23)
+        // 5 + 3 + 5 + 3 + 4 + 4 = 24 codes across the six phases.
+        expect(checked).toBe(24)
     })
 
     it('codes are frozen and cannot be mutated', () => {

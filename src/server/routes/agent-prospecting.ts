@@ -9,6 +9,7 @@ import {
     prospectAiAssessments,
     prospectCandidates,
     prospectingRuns,
+    prospectingRunEvents,
     type OutreachAgentScope,
     type ProspectImportedAs,
 } from '../../db/schema'
@@ -49,6 +50,105 @@ function requireScope(req: Request, res: Response, scope: OutreachAgentScope): A
 }
 
 const boundedTextArray = z.array(z.string().trim().min(1).max(200)).max(25).optional()
+
+router.get('/runs', async (req, res) => {
+    try {
+        const principal = requireScope(req, res, 'outreach:read')
+        if (!principal) return
+        const query = z.object({
+            provider: z.enum(['apollo', 'xcraper']).optional(),
+            externalRunId: z.string().trim().min(1).max(200).optional(),
+            limit: z.coerce.number().int().min(1).max(50).default(20),
+        }).parse(req.query)
+        const conditions = [eq(prospectingRuns.organizationId, principal.organizationId)]
+        if (query.provider) conditions.push(eq(prospectingRuns.provider, query.provider))
+        if (query.externalRunId) conditions.push(eq(prospectingRuns.idempotencyKey, query.externalRunId))
+        const runs = await db.query.prospectingRuns.findMany({
+            where: and(...conditions),
+            orderBy: [desc(prospectingRuns.createdAt)],
+            limit: query.limit,
+            with: {
+                events: { orderBy: (events, { asc }) => [asc(events.sequenceNumber)] },
+                costEntries: { orderBy: (entries, { asc }) => [asc(entries.occurredAt)] },
+            },
+        })
+        res.json({ runs })
+    } catch (error) {
+        if (error instanceof z.ZodError) return res.status(400).json({ error: 'Validation error', details: error.errors })
+        console.error('Agent prospecting Journey list failed:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+const journeyNoteSchema = z.object({
+    idempotencyKey: z.string().trim().min(8).max(200),
+    kind: z.enum(['observation', 'decision', 'lesson', 'next_action']),
+    summary: z.string().trim().min(1).max(500),
+    detail: z.record(z.unknown()).optional().default({}),
+    level: z.enum(['info', 'warn']).optional().default('info'),
+}).refine((value) => JSON.stringify(value.detail).length <= 4_096, {
+    message: 'detail payload exceeds the 4096-byte cap',
+})
+
+router.post('/runs/:id/notes', async (req, res) => {
+    try {
+        const principal = requireScope(req, res, 'prospects:write')
+        if (!principal) return
+        const input = journeyNoteSchema.parse(req.body)
+        const run = await db.query.prospectingRuns.findFirst({
+            where: and(
+                eq(prospectingRuns.id, req.params.id),
+                eq(prospectingRuns.organizationId, principal.organizationId),
+            ),
+            columns: { id: true },
+        })
+        if (!run) return res.status(404).json({ error: 'Prospecting run not found' })
+
+        const result = await db.transaction(async (tx) => {
+            const lockKey = `${principal.organizationId}:${run.id}:${input.idempotencyKey}`
+            await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`)
+            const existing = await tx.query.prospectingRunEvents.findFirst({
+                where: and(
+                    eq(prospectingRunEvents.organizationId, principal.organizationId),
+                    eq(prospectingRunEvents.runId, run.id),
+                    eq(prospectingRunEvents.code, RUN_EVENT_CODES.assess.ORCHESTRATOR_NOTE),
+                    sql`${prospectingRunEvents.detail}->>'idempotency_key' = ${input.idempotencyKey}`,
+                ),
+            })
+            if (existing) return { event: existing, idempotentReplay: true }
+            const [event] = await tx.insert(prospectingRunEvents).values({
+                organizationId: principal.organizationId,
+                runId: run.id,
+                phase: 'assess',
+                level: input.level,
+                code: RUN_EVENT_CODES.assess.ORCHESTRATOR_NOTE,
+                summary: input.summary,
+                detail: {
+                    ...input.detail,
+                    note_kind: input.kind,
+                    idempotency_key: input.idempotencyKey,
+                    agent_credential_id: principal.credentialId,
+                },
+            }).returning()
+            return { event, idempotentReplay: false }
+        })
+        if (result.idempotentReplay) return res.json(result)
+        await writeAgentAudit({
+            principal,
+            request: req,
+            action: 'agent.prospecting.journey_note_appended',
+            resourceType: 'prospecting_run',
+            resourceId: run.id,
+            metadata: { eventId: result.event.id, kind: input.kind, idempotencyKey: input.idempotencyKey },
+        })
+        res.status(201).json(result)
+    } catch (error) {
+        if (error instanceof z.ZodError) return res.status(400).json({ error: 'Validation error', details: error.errors })
+        console.error('Agent prospecting Journey note failed:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
 const searchFiltersSchema = z.object({
     personTitles: boundedTextArray,
     includeSimilarTitles: z.boolean().optional(),

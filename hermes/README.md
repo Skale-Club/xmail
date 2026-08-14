@@ -26,10 +26,11 @@ LLM **externo** (sem GPU local) e teto de RAM pra nunca ameaçar o email.
 
 ## Config atual (LLM)
 
-- **Principal:** Kimi Coding Plan — `provider: kimi-coding`, `model: kimi-for-coding`
-  (key `KIMI_API_KEY`, prefixo `sk-kimi-` → auto-roteia pra `api.kimi.com/coding/v1`).
-- **Fallback:** `openrouter` / `google/gemini-2.5-flash` (em `config.yaml` `fallback_providers:`,
-  dispara em rate-limit / 5xx / erro de conexão, sem perder a conversa).
+- **Principal (desde 2026-08-14):** OpenAI Codex via OAuth — `provider: openai-codex`,
+  `model: gpt-5.6-sol` (explicitamente Sol, não Terra/Luna). A credencial renovável
+  vive em `/opt/data/auth.json`; não usa `OPENAI_API_KEY`.
+- **Único fallback:** `opencode-go` / `kimi-k3`.
+- A cadeia em `config.yaml` dispara em rate-limit, 5xx ou erro de conexão sem perder a conversa.
 - **Modelo vive no `config.yaml`** (no volume), NÃO em env var — ver "Gotchas" abaixo.
 
 ## Canais
@@ -57,6 +58,20 @@ fazer no navegador"):
 5. Outreach: via MCP do **Xphere** — `xmail_outreach_status` (lista campanhas/inboxes)
    e `prospects_enroll_in_campaign` (enrola E ativa; dry-run por padrão, só executa
    com `confirmed:true` após aprovação explícita no Telegram).
+6. Meta/Facebook Audiences: `meta_audiences_status` mostra a configuração e
+   `meta_audience_sync` faz preview agregado. Um sync real de ADD/REMOVE exige
+   `confirmed:true`, termos aceitos e a audiência habilitada no Xphere.
+
+### Journey e skill operacional
+
+- A skill ativa é `/opt/data/skills/skale-club/active-prospect-system/SKILL.md`;
+  a cópia versionada para deploy fica em `hermes/active-prospect-system/SKILL.md`.
+- Todo scrape iniciado pelo Hermes inclui uma hipótese declarada antes do run.
+- O Xcraper envia `external_run_id`, custo real e contagens ao Xphere; o Xphere
+  registra o run no Xmail e propaga `source_run_id` aos leads.
+- O Xmail mede outcomes a cada seis horas. Fatos, custos e outcomes permanecem
+  separados; o Hermes consulta o estado atual em vez de confiar em números
+  gravados na skill.
 
 ### MCPs conectados (4)
 
@@ -109,7 +124,7 @@ fazer no navegador"):
 > consumo recorrente. O backup diário `hermes-memories-backup` roda
 > `scripts/hermes-backup.sh` em modo `no-agent`. O serviço systemd
 > `hermes-provider-switch-notifier` observa ativações de fallback no log do Hermes e
-> avisa o canal pessoal do Telegram, inclusive quando o OpenRouter entra em uso.
+> avisa o canal pessoal do Telegram quando o `kimi-k3` entra em uso.
 
 > **Atualização 2026-08-13 — escopo do backup.** O `hermes-backup.sh` usava
 > `git add -A` dentro de `/opt/data`, então publicava **534 arquivos** no repo com
@@ -208,12 +223,11 @@ Edite `/opt/hermes/hermes.env` e `docker compose up -d --force-recreate`.
    page at https://notion.so/…" faz o agente tentar `browser_navigate` (Chrome não
    instalado — browser automation está off) e falhar com "task is blocked". O prompt
    do cron referencia a página pelo **ID** e manda usar só as tools `API-*` do Notion.
-7. **O protocolo é pesado pro modelo de fallback.** Com o Kimi caindo no fallback
-   pro `gemini-2.5-flash`, a varredura completa consome muitos turns (buscas do Notion
-   voltam com 100k+ chars e incham o contexto). Mitigações: prompt enxuto (usar
+7. **O protocolo é pesado pro modelo de fallback.** A varredura completa pode consumir
+   muitos turns (buscas do Notion voltam com 100k+ chars e incham o contexto), inclusive
+   quando `kimi-k3` assume após uma falha do Codex. Mitigações: prompt enxuto (usar
    `last_edited_time`/metadata e `API-query-data-source` em vez de `get_block_children`
-   de páginas grandes) + `agent.max_turns` folgado. **Melhor ainda: restaurar o Kimi
-   como primário** — ele estava caindo no fallback em toda run de teste (08-jul).
+   de páginas grandes) + `agent.max_turns` folgado.
 
 ## Build do zero (referência)
 
@@ -224,8 +238,12 @@ mkdir -p /opt/hermes && cd /opt/hermes
 git clone --depth 1 https://github.com/NousResearch/hermes-agent.git vendor/hermes-agent
 DOCKER_CONFIG=/tmp/emptydocker docker compose build      # ~minutos no 2-vCPU
 DOCKER_CONFIG=/tmp/emptydocker docker compose up -d
-docker exec hermes hermes config set model.provider kimi-coding
-docker exec hermes hermes config set model.default  kimi-for-coding
+# Device-code OAuth: abra a URL mostrada e autorize com a conta do Codex.
+docker exec -it hermes hermes auth add openai-codex --type oauth
+docker exec hermes hermes config set model.provider openai-codex
+docker exec hermes hermes config set model.default gpt-5.6-sol
+# No picker, selecione OpenCode Go → kimi-k3 como único fallback.
+docker exec -it hermes hermes fallback add
 docker compose restart hermes
 ```
 
@@ -234,5 +252,5 @@ docker compose restart hermes
 ```bash
 docker compose down                       # para (volume hermes-data preserva memória)
 docker volume rm hermes_hermes-data       # apaga a memória do agente (irreversível)
-# backup do config antes do Kimi: /opt/data/config.yaml.bak-pre-kimi
+# backup anterior à troca para GPT-5.6 Sol: /opt/data/config.yaml.bak-pre-gpt56-20260814
 ```

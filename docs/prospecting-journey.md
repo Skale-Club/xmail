@@ -103,7 +103,7 @@ overlapping windows, and that tie-break is what keeps the answer unambiguous.
 | `inbox_subscription` | icemail, USD 2.50/inbox/month. 5 inboxes ⇒ **USD 12.50/month**, posted by the monthly amortization job |
 | `lead_source` | provider-agnostic (renamed from `apollo_credits` in migration 054 — the real production source is xcraper/Apify, not Apollo). An xcraper run posts its **actual** reported cost via `amountMicrosOverride`, not a rate-book estimate; Apollo enrichment still posts an estimated ceiling and remains otherwise unpriced |
 | `email_verification` | MillionVerifier at USD 0.0037/credit — the 10k entry package (migration 056, superseding 055's 0.0005). **An estimate, not a confirmed purchase**: tiers span ~8× and stacking bonuses (+10% auto top-up, 1M free per 5M) put the true effective rate below any sticker. Chosen because it is the likeliest tier at pilot scale and errs high, so spend can only be overstated. **Quantity must be credits the provider reports as consumed, not emails submitted**: MillionVerifier charges only for conclusive results, never for risky (unknown/catch-all) ones |
-| `llm_tokens` | rate not yet seeded; Kimi is a flat plan (`amortized`, ~0 marginal), the OpenRouter fallback is per-token |
+| `llm_tokens` | rate not yet seeded; Codex uses OAuth and Kimi is a flat fallback plan, so both are accounted as amortized rather than per-token today |
 | `domain`, `infrastructure` | not yet priced |
 
 Unpriced usage is **still written**, with zeros and `detail.rate_missing = true`. Absent
@@ -220,7 +220,12 @@ GROUP BY 1 ORDER BY 2 DESC;
 | `052_lead_email_normalization.sql` | `CHECK (email = lower(email))` on leads |
 | `053_seed_cost_rates.sql` | seeds the icemail inbox rate |
 
-All three are validated but **not yet applied**. They were verified by running them in
-sequence against the real production schema inside a transaction and rolling back,
-including a negative test proving the `CHECK` rejects mixed case and an end-to-end pass
-proving the inbox total resolves to exactly USD 12.50.
+All three are applied in production. The production migration ledger is current through
+`056_prospecting_external_run_id.sql`, which also makes external run registration
+idempotent across Xcraper, Xphere, and Xmail.
+
+For Xcraper imports, Xphere registers the run automatically through
+`POST /api/outreach/prospecting/external-runs`. The Xcraper search id becomes
+`external_run_id`, its measured `cost_usd` becomes an actual lead-source cost entry,
+and `source_run_id` follows each imported Xmail lead so the six-hour outcome job can
+attribute emails, replies, bounces, and unsubscribes to the originating run.

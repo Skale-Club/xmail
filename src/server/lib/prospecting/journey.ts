@@ -60,6 +60,7 @@ export const RUN_EVENT_CODES = Object.freeze({
     assess: Object.freeze({
         RECORDED: 'assess.recorded',
         REJECTED: 'assess.rejected',
+        ORCHESTRATOR_NOTE: 'assess.orchestrator_note',
     }),
     import: Object.freeze({
         LEAD_CREATED: 'import.lead_created',
