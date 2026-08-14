@@ -131,11 +131,18 @@ router.post('/external-runs', async (req, res) => {
                 ),
             })
             if (!replay) throw new Error('Idempotent external-run conflict could not be resolved')
-            // Idempotent replay: the run already exists, so neither the journey event nor
-            // the cost entry below are (re-)recorded — recordCost's own dedupKey would
-            // also no-op them, but not reaching them at all is the primary guarantee that
-            // a retried call never double-bills.
-            return res.status(200).json({ run: replay, idempotentReplay: true })
+            // A source can repair/reconcile its own import and replay with a newer count.
+            // Keep the single run current while preserving the append-only event and cost
+            // ledgers below: neither is re-recorded, so a replay can never double-bill.
+            const [reconciled] = await db.update(prospectingRuns).set({
+                discoveredCount: input.resultCount ?? replay.discoveredCount,
+                importedCount: input.importedCount ?? replay.importedCount,
+                updatedAt: new Date(),
+            }).where(and(
+                eq(prospectingRuns.id, replay.id),
+                eq(prospectingRuns.organizationId, organizationId),
+            )).returning()
+            return res.status(200).json({ run: reconciled ?? replay, idempotentReplay: true })
         }
 
         await recordRunEvent(db, {

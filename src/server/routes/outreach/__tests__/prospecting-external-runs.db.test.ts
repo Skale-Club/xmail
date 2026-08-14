@@ -135,14 +135,19 @@ describe('POST /external-runs', () => {
         const first = await post(`/external-runs?organizationId=${IDS.org}`, payload)
         expect(first.status).toBe(201)
 
-        const second = await post(`/external-runs?organizationId=${IDS.org}`, payload)
+        const second = await post(`/external-runs?organizationId=${IDS.org}`, {
+            ...payload,
+            importedCount: 5,
+        })
         expect(second.status).toBe(200)
         expect(second.body.idempotentReplay).toBe(true)
         expect(second.body.run.id).toBe(first.body.run.id)
+        expect(second.body.run.importedCount).toBe(5)
 
-        const runs = await sql`SELECT id FROM prospecting_runs
+        const runs = await sql`SELECT id, imported_count FROM prospecting_runs
             WHERE organization_id = ${IDS.org}::uuid AND provider = 'xcraper' AND idempotency_key = 'run-beta'`
         expect(runs).toHaveLength(1)
+        expect(runs[0].imported_count).toBe(5)
 
         const entries = await sql`SELECT id FROM outreach_cost_entries WHERE run_id = ${first.body.run.id}::uuid`
         expect(entries).toHaveLength(1)
