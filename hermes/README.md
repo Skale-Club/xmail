@@ -111,6 +111,20 @@ fazer no navegador"):
 > `hermes-provider-switch-notifier` observa ativações de fallback no log do Hermes e
 > avisa o canal pessoal do Telegram, inclusive quando o OpenRouter entra em uso.
 
+> **Atualização 2026-08-13 — escopo do backup.** O `hermes-backup.sh` usava
+> `git add -A` dentro de `/opt/data`, então publicava **534 arquivos** no repo com
+> remote no GitHub (`config.yaml`, `config/auth.json`, `.env`, e 500+ logs de cron),
+> e não apenas os arquivos de memória que ele copia. Agora o script adiciona
+> pathspec explícito e instala `scripts/backup-repo.gitignore` (deny-by-default,
+> reabrindo só `MEMORY.md`/`USER.md`) dentro do repo de backup. Os 532 arquivos
+> saíram do índice — **continuam no disco e no volume `hermes-data`**, que é a via
+> real de recuperação. O histórico anterior não foi reescrito: o repo é privado e a
+> reescrita/rotação foi avaliada como custo maior que o risco.
+>
+> O cron roda com `HOME=/opt/data/home` (é de lá que vem a identidade git). Para
+> executar o script na mão, replique isso:
+> `docker exec -u hermes -e HOME=/opt/data/home hermes /opt/data/scripts/hermes-backup.sh`
+
 ## Decisões de design (pra caber na máquina pequena)
 
 - **Container separado** do xmail (que é rebuildado `--no-cache` a cada deploy) — não dentro dele.

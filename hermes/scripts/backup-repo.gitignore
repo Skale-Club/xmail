@@ -1,0 +1,15 @@
+# Allow-list for the Hermes memories backup repository.
+#
+# This file is installed as `.gitignore` inside $HERMES_BACKUP_REPO by
+# hermes-backup.sh. It exists because that repository lives INSIDE the agent's
+# home directory (/opt/data), which also holds config.yaml, config/auth.json and
+# .env. A plain `git add -A` there sweeps all of it into a repo that has a
+# GitHub remote — which is exactly what used to happen (534 tracked files).
+#
+# Deny by default, then re-allow only the agent's memory files. Keep this in
+# sync with BACKED_UP_FILES in hermes-backup.sh.
+*
+
+!.gitignore
+!MEMORY.md
+!USER.md
