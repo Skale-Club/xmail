@@ -15,6 +15,7 @@
 
 import { db } from '../../../db'
 import { prospectingRunEvents, type ProspectingRunEventLevel, type ProspectingRunEventPhase } from '../../../db/schema'
+import { jsonbParam } from '../jsonb'
 
 // ============================================================
 // db/tx parameter typing
@@ -151,7 +152,7 @@ function toRow(input: RecordRunEventInput) {
         level: input.level ?? defaultLevelForCode(input.code),
         code: input.code,
         summary: input.summary ?? null,
-        detail: input.detail ?? {},
+        detail: jsonbParam(input.detail ?? {}),
     }
 }
 

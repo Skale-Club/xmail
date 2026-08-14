@@ -9,6 +9,7 @@ import {
     type RecordCostInput,
 } from '../outreach-costs'
 import type { OutreachCostRate } from '../../../db/schema'
+import { jsonbParam } from '../jsonb'
 
 const AT = new Date('2026-08-13T12:00:00.000Z')
 
@@ -208,7 +209,7 @@ describe('recordCost', () => {
         expect(values).toHaveBeenCalledWith(expect.objectContaining({
             unitCostMicros: 0,
             amountMicros: 0,
-            detail: expect.objectContaining({ rate_missing: true }),
+            detail: jsonbParam({ rate_missing: true }),
         }))
     })
 
@@ -218,7 +219,7 @@ describe('recordCost', () => {
         await recordCost(db, costInput({ detail: { note: 'pre-launch estimate' } }))
 
         expect(values).toHaveBeenCalledWith(expect.objectContaining({
-            detail: { note: 'pre-launch estimate', rate_missing: true },
+            detail: jsonbParam({ note: 'pre-launch estimate', rate_missing: true }),
         }))
     })
 
@@ -317,10 +318,8 @@ describe('recordCost', () => {
             await recordCost(db, costInput({ amountMicrosOverride: 12_345, detail: { runId: 'run-1' } }))
 
             expect(values).toHaveBeenCalledWith(expect.objectContaining({
-                detail: { runId: 'run-1', cost_source: 'provider_reported' },
+                detail: jsonbParam({ runId: 'run-1', cost_source: 'provider_reported' }),
             }))
-            const [[insertedRow]] = values.mock.calls
-            expect((insertedRow as Record<string, unknown>).detail).not.toHaveProperty('rate_missing')
         })
 
         it('still dedupes via onConflictDoNothing (idempotent replay never double-bills)', async () => {

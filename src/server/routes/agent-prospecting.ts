@@ -15,6 +15,7 @@ import {
 } from '../../db/schema'
 import { agentHasScope, getAgentPrincipal, type AgentPrincipal } from '../lib/agent-auth'
 import { writeAgentAudit } from '../lib/agent-audit'
+import { jsonbParam } from '../lib/jsonb'
 import { recordCost } from '../lib/outreach-costs'
 import { emptyAdvisory, loadAdvisory } from '../lib/prospecting/advisory'
 import { createProspectProvider, MAX_APOLLO_CREDITS_PER_PERSON } from '../lib/prospecting/apollo'
@@ -123,12 +124,12 @@ router.post('/runs/:id/notes', async (req, res) => {
                 level: input.level,
                 code: RUN_EVENT_CODES.assess.ORCHESTRATOR_NOTE,
                 summary: input.summary,
-                detail: {
+                detail: jsonbParam({
                     ...input.detail,
                     note_kind: input.kind,
                     idempotency_key: input.idempotencyKey,
                     agent_credential_id: principal.credentialId,
-                },
+                }),
             }).returning()
             return { event, idempotentReplay: false }
         })

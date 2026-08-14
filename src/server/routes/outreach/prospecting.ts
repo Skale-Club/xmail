@@ -5,6 +5,7 @@ import { db } from '../../../db'
 import { prospectAiAssessments, prospectCandidates, prospectingRuns } from '../../../db/schema'
 import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-access'
 import { recordCost } from '../../lib/outreach-costs'
+import { jsonbParam } from '../../lib/jsonb'
 import { externalRunSchema } from '../../lib/prospecting/external-run'
 import { recordRunEvent, RUN_EVENT_CODES } from '../../lib/prospecting/journey'
 
@@ -102,16 +103,16 @@ router.post('/external-runs', async (req, res) => {
             provider: input.provider,
             idempotencyKey: input.externalRunId,
             status: 'imported',
-            searchFilters: {
+            searchFilters: jsonbParam({
                 label: input.label ?? null,
                 query: input.query ?? null,
                 location: input.location ?? null,
                 actorId: input.actorId ?? null,
                 template: input.template ?? null,
-            },
+            }),
             discoveredCount: input.resultCount ?? 0,
             importedCount: input.importedCount ?? 0,
-            hypothesis: input.hypothesis ?? {},
+            hypothesis: jsonbParam(input.hypothesis ?? {}),
             startedAt: new Date(),
             completedAt: new Date(),
         }).onConflictDoNothing({

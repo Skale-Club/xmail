@@ -24,6 +24,7 @@ import {
     type OutreachCostRate,
     type OutreachCostUnit,
 } from '../../db/schema'
+import { jsonbParam } from './jsonb'
 
 // ============================================================
 // db/tx parameter typing
@@ -249,7 +250,7 @@ export async function recordCost(db: DbClient, input: RecordCostInput): Promise<
                 aiRunId: input.aiRunId ?? null,
                 assessmentId: input.assessmentId ?? null,
                 dedupKey: input.dedupKey,
-                detail,
+                detail: jsonbParam(detail),
             })
             .onConflictDoNothing({ target: [outreachCostEntries.organizationId, outreachCostEntries.dedupKey] })
             .returning()

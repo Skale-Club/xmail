@@ -10,6 +10,7 @@ import {
     type RunEventCode,
 } from '../journey'
 import type { ProspectingRunEventLevel, ProspectingRunEventPhase } from '../../../../db/schema'
+import { jsonbParam } from '../../jsonb'
 
 /** Builds a fake DbClient whose insert().values() is spy-able and can be made to throw. */
 function fakeDb(options: { throwOnInsert?: boolean } = {}) {
@@ -115,7 +116,7 @@ describe('recordRunEvent', () => {
             level: 'warn',
             code: 'enrich.no_email',
             summary: 'no email found',
-            detail: {},
+            detail: jsonbParam({}),
         })
     })
 
