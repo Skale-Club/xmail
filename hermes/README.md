@@ -161,8 +161,16 @@ Depois de aplicar a migration 045 e criar a credencial pela API administrativa d
 ```bash
 docker compose up -d --force-recreate
 docker exec -it hermes hermes mcp add xmail \
-  --command node --args /opt/xmail-mcp/server.mjs
+  --command node \
+  --env 'XMAIL_AGENT_API_URL=${XMAIL_AGENT_API_URL}' \
+        'XMAIL_AGENT_KEY=${XMAIL_AGENT_KEY}' \
+  --args /opt/xmail-mcp/server.mjs
 ```
+
+O `env` do MCP e obrigatorio mesmo quando as variaveis ja existem no container. O Hermes filtra o
+ambiente de subprocessos stdio e so encaminha secrets declarados explicitamente; os placeholders
+sao resolvidos em memoria a partir do ambiente do container, sem duplicar os valores no
+`config.yaml`.
 
 As tools permitem leitura, busca Apollo sem consumo de créditos, scoring/listagem de candidatos,
 importação limitada, criação de rascunho, pausa e consumo de eventos. Enriquecimento pago fica fora
