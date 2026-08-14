@@ -2,6 +2,7 @@ import type { Request } from 'express'
 import { db } from '../../db'
 import { outreachAgentAuditLog } from '../../db/schema'
 import type { AgentPrincipal } from './agent-auth'
+import { jsonbParam } from './jsonb'
 
 export interface AgentAuditInput {
     principal: AgentPrincipal
@@ -24,6 +25,6 @@ export async function writeAgentAudit(input: AgentAuditInput): Promise<void> {
         resourceId: input.resourceId,
         requestId: typeof requestId === 'string' ? requestId.slice(0, 200) : undefined,
         outcome: input.outcome ?? 'success',
-        metadata: input.metadata ?? {},
+        metadata: jsonbParam(input.metadata ?? {}),
     })
 }
