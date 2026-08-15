@@ -7,7 +7,7 @@
 > [roadmap de fases](outreach-hermes-roadmap.md), [runbook operacional](outreach-hermes-runbook.md).
 > O container do Hermes em si está em [`hermes/README.md`](../hermes/README.md).
 >
-> Última auditoria completa: **2026-08-14** (commit `9fec17f`). A seção "Achados abertos" tem data —
+> Última auditoria completa: **2026-08-15** (commit `03ba43f`). A seção "Achados abertos" tem data —
 > se estiver velha, refaça a rotina de reanálise no fim do doc antes de confiar nela.
 
 ## 1. O que é, em uma frase
@@ -151,6 +151,12 @@ grep -n "protected_sending_domain" src/server/routes/outreach/campaigns.ts
 npx vitest run src/server/lib/__tests__/hermes-mcp-contract.test.ts src/server/lib/__tests__/outreach-agent-gateway.db.test.ts
 ```
 
+```bash
+# 7. Nenhuma escrita de jsonb sem o cast via text (esperado: nenhuma saída). Ver §13.
+grep -rnE "(toAddresses|ccAddresses|bccAddresses|headers|attachments|customFields):\s*[a-zA-Z]" \
+  src/server --include="*.ts" | grep -v jsonbParam | grep -viE "test|interface|type |\?\?"
+```
+
 Paridade local/CI antes de qualquer push (o build **não** typecheca o client):
 
 ```bash
@@ -161,8 +167,8 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 
 | Item | Onde | Como conferir |
 |---|---|---|
-| Migrations 045–049 | banco de prod | `select * from migrations` / `to_regclass('public.prospecting_runs')` |
-| `APOLLO_API_KEY` | **`run_app_container()` do `.github/workflows/build-deploy.yml`** | `grep APOLLO .github/workflows/build-deploy.yml` — se não aparecer, prospecção responde 503 |
+| Migrations 045–058 | banco de prod | `select * from supabase_migrations.schema_migrations` / `to_regclass('public.warmup_messages')` |
+| `APOLLO_API_KEY` | **`run_app_container()` do `.github/workflows/build-deploy.yml`** *e* o secret existir | `gh secret list \| grep APOLLO` — **o grep no workflow NÃO basta**: ele confirma a fiação, e um `${{ secrets.X }}` inexistente resolve para string vazia sem erro. Foi assim que este item passou por resolvido em 2026-08-15 estando quebrado |
 | Credencial do agente | `POST /api/outreach/agent-credentials?organizationId=…` (sessão admin) | `select id, name, scopes, revoked_at from outreach_agent_credentials` |
 | `XMAIL_AGENT_KEY` no Hermes | `/opt/hermes/hermes.env` (chmod 600) | `docker exec hermes hermes mcp list` + `xmail_health` |
 | Domínio de envio ≠ `MAIL_DOMAIN` | P009 | inbox de outreach precisa ser de domínio descartável; senão a ativação falha |
@@ -171,11 +177,12 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 > **Armadilha nº 1 do deploy:** `deploy-hetzner.yml` é **legado** (`workflow_dispatch`). Editar
 > variável de ambiente só nele não muda nada em produção. O caminho ativo é `build-deploy.yml`.
 
-## 8. Achados abertos — auditoria de 2026-08-14
+## 8. Achados abertos — auditoria de 2026-08-15
 
 | # | Severidade | Achado | Onde |
 |---|---|---|---|
-| 1 | Alta | `APOLLO_API_KEY` ausente no workflow ativo → todo search responde 503 | `.github/workflows/build-deploy.yml` `run_app_container()` |
+| 1 | Alta | `APOLLO_API_KEY` **não existe nos secrets do repo**. O workflow referencia `${{ secrets.APOLLO_API_KEY }}`, que resolve para string vazia, e `apollo.ts` lança `APOLLO_API_KEY is required` → search responde 503. Só afeta o caminho Apollo; o xcraper não usa | GitHub Secrets |
+| 1b | Alta | `XPHERE_EVENTS_API_KEY` também ausente (só `XPHERE_EVENTS_URL` existe). Como os dois são obrigatórios em par, a entrega de eventos ao Xphere está desligada | GitHub Secrets |
 | 2 | Alta | Card do "Human gate" aprova ativação sem mostrar campanha, assunto, corpo, nº de leads ou inbox — e o approve ativa direto | `AgentOpsPage.tsx` (seção Human gate) + `outreach/approvals.ts` |
 | 3 | Alta | O agente auto-certifica verificação: `customFields.email_status:'ok'` → `verified`, e o enroll só exige `verified/likely` | `email-verification-mapping.ts` + `agent-outreach.ts` `/prospects/import` |
 | 4 | Média | Sem filtro para o placeholder `email_not_unlocked@…` do Apollo no import | `prospecting/apollo.ts` `normalizeEmailStatus` |
@@ -185,7 +192,31 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 | 8 | Baixa | Replay idempotente de run `failed` volta 200 com `candidates: []` (lê-se como "sem resultados") | `agent-prospecting.ts` POST `/searches` |
 | 9 | Info | Rate-limit é o global de 500/15min por IP; agente sem orçamento próprio | `src/server/index.ts` |
 | 10 | Info | Não há cron de outreach no lado Hermes: o loop só anda por comando no Telegram | `hermes/README.md` |
-| 11 | Alta | **Não existe warm-up real** (sem pool, sem tráfego de aquecimento, sem resgate de spam) — só a rampa de teto diário. Ver §12 | `outreach-delivery-policy.ts` |
+| 11 | ~~Alta~~ | ~~Não existe warm-up real~~ — **resolvido** pela migration `058_warmup_engine` + `jobs/processWarmup.ts`. Ver §9 | — |
+| 12 | Média | `custom_fields` de lead e as colunas jsonb de `mail_messages`/`outreach_provider_events` gravadas ANTES de 2026-08-15 seguem duplo-codificadas em produção até a normalização rodar. O ORM lê as duas formas, então só o SQL do servidor enxerga a diferença | dados, não código |
+| 13 | Média | O corpo do step 1 da campanha piloto tem `{{websiteInsight}}` num parágrafo próprio, e o Xphere **não envia `websiteInsights`** no push — o e-mail sai com um buraco onde estaria a personalização | lado Xphere |
+
+### Correções aplicadas em 2026-08-15
+
+O mesh de warm-up nunca havia enviado uma única mensagem desde que subiu. Três bugs **em série**, cada
+um escondido atrás do anterior — vale ler como exemplo de por que "job silencioso" não é "job ocioso":
+
+1. **Corte de data em template `sql` cru** (`processWarmup.ts`). Um fragmento `sql` não aplica o
+   `mapToDriverValue` da coluna, então o `Date` chegava puro ao postgres-js e estourava
+   `ERR_INVALID_ARG_TYPE` no Bind — no PRIMEIRO remetente, matando a fase SEND inteira. Corrigido com
+   o operador tipado `gte()`, que a fase GROOM já usava logo abaixo.
+2. **O mesmo `sql` cru na volta.** `sql<Date | null>` sobre `max(sent_at)` é uma anotação que o runtime
+   não cumpre: vem string, e `dueForNextSend` chamava `.getTime()`. Ficou escondido porque com a tabela
+   vazia `max()` dá NULL e o caminho quente nunca era exercido — quebrou no primeiro tick com linhas.
+3. **Credenciais SMTP cifradas com outra chave.** As 5 caixas de `tryskaleclub.com` foram gravadas por
+   um servidor de desenvolvimento local apontado para o `DATABASE_URL` de produção, com a chave do
+   `.env` local. Produção não decifrava. Re-cifradas para a chave de produção; `getEncryptionKey()`
+   perdeu o fallback silencioso para `JWT_SECRET` (era ele que permitia dois servidores cifrarem
+   diferente sem reclamar) e um payload de chave errada agora levanta `CredentialKeyMismatchError`.
+
+Também nesta data: `jsonbParam` aplicado a todos os writes de jsonb dos caminhos de lead e de mail
+(ver §13), e a variável `{{city}}` criada — sua ausência era o motivo de a campanha piloto ter
+"Hudson" escrito fixo no corpo.
 
 ### Correções aplicadas em 2026-08-14
 
@@ -207,7 +238,9 @@ linearmente até o limite cheio ao longo de `warmup_days` (default 14 na criaç�
 settings da org). É avaliada por destinatário em toda origem — `campaign`, `manual`, `agentic`,
 `unified_inbox` — e devolve `warmup_limit_exhausted`, que faz o processador **adiar**, não falhar.
 
-**Mesh interno (migration 051, 2026-08-14):** aquecimento REAL entre as caixas da plataforma.
+**Mesh interno (migration 058, 2026-08-14):** aquecimento REAL entre as caixas da plataforma.
+*(Nasceu como `051` e foi renumerado por colisão de prefixo — ver o aviso no `CLAUDE.md`. Este doc
+carregou o número velho por um dia; se você leu `051` aqui em algum fork, é o mesmo arquivo.)*
 Participação é campo do cadastro normal de inbox (`warmup_source = 'internal'`; `warmup_only`
 proíbe a caixa de campanha). O job `processWarmup.ts` (cron 10min, advisory lock) roda duas fases:
 **SEND** — volume pequeno e crescente (2→20/dia na rampa, 8/dia de manutenção depois), pares
@@ -227,13 +260,62 @@ Módulos: `lib/warmup/plan.ts` (alvos/pares/jitter, puro), `lib/warmup/content.t
 comentário) e métrica de inbox placement fora do mesh. Warm-up feito por vendor é invisível ao
 contador — é para isso que existem `warmup_source='vendor'` + atestação (`warmup_attested_*`).
 
-Bloqueios independentes que impedem envio real hoje: **(1)** chave Apollo ausente em prod e
-**(2)** P009 sem domínio descartável provisionado (`scripts/add-domain.ts` gera o par DKIM).
+**Estado verificado em 2026-08-15:** o mesh envia. As 7 caixas (`info@skale.club`,
+`info@xkedule.com` e as 5 de `tryskaleclub.com`) registraram envio real no mesmo tick.
+
+O que bloqueia **campanha** hoje é só a rampa: `warmup_current_day` avança um dia por dia COM envio
+real, então uma caixa nova leva `warmup_days` dias até a ativação passar — override de ops em
+`OUTREACH_ALLOW_UNWARMED_ACTIVATION=true`. Note a distinção que confunde: a rampa bloqueia o **G9**
+(ativação) mas no **G10** só limita volume — `effectiveDailyLimit` parte de `min(5, limite)` e nunca
+devolve zero, então envio individual/transacional funciona desde o dia 0.
+
+P009 **não** é bloqueio aqui: o domínio protegido é o `MAIL_DOMAIN` (`skale.club`), e as caixas de
+outreach vivem em `tryskaleclub.com` e `xkedule.com`. Só `info@skale.club` seria barrada em campanha.
+
+## 13. A armadilha do jsonb — leia antes de escrever em qualquer coluna jsonb
+
+**Toda escrita em coluna `jsonb` tem que passar por `jsonbParam()` (`lib/jsonb.ts`), ou por
+`::text::jsonb` quando for SQL cru.** Nunca `::jsonb` direto sobre um valor já serializado, nunca o
+binding padrão do Drizzle.
+
+Motivo: o Supavisor infere o parâmetro como jsonb antes de o postgres-js enviá-lo. O valor já foi
+passado por `JSON.stringify` (pelo Drizzle ou à mão), então ele é codificado uma **segunda** vez e a
+coluna guarda uma STRING JSON. O cast intermediário via `text` mantém o parâmetro escalar e deixa o
+PostgreSQL fazer o único parse.
+
+O que torna isso traiçoeiro é a simetria: **o ORM desfaz na leitura**, então a aplicação funciona e
+nada parece quebrado. Quem enxerga a diferença é o SQL do servidor. Numa linha duplo-codificada:
+
+| Operação | Resultado |
+|---|---|
+| `jsonb_exists(col, 'qualquer_chave')` | sempre `false` |
+| `col->>'chave'` | sempre `null` |
+| `col \|\| '{}'::jsonb` | devolve **array**, não objeto |
+| `jsonb_object_keys(col)` | erro: *cannot call on a scalar* |
+
+Consequência concreta encontrada em 2026-08-15: o merge de re-import em
+`routes/outreach/leads.ts` usa `||` e protege a atribuição de primeiro toque com
+`jsonb_exists(custom_fields, 'source_run_id')` — essa guarda **nunca teria disparado**, deixando um
+run posterior roubar silenciosamente a atribuição (e os `outcome_*`) do run que achou o lead.
+
+Diagnóstico de uma linha, que vale rodar depois de qualquer feature nova que escreva jsonb:
+
+```sql
+SELECT jsonb_typeof(custom_fields), count(*) FROM leads GROUP BY 1;
+-- 'string' em qualquer coluna jsonb = duplo-codificado. Esperado: object/array.
+```
+
+Normalização (idempotente, e segura porque o ORM lê as duas formas):
+
+```sql
+UPDATE <tabela> SET <coluna> = (<coluna> #>> '{}')::jsonb
+WHERE jsonb_typeof(<coluna>) = 'string';
+```
 
 ## 10. Rotina de reanálise (~15 min)
 
 1. `git log --oneline -15 -- src/server/routes/agent-*.ts src/server/lib/prospecting hermes/` — o que mudou desde a última auditoria.
-2. Rodar os 6 comandos de invariante da §6.
+2. Rodar os 7 comandos de invariante da §6.
 3. `npx vitest run src/server/lib/__tests__/hermes-mcp-contract.test.ts` — o contrato de capacidade.
 4. Conferir a §7 (pré-requisitos) contra o estado real de prod.
 5. `GET /api/admin/outreach/health` → campo `agentOps`; alertar se `stuckExecutingApprovals > 0`.
@@ -257,3 +339,9 @@ Bloqueios independentes que impedem envio real hoje: **(1)** chave Apollo ausent
 Atualize quando mudar: as tools do MCP, a lista de escopos, os gates G1–G10, as cadências de job,
 ou quando um achado da §8 for resolvido. Se você acabou de reauditar, troque a data no topo — é
 ela que diz ao próximo leitor se pode confiar na §8 sem refazer o trabalho.
+
+**Um achado só sai da §8 com prova que fecha a pergunta inteira.** Em 2026-08-15 o achado nº 1 foi
+dado por resolvido porque `grep APOLLO .github/workflows/build-deploy.yml` casava — mas o secret não
+existia, e `${{ secrets.X }}` inexistente vira string vazia sem erro nenhum. O comando provava a
+fiação e foi lido como prova da configuração. Quando escrever um comando de prova aqui, pergunte o
+que ele NÃO cobre.
