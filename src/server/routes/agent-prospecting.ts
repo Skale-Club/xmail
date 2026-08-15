@@ -820,7 +820,9 @@ router.post('/searches/:id/import', async (req, res) => {
                 icpTier: candidate.scoreTier,
                 icpScoreBreakdown: candidate.scoreBreakdown,
                 enrichedAt: candidate.enrichedAt,
-                customFields: {
+                // jsonbParam pelo mesmo motivo dos outros writes de jsonb neste arquivo: sem o cast
+                // via text o Supavisor codifica o valor duas vezes e a coluna guarda uma STRING.
+                customFields: jsonbParam({
                     prospectingRunId: run.id,
                     externalPersonId: candidate.externalPersonId,
                     seniority: candidate.seniority,
@@ -830,7 +832,7 @@ router.post('/searches/:id/import', async (req, res) => {
                         personalization: latestAssessmentByCandidate.get(candidate.id)!.personalization,
                         evidenceFields: latestAssessmentByCandidate.get(candidate.id)!.evidenceFields,
                     } : null,
-                },
+                }),
             }))).onConflictDoNothing({ target: [leads.organizationId, leads.email] }).returning()
             const resolved = await tx.query.leads.findMany({
                 where: and(

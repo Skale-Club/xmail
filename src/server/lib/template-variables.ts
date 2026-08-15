@@ -63,6 +63,41 @@ const DEFAULT_VALUES: Record<string, string> = {
     location: '',
 }
 
+/**
+ * Cidade a partir do `location`, que chega do Xcraper como endereço postal completo
+ * (`75 Main St, Hudson, MA 01749`). `{{location}}` inteiro não serve em texto de outreach:
+ * "barbershops around 75 Main St, Hudson, MA 01749" soa pior que a cidade escrita à mão — e foi
+ * por não existir `{{city}}` que a campanha piloto acabou com "Hudson" fixo no corpo, o que só
+ * está certo enquanto a campanha não rodar em outra cidade.
+ *
+ * Regra: no formato `rua, cidade, ESTADO CEP` a cidade é o penúltimo segmento; com dois segmentos
+ * (`Hudson, MA`) é o primeiro. Devolve string vazia quando não dá para decidir — um default
+ * inventado colocaria a cidade errada no e-mail, que é pior que a frase ficar sem ela.
+ */
+export function extractCity(location: string | null | undefined): string {
+    if (!location) return ''
+    const parts = location.split(',').map((p) => p.trim()).filter(Boolean)
+    if (parts.length === 0) return ''
+    if (parts.length === 1) return ''
+    const last = parts[parts.length - 1]
+
+    // `MA` ou `MA 01749`: o segmento anterior é a cidade. `Hudson, MA` resolve para `Hudson`.
+    if (/^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$/.test(last)) {
+        const city = parts[parts.length - 2]
+        return /^\d+$/.test(city ?? '') ? '' : (city ?? '')
+    }
+
+    // CEP sozinho não identifica cidade: em `75 Main St, 01749` o segmento anterior é a RUA, não a
+    // cidade. Só dá para confiar quando existe um terceiro segmento (`rua, cidade, CEP`).
+    if (/^\d{5}(-\d{4})?$/.test(last)) {
+        if (parts.length < 3) return ''
+        const city = parts[parts.length - 2]
+        return /^\d+$/.test(city ?? '') ? '' : (city ?? '')
+    }
+
+    return /^\d+$/.test(last) ? '' : last
+}
+
 // Built-in variable handlers
 const BUILTIN_VARIABLES: Record<string, (lead: LeadForTemplate) => string> = {
     '{{firstName}}': (lead) => lead.firstName || DEFAULT_VALUES.firstName,
@@ -78,6 +113,7 @@ const BUILTIN_VARIABLES: Record<string, (lead: LeadForTemplate) => string> = {
     '{{linkedinUrl}}': (lead) => lead.linkedinUrl || DEFAULT_VALUES.linkedinUrl,
     '{{phone}}': (lead) => lead.phone || DEFAULT_VALUES.phone,
     '{{location}}': (lead) => lead.location || DEFAULT_VALUES.location,
+    '{{city}}': (lead) => extractCity(lead.location),
     '{{fullName}}': (lead) => {
         const parts = [lead.firstName, lead.lastName].filter(Boolean)
         return parts.length > 0 ? parts.join(' ') : 'there'

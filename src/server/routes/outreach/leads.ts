@@ -6,6 +6,7 @@ import { eq, and, or, sql, ilike, inArray, asc, desc, type SQL } from 'drizzle-o
 import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-access'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import { mapEmailVerificationCustomFields, resolveLeadVerificationFields } from '../../lib/email-verification-mapping'
+import { jsonbParam } from '../../lib/jsonb'
 
 const router = Router()
 
@@ -359,6 +360,11 @@ router.post('/', async (req: Request, res: Response) => {
         const [newLead] = await db.insert(leads).values({
             organizationId,
             ...validatedData,
+            // jsonbParam, não o binding padrão do Drizzle: sem o cast intermediário via text o
+            // Supavisor codifica o valor uma segunda vez e a coluna guarda uma STRING JSON. O ORM
+            // desfaz isso na leitura, então nada parece quebrado — mas todo operador jsonb no
+            // servidor (`->`, `->>`, `||`, `jsonb_exists`) passa a ver um escalar. Ver lib/jsonb.ts.
+            ...(validatedData.customFields ? { customFields: jsonbParam(validatedData.customFields) } : {}),
             ...verificationFields,
         }).returning()
 
@@ -502,6 +508,11 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
             newLeadsWithVerification.map(({ lead, verification }) => ({
                 organizationId,
                 ...lead,
+                // Ver comentário no create individual acima: sem jsonbParam o Supavisor grava uma
+                // STRING JSON, e é isso que quebra o merge `||` e o jsonb_exists('source_run_id')
+                // do caminho de re-import logo abaixo — a guarda de atribuição de primeiro toque
+                // nunca dispararia, silenciosamente.
+                ...(lead.customFields ? { customFields: jsonbParam(lead.customFields) } : {}),
                 leadListId: validatedData.leadListId || lead.leadListId,
                 ...verification,
             }))

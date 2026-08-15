@@ -23,6 +23,7 @@ import { resolveLeadVerificationFields } from '../lib/email-verification-mapping
 import agentProspectingRouter from './agent-prospecting'
 import agentApprovalsRouter from './agent-approvals'
 import agentAssessmentsRouter from './agent-assessments'
+import { jsonbParam } from '../lib/jsonb'
 
 const router = Router()
 
@@ -168,6 +169,10 @@ router.post('/prospects/import', async (req, res) => {
         const inserted = await db.insert(leads).values(prospectsWithVerification.map(({ prospect, verification }) => ({
             organizationId: principal.organizationId,
             ...prospect,
+            // Ver lib/jsonb.ts: sem o cast via text o Supavisor codifica o valor duas vezes e a
+            // coluna guarda uma STRING JSON, invisível através do ORM mas opaca a todo operador
+            // jsonb do lado do servidor.
+            ...(prospect.customFields ? { customFields: jsonbParam(prospect.customFields) } : {}),
             source: input.source,
             leadListId: input.leadListId,
             ...verification,
