@@ -63,11 +63,11 @@ describe('fase SEND do mesh de warm-up — corte de data por operador tipado', (
         // `sql` cru não passa pelo mapFromDriverValue da coluna, então `sql<Date>` é uma promessa
         // que o runtime não cumpre — e `.getTime()` no resultado explode. Travado aqui porque o
         // tipo mente de forma convincente e ninguém revisa uma anotação que "parece certa".
-        const [row] = await db.select({ t: sql<unknown>`now()` }).from(warmupMessages).limit(1)
-            .then(r => r.length ? r : db.select({ t: sql<unknown>`now()` }))
+        const rows = await db.execute(sql`select now() as t`)
+        const value = (rows as unknown as Array<{ t: unknown }>)[0]?.t
 
-        expect(row?.t).not.toBeInstanceOf(Date)
-        expect(typeof row?.t).toBe('string')
+        expect(value).not.toBeInstanceOf(Date)
+        expect(typeof value).toBe('string')
     })
 
     it('executa a agregação diária com um Date sem estourar no driver', async () => {
