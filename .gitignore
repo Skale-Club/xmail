@@ -64,6 +64,9 @@ drizzle/meta
 nul
 Thumbs.db
 
+# Generated task artifacts (xlsx/png/ndjson deliverables, not source)
+outputs/
+
 # Misc
 *.pem
 .keepalive
