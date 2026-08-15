@@ -1994,8 +1994,15 @@ export type NewOutreachConversationRead = typeof outreachConversationReads.$infe
 // Every operator action (label, archive, reminder, snippet, scheduled reply) is a durable,
 // organization-scoped row — never browser state. Tables mirror 042 byte-for-byte on names.
 
-/** Private Supabase Storage bucket for inbox attachments. Configured by migration 042. */
-export const INBOX_ATTACHMENTS_BUCKET = 'inbox-attachments'
+/**
+ * Private object-storage bucket for inbox attachments.
+ *
+ * Cloudflare R2 bucket `xmail-inbox-attachments` (WEUR, private) as of migration 057;
+ * previously the Supabase bucket `inbox-attachments` from migration 042. Only NEW uploads
+ * use this constant — download/delete read `inbox_attachments.storage_bucket` off the row,
+ * so any pre-existing object keeps resolving to the bucket it was actually written to.
+ */
+export const INBOX_ATTACHMENTS_BUCKET = 'xmail-inbox-attachments'
 
 export type InboxSendCommandMode = 'reply' | 'reply_all' | 'forward'
 export type InboxSendCommandStatus =

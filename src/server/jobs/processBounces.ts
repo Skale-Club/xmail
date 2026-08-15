@@ -31,7 +31,7 @@ import {
     createDrizzleInboundEventStore,
     type StoredProviderEvent,
 } from '../lib/outreach-inbound'
-import { ingestOutreachInbound } from '../lib/outreach-inbound-sources'
+import { ingestOutreachInboundExclusive } from '../lib/outreach-inbound-sources'
 import { TERMINAL_CAMPAIGN_LEAD_STATUSES } from '../lib/outreach-sequence-state'
 
 const log = createLogger('outreach.bounce')
@@ -356,10 +356,11 @@ export async function processBounces(): Promise<{ processed: number; bounces: nu
 
     const store = createDrizzleInboundEventStore()
 
-    // Stage first — see the note in processReplies.ts. Ingestion is idempotent, so
-    // whichever job wins the tick, both classifications end up staged exactly once.
-    const ingested = await ingestOutreachInbound({ store })
-    result.errors += ingested.errors
+    // Stage first — see the note in processReplies.ts. Ingestion is idempotent AND
+    // advisory-locked, so whichever job wins a colliding tick stages once and the other
+    // skips straight to consuming (null result).
+    const ingested = await ingestOutreachInboundExclusive({ store })
+    if (ingested) result.errors += ingested.errors
 
     const consumed = await consumeClassifiedEvents({
         store,

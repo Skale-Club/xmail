@@ -32,7 +32,7 @@ import {
     type StoredProviderEvent,
 } from '../lib/outreach-inbound'
 import { scheduleAutonomousFollowUp } from '../lib/inbox-ai-automation-runtime'
-import { ingestOutreachInbound } from '../lib/outreach-inbound-sources'
+import { ingestOutreachInboundExclusive } from '../lib/outreach-inbound-sources'
 import { sqlTimestamp } from '../lib/sql-timestamp'
 import {
     TERMINAL_CAMPAIGN_LEAD_STATUSES,
@@ -164,10 +164,11 @@ export async function processReplies(): Promise<ProcessRepliesResult> {
     const store = createDrizzleInboundEventStore()
 
     // Stage first. Either job may be first on a tick, and neither may consume a
-    // classification that was never staged. Ingestion is cursor-driven and
-    // deduplicated, so running it from both jobs stages nothing twice.
-    const ingested = await ingestOutreachInbound({ store })
-    result.errors += ingested.errors
+    // classification that was never staged. The shared ingestion lock means a colliding
+    // bounce tick no longer runs the same provider scan a second time; null = the other
+    // job is staging right now, and its events are durable, so consuming still proceeds.
+    const ingested = await ingestOutreachInboundExclusive({ store })
+    if (ingested) result.errors += ingested.errors
 
     // Auto-replies are tagged but never stop the sequence — same behaviour as before,
     // except the decision was already made once at ingestion instead of being

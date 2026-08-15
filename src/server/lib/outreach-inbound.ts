@@ -362,6 +362,21 @@ export interface InboundSourcePage {
     messages: NormalizedInboundMessage[]
     nextCursor: ProviderCursorState
     /**
+     * Cursor that is safe to persist once the message at `index` has been durably staged.
+     * Optional because not every provider can express one (a Graph delta token is scoped
+     * to the whole page). When present, ingestion checkpoints progress mid-page and, on a
+     * failure, resumes from the last staged message instead of re-fetching the entire
+     * page — the 2026-08 egress incident was one page being re-transmitted, bodies and
+     * all, on every tick for a month because the cursor only ever advanced page-at-a-time.
+     */
+    getMessageCursor?: (index: number) => ProviderCursorState | null
+    /**
+     * Messages the source skipped because they are already staged (counted into
+     * `duplicates`). Lets a source avoid transferring bodies for mail that ingestion
+     * would only bounce off the unique key anyway.
+     */
+    alreadyStaged?: number
+    /**
      * Set when the provider asked us to back off (Graph 429 Retry-After). Reported rather
      * than thrown, so the work already done this page is still staged.
      */
@@ -398,6 +413,20 @@ export interface IngestResult {
 // Ingestion
 // ============================================================
 
+/**
+ * How often ingestion persists the per-message cursor mid-page. Small enough that a
+ * crash re-stages at most this many already-deduplicated messages; large enough that a
+ * full page is not one cursor write per row.
+ */
+export const CURSOR_CHECKPOINT_INTERVAL = 25
+
+/**
+ * Backoff persisted when ingestion of an account throws. Must exceed the shortest
+ * caller cadence (replies run every 15 minutes) or the failed account is retried at
+ * full weight on the very next tick anyway.
+ */
+export const INGEST_FAILURE_BACKOFF_MINUTES = 30
+
 export async function ingestInboundPage(deps: {
     store: InboundEventStore
     source: InboundSource
@@ -417,58 +446,86 @@ export async function ingestInboundPage(deps: {
     const result: IngestResult = {
         scanned: messages.length,
         recorded: 0,
-        duplicates: 0,
+        // Messages the source pre-filtered as already staged never reach recordEvent,
+        // but they are still duplicates from the caller's point of view.
+        duplicates: page.alreadyStaged ?? 0,
         classifications: { reply: 0, bounce: 0, auto_reply: 0, other: 0 },
         // Sources that do not report it read exactly one page by construction (native and
         // IMAP both query directly and throw on failure), so absence means one.
         pagesFetched: page.pagesFetched ?? 1,
     }
 
-    for (const message of messages) {
-        let hasKnownCorrespondent = false
-        // Only consulted when cheaper signals are absent, so the extra lookup does not
-        // run for the common threaded-reply/DSN cases.
-        if (deps.isKnownCorrespondent && message.fromAddress && !message.inReplyTo && !message.references) {
-            hasKnownCorrespondent = await deps.isKnownCorrespondent(message.fromAddress)
+    // The last per-message cursor whose message is durably staged. Persisted mid-page as
+    // a checkpoint and, crucially, on failure: a message whose recordEvent always throws
+    // must cost re-reading only itself, never the messages staged before it. Without
+    // this, one poisonous message re-transmitted the whole page — bodies included — on
+    // every tick of both calling jobs (the 2026-08 Supabase egress overrun).
+    let lastStagedCursor: ProviderCursorState | null = null
+
+    try {
+        for (const [index, message] of messages.entries()) {
+            let hasKnownCorrespondent = false
+            // Only consulted when cheaper signals are absent, so the extra lookup does not
+            // run for the common threaded-reply/DSN cases.
+            if (deps.isKnownCorrespondent && message.fromAddress && !message.inReplyTo && !message.references) {
+                hasKnownCorrespondent = await deps.isKnownCorrespondent(message.fromAddress)
+            }
+
+            const { classification } = classifyInboundMessage({
+                fromAddress: message.fromAddress,
+                subject: message.subject,
+                headers: message.headers,
+                inReplyTo: message.inReplyTo,
+                references: message.references,
+                hasKnownCorrespondent,
+            })
+
+            const { inserted } = await deps.store.recordEvent({
+                organizationId: deps.account.organizationId,
+                emailAccountId: deps.account.id,
+                provider: message.provider,
+                providerMessageId: message.providerMessageId,
+                messageId: normalizeMessageId(message.messageId),
+                inReplyTo: message.inReplyTo,
+                messageReferences: message.references,
+                classification,
+                fromAddress: message.fromAddress,
+                toAddresses: message.toAddresses,
+                ccAddresses: message.ccAddresses,
+                subject: message.subject,
+                textBody: message.textBody,
+                htmlBody: message.htmlBody,
+                headers: message.headers,
+                attachments: message.attachments,
+                receivedAt: message.receivedAt,
+            })
+
+            if (inserted) result.recorded++
+            else result.duplicates++
+            result.classifications[classification]++
+
+            const messageCursor = page.getMessageCursor?.(index) ?? null
+            if (messageCursor) {
+                lastStagedCursor = messageCursor
+                if ((index + 1) % CURSOR_CHECKPOINT_INTERVAL === 0) {
+                    await deps.store.saveCursor(deps.account.id, deps.source.provider, messageCursor)
+                }
+            }
         }
-
-        const { classification } = classifyInboundMessage({
-            fromAddress: message.fromAddress,
-            subject: message.subject,
-            headers: message.headers,
-            inReplyTo: message.inReplyTo,
-            references: message.references,
-            hasKnownCorrespondent,
-        })
-
-        const { inserted } = await deps.store.recordEvent({
-            organizationId: deps.account.organizationId,
-            emailAccountId: deps.account.id,
-            provider: message.provider,
-            providerMessageId: message.providerMessageId,
-            messageId: normalizeMessageId(message.messageId),
-            inReplyTo: message.inReplyTo,
-            messageReferences: message.references,
-            classification,
-            fromAddress: message.fromAddress,
-            toAddresses: message.toAddresses,
-            ccAddresses: message.ccAddresses,
-            subject: message.subject,
-            textBody: message.textBody,
-            htmlBody: message.htmlBody,
-            headers: message.headers,
-            attachments: message.attachments,
-            receivedAt: message.receivedAt,
-        })
-
-        if (inserted) result.recorded++
-        else result.duplicates++
-        result.classifications[classification]++
+    } catch (error) {
+        // Everything before the failing message is durably staged, so advancing to it is
+        // safe. The failing message itself stays ahead of the cursor and is re-fetched
+        // next tick. The caller records the backoff (recordCursorRetry) AFTER this save,
+        // because saveCursor clears the retry bookkeeping.
+        if (lastStagedCursor) {
+            await deps.store.saveCursor(deps.account.id, deps.source.provider, lastStagedCursor)
+        }
+        throw error
     }
 
     // Only after every message in the page is durably staged. If recordEvent throws we
-    // never get here, so the page is re-fetched next tick and deduplicated — losing a
-    // page is recoverable, advancing past one is not.
+    // never get here, so the unstaged tail is re-fetched next tick and deduplicated —
+    // losing part of a page is recoverable, advancing past one is not.
     await deps.store.saveCursor(deps.account.id, deps.source.provider, page.nextCursor)
 
     // After the cursor, never before: saveCursor clears the row's error/retry bookkeeping on
@@ -731,13 +788,27 @@ export function createSqlInboundEventStore(
             const sql = await getClient()
             // Deliberately does not touch delta_cursor/uid/received-at columns: a backoff is
             // bookkeeping about the last attempt, not a change of position.
+            //
+            // Upsert, not UPDATE: an account that fails before its FIRST successful page has
+            // no cursor row, and a plain UPDATE was a silent no-op — so the backoff was never
+            // persisted, loadIngestableAccounts kept selecting the account, and every tick
+            // re-fetched the same full page (the 2026-08 egress overrun). The org id comes
+            // from email_accounts, mirroring saveCursor.
             await sql`
-                UPDATE outreach_provider_cursors
-                SET last_error = ${input.error},
+                INSERT INTO outreach_provider_cursors (
+                    organization_id, email_account_id, provider,
+                    last_error, last_error_at, retry_at, updated_at
+                )
+                SELECT organization_id, id, ${provider},
+                       ${input.error}, now(), ${sqlTimestampValue(input.retryAt)}, now()
+                FROM email_accounts
+                WHERE id = ${emailAccountId}
+                ON CONFLICT (organization_id, email_account_id, provider)
+                DO UPDATE SET
+                    last_error = EXCLUDED.last_error,
                     last_error_at = now(),
-                    retry_at = ${sqlTimestampValue(input.retryAt)},
+                    retry_at = EXCLUDED.retry_at,
                     updated_at = now()
-                WHERE email_account_id = ${emailAccountId} AND provider = ${provider}
             `
         },
     }

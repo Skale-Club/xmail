@@ -6,12 +6,14 @@ import { systemBranding, users, organizations, domains, mailboxes, mailFolders, 
 import { eq, and } from 'drizzle-orm'
 import { z } from 'zod'
 import { getCachedBranding, clearBrandingCache } from '../lib/serverBranding'
-import { supabaseAdminClient } from '../lib/supabase'
+import { createObjectStorage, publicObjectUrl } from '../lib/object-storage'
 
 const router = Router()
 
 const brandingId = 'default'
-const BUCKET_NAME = 'branding-assets'
+// Cloudflare R2 bucket (public, served from cdn.xmail.skale.club); was the Supabase
+// 'branding-assets' bucket before the 2026-08 storage migration.
+const BUCKET_NAME = 'xmail-branding-assets'
 
 const brandingSchema = z.object({
     companyName: z.string().trim().min(1).max(120).optional(),
@@ -45,15 +47,24 @@ async function readBranding() {
     }
 }
 
-const DEFAULT_LOGO_URL = `${process.env.SUPABASE_URL}/storage/v1/object/public/branding-assets/brand-mark.svg`
+// Branding assets are public objects. On R2 the public custom domain is bound to the
+// branding bucket, so the URL carries only the object path; the Supabase fallback keeps
+// the historical /storage/v1/object/public/<bucket>/<path> shape until cutover.
+function getDefaultLogoUrl(): string {
+    return publicObjectUrl('brand-mark.svg')
+        ?? `${process.env.SUPABASE_URL}/storage/v1/object/public/${BUCKET_NAME}/brand-mark.svg`
+}
 
 function getPublicUrl(storage: string | null): string {
     if (!storage) {
-        return DEFAULT_LOGO_URL
+        return getDefaultLogoUrl()
     }
 
-    const [bucket, path] = storage.split('/')
-    return `${process.env.SUPABASE_URL}/storage/v1/object/public/${bucket}/${path}`
+    // Stored as '<bucket>/<path>'; the path may itself contain slashes.
+    const separator = storage.indexOf('/')
+    const path = separator === -1 ? storage : storage.slice(separator + 1)
+    return publicObjectUrl(path)
+        ?? `${process.env.SUPABASE_URL}/storage/v1/object/public/${storage}`
 }
 
 function getFaviconPublicUrl(faviconStorage: string | null, logoStorage: string | null): string {
@@ -206,15 +217,9 @@ router.post('/branding/upload', async (req: Request, res: Response) => {
         const storagePath = `${fieldName}-${timestamp}-${filename}`
         const storageKey = `${BUCKET_NAME}/${storagePath}`
 
-        const { error: uploadError } = await supabaseAdminClient
-            .storage
-            .from(BUCKET_NAME)
-            .upload(storagePath, fileBuffer, {
-                contentType: fileType,
-                upsert: true,
-            })
-
-        if (uploadError) {
+        try {
+            await createObjectStorage().upload(BUCKET_NAME, storagePath, fileBuffer, fileType, { upsert: true })
+        } catch (uploadError) {
             console.error('Upload error:', uploadError)
             return res.status(500).json({ error: 'Failed to upload file' })
         }

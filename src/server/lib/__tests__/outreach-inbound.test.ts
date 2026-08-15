@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+    CURSOR_CHECKPOINT_INTERVAL,
     DEFAULT_INBOUND_PAGE_SIZE,
     MAX_INBOUND_PAGE_SIZE,
     classifyInboundMessage,
@@ -44,12 +45,16 @@ function createFakeStore(seed: StoredProviderEvent[] = []) {
     const events = new Map<string, StoredProviderEvent>()
     let cursor: ProviderCursorState | null = null
     let sequence = 0
+    const cursorSaves: ProviderCursorState[] = []
+    const retries: { error: string; retryAt: Date | null }[] = []
 
     for (const event of seed) events.set(`${event.provider}:${event.providerMessageId}`, { ...event })
 
     const store: InboundEventStore & {
         all: () => StoredProviderEvent[]
         cursorState: () => ProviderCursorState | null
+        cursorSaves: () => ProviderCursorState[]
+        retries: () => { error: string; retryAt: Date | null }[]
     } = {
         async recordEvent(input) {
             const key = `${input.provider}:${input.providerMessageId}`
@@ -79,6 +84,10 @@ function createFakeStore(seed: StoredProviderEvent[] = []) {
         },
         async saveCursor(_account, _provider, next) {
             cursor = { ...next }
+            cursorSaves.push({ ...next })
+        },
+        async recordCursorRetry(_account, _provider, input) {
+            retries.push({ ...input })
         },
         // Mirrors the SQL store's lease: pick the oldest pending row of this
         // classification, run the handler, and only then mark it processed. A failure
@@ -105,6 +114,8 @@ function createFakeStore(seed: StoredProviderEvent[] = []) {
         },
         all: () => [...events.values()],
         cursorState: () => cursor,
+        cursorSaves: () => [...cursorSaves],
+        retries: () => [...retries],
     }
     return store
 }
@@ -394,6 +405,106 @@ describe('ingestInboundPage', () => {
 
         // Losing the page is recoverable; advancing past it is not.
         expect(store.cursorState()).toBeNull()
+    })
+
+    // 2026-08 Supabase egress overrun: a message whose recordEvent always threw kept the
+    // cursor from ever being saved, so every tick of both jobs re-fetched the whole page
+    // — full bodies included — for a month. A poisonous message must cost re-reading
+    // only itself, never the messages staged before it.
+    it('a poisonous message does not force re-downloading the messages staged before it', async () => {
+        const store = createFakeStore()
+        const failing: InboundEventStore = {
+            ...store,
+            recordEvent: async (input) => {
+                if (input.providerMessageId === 'poison') throw new Error('unstorable message')
+                return store.recordEvent(input)
+            },
+        }
+
+        const messages = ['a', 'poison', 'c'].map((id, index) => message({
+            providerMessageId: id,
+            messageId: `${id}@prospect.test`,
+            receivedAt: new Date(Date.UTC(2026, 6, 16, 10, index)),
+        }))
+        const cursorFor = (msg: NormalizedInboundMessage): ProviderCursorState => ({
+            ...EMPTY_CURSOR,
+            lastReceivedAt: msg.receivedAt,
+            lastProviderMessageId: msg.providerMessageId,
+        })
+        const source: InboundSource = {
+            provider: 'native',
+            async fetchPage() {
+                return {
+                    messages,
+                    nextCursor: cursorFor(messages[2]),
+                    getMessageCursor: (index) => cursorFor(messages[index]),
+                }
+            },
+        }
+
+        await expect(ingestInboundPage({
+            store: failing,
+            source,
+            account: { id: ACCOUNT, organizationId: ORG },
+        })).rejects.toThrow('unstorable message')
+
+        // 'a' is durably staged, so the persisted cursor points at it — the next fetch
+        // starts at the poisonous message, not at the top of the page.
+        expect(store.cursorState()).toMatchObject({ lastProviderMessageId: 'a' })
+        expect(store.all().map((event) => event.providerMessageId)).toEqual(['a'])
+    })
+
+    it('checkpoints the cursor mid-page so a long page cannot lose all progress', async () => {
+        const store = createFakeStore()
+        const total = CURSOR_CHECKPOINT_INTERVAL * 2 + 3
+        const messages = Array.from({ length: total }, (_, index) => message({
+            providerMessageId: `m-${index}`,
+            messageId: `m-${index}@prospect.test`,
+        }))
+        const cursorFor = (index: number): ProviderCursorState => ({
+            ...EMPTY_CURSOR,
+            lastProviderMessageId: messages[index].providerMessageId,
+        })
+        const source: InboundSource = {
+            provider: 'native',
+            async fetchPage() {
+                return {
+                    messages,
+                    nextCursor: cursorFor(total - 1),
+                    getMessageCursor: cursorFor,
+                }
+            },
+        }
+
+        await ingestInboundPage({ store, source, account: { id: ACCOUNT, organizationId: ORG } })
+
+        // Two mid-page checkpoints plus the final page cursor.
+        expect(store.cursorSaves().map((saved) => saved.lastProviderMessageId)).toEqual([
+            `m-${CURSOR_CHECKPOINT_INTERVAL - 1}`,
+            `m-${CURSOR_CHECKPOINT_INTERVAL * 2 - 1}`,
+            `m-${total - 1}`,
+        ])
+    })
+
+    it('counts source-side pre-filtered messages as duplicates without re-staging them', async () => {
+        // The native source no longer transfers bodies for already-staged rows; the
+        // ingest result still has to account for them so callers can see scan activity.
+        const store = createFakeStore()
+        const source: InboundSource = {
+            provider: 'native',
+            async fetchPage() {
+                return {
+                    messages: [message({ providerMessageId: 'fresh' })],
+                    nextCursor: EMPTY_CURSOR,
+                    alreadyStaged: 4,
+                }
+            },
+        }
+
+        const result = await ingestInboundPage({ store, source, account: { id: ACCOUNT, organizationId: ORG } })
+
+        expect(result).toMatchObject({ scanned: 1, recorded: 1, duplicates: 4 })
+        expect(store.all()).toHaveLength(1)
     })
 
     it('does not read or mutate user read state', async () => {

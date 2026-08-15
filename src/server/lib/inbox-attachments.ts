@@ -2,7 +2,8 @@
 // Unified Inbox attachment lifecycle (Phase 22 UIX-05, locked #7)
 // ============================================================
 // Attachments are BOUNDED, organization-owned, and NEVER base64 JSON blobs. Bytes live in one
-// PRIVATE Supabase Storage bucket (migration 042); Postgres holds only metadata + an object
+// PRIVATE object-storage bucket — Cloudflare R2 when configured, else the Supabase bucket from
+// migration 042 (see object-storage.ts) — and Postgres holds only metadata + an object
 // reference. Every operation is organization-scoped: an attachment id from another tenant is
 // indistinguishable from a missing one.
 //
@@ -144,31 +145,38 @@ export interface AttachmentStorage {
     remove(bucket: string, paths: string[]): Promise<void>
 }
 
+// Backend selection (R2 vs Supabase) lives in object-storage.ts; this wrapper only
+// translates backend failures into the InboxAttachmentError codes the routes expose.
 function defaultStorage(): AttachmentStorage {
+    const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
     return {
         async upload(bucket, path, bytes, contentType) {
-            const { supabaseAdminClient } = await import('./supabase')
-            const { error } = await supabaseAdminClient.storage.from(bucket).upload(path, bytes, {
-                contentType,
-                upsert: false,
-            })
-            if (error) throw new InboxAttachmentError(502, 'attachment_storage_upload_failed', error.message)
+            const { createObjectStorage } = await import('./object-storage')
+            try {
+                await createObjectStorage().upload(bucket, path, bytes, contentType, { upsert: false })
+            } catch (error) {
+                throw new InboxAttachmentError(502, 'attachment_storage_upload_failed', errorMessage(error))
+            }
         },
         async download(bucket, path) {
-            const { supabaseAdminClient } = await import('./supabase')
-            const { data, error } = await supabaseAdminClient.storage.from(bucket).download(path)
-            if (error || !data) throw new InboxAttachmentError(502, 'attachment_storage_download_failed', error?.message)
-            return Buffer.from(await data.arrayBuffer())
+            const { createObjectStorage } = await import('./object-storage')
+            try {
+                return await createObjectStorage().download(bucket, path)
+            } catch (error) {
+                throw new InboxAttachmentError(502, 'attachment_storage_download_failed', errorMessage(error))
+            }
         },
         async createSignedUrl(bucket, path, expiresInSeconds) {
-            const { supabaseAdminClient } = await import('./supabase')
-            const { data, error } = await supabaseAdminClient.storage.from(bucket).createSignedUrl(path, expiresInSeconds)
-            if (error || !data?.signedUrl) throw new InboxAttachmentError(502, 'attachment_storage_sign_failed', error?.message)
-            return data.signedUrl
+            const { createObjectStorage } = await import('./object-storage')
+            try {
+                return await createObjectStorage().createSignedUrl(bucket, path, expiresInSeconds)
+            } catch (error) {
+                throw new InboxAttachmentError(502, 'attachment_storage_sign_failed', errorMessage(error))
+            }
         },
         async remove(bucket, paths) {
-            const { supabaseAdminClient } = await import('./supabase')
-            await supabaseAdminClient.storage.from(bucket).remove(paths)
+            const { createObjectStorage } = await import('./object-storage')
+            await createObjectStorage().remove(bucket, paths)
         },
     }
 }

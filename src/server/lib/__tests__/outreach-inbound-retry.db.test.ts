@@ -110,6 +110,23 @@ describe('provider backoff is honoured by the ingest loop', () => {
         expect(await ingestable(NOW)).toEqual(['backed-off@example.test', 'due@example.test'])
     })
 
+    it('records a backoff even for an account that has no cursor row yet', async () => {
+        // 2026-08 egress overrun: recordCursorRetry was a plain UPDATE, so an account that
+        // failed before its FIRST successful page (no cursor row) never persisted its
+        // backoff and was re-scanned at full page weight on every tick. It now upserts.
+        const { createSqlInboundEventStore } = await import('../outreach-inbound')
+        const store = createSqlInboundEventStore(async () => sql as never)
+
+        await store.recordCursorRetry!(IDS.backedOff, 'native', {
+            error: 'ingest_failed',
+            retryAt: new Date(NOW.getTime() + 30 * 60_000),
+        })
+
+        expect(await ingestable(NOW)).toEqual(['due@example.test'])
+        expect(await ingestable(new Date(NOW.getTime() + 31 * 60_000)))
+            .toEqual(['backed-off@example.test', 'due@example.test'])
+    })
+
     it('lets a successful sync clear the backoff, so a stuck value cannot strand an account', async () => {
         await setRetryAt(IDS.backedOff, new Date(NOW.getTime() + 10 * 60_000))
         expect(await ingestable(NOW)).toEqual(['due@example.test'])

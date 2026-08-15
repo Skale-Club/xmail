@@ -177,7 +177,7 @@ be rebuilt from scratch. Keep its "achados abertos" table and audit date current
 
 Required: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `DATABASE_URL`
 
-Optional: `PORT` (default 9001), `NODE_ENV`, `JWT_SECRET`, `FRONTEND_URL` (default http://localhost:9000), `SMTP_HOST/PORT/USER/PASS/FROM`, `XMAIL_SERVICE_KEY` (machine-to-machine auth for the Xphere orchestrator on `/api/outreach/*`, fails closed if unset), `XMAIL_SERVICE_USER_ID`/`XMAIL_SERVICE_ORGANIZATION_ID` (bind the service key to a server-configured principal + organization; the client cannot choose its own identity or tenant, and all three must be set together or machine auth stays disabled), `XPHERE_EVENTS_URL`/`XPHERE_EVENTS_API_KEY` (outbound outreach event notifications to Xphere; both required together)
+Optional: `PORT` (default 9001), `NODE_ENV`, `JWT_SECRET`, `FRONTEND_URL` (default http://localhost:9000), `SMTP_HOST/PORT/USER/PASS/FROM`, `R2_ACCOUNT_ID`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY` (Cloudflare R2 object storage for inbox attachments + branding assets via `src/server/lib/object-storage.ts`; falls back to Supabase Storage when unset) plus `R2_PUBLIC_BASE_URL` (public domain of the branding-assets bucket) and optional `R2_ENDPOINT` override, `XMAIL_SERVICE_KEY` (machine-to-machine auth for the Xphere orchestrator on `/api/outreach/*`, fails closed if unset), `XMAIL_SERVICE_USER_ID`/`XMAIL_SERVICE_ORGANIZATION_ID` (bind the service key to a server-configured principal + organization; the client cannot choose its own identity or tenant, and all three must be set together or machine auth stays disabled), `XPHERE_EVENTS_URL`/`XPHERE_EVENTS_API_KEY` (outbound outreach event notifications to Xphere; both required together)
 
 See `.env.example` for full list.
 
@@ -204,7 +204,13 @@ All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql
 - **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/0000_dear_wolverine.sql`. The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
 - **Do NOT add Drizzle relations / constraints expecting them to apply automatically.** The TS-side schema is for type information; the DB side comes from the SQL migration.
 
-**Numbering convention:** Migrations are sequential integers. As of 2026-08-14 production is applied through `056_email_verification_rate_entry_tier.sql` (verified against `supabase_migrations.schema_migrations`); the next free number is `057`. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+**Numbering convention:** Migrations are sequential integers. As of 2026-08-15 the database is applied through `058_warmup_engine.sql` (verified against `supabase_migrations.schema_migrations`); the next free number is `059`. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+
+> **Resolved collision (2026-08-15):** `051_warmup_engine.sql` shared its prefix with the
+> already-applied `051_prospecting_journey_and_costs.sql`. Because the ledger keys on the numeric
+> prefix, `051` read as applied and the warm-up file would never have run — silently. It was
+> renumbered to `058_warmup_engine.sql` and applied. Treat this as the worked example of why a
+> duplicate prefix must never be reintroduced.
 
 **Two numbers must never collide.** `scripts/apply-pending-migrations.mjs` keys the ledger on the numeric prefix alone, so two files sharing a prefix register as one version and the second is silently skipped forever. A `032_reconcile_unique_indexes.sql` once collided with `032_add_native_email_provider.sql`; it was deleted on 2026-08-13 because `035` already creates the same index idempotently and transaction-safely. Do not reintroduce a duplicate prefix.
 

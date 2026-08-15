@@ -12,24 +12,27 @@
 
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
-import { and, asc, eq, isNotNull, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import {
     emailAccounts,
     mailFolders,
     mailMessages,
     outlookMailboxes,
+    outreachProviderEvents,
     type OutlookMailbox,
 } from '../../db/schema'
 import { decryptSecret } from './crypto'
 import { sqlTimestamp } from './sql-timestamp'
 import { createLogger } from './logger'
+import { runWithLock } from './cron-lock'
 import { getNativeMailboxForOrganization } from './native-send'
 import { fetchOutlookInboxDelta } from './outlook'
 import { nativeEventFromMailRow } from './unified-inbox/providers/native'
 import { imapEventFromParsedMail } from './unified-inbox/providers/imap'
 import { outlookEventFromGraphMessage } from './unified-inbox/providers/outlook'
 import {
+    INGEST_FAILURE_BACKOFF_MINUTES,
     ingestInboundPage,
     resolveImapCursor,
     type InboundEventStore,
@@ -95,8 +98,20 @@ export async function createNativeInboundSource(account: {
             const after = cursor?.lastReceivedAt ?? null
             const afterId = cursor?.lastProviderMessageId ?? null
 
-            const candidates = await db.query.mailMessages.findMany({
-                where: and(
+            // Metadata first, bodies last (2026-08 egress overrun): the previous version
+            // fetched FULL rows — plain_body, html_body, headers, attachments, ~37KB each —
+            // for every candidate, including ones already staged, and any failure before
+            // saveCursor re-transmitted the same page on every tick. The candidate scan now
+            // moves only the ordering key; bodies are fetched below, and only for rows that
+            // outreach_provider_events does not already hold.
+            const candidates = await db
+                .select({
+                    id: mailMessages.id,
+                    receivedAt: mailMessages.receivedAt,
+                    createdAt: mailMessages.createdAt,
+                })
+                .from(mailMessages)
+                .where(and(
                     eq(mailMessages.folderId, inbox.id),
                     // Row-value comparison is the tie breaker: several messages can share
                     // one timestamp, so `>` alone would skip the rest of that instant and
@@ -105,12 +120,9 @@ export async function createNativeInboundSource(account: {
                         ? sql`(${orderKey}, ${mailMessages.id}::text) > (${sqlTimestamp(after)}, ${afterId ?? ''}::text)`
                         : undefined,
                     // Never filtered by isRead: the human's read state is not our cursor.
-                ),
-                orderBy: [sql`${orderKey} ASC`, asc(mailMessages.id)],
-                limit: pageSize,
-            })
-
-            const messages: NormalizedInboundMessage[] = candidates.map((row) => nativeEventFromMailRow(row))
+                ))
+                .orderBy(sql`${orderKey} ASC`, asc(mailMessages.id))
+                .limit(pageSize)
 
             const last = candidates[candidates.length - 1]
             const nextCursor: ProviderCursorState = last
@@ -131,7 +143,55 @@ export async function createNativeInboundSource(account: {
                     lastProviderMessageId: afterId,
                 }
 
-            return { messages, nextCursor }
+            if (candidates.length === 0) return { messages: [], nextCursor }
+
+            // Native provider_message_id IS the mail_messages row id, so already-staged
+            // rows are knowable from ids alone — their bodies never leave Postgres again.
+            const staged = await db
+                .select({ providerMessageId: outreachProviderEvents.providerMessageId })
+                .from(outreachProviderEvents)
+                .where(and(
+                    eq(outreachProviderEvents.organizationId, account.organizationId),
+                    eq(outreachProviderEvents.emailAccountId, account.id),
+                    eq(outreachProviderEvents.provider, 'native'),
+                    inArray(outreachProviderEvents.providerMessageId, candidates.map((row) => row.id)),
+                ))
+            const stagedIds = new Set(staged.map((row) => row.providerMessageId))
+            const pendingIds = candidates
+                .filter((row) => !stagedIds.has(row.id))
+                .map((row) => row.id)
+
+            let messages: NormalizedInboundMessage[] = []
+            if (pendingIds.length > 0) {
+                const fullRows = await db.query.mailMessages.findMany({
+                    where: inArray(mailMessages.id, pendingIds),
+                    orderBy: [sql`${orderKey} ASC`, asc(mailMessages.id)],
+                })
+                messages = fullRows.map((row) => nativeEventFromMailRow(row))
+            }
+
+            return {
+                messages,
+                nextCursor,
+                alreadyStaged: stagedIds.size,
+                // Per-message resume point. receivedAt in the normalized message is already
+                // COALESCE(received_at, created_at) (nativeEventFromMailRow), matching the
+                // ordering key, and providerMessageId is the row id — so a failure mid-page
+                // resumes after the last staged message instead of re-reading the page.
+                // Duplicates skipped between two staged messages are covered: they are
+                // already in outreach_provider_events, which is what excluded them here.
+                getMessageCursor: (index) => {
+                    const staged = messages[index]
+                    if (!staged) return null
+                    return {
+                        deltaCursor: null,
+                        uidValidity: null,
+                        lastUid: null,
+                        lastReceivedAt: staged.receivedAt,
+                        lastProviderMessageId: staged.providerMessageId,
+                    }
+                },
+            }
         },
     }
 }
@@ -202,6 +262,10 @@ export function createImapInboundSource(account: ImapInboundAccount): InboundSou
                         .slice(0, pageSize)
 
                     const messages: NormalizedInboundMessage[] = []
+                    // Aligned with `messages`: the cursor that is safe once messages[i] is
+                    // staged. Skipped-unfetchable UIDs below a message are covered by its
+                    // own UID, so resuming from it never re-reads staged mail.
+                    const messageCursors: ProviderCursorState[] = []
                     let highWater = resolved.startUid
 
                     for (const uid of pending) {
@@ -213,6 +277,13 @@ export function createImapInboundSource(account: ImapInboundAccount): InboundSou
                             }
                             const parsed = await simpleParser(fetched.source)
                             messages.push(imapEventFromParsedMail(parsed, uid, resolved.uidValidity))
+                            messageCursors.push({
+                                deltaCursor: null,
+                                uidValidity: resolved.uidValidity,
+                                lastUid: uid,
+                                lastReceivedAt: null,
+                                lastProviderMessageId: null,
+                            })
                             highWater = Math.max(highWater, uid)
                         } catch (error) {
                             const err = error instanceof Error ? error : new Error(String(error))
@@ -237,6 +308,7 @@ export function createImapInboundSource(account: ImapInboundAccount): InboundSou
                             lastReceivedAt: null,
                             lastProviderMessageId: null,
                         },
+                        getMessageCursor: (index) => messageCursors[index] ?? null,
                     }
                 } finally {
                     lock.release()
@@ -437,15 +509,58 @@ export async function ingestOutreachInbound(deps: {
         } catch (error) {
             result.errors++
             const err = error instanceof Error ? error : new Error(String(error))
+
+            // Persist the failure as a backoff. Without this, a repeatedly failing account
+            // was retried at full page weight by BOTH calling jobs on every tick — for a
+            // month, in the 2026-08 incident. recordCursorRetry upserts, so it also works
+            // for an account that failed before its first successful page (no cursor row).
+            // Runs AFTER any partial-progress saveCursor inside ingestInboundPage, which is
+            // required: saveCursor clears the retry bookkeeping.
+            const retryAt = new Date(
+                (deps.now?.() ?? new Date()).getTime() + INGEST_FAILURE_BACKOFF_MINUTES * 60_000,
+            )
+            try {
+                await deps.store.recordCursorRetry?.(
+                    account.id,
+                    account.provider,
+                    { error: err.message.slice(0, 500), retryAt },
+                )
+            } catch {
+                // Backoff bookkeeping is best-effort; the error below is still logged.
+            }
+
             log.error({
                 action: 'outreach.inbound.account_error',
                 emailAccountId: account.id,
                 provider: account.provider,
+                retryAt: retryAt.toISOString(),
                 error: { message: err.message, stack: err.stack },
-            }, 'inbound ingestion failed for account')
+            }, 'inbound ingestion failed for account; backing off')
         }
     }
 
+    return result
+}
+
+/**
+ * Advisory-locked entry point for the cron jobs. Replies (every 15 min) and bounces
+ * (every 30 min) both stage before consuming, so on colliding ticks the same provider
+ * scan used to run twice back-to-back — half of the 8k-query volume in the 2026-08
+ * incident. With one shared lock, whichever job arrives second skips ingestion and goes
+ * straight to consuming events the first one is staging; events are durable, so nothing
+ * is lost by skipping.
+ *
+ * Returns null when ingestion was skipped because the lock is held elsewhere.
+ */
+export async function ingestOutreachInboundExclusive(deps: {
+    store: InboundEventStore
+    pageSize?: number
+    now?: () => Date
+}): Promise<{ accounts: number; recorded: number; duplicates: number; errors: number } | null> {
+    let result: { accounts: number; recorded: number; duplicates: number; errors: number } | null = null
+    await runWithLock('outreach-inbound-ingest', async () => {
+        result = await ingestOutreachInbound(deps)
+    })
     return result
 }
 

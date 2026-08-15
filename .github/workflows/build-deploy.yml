@@ -184,6 +184,10 @@ jobs:
                 -e XPHERE_EVENTS_URL="${{ secrets.XPHERE_EVENTS_URL }}" \
                 -e XPHERE_EVENTS_API_KEY="${{ secrets.XPHERE_EVENTS_API_KEY }}" \
                 -e APOLLO_API_KEY="${{ secrets.APOLLO_API_KEY }}" \
+                -e R2_ACCOUNT_ID="${{ secrets.R2_ACCOUNT_ID }}" \
+                -e R2_ACCESS_KEY_ID="${{ secrets.R2_ACCESS_KEY_ID }}" \
+                -e R2_SECRET_ACCESS_KEY="${{ secrets.R2_SECRET_ACCESS_KEY }}" \
+                -e R2_PUBLIC_BASE_URL="${{ secrets.R2_PUBLIC_BASE_URL }}" \
                 --label "traefik.enable=${TRAEFIK_ENABLED}" \
                 --label "traefik.docker.network=coolify" \
                 --label "traefik.http.routers.${NAME}.rule=Host(\`mail.skale.club\`)" \
