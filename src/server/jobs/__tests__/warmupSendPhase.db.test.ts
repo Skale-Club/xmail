@@ -58,9 +58,21 @@ afterAll(async () => {
 describe('fase SEND do mesh de warm-up — corte de data por operador tipado', () => {
     const startOfDay = new Date(Date.UTC(2026, 7, 15))
 
+    it('devolve timestamp de fragmento `sql` cru como STRING, não Date', async () => {
+        // A armadilha que derrubou a fase SEND no primeiro tick com linhas do dia. Um fragmento
+        // `sql` cru não passa pelo mapFromDriverValue da coluna, então `sql<Date>` é uma promessa
+        // que o runtime não cumpre — e `.getTime()` no resultado explode. Travado aqui porque o
+        // tipo mente de forma convincente e ninguém revisa uma anotação que "parece certa".
+        const [row] = await db.select({ t: sql<unknown>`now()` }).from(warmupMessages).limit(1)
+            .then(r => r.length ? r : db.select({ t: sql<unknown>`now()` }))
+
+        expect(row?.t).not.toBeInstanceOf(Date)
+        expect(typeof row?.t).toBe('string')
+    })
+
     it('executa a agregação diária com um Date sem estourar no driver', async () => {
         const rows = await db.select({
-            lastSentAt: sql<Date | null>`max(${warmupMessages.sentAt})`,
+            lastSentAt: sql<unknown>`max(${warmupMessages.sentAt})`,
             addresses: sql<string[]>`coalesce(array_agg(distinct ${warmupMessages.toAddress}), '{}')`,
         }).from(warmupMessages).where(and(
             eq(warmupMessages.fromAccountId, ABSENT_ACCOUNT),

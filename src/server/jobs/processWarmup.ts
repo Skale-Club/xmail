@@ -127,7 +127,24 @@ function withinSendWindow(now: Date): boolean {
  * "janela ÷ alvo do dia", com jitter determinístico por (conta, nº já enviado). Rajada é padrão
  * de robô; isso espalha o alvo diário pela janela sem precisar de agendador persistente.
  */
-function dueForNextSend(sender: WarmupSender, lastSentAt: Date | null, now: Date): boolean {
+/**
+ * Um fragmento `sql` cru não aplica o `mapFromDriverValue` da coluna, então uma anotação como
+ * `sql<Date | null>` é só uma afirmação ao compilador: em runtime o driver devolve a timestamp como
+ * STRING. Foi assim que `lastSentAt.getTime is not a function` derrubou a fase SEND inteira no
+ * primeiro tick em que já existiam linhas do dia (com a tabela vazia, `max()` dava NULL e o caminho
+ * quente nunca era exercido — o bug ficou escondido atrás de um estado que se esgotou sozinho).
+ *
+ * Normalizar na fronteira é mais barato que confiar na anotação, e cobre Date e string.
+ */
+function toDate(value: unknown): Date | null {
+    if (value == null) return null
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
+    const parsed = new Date(value as string)
+    return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function dueForNextSend(sender: WarmupSender, lastSentAtRaw: unknown, now: Date): boolean {
+    const lastSentAt = toDate(lastSentAtRaw)
     if (!lastSentAt) return true
     const windowMs = (SEND_WINDOW_END_UTC - SEND_WINDOW_START_UTC) * 60 * 60 * 1000
     const target = Math.max(1, sender.warmupSentToday + remainingWarmupQuota(sender))
@@ -151,7 +168,8 @@ async function runSendPhase(mesh: MeshAccount[], now: Date): Promise<number> {
         if (remainingWarmupQuota(sender) <= 0) continue
 
         const [today] = await db.select({
-            lastSentAt: sql<Date | null>`max(${warmupMessages.sentAt})`,
+            // Tipado como unknown de propósito: o driver devolve string aqui, não Date. Ver toDate().
+            lastSentAt: sql<unknown>`max(${warmupMessages.sentAt})`,
             addresses: sql<string[]>`coalesce(array_agg(distinct ${warmupMessages.toAddress}), '{}')`,
         }).from(warmupMessages).where(and(
             eq(warmupMessages.fromAccountId, sender.accountId),
