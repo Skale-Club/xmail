@@ -214,7 +214,7 @@ All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql
 - **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/0000_dear_wolverine.sql`. The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
 - **Do NOT add Drizzle relations / constraints expecting them to apply automatically.** The TS-side schema is for type information; the DB side comes from the SQL migration.
 
-**Numbering convention:** Migrations are sequential integers. As of 2026-08-15 the database is applied through `058_warmup_engine.sql` (verified against `supabase_migrations.schema_migrations`); the next free number is `059`. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+**Numbering convention:** Migrations are sequential integers. As of 2026-08-15 the database is applied through `059_normalize_double_encoded_jsonb.sql` (verified against `supabase_migrations.schema_migrations`); the next free number is `060`. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
 
 > **Resolved collision (2026-08-15):** `051_warmup_engine.sql` shared its prefix with the
 > already-applied `051_prospecting_journey_and_costs.sql`. Because the ledger keys on the numeric
