@@ -1,9 +1,9 @@
 ---
 name: active-prospect-system
-description: "Operate Skale Club's Active Prospect System across Xcraper, Xphere, Website Analyzer, Xmail, Skale Club previews, and Meta/Facebook Custom Audiences. Load for prospecting, Journey attribution, outreach, previews, or audience sync."
+description: "Operate Skale Club's Active Prospect System across Xcraper, Xphere, Website Analyzer, Xkedule, Xmail, Skale Club previews, and Meta/Facebook Custom Audiences. Load for prospecting, Journey attribution, outreach, booking-platform discovery, previews, or audience sync."
 metadata:
   hermes:
-    tags: [skale-club, prospecting, crm, journey, outreach, meta-audiences]
+    tags: [skale-club, prospecting, crm, journey, outreach, booking, xkedule, meta-audiences]
     related_skills: []
 ---
 
@@ -41,6 +41,9 @@ skill defines the procedure and authority boundaries, not mutable business data.
 6. **Meta/Facebook Custom Audiences** receives locally normalized SHA-256
    identifiers through Xphere. Raw contact identifiers and Meta tokens are never
    returned to Hermes.
+7. **Xkedule** is Skale Club's multi-tenant booking product. Booking-platform
+   detection is a commercial qualification signal; it does not authorize a
+   migration, tenant creation, or outreach by itself.
 
 ## Authority boundaries
 
@@ -118,11 +121,39 @@ hypothesis after seeing results, or describe a small sample as conclusive.
 Hermes may append orchestrator notes but cannot edit or delete system events,
 cost entries, hypotheses, or measured outcomes.
 
+Every completed Xcraper run must also record its web-presence observation in the
+maestro note. Use structured Xcraper/Xphere evidence and include owned versus
+no-owned website counts, counts by `web_presence_type`, counts by
+`booking_platform`, the Website/Xkedule segments worth reviewing, and the
+unknown/unclassified count. Never silently count unknown as no website.
+
 ## Triage and website previews
 
 Use Xphere MCP tools to list the new `source_type='xcraper'` prospects and review
-Website Analyzer evidence. Recommend qualification and a small set of preview
-candidates. Do not infer that score alone authorizes promotion or outreach.
+the returned `web_presence_summary`.
+
+- `has_owned_website=true` means a real independent business domain. Website
+  Analyzer may audit it and may discover booking links, forms, or iframes.
+- `has_owned_website=false` means booking platform, social profile,
+  directory/Maps, link hub, or no detected presence. Never describe one of
+  these as a website or use its Analyzer score as website evidence.
+- Missing/null classification means `unclassified`, not "no website".
+
+Use `prospects_list.web_presence` and `prospects_list.booking_platform` to build
+reviewable groups. Report platform names and URLs only from structured evidence;
+never guess a provider from a business name or generic CTA.
+
+| Presence | Booking | Primary opportunity |
+| --- | --- | --- |
+| No owned website | None detected | Skale Club Website + new Xkedule setup |
+| No owned website | Third-party platform | Branded Website + Xkedule migration |
+| Owned website | Third-party platform | Xkedule replacement/integration |
+| Owned website | None detected | Add Xkedule to the existing site |
+| Owned website | On-site booking | Review quality before recommending replacement |
+
+Website Analyzer evidence still drives website-quality recommendations.
+Recommend qualification and a small set of preview candidates. Do not infer
+that score alone authorizes promotion or outreach.
 
 The commercial promise is: "We already built a cleaner version of your website.
 You only pay if you like it." Create a preview only after approval and verify the
