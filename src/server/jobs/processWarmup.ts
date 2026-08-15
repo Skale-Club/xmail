@@ -22,7 +22,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { ImapFlow } from 'imapflow'
-import { and, eq, inArray, lt, sql } from 'drizzle-orm'
+import { and, eq, gte, inArray, lt, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import {
     emailAccounts,
@@ -155,7 +155,11 @@ async function runSendPhase(mesh: MeshAccount[], now: Date): Promise<number> {
             addresses: sql<string[]>`coalesce(array_agg(distinct ${warmupMessages.toAddress}), '{}')`,
         }).from(warmupMessages).where(and(
             eq(warmupMessages.fromAccountId, sender.accountId),
-            sql`${warmupMessages.sentAt} >= ${startOfDay}`,
+            // Operador tipado, não template `sql` cru: só o operador aplica o mapToDriverValue da
+            // coluna. Com `sql\`... >= ${date}\`` o Date chega puro ao postgres-js, que tenta
+            // serializá-lo como string e estoura ERR_INVALID_ARG_TYPE no Bind — a fase SEND inteira
+            // morria no primeiro remetente e o mesh nunca enviava nada.
+            gte(warmupMessages.sentAt, startOfDay),
         ))
         if (!dueForNextSend(sender, today?.lastSentAt ?? null, now)) continue
 
