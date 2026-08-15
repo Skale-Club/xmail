@@ -24,6 +24,7 @@ import agentProspectingRouter from './agent-prospecting'
 import agentApprovalsRouter from './agent-approvals'
 import agentAssessmentsRouter from './agent-assessments'
 import { jsonbParam } from '../lib/jsonb'
+import { withSourceRunId } from '../lib/prospecting/source-run-id'
 
 const router = Router()
 
@@ -169,10 +170,12 @@ router.post('/prospects/import', async (req, res) => {
         const inserted = await db.insert(leads).values(prospectsWithVerification.map(({ prospect, verification }) => ({
             organizationId: principal.organizationId,
             ...prospect,
-            // Ver lib/jsonb.ts: sem o cast via text o Supavisor codifica o valor duas vezes e a
-            // coluna guarda uma STRING JSON, invisível através do ORM mas opaca a todo operador
-            // jsonb do lado do servidor.
-            ...(prospect.customFields ? { customFields: jsonbParam(prospect.customFields) } : {}),
+            // withSourceRunId carimba a chave que measureProspectingOutcomes usa para atribuir o
+            // lead ao run; jsonbParam impede a dupla codificação do pooler. Ver source-run-id.ts.
+            ...(() => {
+                const fields = withSourceRunId(prospect.customFields, input.source)
+                return fields ? { customFields: jsonbParam(fields) } : {}
+            })(),
             source: input.source,
             leadListId: input.leadListId,
             ...verification,

@@ -7,6 +7,7 @@ import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-ac
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import { mapEmailVerificationCustomFields, resolveLeadVerificationFields } from '../../lib/email-verification-mapping'
 import { jsonbParam } from '../../lib/jsonb'
+import { withSourceRunId } from '../../lib/prospecting/source-run-id'
 
 const router = Router()
 
@@ -364,7 +365,10 @@ router.post('/', async (req: Request, res: Response) => {
             // Supavisor codifica o valor uma segunda vez e a coluna guarda uma STRING JSON. O ORM
             // desfaz isso na leitura, então nada parece quebrado — mas todo operador jsonb no
             // servidor (`->`, `->>`, `||`, `jsonb_exists`) passa a ver um escalar. Ver lib/jsonb.ts.
-            ...(validatedData.customFields ? { customFields: jsonbParam(validatedData.customFields) } : {}),
+            ...(() => {
+                const fields = withSourceRunId(validatedData.customFields, validatedData.source)
+                return fields ? { customFields: jsonbParam(fields) } : {}
+            })(),
             ...verificationFields,
         }).returning()
 
@@ -508,11 +512,18 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
             newLeadsWithVerification.map(({ lead, verification }) => ({
                 organizationId,
                 ...lead,
-                // Ver comentário no create individual acima: sem jsonbParam o Supavisor grava uma
-                // STRING JSON, e é isso que quebra o merge `||` e o jsonb_exists('source_run_id')
-                // do caminho de re-import logo abaixo — a guarda de atribuição de primeiro toque
-                // nunca dispararia, silenciosamente.
-                ...(lead.customFields ? { customFields: jsonbParam(lead.customFields) } : {}),
+                // Duas coisas acontecem aqui, e as duas são de atribuição:
+                //
+                // 1. withSourceRunId carimba a chave canônica `source_run_id` a partir do que o
+                //    produtor de fato mandou (o Xphere manda `xcraper_run_id`) ou do próprio
+                //    `source`. Sem ela o join do caminho (b) de measureProspectingOutcomes nunca
+                //    casa e TODO run de xcraper fica com outcome_* zerado para sempre.
+                // 2. jsonbParam impede a dupla codificação do pooler, que quebraria o merge `||` e
+                //    o jsonb_exists('source_run_id') do re-import logo acima.
+                ...(() => {
+                    const fields = withSourceRunId(lead.customFields, lead.source)
+                    return fields ? { customFields: jsonbParam(fields) } : {}
+                })(),
                 leadListId: validatedData.leadListId || lead.leadListId,
                 ...verification,
             }))
