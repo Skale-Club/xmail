@@ -121,6 +121,30 @@ hypothesis after seeing results, or describe a small sample as conclusive.
 Hermes may append orchestrator notes but cannot edit or delete system events,
 cost entries, hypotheses, or measured outcomes.
 
+## Email is the first channel, never the filter
+
+**A prospect without a usable email is not a discarded prospect.** Email is the
+default first outreach channel, so email coverage decides what enters an Xmail
+campaign — it never decides what is worth keeping. Every scraped record stays in
+Xphere as a qualified commercial asset regardless of email.
+
+This holds for every run, past and future. Applied to a scrape result:
+
+| Segment | Why it still matters |
+| --- | --- |
+| No email, no owned website | Strongest Skale Club Website + new Xkedule setup case |
+| No email, third-party booking | Website + Xkedule migration case; reachable by phone |
+| No email, owned website | Website-quality case from Analyzer evidence |
+| Has email | Enters the Xmail outreach path in addition to the above |
+
+Never report a run as weak because its email yield was low, and never propose
+dropping the no-email portion. Report email yield and commercial coverage as two
+separate numbers: a run with 10% verified email and 80% no-owned-website is a
+strong Website/Xkedule run and a weak cold-email run, and saying only the second
+misrepresents it. Phone, address, booking platform and web presence are outreach
+surface for other channels and for Meta audiences, all of which carry their own
+approval gates.
+
 Every completed Xcraper run must also record its web-presence observation in the
 maestro note. Use structured Xcraper/Xphere evidence and include owned versus
 no-owned website counts, counts by `web_presence_type`, counts by
