@@ -132,6 +132,11 @@ const createEmailAccountSchema = z.object({
     maxMinutesBetweenEmails: z.number().int().min(1).optional(),
     warmupEnabled: z.boolean().optional(),
     warmupDays: z.number().int().min(1).max(60).optional(),
+    // Migration 051 — warm-up mesh participation is part of the normal inbox registration.
+    // 'internal' opts this inbox into the in-platform mesh; warmupOnly makes it a dedicated
+    // warming mailbox that campaign enrollment must reject.
+    warmupSource: z.enum(['none', 'internal', 'vendor', 'provider']).optional(),
+    warmupOnly: z.boolean().optional(),
 }).superRefine((data, ctx) => {
     if (data.provider === 'smtp') {
         if (!data.smtpHost) {
@@ -192,6 +197,8 @@ const updateEmailAccountSchema = z.object({
     maxMinutesBetweenEmails: z.number().int().min(1).optional(),
     warmupEnabled: z.boolean().optional(),
     warmupDays: z.number().int().min(1).max(60).optional(),
+    warmupSource: z.enum(['none', 'internal', 'vendor', 'provider']).optional(),
+    warmupOnly: z.boolean().optional(),
     status: z.enum(['pending', 'verified', 'failed', 'paused']).optional(),
 })
 
@@ -514,6 +521,9 @@ router.post('/', async (req: Request, res: Response) => {
                 maxMinutesBetweenEmails,
                 warmupEnabled,
                 warmupDays,
+                warmupSource: validatedData.warmupSource ?? 'none',
+                warmupOnly: validatedData.warmupOnly ?? false,
+                warmupStartedAt: validatedData.warmupSource === 'internal' ? new Date() : null,
                 status: 'pending',
             }).returning()
             newAccount = inserted
@@ -550,6 +560,9 @@ router.post('/', async (req: Request, res: Response) => {
                 maxMinutesBetweenEmails,
                 warmupEnabled,
                 warmupDays,
+                warmupSource: validatedData.warmupSource ?? 'none',
+                warmupOnly: validatedData.warmupOnly ?? false,
+                warmupStartedAt: validatedData.warmupSource === 'internal' ? new Date() : null,
                 status: 'pending',
             }).returning()
             newAccount = inserted
@@ -635,6 +648,15 @@ router.put('/:id', async (req: Request, res: Response) => {
         if (validatedData.maxMinutesBetweenEmails !== undefined) updateValues.maxMinutesBetweenEmails = validatedData.maxMinutesBetweenEmails
         if (validatedData.warmupEnabled !== undefined) updateValues.warmupEnabled = validatedData.warmupEnabled
         if (validatedData.warmupDays !== undefined) updateValues.warmupDays = validatedData.warmupDays
+        if (validatedData.warmupSource !== undefined) {
+            updateValues.warmupSource = validatedData.warmupSource
+            // First opt-in stamps the start; later toggles keep the original date (it answers
+            // "how long has this box been warming", not "when was the flag last flipped").
+            if (validatedData.warmupSource === 'internal' && !account.warmupStartedAt) {
+                updateValues.warmupStartedAt = new Date()
+            }
+        }
+        if (validatedData.warmupOnly !== undefined) updateValues.warmupOnly = validatedData.warmupOnly
         if (validatedData.status !== undefined) updateValues.status = validatedData.status
 
         const [updatedAccount] = await db.update(emailAccounts)

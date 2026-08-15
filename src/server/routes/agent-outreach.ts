@@ -354,6 +354,8 @@ router.post('/campaigns/:id/enroll-draft', async (req, res) => {
                 eq(emailAccounts.id, input.emailAccountId),
                 eq(emailAccounts.organizationId, principal.organizationId),
                 eq(emailAccounts.status, 'verified'),
+                // Warm-up-only inboxes never carry campaign traffic (migration 051).
+                eq(emailAccounts.warmupOnly, false),
             ),
             columns: { id: true },
         })

@@ -40,6 +40,8 @@ interface SmtpForm {
     dailySendLimit: number
     warmupEnabled: boolean
     warmupDays: number
+    joinWarmupMesh: boolean
+    warmupOnly: boolean
 }
 
 const defaultForm: SmtpForm = {
@@ -61,6 +63,8 @@ const defaultForm: SmtpForm = {
     dailySendLimit: 50,
     warmupEnabled: true,
     warmupDays: 14,
+    joinWarmupMesh: false,
+    warmupOnly: false,
 }
 
 // Presets deliberately carry no smtpSecure: the port implies it, and withCanonicalSmtpSecurity
@@ -146,6 +150,8 @@ async function createEmailAccount(organizationId: string, form: SmtpForm): Promi
             dailySendLimit: form.dailySendLimit,
             warmupEnabled: form.warmupEnabled,
             warmupDays: form.warmupDays,
+            warmupSource: form.joinWarmupMesh ? 'internal' : 'none',
+            warmupOnly: form.joinWarmupMesh ? form.warmupOnly : false,
         }),
     })
     return data
@@ -630,6 +636,34 @@ export function NewInboxPage() {
                                 Enable warmup mode (gradually increase sending volume)
                             </label>
                         </div>
+
+                        <div className="flex items-center gap-2">
+                            <input
+                                type="checkbox"
+                                id="joinWarmupMesh"
+                                checked={form.joinWarmupMesh}
+                                onChange={(e) => setForm(prev => ({ ...prev, joinWarmupMesh: e.target.checked }))}
+                                className="rounded border-input text-primary focus:ring-primary"
+                            />
+                            <label htmlFor="joinWarmupMesh" className="text-sm text-gray-700 dark:text-gray-300">
+                                Join the internal warm-up mesh (exchange real warm-up mail with our other inboxes; conversations are auto-archived)
+                            </label>
+                        </div>
+
+                        {form.joinWarmupMesh && (
+                            <div className="ml-6 flex items-center gap-2">
+                                <input
+                                    type="checkbox"
+                                    id="warmupOnly"
+                                    checked={form.warmupOnly}
+                                    onChange={(e) => setForm(prev => ({ ...prev, warmupOnly: e.target.checked }))}
+                                    className="rounded border-input text-primary focus:ring-primary"
+                                />
+                                <label htmlFor="warmupOnly" className="text-sm text-gray-700 dark:text-gray-300">
+                                    Warm-up only (this inbox can never be assigned to campaigns)
+                                </label>
+                            </div>
+                        )}
                     </div>
 
                     <div className="flex items-center justify-end gap-4">

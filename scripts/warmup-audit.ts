@@ -135,8 +135,31 @@ async function main(): Promise<void> {
                 console.log(`   - ${account.email}: dia ${account.warmup_current_day}/${account.warmup_days}, mas só ${account.active_send_days} dia(s) com envio`)
             }
         }
-        console.log('\nNão existe warm-up real neste schema: nenhuma tabela de pool/par/conversa de aquecimento,')
-        console.log('nenhum tráfego sintético entre caixas, nenhum resgate de spam. O que existe é apenas o teto diário.')
+        // Mesh (migration 051): existe quando a tabela warmup_messages está presente.
+        const [meshTable] = await sql`SELECT to_regclass('public.warmup_messages') AS t`
+        if (!meshTable.t) {
+            console.log('\nMesh de warm-up (migration 051) ainda NÃO aplicado neste banco — só a rampa de teto existe.')
+        } else {
+            const [mesh] = await sql`
+                SELECT count(*) FILTER (WHERE sent_at > now() - interval '24 hours')::int AS sent_24h,
+                       count(*) FILTER (WHERE detected_folder = 'spam')::int              AS landed_spam,
+                       count(*) FILTER (WHERE detected_folder = 'inbox')::int             AS landed_inbox,
+                       count(*) FILTER (WHERE replied_at IS NOT NULL)::int                AS replied,
+                       count(*) FILTER (WHERE archived_at IS NOT NULL)::int               AS archived,
+                       count(*) FILTER (WHERE status = 'failed')::int                     AS failed
+                FROM warmup_messages`
+            const participants = await sql<{ email: string; warmup_only: boolean }[]>`
+                SELECT email, warmup_only FROM email_accounts
+                WHERE warmup_source = 'internal' AND status = 'verified' ORDER BY email`
+            console.log('\n=== WARM-UP MESH (migration 051) ===')
+            console.log(`participantes: ${participants.length}${participants.length ? ' — ' + participants.map((p) => p.email + (p.warmup_only ? ' (only)' : '')).join(', ') : ''}`)
+            const delivered = mesh.landed_inbox + mesh.landed_spam
+            const spamRate = delivered > 0 ? ((mesh.landed_spam / delivered) * 100).toFixed(1) : '—'
+            console.log(`24h: ${mesh.sent_24h} enviados | inbox ${mesh.landed_inbox} | spam ${mesh.landed_spam} (${spamRate}%) | respondidos ${mesh.replied} | arquivados ${mesh.archived} | falhas ${mesh.failed}`)
+            if (participants.length < 2) {
+                console.log('⚠️  Mesh precisa de pelo menos 2 caixas habilitadas (scripts/warmup-mesh.ts --enable …).')
+            }
+        }
     } finally {
         await sql.end({ timeout: 5 })
     }

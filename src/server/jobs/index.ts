@@ -14,6 +14,7 @@ import { runOutreachEventDeliveryWithLock } from './deliverOutreachEvents'
 import { runOutreachEventReconciliationWithLock } from './reconcileOutreachEvents'
 import { runDeliverabilityGuardrailsWithLock } from './enforceDeliverabilityGuardrails'
 import { runApprovalExpiryWithLock } from './expireOutreachApprovals'
+import { runWarmupMeshWithLock } from './processWarmup'
 import { runAmortizeSubscriptionCostsWithLock } from './amortizeSubscriptionCosts'
 import { runMeasureProspectingOutcomesWithLock } from './measureProspectingOutcomes'
 
@@ -188,6 +189,20 @@ export function startJobs(): void {
         runApprovalExpiryWithLock().catch((err) => {
             const e = err instanceof Error ? err : new Error(String(err))
             log.error({ action: 'outreach.jobs.approvalExpiry_failed', error: { message: e.message, stack: e.stack } }, 'approval expiry failed')
+        })
+    })
+
+    // Migration 051 — warm-up mesh: real mailbox warming between our own registered inboxes
+    // (send → detect folder → rescue from spam → threaded reply → archive). 10-minute cadence:
+    // the per-sender spacing inside the job decides whether anything is actually due, so most
+    // ticks are no-ops; the advisory lock makes overlapping ticks safe.
+    cron.schedule('*/10 * * * *', () => {
+        runWarmupMeshWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.warmupMesh_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'warmup mesh failed')
         })
     })
 

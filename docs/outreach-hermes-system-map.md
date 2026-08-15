@@ -207,14 +207,25 @@ linearmente até o limite cheio ao longo de `warmup_days` (default 14 na criaç�
 settings da org). É avaliada por destinatário em toda origem — `campaign`, `manual`, `agentic`,
 `unified_inbox` — e devolve `warmup_limit_exhausted`, que faz o processador **adiar**, não falhar.
 
-**Não existe** (verificado no schema inteiro e no server): pool de caixas, pares de aquecimento,
-tráfego sintético entre inboxes, auto-abertura, auto-resposta, resgate de Spam→Inbox, reputação por
-domínio, métrica de inbox placement, e ingestão de estado de warm-up de provider externo — o
-`provider_ref` em `inbox-providers.ts` existe para isso, mas só como comentário.
+**Mesh interno (migration 051, 2026-08-14):** aquecimento REAL entre as caixas da plataforma.
+Participação é campo do cadastro normal de inbox (`warmup_source = 'internal'`; `warmup_only`
+proíbe a caixa de campanha). O job `processWarmup.ts` (cron 10min, advisory lock) roda duas fases:
+**SEND** — volume pequeno e crescente (2→20/dia na rampa, 8/dia de manutenção depois), pares
+priorizando outro domínio e outro provedor, conteúdo combinatório determinístico sem custo de LLM,
+sem links, sem header identificável (o Message-ID é a chave de correlação); **GROOM** — do lado
+do destinatário: caiu em Spam → resgata para a Inbox; na Inbox → marca lida, responde ~35% em
+thread e **arquiva** (IMAP move para Archive/All Mail; nativa move de pasta no banco) — o inbox
+dos participantes não acumula ruído. Envios do mesh usam `warmup_sent_today` (não consomem cota
+de campanha) e contam como dia de envio real na rampa via `resetDailyLimits`.
 
-Auditoria com dados: `npx tsx scripts/warmup-audit.ts` (read-only) lista por caixa o estado do
-warm-up, o limite efetivo, envios reais e **dias com envio real**, sinalizando caixas que
-graduaram sem aquecer.
+Módulos: `lib/warmup/plan.ts` (alvos/pares/jitter, puro), `lib/warmup/content.ts` (texto, puro),
+`jobs/processWarmup.ts` (I/O). Operação: `scripts/warmup-mesh.ts` (`--list`, `--enable`,
+`--enable-provider`, `--add-native`, `--disable`); auditoria: `scripts/warmup-audit.ts`
+(estado por caixa + taxa de spam do mesh). Outlook ainda não participa (arquivar exige Graph).
+
+**Ainda não existe:** ingestão de estado de warm-up de vendor externo (`provider_ref` segue só
+comentário) e métrica de inbox placement fora do mesh. Warm-up feito por vendor é invisível ao
+contador — é para isso que existem `warmup_source='vendor'` + atestação (`warmup_attested_*`).
 
 Bloqueios independentes que impedem envio real hoje: **(1)** chave Apollo ausente em prod e
 **(2)** P009 sem domínio descartável provisionado (`scripts/add-domain.ts` gera o par DKIM).

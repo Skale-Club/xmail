@@ -173,7 +173,7 @@ export async function validateCampaignReadyForActivation(campaignId: string, org
                 eq(emailAccounts.status, 'verified'),
                 inArray(emailAccounts.id, assignedAccountIds)
             ),
-            columns: { id: true, email: true, warmupEnabled: true, warmupCurrentDay: true, warmupDays: true },
+            columns: { id: true, email: true, warmupEnabled: true, warmupCurrentDay: true, warmupDays: true, warmupOnly: true },
         })
         if (verifiedAccounts.length !== assignedAccountIds.length) {
             issues.push({
@@ -198,6 +198,16 @@ export async function validateCampaignReadyForActivation(campaignId: string, org
                         'Assign a disposable/provider inbox instead.',
                 })
             }
+        }
+
+        // Migration 051 — a mailbox that exists only to feed the warm-up mesh must never carry
+        // campaign traffic: its "engagement" history is synthetic and burning it defeats the mesh.
+        const warmupOnlyAccounts = verifiedAccounts.filter(a => a.warmupOnly)
+        if (warmupOnlyAccounts.length > 0) {
+            issues.push({
+                code: 'email_account_invalid',
+                message: `Warm-up-only inboxes cannot send campaigns (${warmupOnlyAccounts.map(a => a.email).join(', ')}).`,
+            })
         }
 
         if (!allowsUnwarmedActivation()) {
@@ -1224,10 +1234,13 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
                     eq(emailAccounts.id, validatedData.emailAccountId),
                     eq(emailAccounts.organizationId, campaign.organizationId)
                 ),
-                columns: { id: true },
+                columns: { id: true, warmupOnly: true },
             })
             if (!account) {
                 return res.status(400).json({ error: 'Email account not found or access denied' })
+            }
+            if (account.warmupOnly) {
+                return res.status(422).json({ error: 'This inbox is warm-up-only and cannot be assigned to campaign leads' })
             }
         }
 

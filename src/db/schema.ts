@@ -684,6 +684,19 @@ export const emailAccounts = pgTable('email_accounts', {
     warmupEnabled: boolean('warmup_enabled').default(true).notNull(),
     warmupDays: integer('warmup_days').default(14).notNull(),
     warmupCurrentDay: integer('warmup_current_day').default(0).notNull(),
+    // Migration 051. `warmupCurrentDay` counts days on which this mailbox actually SENT, so a
+    // mailbox warmed by an external vendor (whose traffic never touches Xmail) would sit at day 0
+    // forever. warmupSource records who is doing the warming ('internal' = this account joins the
+    // in-platform warm-up mesh) and the attestation columns let a human vouch for warm-up that
+    // happened outside this system, auditably.
+    warmupSource: text('warmup_source').$type<'none' | 'internal' | 'vendor' | 'provider'>().default('none').notNull(),
+    /** Mailbox exists ONLY for warming: campaign enrollment and activation must reject it. */
+    warmupOnly: boolean('warmup_only').default(false).notNull(),
+    warmupStartedAt: timestamp('warmup_started_at'),
+    /** Warm-up sends today. Separate from currentDailySent: warming must not eat campaign quota. */
+    warmupSentToday: integer('warmup_sent_today').default(0).notNull(),
+    warmupAttestedAt: timestamp('warmup_attested_at'),
+    warmupAttestedBy: uuid('warmup_attested_by').references(() => users.id),
     // Status
     status: emailAccountStatusEnum('status').default('pending').notNull(),
     lastError: text('last_error'),
@@ -2763,3 +2776,48 @@ export type ProspectCandidate = typeof prospectCandidates.$inferSelect
 export type NewProspectCandidate = typeof prospectCandidates.$inferInsert
 export type ProspectAiAssessment = typeof prospectAiAssessments.$inferSelect
 export type NewProspectAiAssessment = typeof prospectAiAssessments.$inferInsert
+
+// ============================================================================
+// Warm-up engine (migration 051)
+//
+// Real mailbox warming: low-volume traffic between the platform's own registered mailboxes
+// (email_accounts with warmupSource = 'internal'), with folder detection (Inbox vs Spam), spam
+// rescue, threaded replies and end-of-cycle archiving so participating inboxes stay clean. The
+// Message-ID is the correlation key on purpose — an `X-Warmup` header would advertise the
+// traffic as synthetic to the very providers we are building reputation with.
+// ============================================================================
+
+export const warmupMessages = pgTable('warmup_messages', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Organization of the SENDING account: the mesh is operator-global, rows are tenant-scoped. */
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    fromAccountId: uuid('from_account_id').references(() => emailAccounts.id, { onDelete: 'cascade' }).notNull(),
+    toAccountId: uuid('to_account_id').references(() => emailAccounts.id, { onDelete: 'cascade' }).notNull(),
+    toAddress: text('to_address').notNull(),
+    subject: text('subject').notNull(),
+    messageId: text('message_id').notNull(),
+    threadRootMessageId: text('thread_root_message_id'),
+    status: text('status').$type<'pending' | 'sent' | 'delivered' | 'rescued' | 'replied' | 'archived' | 'failed'>().default('pending').notNull(),
+    sentAt: timestamp('sent_at'),
+    detectedAt: timestamp('detected_at'),
+    detectedFolder: text('detected_folder').$type<'inbox' | 'spam' | 'missing'>(),
+    rescuedAt: timestamp('rescued_at'),
+    repliedAt: timestamp('replied_at'),
+    archivedAt: timestamp('archived_at'),
+    lastError: text('last_error'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    messageIdUnique: uniqueIndex('warmup_messages_message_id_unique').on(table.messageId),
+    idxOrgSent: index('idx_warmup_messages_org_sent').on(table.organizationId, table.sentAt),
+    idxFromAccountSent: index('idx_warmup_messages_from_account_sent').on(table.fromAccountId, table.sentAt),
+}))
+
+export const warmupMessagesRelations = relations(warmupMessages, ({ one }) => ({
+    organization: one(organizations, { fields: [warmupMessages.organizationId], references: [organizations.id] }),
+    fromAccount: one(emailAccounts, { fields: [warmupMessages.fromAccountId], references: [emailAccounts.id] }),
+    toAccount: one(emailAccounts, { fields: [warmupMessages.toAccountId], references: [emailAccounts.id] }),
+}))
+
+export type WarmupMessage = typeof warmupMessages.$inferSelect
+export type NewWarmupMessage = typeof warmupMessages.$inferInsert

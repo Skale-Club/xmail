@@ -36,6 +36,8 @@ interface EmailAccount {
     warmupEnabled: boolean
     warmupDay: number
     warmupProgress: number
+    warmupSource?: 'none' | 'internal' | 'vendor' | 'provider'
+    warmupOnly?: boolean
     lastSyncAt: string | null
     createdAt: string
 }
@@ -178,6 +180,16 @@ function InboxCard({ account, onVerify, onDelete }: {
                                 {status.label}
                             </span>
                             <span className="text-xs font-medium text-muted-foreground">{identity.label}</span>
+                            {account.warmupSource === 'internal' && (
+                                <span
+                                    className="inline-flex items-center rounded-full bg-orange-500/10 px-2 py-1 text-xs font-medium text-orange-600 dark:text-orange-400"
+                                    title={account.warmupOnly
+                                        ? 'This inbox only exchanges warm-up mail; it can never send campaigns.'
+                                        : 'This inbox exchanges warm-up mail with the internal mesh.'}
+                                >
+                                    {account.warmupOnly ? 'Warm-up only' : 'Warm-up mesh'}
+                                </span>
+                            )}
                             {account.displayName && (
                                 <span className="truncate text-xs text-muted-foreground">· {account.displayName}</span>
                             )}
