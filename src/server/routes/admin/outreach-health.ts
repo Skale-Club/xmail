@@ -17,10 +17,16 @@
  *     overall: { sent1h, sent24h, sent7d, openRate24h, ..., processorTickP50Ms, ... },
  *     byOrg:   [{ organizationId, name, sent24h, bounceRate24h, replyRate24h, status }],
  *     topBouncingCampaigns: [{ campaignId, name, sent24h, bounceRate24h }],  // top 5
+ *     silence: { warmupSends24h, doubleEncodedJsonbColumns, ... },  // ver outreach-silence.ts
  *     alerts:  [{ severity, kind, message, since }],
  *     thresholds: { bounceWarn1h, bounceError24h, processorSlowMs },
  *     _meta:   { latencyMs, notes }
  *   }
+ *
+ * Os alertas vêm de DUAS famílias, e a distinção é o ponto: `buildAlerts` cobre falha ("algo deu
+ * erro e o erro foi gravado"), enquanto `buildSilenceAlerts` cobre ausência de resultado ("isto
+ * deveria ter produzido algo e não produziu"). A segunda existe porque, em 2026-08-15, sete
+ * defeitos reais foram encontrados de uma vez e nenhum deles teria disparado um alerta da primeira.
  */
 
 import { Router, Request, Response } from 'express'
@@ -36,6 +42,8 @@ import {
     OUTREACH_PROCESSOR_SLOW_MS,
     computeAgentOpsMetrics,
 } from '../../lib/outreach-metrics'
+import { buildSilenceAlerts } from '../../lib/outreach-silence'
+import { computeSilenceMetrics } from '../../lib/outreach-silence-query'
 
 const router = Router()
 const log = createLogger('outreach.health')
@@ -55,14 +63,19 @@ router.get('/health', async (req: Request, res: Response) => {
     const t0 = performance.now()
 
     try {
-        const [overall, byOrg, topBouncingCampaigns, agentOps] = await Promise.all([
+        const [overall, byOrg, topBouncingCampaigns, agentOps, silence] = await Promise.all([
             computeOverallMetrics(now),
             computeByOrgMetrics(now),
             computeTopBouncingCampaigns(now),
             computeAgentOpsMetrics(now),
+            computeSilenceMetrics(now),
         ])
 
         const alerts = buildAlerts(overall, byOrg, topBouncingCampaigns, now)
+        // Silêncio é uma classe de defeito distinta de falha: o subsistema não errou, apenas não
+        // produziu nada — e zero é um valor válido, então ele se disfarça de operação normal. Ver
+        // outreach-silence.ts para o incidente que motivou cada checagem.
+        alerts.push(...buildSilenceAlerts(silence, now))
         if (agentOps.stuckExecutingApprovals > 0) {
             alerts.push({ severity: 'critical', kind: 'stuck_agent_approvals', message: `${agentOps.stuckExecutingApprovals} paid action approval(s) have been executing for more than 15 minutes; inspect before retrying.`, since: now.toISOString() })
         }
@@ -87,6 +100,7 @@ router.get('/health', async (req: Request, res: Response) => {
             byOrg,
             topBouncingCampaigns,
             agentOps,
+            silence,
             alerts,
             thresholds: {
                 bounceWarn1h: OUTREACH_BOUNCE_WARN_1H,
