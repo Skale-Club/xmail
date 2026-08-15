@@ -19,7 +19,16 @@ crédito pago e toda ativação passam por aprovação humana durável.
 
 ## 2. Modelo de autoridade
 
-| O Hermes PODE | O Hermes NÃO PODE |
+> ⚠️ **A tabela abaixo vale para o gateway do Xmail, não para o Hermes como um todo.** O Hermes
+> tem 4 MCPs conectados; pelo MCP do **Xphere** (`prospects_enroll_in_campaign`) ele consegue
+> **enrolar e ativar campanha**. Lá o gate é `confirmed: true` + aprovação no chat — comportamento,
+> não capability. Ou seja: "o agente não ativa campanha" é verdade sobre esta API e falso sobre o
+> sistema. Ver `hermes/README.md` § "Papel: orquestrador do Active Prospect System".
+> O que continua valendo para os dois caminhos é o gate de ativação do §4 (G9), porque a rota
+> `PUT /api/outreach/campaigns/:id` roda `validateCampaignReadyForActivation` para qualquer
+> chamador — humano, service key do Xphere ou aprovação de agente.
+
+| O Hermes PODE (via gateway do Xmail) | O Hermes NÃO PODE (via gateway do Xmail) |
 |---|---|
 | Ler campanhas, runs, candidatos, aprovações próprias | Ativar campanha (só pedir aprovação) |
 | Buscar no Apollo (sem revelar contato, sem crédito) | Enviar e-mail por qualquer caminho |
@@ -92,7 +101,7 @@ xmail_search_prospects ──G1─→ prospecting_runs + prospect_candidates (sc
 | G6 | `/searches/:id/import` | Só candidato com e-mail, status aceito e score ≥ threshold |
 | G7 | `/campaigns/:id/enroll-draft` | Só draft, inbox verificada da org, leads verified/likely e não descadastrados, ≤100 |
 | G8 | `agent-approvals.ts` | Só de `draft`/`paused`; idempotente |
-| G9 | `outreach/approvals.ts` | `validateCampaignReadyForActivation` + ativação atômica |
+| G9 | `outreach/approvals.ts` + `PUT /campaigns/:id` | `validateCampaignReadyForActivation` (sequência, leads com inbox, **P009**, **warm-up completo**) + ativação atômica. Único gate comum aos caminhos humano, Xphere e agente |
 | G10 | `outreach-delivery-policy.ts` | Última rede antes do envio, por destinatário |
 
 ## 5. Workers (todos in-process, `src/server/jobs/index.ts`)
@@ -176,11 +185,41 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 | 8 | Baixa | Replay idempotente de run `failed` volta 200 com `candidates: []` (lê-se como "sem resultados") | `agent-prospecting.ts` POST `/searches` |
 | 9 | Info | Rate-limit é o global de 500/15min por IP; agente sem orçamento próprio | `src/server/index.ts` |
 | 10 | Info | Não há cron de outreach no lado Hermes: o loop só anda por comando no Telegram | `hermes/README.md` |
+| 11 | Alta | **Não existe warm-up real** (sem pool, sem tráfego de aquecimento, sem resgate de spam) — só a rampa de teto diário. Ver §12 | `outreach-delivery-policy.ts` |
+
+### Correções aplicadas em 2026-08-14
+
+- `resetDailyLimits` passou a avançar `warmup_current_day` **só em dia com envio real** (era
+  calendário: a caixa graduava sozinha sem ter aquecido nada).
+- `getEffectiveDailySendLimit` virou wrapper de `effectiveDailyLimit` — acabou a fórmula duplicada
+  que fazia a UI e o dispatcher poderem discordar. Coberto por `__tests__/warmup-ramp.test.ts`.
+- Novo issue de ativação `sending_inbox_not_warmed`: campanha não ativa com caixa de warm-up
+  incompleto. Escape hatch de ops: `OUTREACH_ALLOW_UNWARMED_ACTIVATION=true`.
+
+> **Consequência imediata:** com o contador agora baseado em envio, toda caixa que nunca enviou
+> está no dia 0 → ativação bloqueada até existir warm-up de verdade (ou até o override). Isso é
+> intencional: torna visível o estado que antes passava silencioso.
+
+## 9. Warm-up: o que existe e o que falta
+
+**Existe:** rampa de teto diário. `effectiveDailyLimit()` sai de `min(5, dailySendLimit)` e sobe
+linearmente até o limite cheio ao longo de `warmup_days` (default 14 na criação de inbox, 21 nas
+settings da org). É avaliada por destinatário em toda origem — `campaign`, `manual`, `agentic`,
+`unified_inbox` — e devolve `warmup_limit_exhausted`, que faz o processador **adiar**, não falhar.
+
+**Não existe** (verificado no schema inteiro e no server): pool de caixas, pares de aquecimento,
+tráfego sintético entre inboxes, auto-abertura, auto-resposta, resgate de Spam→Inbox, reputação por
+domínio, métrica de inbox placement, e ingestão de estado de warm-up de provider externo — o
+`provider_ref` em `inbox-providers.ts` existe para isso, mas só como comentário.
+
+Auditoria com dados: `npx tsx scripts/warmup-audit.ts` (read-only) lista por caixa o estado do
+warm-up, o limite efetivo, envios reais e **dias com envio real**, sinalizando caixas que
+graduaram sem aquecer.
 
 Bloqueios independentes que impedem envio real hoje: **(1)** chave Apollo ausente em prod e
 **(2)** P009 sem domínio descartável provisionado (`scripts/add-domain.ts` gera o par DKIM).
 
-## 9. Rotina de reanálise (~15 min)
+## 10. Rotina de reanálise (~15 min)
 
 1. `git log --oneline -15 -- src/server/routes/agent-*.ts src/server/lib/prospecting hermes/` — o que mudou desde a última auditoria.
 2. Rodar os 6 comandos de invariante da §6.
@@ -190,7 +229,7 @@ Bloqueios independentes que impedem envio real hoje: **(1)** chave Apollo ausent
 6. Em prod: `docker logs xmail --since 24h 2>&1 | grep -E 'agent-auth|prospecting|outreach\.(approvals|events)'`.
 7. Atualizar a tabela §8 (achado resolvido sai; achado novo entra com data).
 
-## 10. Decisões de design que parecem bug e não são
+## 11. Decisões de design que parecem bug e não são
 
 - **Não existe tool de ativação nem de envio.** É deliberado, e há teste de contrato garantindo.
 - **Aprovação de enriquecimento falha "para o lado terminal":** provider ambíguo → run e approval
@@ -202,7 +241,7 @@ Bloqueios independentes que impedem envio real hoje: **(1)** chave Apollo ausent
   padrão; só `sendXphereOutreachEvent` marca `true`.
 - **O score ICP sem critério devolve 50/`tier c`** — é baseline neutro, não bug.
 
-## 11. Manutenção deste doc
+## 12. Manutenção deste doc
 
 Atualize quando mudar: as tools do MCP, a lista de escopos, os gates G1–G10, as cadências de job,
 ou quando um achado da §8 for resolvido. Se você acabou de reauditar, troque a data no topo — é

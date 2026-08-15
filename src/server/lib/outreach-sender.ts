@@ -22,6 +22,7 @@ import {
     type ProviderAcceptance,
     type ProviderFailure,
 } from './outreach-dispatch'
+import { effectiveDailyLimit } from './outreach-delivery-policy'
 import {
     sendComposedOutreachMessage,
     type OutreachAttachmentInput,
@@ -127,17 +128,16 @@ function getZonedDateParts(date: Date, timeZone: string): { weekday: number; hou
     }
 }
 
+/**
+ * Read-side wrapper kept for the inbox API, which reports the limit back to the UI.
+ *
+ * This used to be a second, hand-copied implementation of the warm-up ramp. Two copies of a
+ * quota formula is a drift hazard: the moment they disagree the inbox screen reports a limit
+ * the dispatcher does not honour. The policy module owns the formula; this only adapts the
+ * argument type.
+ */
 export function getEffectiveDailySendLimit(account: typeof emailAccounts.$inferSelect): number {
-    const fullLimit = Math.max(1, account.dailySendLimit)
-    if (!account.warmupEnabled) return fullLimit
-
-    const warmupDays = Math.max(1, account.warmupDays)
-    const currentDay = Math.max(0, Math.min(account.warmupCurrentDay, warmupDays))
-    if (currentDay >= warmupDays) return fullLimit
-
-    const startLimit = Math.min(5, fullLimit)
-    const progress = currentDay / warmupDays
-    return Math.max(1, Math.min(fullLimit, Math.ceil(startLimit + (fullLimit - startLimit) * progress)))
+    return effectiveDailyLimit(account)
 }
 
 export function canSendFromAccount(

@@ -108,6 +108,15 @@ function getProtectedSendingDomains(): Set<string> {
     )
 }
 
+// A mailbox that never completed its warm-up ramp must not start cold outreach. The counter is
+// send-based (see resetDailyLimits), so "day N of M" now means N days on which this inbox actually
+// sent — not N days on the calendar. Set OUTREACH_ALLOW_UNWARMED_ACTIVATION=true to bypass while
+// no real warm-up system exists; it is deliberately an ops-level switch, like the protected-domain
+// override above, so bypassing is a recorded environment decision and not a per-campaign habit.
+function allowsUnwarmedActivation(): boolean {
+    return process.env.OUTREACH_ALLOW_UNWARMED_ACTIVATION === 'true'
+}
+
 type CampaignActivationIssue = SequenceValidationIssue | {
     code:
         | 'sequence_missing'
@@ -116,6 +125,7 @@ type CampaignActivationIssue = SequenceValidationIssue | {
         | 'lead_missing_email_account'
         | 'email_account_invalid'
         | 'protected_sending_domain'
+        | 'sending_inbox_not_warmed'
     message: string
 }
 
@@ -163,7 +173,7 @@ export async function validateCampaignReadyForActivation(campaignId: string, org
                 eq(emailAccounts.status, 'verified'),
                 inArray(emailAccounts.id, assignedAccountIds)
             ),
-            columns: { id: true, email: true },
+            columns: { id: true, email: true, warmupEnabled: true, warmupCurrentDay: true, warmupDays: true },
         })
         if (verifiedAccounts.length !== assignedAccountIds.length) {
             issues.push({
@@ -186,6 +196,17 @@ export async function validateCampaignReadyForActivation(campaignId: string, org
                     code: 'protected_sending_domain',
                     message: `Cold outreach cannot send from the primary domain (${offending.map(a => a.email).join(', ')}). ` +
                         'Assign a disposable/provider inbox instead.',
+                })
+            }
+        }
+
+        if (!allowsUnwarmedActivation()) {
+            const unwarmed = verifiedAccounts.filter(a => a.warmupEnabled && a.warmupCurrentDay < a.warmupDays)
+            if (unwarmed.length > 0) {
+                issues.push({
+                    code: 'sending_inbox_not_warmed',
+                    message: `Sending inbox warm-up is incomplete (${unwarmed.map(a => `${a.email}: day ${a.warmupCurrentDay}/${a.warmupDays}`).join(', ')}). ` +
+                        'Warm the mailbox before cold outreach, or set OUTREACH_ALLOW_UNWARMED_ACTIVATION=true to override.',
                 })
             }
         }

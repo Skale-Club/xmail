@@ -395,6 +395,12 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
 }
 
 export async function resetDailyLimits(): Promise<void> {
+    // The warm-up day counter measures SENDING days, not calendar days. The previous version
+    // advanced it for every account every midnight — including accounts that sent nothing — so a
+    // mailbox "graduated" to its full daily limit purely by existing for `warmup_days`, having
+    // never warmed anything. That is worse than no ramp at all: it hands a cold mailbox a full
+    // quota while reporting it as warmed. Only an account that actually sent today advances,
+    // which is also why the WHERE no longer needs the warm-up clause.
     const result = await db.update(emailAccounts)
         .set({
             currentDailySent: 0,
@@ -406,7 +412,7 @@ export async function resetDailyLimits(): Promise<void> {
             END`,
             updatedAt: new Date(),
         })
-        .where(sql`${emailAccounts.currentDailySent} > 0 OR (${emailAccounts.warmupEnabled} = TRUE AND ${emailAccounts.warmupCurrentDay} < ${emailAccounts.warmupDays})`)
+        .where(sql`${emailAccounts.currentDailySent} > 0`)
         .returning({ id: emailAccounts.id })
     log.info({ action: 'outreach.processor.reset_daily_limits', accountsReset: result.length }, 'reset daily limits')
 }
