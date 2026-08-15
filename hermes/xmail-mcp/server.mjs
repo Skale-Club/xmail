@@ -96,6 +96,33 @@ const tools = [
     },
   },
   {
+    name: 'xmail_list_prospecting_journeys',
+    description: 'List tenant-scoped prospecting runs with their ordered Journey events, hypotheses, outcomes, and cost entries. Supports Xcraper external run ids. Read-only.',
+    inputSchema: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        provider: { type: 'string', enum: ['apollo', 'xcraper'] },
+        externalRunId: { type: 'string' },
+        limit: { type: 'integer', minimum: 1, maximum: 50 },
+      },
+    },
+  },
+  {
+    name: 'xmail_append_prospecting_journey_note',
+    description: 'Append an idempotent orchestrator observation, decision, lesson, or next action to a tenant-scoped prospecting Journey. Cannot alter system facts, costs, or outcomes.',
+    inputSchema: {
+      type: 'object', required: ['runId', 'idempotencyKey', 'kind', 'summary'], additionalProperties: false,
+      properties: {
+        runId: { type: 'string' },
+        idempotencyKey: { type: 'string', minLength: 8, maxLength: 200 },
+        kind: { type: 'string', enum: ['observation', 'decision', 'lesson', 'next_action'] },
+        summary: { type: 'string', minLength: 1, maxLength: 500 },
+        detail: { type: 'object' },
+        level: { type: 'string', enum: ['info', 'warn'] },
+      },
+    },
+  },
+  {
     name: 'xmail_list_prospect_candidates',
     description: 'List persisted candidates for a prospecting run, ordered by explainable ICP score.',
     inputSchema: {
@@ -288,6 +315,11 @@ async function callTool(name, args = {}) {
     case 'xmail_import_prospects': return request('/prospects/import', { method: 'POST', body: args })
     case 'xmail_search_prospects': return request('/prospecting/searches', { method: 'POST', body: args })
     case 'xmail_get_prospect_search': return request(`/prospecting/searches/${encodeURIComponent(args.runId)}`)
+    case 'xmail_list_prospecting_journeys': return request('/prospecting/runs', { query: args })
+    case 'xmail_append_prospecting_journey_note': {
+      const { runId, ...body } = args
+      return request(`/prospecting/runs/${encodeURIComponent(runId)}/notes`, { method: 'POST', body })
+    }
     case 'xmail_list_prospect_candidates': {
       const { runId, ...query } = args
       return request(`/prospecting/searches/${encodeURIComponent(runId)}/candidates`, { query })

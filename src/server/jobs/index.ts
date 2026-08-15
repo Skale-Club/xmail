@@ -14,6 +14,8 @@ import { runOutreachEventDeliveryWithLock } from './deliverOutreachEvents'
 import { runOutreachEventReconciliationWithLock } from './reconcileOutreachEvents'
 import { runDeliverabilityGuardrailsWithLock } from './enforceDeliverabilityGuardrails'
 import { runApprovalExpiryWithLock } from './expireOutreachApprovals'
+import { runAmortizeSubscriptionCostsWithLock } from './amortizeSubscriptionCosts'
+import { runMeasureProspectingOutcomesWithLock } from './measureProspectingOutcomes'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
 import { createLogger } from '../lib/logger'
@@ -229,9 +231,37 @@ export function startJobs(): void {
             })
     })
 
+    // Phase 31 follow-up: post one inbox_subscription cost entry per email account for the
+    // current calendar month, on the 1st at 04:00 UTC. dedupKey (inbox:<accountId>:<YYYY-MM>)
+    // makes re-runs within the same month a no-op; see amortizeSubscriptionCosts.ts.
+    cron.schedule('0 4 1 * *', () => {
+        runAmortizeSubscriptionCostsWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.amortizeSubscriptionCosts_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'amortizeSubscriptionCosts failed')
+        })
+    }, { timezone: 'UTC' })
+
+    // Phase 31 follow-up — recompute prospecting_runs.outcome_* counters from source-of-truth
+    // tables (prospect_candidates -> leads -> campaign_leads -> outreach_emails) every 6 hours,
+    // so a reply arriving weeks after a prospecting run still gets attributed back to it. See
+    // measureProspectingOutcomes.ts for the recompute-not-increment rationale and the
+    // imported_as = 'created' attribution rule.
+    cron.schedule('0 */6 * * *', () => {
+        runMeasureProspectingOutcomesWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.measureProspectingOutcomes_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'measureProspectingOutcomes failed')
+        })
+    }, { timezone: 'UTC' })
+
     log.info({
         action: 'outreach.jobs.scheduler_ready',
-        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am',
+        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am, amortizeSubscriptionCosts=monthly-1st-04:00-UTC, measureProspectingOutcomes=every-6h-UTC',
     }, 'scheduler ready')
 
     // Phase 23 (AI-03): log the GLOBAL autonomous-automation kill-control posture once at startup

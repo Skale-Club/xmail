@@ -26,10 +26,11 @@ LLM **externo** (sem GPU local) e teto de RAM pra nunca ameaçar o email.
 
 ## Config atual (LLM)
 
-- **Principal:** Kimi Coding Plan — `provider: kimi-coding`, `model: kimi-for-coding`
-  (key `KIMI_API_KEY`, prefixo `sk-kimi-` → auto-roteia pra `api.kimi.com/coding/v1`).
-- **Fallback:** `openrouter` / `google/gemini-2.5-flash` (em `config.yaml` `fallback_providers:`,
-  dispara em rate-limit / 5xx / erro de conexão, sem perder a conversa).
+- **Principal (desde 2026-08-14):** OpenAI Codex via OAuth — `provider: openai-codex`,
+  `model: gpt-5.6-sol` (explicitamente Sol, não Terra/Luna). A credencial renovável
+  vive em `/opt/data/auth.json`; não usa `OPENAI_API_KEY`.
+- **Único fallback:** `opencode-go` / `kimi-k3`.
+- A cadeia em `config.yaml` dispara em rate-limit, 5xx ou erro de conexão sem perder a conversa.
 - **Modelo vive no `config.yaml`** (no volume), NÃO em env var — ver "Gotchas" abaixo.
 
 ## Canais
@@ -37,6 +38,60 @@ LLM **externo** (sem GPU local) e teto de RAM pra nunca ameaçar o email.
 - **Telegram:** bot `@skaleclubhermesbot`, allowlist travada no user id `5209892068` (@vdesjr),
   que também é o `TELEGRAM_HOME_CHANNEL` (notificações/cron caem aí). Polling de saída, sem porta aberta.
 - **CLI:** `docker exec -it hermes hermes chat` (interativo) ou `hermes -z "prompt"` (one-shot).
+
+## Papel: orquestrador do Active Prospect System (verificado 2026-08-13)
+
+O Hermes não é só um assistente de chat — ele **orquestra o pipeline de prospecção**
+inteiro (a memória do agente registra: "EU disparo as ações, não peço pro Vanildo
+fazer no navegador"):
+
+1. Vanildo pede no Telegram ("vamos prospectar X em Y").
+2. Hermes chama `POST $XCRAPER_SERVICE_URL/scrape` (xcraper em
+   `https://xcraper.skale.club/api/service`, autenticado por `XCRAPER_SERVICE_KEY`
+   no `hermes.env`) e faz poll de `/scrape/<id>` a cada ~20s até `completed`.
+3. O xcraper (Apify/Google Maps) faz **auto-push pro Xphere** como prospects
+   (`source=xcraper`, `lifecycle_stage=prospect`); o **Website Analyzer do Xphere**
+   roda sozinho em quem tem domínio (audit + screenshots + lead_score +
+   websiteInsights multilíngue).
+4. Hermes tria os resultados e recomenda; **Vanildo aprova só o sensível**
+   (prospect→lead, disparo de outreach; preview de website é manual only).
+5. Outreach: via MCP do **Xphere** — `xmail_outreach_status` (lista campanhas/inboxes)
+   e `prospects_enroll_in_campaign` (enrola E ativa; dry-run por padrão, só executa
+   com `confirmed:true` após aprovação explícita no Telegram).
+6. Meta/Facebook Audiences: `meta_audiences_status` mostra a configuração e
+   `meta_audience_sync` faz preview agregado. Um sync real de ADD/REMOVE exige
+   `confirmed:true`, termos aceitos e a audiência habilitada no Xphere.
+
+### Journey e skill operacional
+
+- A skill ativa é `/opt/data/skills/skale-club/active-prospect-system/SKILL.md`;
+  a cópia versionada para deploy fica em `hermes/active-prospect-system/SKILL.md`.
+- Todo scrape iniciado pelo Hermes inclui uma hipótese declarada antes do run.
+- O Xcraper envia `external_run_id`, custo real e contagens ao Xphere; o Xphere
+  registra o run no Xmail e propaga `source_run_id` aos leads.
+- O Xmail mede outcomes a cada seis horas. Fatos, custos e outcomes permanecem
+  separados; o Hermes consulta o estado atual em vez de confiar em números
+  gravados na skill.
+
+### MCPs conectados (4)
+
+| Nome | Transporte | Papel |
+|---|---|---|
+| `xphere` | `https://xphere.app/api/mcp` | prospects, Website Analyzer, enrollment/ativação de campanha |
+| `skaleclub` | `https://skale.club/mcp` | site/serviços Skale Club |
+| `notion` | stdio `npx @notionhq/notion-mcp-server` | workspace Skale Club |
+| `xmail` | stdio `node /opt/xmail-mcp/server.mjs` | gateway escopado `/api/agent/outreach/*` |
+
+> A fronteira de segurança descrita em `docs/outreach-hermes-architecture.md`
+> (sem ativação, sem envio) vale **apenas para o gateway do xmail**. Pelo MCP do
+> Xphere o Hermes consegue enrolar e ativar campanhas — o gate ali é o
+> `confirmed:true` + aprovação humana no chat, não uma restrição de capability.
+
+### Crons ativos (2026-08)
+
+- `hermes-memories-backup` — 02:00 ET diário, `scripts/hermes-backup.sh`, modo no-agent.
+- `email-verification-credits` — 09:00 ET diário, `verification-credits.py`, modo no-agent.
+- `weekly-health-check` — **pausado** desde 2026-08-10 (custo recorrente).
 
 ## Notion + Health Check semanal (adicionado 2026-07-08)
 
@@ -69,7 +124,21 @@ LLM **externo** (sem GPU local) e teto de RAM pra nunca ameaçar o email.
 > consumo recorrente. O backup diário `hermes-memories-backup` roda
 > `scripts/hermes-backup.sh` em modo `no-agent`. O serviço systemd
 > `hermes-provider-switch-notifier` observa ativações de fallback no log do Hermes e
-> avisa o canal pessoal do Telegram, inclusive quando o OpenRouter entra em uso.
+> avisa o canal pessoal do Telegram quando o `kimi-k3` entra em uso.
+
+> **Atualização 2026-08-13 — escopo do backup.** O `hermes-backup.sh` usava
+> `git add -A` dentro de `/opt/data`, então publicava **534 arquivos** no repo com
+> remote no GitHub (`config.yaml`, `config/auth.json`, `.env`, e 500+ logs de cron),
+> e não apenas os arquivos de memória que ele copia. Agora o script adiciona
+> pathspec explícito e instala `scripts/backup-repo.gitignore` (deny-by-default,
+> reabrindo só `MEMORY.md`/`USER.md`) dentro do repo de backup. Os 532 arquivos
+> saíram do índice — **continuam no disco e no volume `hermes-data`**, que é a via
+> real de recuperação. O histórico anterior não foi reescrito: o repo é privado e a
+> reescrita/rotação foi avaliada como custo maior que o risco.
+>
+> O cron roda com `HOME=/opt/data/home` (é de lá que vem a identidade git). Para
+> executar o script na mão, replique isso:
+> `docker exec -u hermes -e HOME=/opt/data/home hermes /opt/data/scripts/hermes-backup.sh`
 
 ## Decisões de design (pra caber na máquina pequena)
 
@@ -92,8 +161,16 @@ Depois de aplicar a migration 045 e criar a credencial pela API administrativa d
 ```bash
 docker compose up -d --force-recreate
 docker exec -it hermes hermes mcp add xmail \
-  --command node --args /opt/xmail-mcp/server.mjs
+  --command node \
+  --env 'XMAIL_AGENT_API_URL=${XMAIL_AGENT_API_URL}' \
+        'XMAIL_AGENT_KEY=${XMAIL_AGENT_KEY}' \
+  --args /opt/xmail-mcp/server.mjs
 ```
+
+O `env` do MCP e obrigatorio mesmo quando as variaveis ja existem no container. O Hermes filtra o
+ambiente de subprocessos stdio e so encaminha secrets declarados explicitamente; os placeholders
+sao resolvidos em memoria a partir do ambiente do container, sem duplicar os valores no
+`config.yaml`.
 
 As tools permitem leitura, busca Apollo sem consumo de créditos, scoring/listagem de candidatos,
 importação limitada, criação de rascunho, pausa e consumo de eventos. Enriquecimento pago fica fora
@@ -154,12 +231,11 @@ Edite `/opt/hermes/hermes.env` e `docker compose up -d --force-recreate`.
    page at https://notion.so/…" faz o agente tentar `browser_navigate` (Chrome não
    instalado — browser automation está off) e falhar com "task is blocked". O prompt
    do cron referencia a página pelo **ID** e manda usar só as tools `API-*` do Notion.
-7. **O protocolo é pesado pro modelo de fallback.** Com o Kimi caindo no fallback
-   pro `gemini-2.5-flash`, a varredura completa consome muitos turns (buscas do Notion
-   voltam com 100k+ chars e incham o contexto). Mitigações: prompt enxuto (usar
+7. **O protocolo é pesado pro modelo de fallback.** A varredura completa pode consumir
+   muitos turns (buscas do Notion voltam com 100k+ chars e incham o contexto), inclusive
+   quando `kimi-k3` assume após uma falha do Codex. Mitigações: prompt enxuto (usar
    `last_edited_time`/metadata e `API-query-data-source` em vez de `get_block_children`
-   de páginas grandes) + `agent.max_turns` folgado. **Melhor ainda: restaurar o Kimi
-   como primário** — ele estava caindo no fallback em toda run de teste (08-jul).
+   de páginas grandes) + `agent.max_turns` folgado.
 
 ## Build do zero (referência)
 
@@ -170,8 +246,12 @@ mkdir -p /opt/hermes && cd /opt/hermes
 git clone --depth 1 https://github.com/NousResearch/hermes-agent.git vendor/hermes-agent
 DOCKER_CONFIG=/tmp/emptydocker docker compose build      # ~minutos no 2-vCPU
 DOCKER_CONFIG=/tmp/emptydocker docker compose up -d
-docker exec hermes hermes config set model.provider kimi-coding
-docker exec hermes hermes config set model.default  kimi-for-coding
+# Device-code OAuth: abra a URL mostrada e autorize com a conta do Codex.
+docker exec -it hermes hermes auth add openai-codex --type oauth
+docker exec hermes hermes config set model.provider openai-codex
+docker exec hermes hermes config set model.default gpt-5.6-sol
+# No picker, selecione OpenCode Go → kimi-k3 como único fallback.
+docker exec -it hermes hermes fallback add
 docker compose restart hermes
 ```
 
@@ -180,5 +260,5 @@ docker compose restart hermes
 ```bash
 docker compose down                       # para (volume hermes-data preserva memória)
 docker volume rm hermes_hermes-data       # apaga a memória do agente (irreversível)
-# backup do config antes do Kimi: /opt/data/config.yaml.bak-pre-kimi
+# backup anterior à troca para GPT-5.6 Sol: /opt/data/config.yaml.bak-pre-gpt56-20260814
 ```

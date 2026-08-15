@@ -29,6 +29,10 @@ export const prospectAssessmentInputSchema = z.object({
     }).default({}),
     evidenceFields: z.array(z.enum(PROSPECT_EVIDENCE_FIELDS)).max(PROSPECT_EVIDENCE_FIELDS.length).default([]),
     riskFlags: z.array(z.enum(PROSPECT_RISK_FLAGS)).max(PROSPECT_RISK_FLAGS.length).default([]),
+    // Phase 31 (migration 051): optional token accounting, feeds outreach_cost_entries
+    // (category llm_tokens) when present. Absent for callers that don't report usage.
+    promptTokens: z.number().int().nonnegative().optional(),
+    completionTokens: z.number().int().nonnegative().optional(),
 }).superRefine((value, ctx) => {
     if (value.recommendation === 'qualified' && value.confidence < 60) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['confidence'], message: 'Qualified recommendations require confidence >= 60' })

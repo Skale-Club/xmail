@@ -455,7 +455,22 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
                     ...profile,
                     ...verification,
                     ...(lead.customFields ? {
-                        customFields: sql`COALESCE(${leads.customFields}, '{}'::jsonb) || ${JSON.stringify(lead.customFields)}::jsonb`,
+                        // First-touch attribution for `source_run_id` (Phase 32 follow-up):
+                        // the general merge below (`||`) lets the new payload win key-for-key,
+                        // which is correct for every other custom field — but source_run_id
+                        // identifies which prospecting run originally sourced this lead, and
+                        // letting a later re-import overwrite it would let a second run
+                        // silently steal attribution (and its outcome_* counters) from the
+                        // run that actually found the lead first. This mirrors
+                        // prospect_candidates.imported_as = 'created', which exists on the
+                        // Apollo path for the identical reason — see
+                        // measureProspectingOutcomes.ts's attribution-rule comment. So: do
+                        // the normal merge, then re-apply whatever source_run_id already
+                        // existed (if any) on top, restoring it verbatim.
+                        customFields: sql`(COALESCE(${leads.customFields}, '{}'::jsonb) || ${JSON.stringify(lead.customFields)}::jsonb)
+                            || CASE WHEN jsonb_exists(${leads.customFields}, 'source_run_id')
+                                    THEN jsonb_build_object('source_run_id', ${leads.customFields} -> 'source_run_id')
+                                    ELSE '{}'::jsonb END`,
                     } : {}),
                     updatedAt: new Date(),
                 })

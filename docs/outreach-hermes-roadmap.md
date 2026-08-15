@@ -12,6 +12,13 @@
 | 31 | Agent Ops UI, approval queue, candidate evidence and deliverability controls | Complete |
 | 32 | Expiry/reconciliation, health metrics, MCP contract tests and operator runbook | Complete |
 
-“Complete” means implemented and locally validated. Production remains a separate release action:
-apply migrations 045–049, configure the Apollo secret, deploy Xmail, rotate/create the Hermes
-credential, and perform the controlled-recipient smoke path in the runbook.
+“Complete” means implemented and locally validated. Production verification is tracked separately.
+
+**Production migrations: done.** As of 2026-08-14 the production ledger is reconciled through
+`056_prospecting_external_run_id.sql`. The Journey schema, cost ledger, outcome measurement,
+external Xcraper run registration, and attribution fields are present in production.
+
+**Production wiring: done.** The scoped Hermes credential and Xmail MCP gateway are live, and
+the Xphere/Xcraper external-run contract is implemented. The remaining action is the deliberately
+controlled UAT in the runbook: create one approved run, verify its Journey facts/costs, and only
+then approve a controlled-recipient outreach. No scrape or send is part of preflight validation.
