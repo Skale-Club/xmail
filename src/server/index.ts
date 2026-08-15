@@ -1,4 +1,20 @@
 import 'dotenv/config'
+import { ALLOW_REMOTE_DB_ENV, checkRemoteDbGuard } from './lib/remote-db-guard'
+
+// ANTES de qualquer import que abra conexão: um servidor de desenvolvimento apontado para o banco
+// de produção já cadastrou credenciais cifradas com a chave errada, e o estrago só apareceu dias
+// depois, no envio. Ver lib/remote-db-guard.ts.
+const remoteDbRefusal = checkRemoteDbGuard({
+    databaseUrl: process.env.DATABASE_URL,
+    nodeEnv: process.env.NODE_ENV,
+    allowRemote: process.env[ALLOW_REMOTE_DB_ENV],
+})
+if (remoteDbRefusal) {
+    console.error(`
+${remoteDbRefusal}
+`)
+    process.exit(1)
+}
 import express from 'express'
 import cors from 'cors'
 import { join } from 'path'

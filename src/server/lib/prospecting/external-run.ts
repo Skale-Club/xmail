@@ -10,6 +10,37 @@
 import { z } from 'zod'
 import { hypothesisSchema } from './hypothesis'
 
+/**
+ * Cobertura do run: quantos dos resultados renderam e-mail, e como a presença web se distribui.
+ *
+ * Existe porque, sem isso, o Xmail sabe que um run aconteceu, quanto custou e quantos resultados
+ * teve — mas não quantos vieram com e-mail. Em 2026-08-15 a pergunta "que % dos prospects tem
+ * e-mail?" não pôde ser respondida para 85% da base, e é uma pergunta de decisão de custo
+ * recorrente: sem ela não dá para saber se pagar por `enriched` compensa.
+ *
+ * Tudo é opcional de propósito: o Xphere ainda não envia nada disto, e o contrato precisa aceitar
+ * o payload atual sem quebrar. O que chegar é gravado; o que faltar continua ausente e VISÍVEL
+ * (ver o alerta `enriched_count_never_populated` em outreach-silence.ts), nunca preenchido com
+ * zero como se fosse medição.
+ */
+export const runCoverageSchema = z.object({
+    /** Resultados que vieram com pelo menos um endereço de e-mail. */
+    emailFound: z.number().int().min(0).optional(),
+    /** Destes, quantos o verificador classificou como entregáveis. */
+    emailVerified: z.number().int().min(0).optional(),
+    /** Contagem por `web_presence_type` — chave livre porque o vocabulário é do Xphere. */
+    byWebPresence: z.record(z.number().int().min(0)).optional(),
+    /** Contagem por `booking_platform`. */
+    byBookingPlatform: z.record(z.number().int().min(0)).optional(),
+    /**
+     * Sem classificação de presença web. NUNCA somar isto a "sem site": desconhecido é
+     * desconhecido, e tratá-lo como ausência inventa cobertura comercial que ninguém mediu.
+     */
+    unclassified: z.number().int().min(0).optional(),
+})
+
+export type RunCoverage = z.infer<typeof runCoverageSchema>
+
 export const externalRunSchema = z.object({
     // Only value for now — xcraper/Apify is the only run source that has ever shipped a
     // lead in production. See migration 054's header comment.
@@ -26,6 +57,9 @@ export const externalRunSchema = z.object({
     actorId: z.string().trim().min(1).max(200).optional(),
     template: z.string().trim().min(1).max(200).optional(),
     hypothesis: hypothesisSchema.optional(),
+    /** Quantos resultados passaram por enriquecimento de contato. Popula `enriched_count`. */
+    enrichedCount: z.number().int().min(0).optional(),
+    coverage: runCoverageSchema.optional(),
 })
 
 export type ExternalRunInput = z.infer<typeof externalRunSchema>

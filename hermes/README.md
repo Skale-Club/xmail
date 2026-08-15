@@ -231,7 +231,25 @@ Edite `/opt/hermes/hermes.env` e `docker compose up -d --force-recreate`.
    page at https://notion.so/…" faz o agente tentar `browser_navigate` (Chrome não
    instalado — browser automation está off) e falhar com "task is blocked". O prompt
    do cron referencia a página pelo **ID** e manda usar só as tools `API-*` do Notion.
-7. **O protocolo é pesado pro modelo de fallback.** A varredura completa pode consumir
+7. **O CLI (`hermes -z`) NÃO usa a cadeia de fallback; o gateway usa.** Descoberto em
+   2026-08-15, com o Codex em `usage_limit_reached (429)` por 5 dias. A cadeia em
+   `config.yaml` dispara em *rate-limit, 5xx ou erro de conexão* — mas o CLI filtra a
+   credencial indisponível e reporta **`No Codex credentials stored`**, que não é
+   nenhum dos três, então o fallback nunca casa. A mensagem é enganosa: a credencial
+   existe, está é em cooldown. Confira com `docker exec -u hermes hermes hermes auth`,
+   que mostra o estado real e quanto falta.
+   **Workaround (testado):** force o provider na chamada.
+   ```bash
+   docker exec -u hermes hermes hermes -z "prompt" --provider opencode-go -m kimi-k3
+   ```
+   Sem isso é fácil concluir que o Hermes está fora do ar quando ele só precisa de um
+   flag. Pior: um `hermes -z` que morre por credencial pode ter **executado ações
+   antes de falhar** — foi o que aconteceu naquele dia, e um scrape pago acabou
+   rodando duas vezes porque o `ps aux` no container não mostrou o processo e eu
+   concluí que ele nunca tinha começado. **Verifique o efeito no banco, não o
+   processo.**
+
+8. **O protocolo é pesado pro modelo de fallback.** A varredura completa pode consumir
    muitos turns (buscas do Notion voltam com 100k+ chars e incham o contexto), inclusive
    quando `kimi-k3` assume após uma falha do Codex. Mitigações: prompt enxuto (usar
    `last_edited_time`/metadata e `API-query-data-source` em vez de `get_block_children`

@@ -74,3 +74,50 @@ describe('externalRunSchema', () => {
         expect(parsed.hypothesis).toEqual({ premise: 'Local businesses reply better to a personal tone' })
     })
 })
+
+describe('cobertura do run (contrato Xphere→Xmail, 2026-08-15)', () => {
+    it('aceita enrichedCount e coverage completos', () => {
+        const parsed = externalRunSchema.parse({
+            provider: 'xcraper',
+            externalRunId: 'run-1',
+            enrichedCount: 18,
+            coverage: {
+                emailFound: 18,
+                emailVerified: 11,
+                byWebPresence: { owned_website: 9, booking_platform: 7 },
+                byBookingPlatform: { booksy: 4 },
+                unclassified: 4,
+            },
+        })
+        expect(parsed.enrichedCount).toBe(18)
+        expect(parsed.coverage?.emailVerified).toBe(11)
+        expect(parsed.coverage?.byWebPresence?.owned_website).toBe(9)
+        // unclassified fica SEPARADO de propósito: somá-lo a "sem site" inventaria cobertura.
+        expect(parsed.coverage?.unclassified).toBe(4)
+    })
+
+    it('aceita o payload atual do Xphere, que não manda nada disso', () => {
+        // O contrato não pode quebrar o produtor enquanto ele não se atualiza. Ausente permanece
+        // ausente e VISÍVEL — o alerta enriched_count_never_populated é quem cobra.
+        const parsed = externalRunSchema.parse({ provider: 'xcraper', externalRunId: 'run-2', resultCount: 25 })
+        expect(parsed.enrichedCount).toBeUndefined()
+        expect(parsed.coverage).toBeUndefined()
+    })
+
+    it('rejeita contagem negativa', () => {
+        expect(() => externalRunSchema.parse({
+            provider: 'xcraper', externalRunId: 'run-3', enrichedCount: -1,
+        })).toThrow()
+        expect(() => externalRunSchema.parse({
+            provider: 'xcraper', externalRunId: 'run-4', coverage: { emailFound: -2 },
+        })).toThrow()
+    })
+
+    it('aceita chaves livres em byWebPresence — o vocabulário é do Xphere', () => {
+        const parsed = externalRunSchema.parse({
+            provider: 'xcraper', externalRunId: 'run-5',
+            coverage: { byWebPresence: { link_hub: 2, directory_only: 3, qualquer_coisa_nova: 1 } },
+        })
+        expect(parsed.coverage?.byWebPresence?.qualquer_coisa_nova).toBe(1)
+    })
+})

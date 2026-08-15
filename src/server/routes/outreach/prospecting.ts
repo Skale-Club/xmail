@@ -112,6 +112,10 @@ router.post('/external-runs', async (req, res) => {
             }),
             discoveredCount: input.resultCount ?? 0,
             importedCount: input.importedCount ?? 0,
+            // Ausente continua ausente: sem enrichedCount o contador fica 0 e o alerta
+            // `enriched_count_never_populated` (outreach-silence.ts) permanece firing. Preencher
+            // com zero como se fosse medicao esconderia exatamente o que precisa ser visto.
+            ...(input.enrichedCount !== undefined ? { enrichedCount: input.enrichedCount } : {}),
             hypothesis: jsonbParam(input.hypothesis ?? {}),
             startedAt: new Date(),
             completedAt: new Date(),
@@ -137,6 +141,7 @@ router.post('/external-runs', async (req, res) => {
             const [reconciled] = await db.update(prospectingRuns).set({
                 discoveredCount: input.resultCount ?? replay.discoveredCount,
                 importedCount: input.importedCount ?? replay.importedCount,
+                enrichedCount: input.enrichedCount ?? replay.enrichedCount,
                 updatedAt: new Date(),
             }).where(and(
                 eq(prospectingRuns.id, replay.id),
@@ -156,6 +161,10 @@ router.post('/external-runs', async (req, res) => {
                 resultCount: input.resultCount ?? 0,
                 importedCount: input.importedCount ?? 0,
                 costUsd: input.costUsd ?? null,
+                // `code` e valor de maquina, entao a cobertura vai no detail e fica agregavel por
+                // GROUP BY code depois. null quando o produtor nao mandou — nunca zero inventado.
+                enrichedCount: input.enrichedCount ?? null,
+                coverage: input.coverage ?? null,
             },
         })
 
