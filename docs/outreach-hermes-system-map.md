@@ -7,7 +7,7 @@
 > [roadmap de fases](outreach-hermes-roadmap.md), [runbook operacional](outreach-hermes-runbook.md).
 > O container do Hermes em si está em [`hermes/README.md`](../hermes/README.md).
 >
-> Última auditoria completa: **2026-08-15** (commit `03ba43f`). A seção "Achados abertos" tem data —
+> Última auditoria completa: **2026-08-15** (commit `159450d`). A seção "Achados abertos" tem data —
 > se estiver velha, refaça a rotina de reanálise no fim do doc antes de confiar nela.
 
 ## 1. O que é, em uma frase
@@ -193,8 +193,12 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 | 9 | Info | Rate-limit é o global de 500/15min por IP; agente sem orçamento próprio | `src/server/index.ts` |
 | 10 | Info | Não há cron de outreach no lado Hermes: o loop só anda por comando no Telegram | `hermes/README.md` |
 | 11 | ~~Alta~~ | ~~Não existe warm-up real~~ — **resolvido** pela migration `058_warmup_engine` + `jobs/processWarmup.ts`. Ver §9 | — |
-| 12 | Média | `custom_fields` de lead e as colunas jsonb de `mail_messages`/`outreach_provider_events` gravadas ANTES de 2026-08-15 seguem duplo-codificadas em produção até a normalização rodar. O ORM lê as duas formas, então só o SQL do servidor enxerga a diferença | dados, não código |
+| 12 | ~~Média~~ | ~~jsonb duplo-codificado em produção~~ — **resolvido** pela migration `059`. Verificado: 0 linhas escalares no banco inteiro | — |
 | 13 | Média | O corpo do step 1 da campanha piloto tem `{{websiteInsight}}` num parágrafo próprio, e o Xphere **não envia `websiteInsights`** no push — o e-mail sai com um buraco onde estaria a personalização | lado Xphere |
+| 14 | Média | `prospects_list` do MCP do Xphere **não devolve** `web_presence_type`, `booking_platform`, `location` nem `phone`. A segmentação comercial que decide entre cold email e proposta de Website/Xkedule não pode ser produzida pelo agente | lado Xphere — ver [contrato](xphere-xmail-contract.md) |
+| 15 | Média | O Xphere não envia `enrichedCount` nem `coverage` em `/external-runs`. O Xmail já aceita ambos; enquanto não chegarem, `enriched_count` fica 0 e o alerta `enriched_count_never_populated` permanece firing | lado Xphere |
+| 16 | Info | `hermes -z` (CLI) **não usa a cadeia de fallback** que o gateway usa: filtra a credencial em cooldown e reporta `No Codex credentials stored`, que não é o rate-limit em que a cadeia dispara. Workaround testado: `--provider opencode-go -m kimi-k3` | `hermes/README.md` gotcha 7 |
+| 17 | Info | Rampa de warm-up em 0/14 nas 7 caixas em 2026-08-15. O mesh envia; o contador avança na virada UTC. Ativação de campanha destravada em ~14 dias, ou com `OUTREACH_ALLOW_UNWARMED_ACTIVATION=true` | tempo, não bug |
 
 ### Correções aplicadas em 2026-08-15
 
@@ -214,9 +218,23 @@ um escondido atrás do anterior — vale ler como exemplo de por que "job silenc
    perdeu o fallback silencioso para `JWT_SECRET` (era ele que permitia dois servidores cifrarem
    diferente sem reclamar) e um payload de chave errada agora levanta `CredentialKeyMismatchError`.
 
-Também nesta data: `jsonbParam` aplicado a todos os writes de jsonb dos caminhos de lead e de mail
-(ver §13), e a variável `{{city}}` criada — sua ausência era o motivo de a campanha piloto ter
-"Hudson" escrito fixo no corpo.
+Também nesta data:
+
+- **`jsonbParam` em todos os writes de jsonb** dos caminhos de lead e de mail (ver §13), e migration
+  `059` normalizando o que já estava gravado. Verificado: 0 linhas escalares restantes.
+- **Atribuição de outcome consertada.** O Xmail procurava `source_run_id`, o Xphere carimba
+  `xcraper_run_id` — chaves diferentes, então TODO run de xcraper ficava com `outcome_*` zerado
+  para sempre. `lib/prospecting/source-run-id.ts` passou a tolerar os apelidos e a extrair o id do
+  próprio `source`; migration `060` carimbou o que existia. O join agora casa.
+- **Detector de silêncio** (`lib/outreach-silence.ts`, exposto no health endpoint). Nasceu da
+  constatação de que **nenhum** dos sete defeitos deste dia teria disparado um alerta existente:
+  todos os alertas eram da forma "algo deu erro", e estes eram "não produziu nada", com zero se
+  passando por valor legítimo.
+- **Guarda dev→prod** (`lib/remote-db-guard.ts`): o servidor recusa subir fora de produção contra
+  banco remoto, porque foi assim que as credenciais entraram cifradas com a chave errada.
+- **Contrato Xphere↔Xmail** versionado em [`xphere-xmail-contract.md`](xphere-xmail-contract.md),
+  com as quatro divergências encontradas — todas por acidente, todas silenciosas.
+- **`{{city}}`** criada; sua ausência era o motivo de a campanha piloto ter "Hudson" fixo no corpo.
 
 ### Correções aplicadas em 2026-08-14
 
