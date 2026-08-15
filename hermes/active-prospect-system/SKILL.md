@@ -182,26 +182,48 @@ and must never be described as one. Human approval applies to **starting outreac
 an audience**, not to judging each business one by one.
 
 Every completed Xcraper run must also record its web-presence observation in the
-maestro note. Use structured Xcraper/Xphere evidence and include owned versus
-no-owned website counts, counts by `web_presence_type`, counts by
-`booking_platform`, the Website/Xkedule segments worth reviewing, and the
-unknown/unclassified count. Never silently count unknown as no website.
+maestro note, using only fields that actually come back — see the triage section
+for what those are today. Never silently count unknown as no website.
 
 ## Triage and website previews
 
-Use Xphere MCP tools to list the new `source_type='xcraper'` prospects and review
-the returned `web_presence_summary`.
+### What `prospects_list` actually returns (verified 2026-08-15)
 
-- `has_owned_website=true` means a real independent business domain. Website
-  Analyzer may audit it and may discover booking links, forms, or iframes.
-- `has_owned_website=false` means booking platform, social profile,
-  directory/Maps, link hub, or no detected presence. Never describe one of
-  these as a website or use its Analyzer score as website evidence.
-- Missing/null classification means `unclassified`, not "no website".
+Exactly nine fields, present on every row:
 
-Use `prospects_list.web_presence` and `prospects_list.booking_platform` to build
-reviewable groups. Report platform names and URLs only from structured evidence;
-never guess a provider from a business name or generic CTA.
+```
+id · name · kind · source_type · email · emailDndBlocked · website · score · engagement_status
+```
+
+**Verify before trusting an earlier version of this skill.** It used to instruct
+using `web_presence_summary`, `has_owned_website`, `prospects_list.web_presence`
+and `prospects_list.booking_platform`. All four were checked against all 77
+xcraper prospects and are **absent from every row**, along with `location`,
+`city` and `phone`. Writing a procedure around fields nobody confirmed is how the
+skill came to describe a tool that does not exist.
+
+Absent from `prospects_list` does **not** mean absent from Xphere: `meta_audience_sync`
+projects identifiers server-side, so the phone almost certainly exists there. What
+is missing is the agent's *visibility*, not the data.
+
+### How to triage with what exists
+
+- `email` present or null decides who can enter an Xmail campaign, and nothing else.
+- `website` is the **raw Google Maps URL**. A URL alone does **not** establish an
+  owned website — it is just as often a booking platform, a social profile or a
+  link hub. Do not classify it as an owned domain without Website Analyzer evidence.
+- `score` is the Analyzer's lead score, and only means something for a domain the
+  Analyzer actually audited. Never present it as website evidence for a URL that
+  was never audited.
+
+**When the presence/booking breakdown is asked for, report it as UNAVAILABLE and
+name the reason.** Do not infer a platform from the URL, and never guess a provider
+from a business name or a generic CTA. An honest "not exposed by the tool" is worth
+more than a plausible number nobody can check — a number invented here becomes the
+basis of a commercial decision.
+
+The table below stays as the commercial framing to apply **once** the classification
+becomes available. It is not something to fill in by guessing today.
 
 | Presence | Booking | Primary opportunity |
 | --- | --- | --- |

@@ -16,6 +16,7 @@ As três divergências encontradas, e o que cada uma custou:
 | Xmail lê `source_run_id`, Xphere manda `xcraper_run_id` | **Todo** run de xcraper com `outcome_* = 0` para sempre; custo-por-resposta dividido por zero | Por acaso, ao auditar a atribuição |
 | `websiteInsights` nunca enviado | `{{websiteInsight}}` renderiza vazio, deixando um buraco no corpo do e-mail | Ao ler os textos da campanha |
 | Cobertura de e-mail sem campo no payload | Impossível responder "que % tem e-mail?" — decisão de custo recorrente feita às cegas | Ao tentar responder a pergunta |
+| A skill do Hermes manda usar campos que o `prospects_list` não devolve | O agente não consegue produzir a segmentação comercial e reporta "PENDING" | Ao chamar a ferramenta direto |
 
 O denominador comum: **nenhuma delas dá erro**. O Xmail aceita o payload, grava o que reconhece e
 ignora o resto em silêncio. Um campo que não chega é indistinguível de um campo que chegou vazio.
@@ -118,6 +119,36 @@ Hoje o campo não chega, e o `{{websiteInsight}}` do step 1 da campanha piloto r
 deixando um parágrafo em branco no meio do e-mail — exatamente onde estaria a personalização que
 justifica a abordagem.
 
+## Endpoint 3 (sentido inverso) — `prospects_list` do MCP do Xphere
+
+Não é o Xphere chamando o Xmail, mas é o mesmo acoplamento informal e a mesma classe de
+divergência, então mora aqui.
+
+**O que a ferramenta devolve hoje** (verificado em 2026-08-15 contra os 77 prospects de xcraper,
+todos os campos presentes em 100% das linhas):
+
+```
+id · name · kind · source_type · email · emailDndBlocked · website · score · engagement_status
+```
+
+**O que a skill do Hermes mandava usar e não existe:** `web_presence_summary`,
+`has_owned_website`, `web_presence`, `booking_platform` — e também `location`, `city` e `phone`.
+
+Consequência: a segmentação comercial que decide entre cold email e proposta de Website/Xkedule
+**não pode ser produzida pelo agente**. Foi por isso que a nota do maestro do run de Marlborough
+registrou a cobertura como `PENDING` — o Hermes tentou, não achou, e (corretamente) reportou
+indisponível em vez de estimar.
+
+> **Ausente em `prospects_list` ≠ ausente no Xphere.** O `meta_audience_sync` projeta
+> identificadores no servidor, então o telefone quase certamente existe lá. O que falta é a
+> **visibilidade** do agente, não o dado. Confundir as duas coisas leva a "o Xphere não tem
+> telefone", que é falso e mandaria arrancar um canal que funciona.
+
+**O que o Xphere precisa expor:** `web_presence_type`, `booking_platform` e `location` em
+`prospects_list`, ou uma ferramenta de agregação equivalente. Enquanto não expuser, qualquer
+número de presença web é heurística sobre a URL crua — útil para orientar, nunca para reportar
+como medição.
+
 ## Invariantes, com prova
 
 ```bash
@@ -139,6 +170,18 @@ SELECT count(*) FROM leads WHERE custom_fields->>'source_run_id' IS NULL;
 -- 4. Nenhum run enriched sem contagem de enriquecimento (esperado: 0 quando o Xphere cumprir)
 SELECT count(*) FROM prospecting_runs
 WHERE search_filters->>'template' = 'enriched' AND coalesce(enriched_count, 0) = 0;
+```
+
+```bash
+# 5. Quais campos o prospects_list REALMENTE devolve. Rode antes de escrever qualquer procedimento
+#    que dependa de um campo do Xphere — foi pular esta checagem que produziu a 4ª divergência.
+#    A credencial do MCP vive no config.yaml do Hermes; o `initialize` é obrigatório antes de
+#    qualquer chamada, e pulá-lo devolve `-32001 Unauthorized`, que se parece com erro de auth.
+docker exec hermes python3 -c "
+import yaml; c=yaml.safe_load(open('/opt/data/config.yaml'))
+m=(c.get('mcp_servers') or c.get('mcp'))['xphere']; print(m['url']); print(m['headers']['Authorization'])"
+# → POST initialize, depois tools/call prospects_list, e inspecione as chaves de TODOS os itens
+#   (não só do primeiro: um campo opcional pode faltar em uma linha e existir em outra).
 ```
 
 ## Manutenção
