@@ -76,7 +76,7 @@
 - OAuth flow: `POST /api/outlook/connect/start` → redirect → callback at `/api/outlook/connect/callback`
 - Token refresh: automatic with 2-minute buffer before expiry (`REFRESH_SKEW_MS`)
 - Config: `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` env vars
-- Token storage: encrypted with `OUTLOOK_TOKEN_ENCRYPTION_KEY` (falls back to `JWT_SECRET`)
+- Token storage: encrypted with `OUTLOOK_TOKEN_ENCRYPTION_KEY` (required; no fallback)
 - Implementation: `src/server/lib/outlook.ts`, `src/server/routes/outlook.ts`
 - State validation: HMAC-SHA256 signed, 10-minute TTL
 

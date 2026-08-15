@@ -175,7 +175,17 @@ be rebuilt from scratch. Keep its "achados abertos" table and audit date current
 
 ## Environment Variables
 
-Required: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `DATABASE_URL`
+Required: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `DATABASE_URL`, `OUTLOOK_TOKEN_ENCRYPTION_KEY`
+
+> **`OUTLOOK_TOKEN_ENCRYPTION_KEY` has no fallback, on purpose.** It is the single key behind
+> `encryptSecret`/`decryptSecret` (stored SMTP/IMAP passwords, Outlook tokens). It used to fall back
+> to `JWT_SECRET`, which meant two servers pointed at the same database could encrypt with two
+> different keys and neither would complain — the rows only turned out unreadable much later, at the
+> point of use. That is exactly what happened on 2026-08-15: a dev server on a local `.env` wrote the
+> five outreach mailbox credentials, and production could not decrypt any of them. **Never point a
+> local server at the production `DATABASE_URL` to write credentials.** A wrong-key payload now
+> raises `CredentialKeyMismatchError`, which names the affected record instead of surfacing Node's
+> bare `Unsupported state or unable to authenticate data`.
 
 Optional: `PORT` (default 9001), `NODE_ENV`, `JWT_SECRET`, `FRONTEND_URL` (default http://localhost:9000), `SMTP_HOST/PORT/USER/PASS/FROM`, `R2_ACCOUNT_ID`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY` (Cloudflare R2 object storage for inbox attachments + branding assets via `src/server/lib/object-storage.ts`; falls back to Supabase Storage when unset) plus `R2_PUBLIC_BASE_URL` (public domain of the branding-assets bucket) and optional `R2_ENDPOINT` override, `XMAIL_SERVICE_KEY` (machine-to-machine auth for the Xphere orchestrator on `/api/outreach/*`, fails closed if unset), `XMAIL_SERVICE_USER_ID`/`XMAIL_SERVICE_ORGANIZATION_ID` (bind the service key to a server-configured principal + organization; the client cannot choose its own identity or tenant, and all three must be set together or machine auth stays disabled), `XPHERE_EVENTS_URL`/`XPHERE_EVENTS_API_KEY` (outbound outreach event notifications to Xphere; both required together)
 

@@ -397,7 +397,7 @@ export function createSmtpTransporter(account: EmailAccount): nodemailer.Transpo
         port: account.smtpPort,
         secure: account.smtpSecure,
         username: account.smtpUsername,
-        password: decryptSecret(account.smtpPassword),
+        password: decryptSecret(account.smtpPassword, `smtp_password of email_account ${account.id}`),
     })
 
     if (resolution.warning) {

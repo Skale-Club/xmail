@@ -179,7 +179,8 @@ Production mail identity currently uses:
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | Supabase backend |
 | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | Client-side Supabase |
 | `DATABASE_URL` | Postgres pooler connection |
-| `JWT_SECRET`, `ENCRYPTION_KEY`, `OUTLOOK_TOKEN_ENCRYPTION_KEY` | Signing/crypto |
+| `JWT_SECRET`, `ENCRYPTION_KEY` | Signing |
+| `OUTLOOK_TOKEN_ENCRYPTION_KEY` | Credential encryption — **required, no fallback** |
 | `MAIL_DOMAIN` | Primary mail domain, e.g. `skale.club` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Outbound relay (fallback) |
 | `FRONTEND_URL` | Frontend URL for CORS |

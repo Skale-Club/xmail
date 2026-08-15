@@ -193,7 +193,7 @@ app.get('/health/mail', (_req, res) => {
         SMTP_HOST:                       process.env.SMTP_HOST ? '✓ set' : '(not set)',
     }
 
-    const encryptionKeyPresent = !!(process.env.OUTLOOK_TOKEN_ENCRYPTION_KEY || process.env.JWT_SECRET)
+    const encryptionKeyPresent = !!process.env.OUTLOOK_TOKEN_ENCRYPTION_KEY
 
     res.json({
         status: 'ok',
@@ -205,7 +205,7 @@ app.get('/health/mail', (_req, res) => {
         encryptionKey: {
             ok: encryptionKeyPresent,
             note: encryptionKeyPresent
-                ? 'Encryption key present (OUTLOOK_TOKEN_ENCRYPTION_KEY or JWT_SECRET)'
+                ? 'Encryption key present (OUTLOOK_TOKEN_ENCRYPTION_KEY)'
                 : '⚠️  MISSING — mailbox provisioning will fail with 500 (set OUTLOOK_TOKEN_ENCRYPTION_KEY in Coolify)',
         },
         ports: {

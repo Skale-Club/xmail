@@ -178,7 +178,7 @@ npm run db:audit         # Audit schema drift
 | `DATABASE_URL` | Yes | PostgreSQL connection string (Supabase pooler) | — |
 | `JWT_SECRET` | No | JWT signing secret for SMTP/IMAP auth | — |
 | `ENCRYPTION_KEY` | No | Data encryption key (hex, 32 bytes) | — |
-| `OUTLOOK_TOKEN_ENCRYPTION_KEY` | No | Outlook token encryption key | Falls back to `JWT_SECRET` |
+| `OUTLOOK_TOKEN_ENCRYPTION_KEY` | Yes | Credential/token encryption key | No fallback (removed 2026-08-15) |
 | `PORT` | No | Server port | `9001` |
 | `NODE_ENV` | No | Environment mode | `development` |
 | `FRONTEND_URL` | No | Frontend URL for CORS | `http://localhost:9000` |
