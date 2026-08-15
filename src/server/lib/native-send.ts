@@ -19,6 +19,7 @@ import { db } from '../../db'
 import { mailboxes, mailFolders, mailMessages } from '../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
 import { getDkimConfigForEmail, toNodemailerDkim } from './dkim'
+import { jsonbParam } from './jsonb'
 
 export interface StoreMessageData {
     messageId: string
@@ -128,14 +129,15 @@ export async function storeMessage(
         subject: data.subject,
         fromAddress: data.fromAddress,
         fromName: data.fromName,
-        toAddresses: data.toAddresses,
-        ccAddresses: data.ccAddresses,
-        bccAddresses: data.bccAddresses,
+        // jsonbParam: ver lib/jsonb.ts — o cast via text impede a segunda codificação do pooler.
+        toAddresses: jsonbParam(data.toAddresses ?? []),
+        ccAddresses: jsonbParam(data.ccAddresses ?? []),
+        bccAddresses: jsonbParam(data.bccAddresses ?? []),
         plainBody: data.plainBody,
         htmlBody: data.htmlBody,
-        headers: {},
+        headers: jsonbParam({}),
         hasAttachments: data.hasAttachments,
-        attachments: data.attachments,
+        attachments: jsonbParam(data.attachments ?? []),
         isRead,
         isDraft: false,
         remoteDate: new Date(),

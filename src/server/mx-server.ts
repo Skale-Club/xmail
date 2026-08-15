@@ -33,6 +33,7 @@ import {
     hasValidFromHeader,
     isDateTooOld,
 } from './lib/mx-guard'
+import { jsonbParam } from './lib/jsonb'
 
 async function findLocalNativeMailbox(recipient: string, userId: string) {
     return db.query.mailboxes.findFirst({
@@ -94,18 +95,22 @@ async function storeInbound(
         subject: parsed.subject,
         fromAddress: parsed.from.address,
         fromName: parsed.from.name,
-        toAddresses: parsed.to as object[],
-        ccAddresses: parsed.cc as object[],
-        bccAddresses: parsed.bcc as object[],
+        // jsonbParam em toda coluna jsonb: sem o cast via text o pooler codifica o valor uma
+        // segunda vez e a coluna guarda uma STRING JSON. O ORM desfaz na leitura, então nada
+        // aparenta quebrar — mas todo operador jsonb do servidor passa a ver um escalar opaco.
+        // Ver lib/jsonb.ts.
+        toAddresses: jsonbParam(parsed.to ?? []),
+        ccAddresses: jsonbParam(parsed.cc ?? []),
+        bccAddresses: jsonbParam(parsed.bcc ?? []),
         plainBody: parsed.plainBody,
         htmlBody: parsed.htmlBody,
-        headers: parsed.headers as object,
+        headers: jsonbParam(parsed.headers ?? {}),
         hasAttachments: parsed.hasAttachments,
-        attachments: parsed.attachments.map(a => ({
+        attachments: jsonbParam(parsed.attachments.map(a => ({
             filename: a.filename,
             contentType: a.contentType,
             size: a.size,
-        })) as object[],
+        }))),
         isRead: false,
         isDraft: false,
         remoteUid: assignedUid,

@@ -12,6 +12,7 @@ import { createMultipartEmail } from '../../lib/html-to-text'
 import { findLocalUser } from '../../lib/native-mail'
 import { processInboundEmail, deliverViaRoutes } from '../../lib/route-matcher'
 import { relayMessage, storeMessage } from '../../lib/native-send'
+import { jsonbParam } from '../../lib/jsonb'
 
 const router = Router()
 
@@ -428,14 +429,15 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
                 subject: data.subject || null,
                 fromAddress: mailbox.email,
                 fromName: mailbox.displayName,
-                toAddresses: normalizedTo,
-                ccAddresses: normalizedCc,
-                bccAddresses: normalizedBcc,
+                // jsonbParam: ver lib/jsonb.ts — o cast via text impede a segunda codificação.
+                toAddresses: jsonbParam(normalizedTo),
+                ccAddresses: jsonbParam(normalizedCc),
+                bccAddresses: jsonbParam(normalizedBcc),
                 plainBody: data.plainBody,
                 htmlBody: data.htmlBody,
-                headers: {},
+                headers: jsonbParam({}),
                 hasAttachments: normalizedAttachments.length > 0,
-                attachments: normalizedAttachments,
+                attachments: jsonbParam(normalizedAttachments),
                 isDraft: true,
                 remoteDate: new Date(),
                 receivedAt: existingDraft.receivedAt || new Date(),
@@ -449,14 +451,15 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
                 subject: data.subject || null,
                 fromAddress: mailbox.email,
                 fromName: mailbox.displayName,
-                toAddresses: normalizedTo,
-                ccAddresses: normalizedCc,
-                bccAddresses: normalizedBcc,
+                // jsonbParam: ver lib/jsonb.ts — o cast via text impede a segunda codificação.
+                toAddresses: jsonbParam(normalizedTo),
+                ccAddresses: jsonbParam(normalizedCc),
+                bccAddresses: jsonbParam(normalizedBcc),
                 plainBody: data.plainBody,
                 htmlBody: data.htmlBody,
-                headers: {},
+                headers: jsonbParam({}),
                 hasAttachments: normalizedAttachments.length > 0,
-                attachments: normalizedAttachments,
+                attachments: jsonbParam(normalizedAttachments),
                 isDraft: true,
                 remoteDate: new Date(),
                 receivedAt: new Date(),

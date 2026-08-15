@@ -4,6 +4,7 @@ import { db } from '../../db'
 import { mailboxes, mailFolders, mailMessages } from '../../db/schema'
 import { eq, and, desc } from 'drizzle-orm'
 import { decryptSecret } from './crypto'
+import { jsonbParam } from './jsonb'
 
 interface SyncResult {
     mailboxId: string
@@ -383,19 +384,21 @@ async function fetchMessagesSync(
                                 subject: parsed.subject || null,
                                 fromAddress: parsed.from?.value[0]?.address || null,
                                 fromName: parsed.from?.value[0]?.name || null,
-                                toAddresses: toObj?.value.map(v => ({
+                                // jsonbParam: ver lib/jsonb.ts — sem o cast via text o pooler
+                                // grava uma STRING JSON, opaca aos operadores jsonb do servidor.
+                                toAddresses: jsonbParam(toObj?.value.map(v => ({
                                     name: v.name,
                                     address: v.address
-                                })) || [],
+                                })) || []),
                                 plainBody: parsed.text || null,
                                 htmlBody: parsed.html as string || null,
-                                headers: {},
+                                headers: jsonbParam({}),
                                 hasAttachments: parsed.attachments.length > 0,
-                                attachments: parsed.attachments.map((att: any) => ({
+                                attachments: jsonbParam(parsed.attachments.map((att: any) => ({
                                     filename: att.filename,
                                     contentType: att.contentType,
                                     size: att.size,
-                                })),
+                                }))),
                                 isRead: false,
                                 isDraft: false,
                                 remoteUid: uid,

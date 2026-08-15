@@ -21,6 +21,7 @@ import { isIpLocked, recordAuthFailure, clearAuthFailures } from './lib/auth-thr
 import { emitFolderChange } from './lib/mail-events'
 import { allocateNextUid, recomputeFolderCounts } from './lib/folder-counts'
 import { getDkimConfigForEmail, toNodemailerDkim } from './lib/dkim'
+import { jsonbParam } from './lib/jsonb'
 
 // Find the companion mailboxes entry (for folder/message storage)
 async function getCompanionMailbox(email: string, userId: string) {
@@ -63,18 +64,19 @@ async function storeMessage(
         subject: parsed.subject,
         fromAddress: parsed.from.address,
         fromName: parsed.from.name,
-        toAddresses: parsed.to as object[],
-        ccAddresses: parsed.cc as object[],
-        bccAddresses: parsed.bcc as object[],
+        // jsonbParam: ver lib/jsonb.ts — o cast via text impede a segunda codificação do pooler.
+        toAddresses: jsonbParam(parsed.to ?? []),
+        ccAddresses: jsonbParam(parsed.cc ?? []),
+        bccAddresses: jsonbParam(parsed.bcc ?? []),
         plainBody: parsed.plainBody,
         htmlBody: parsed.htmlBody,
-        headers: parsed.headers as object,
+        headers: jsonbParam(parsed.headers ?? {}),
         hasAttachments: parsed.hasAttachments,
-        attachments: parsed.attachments.map(a => ({
+        attachments: jsonbParam(parsed.attachments.map(a => ({
             filename: a.filename,
             contentType: a.contentType,
             size: a.size,
-        })) as object[],
+        }))),
         isRead,
         isDraft: false,
         remoteUid: assignedUid,

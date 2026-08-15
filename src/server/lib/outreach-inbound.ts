@@ -640,11 +640,15 @@ export function createSqlInboundEventStore(
                     ${input.organizationId}, ${input.emailAccountId}, ${input.provider},
                     ${input.providerMessageId}, ${input.messageId}, ${input.inReplyTo},
                     ${input.messageReferences}, ${input.classification}, ${input.fromAddress},
-                    ${JSON.stringify(input.toAddresses)}::jsonb,
-                    ${JSON.stringify(input.ccAddresses)}::jsonb,
+                    -- ::text::jsonb, não ::jsonb direto: com o cast direto o pooler infere o
+                    -- parâmetro como jsonb e o codifica uma segunda vez (o valor já vem de
+                    -- JSON.stringify), gravando uma STRING JSON. O cast intermediário mantém o
+                    -- parâmetro escalar e deixa o PostgreSQL fazer o único parse. Ver lib/jsonb.ts.
+                    ${JSON.stringify(input.toAddresses)}::text::jsonb,
+                    ${JSON.stringify(input.ccAddresses)}::text::jsonb,
                     ${input.subject}, ${input.textBody}, ${input.htmlBody},
-                    ${JSON.stringify(input.headers)}::jsonb,
-                    ${JSON.stringify(input.attachments)}::jsonb,
+                    ${JSON.stringify(input.headers)}::text::jsonb,
+                    ${JSON.stringify(input.attachments)}::text::jsonb,
                     ${sqlTimestampValue(input.receivedAt)}
                 )
                 ON CONFLICT (organization_id, email_account_id, provider, provider_message_id)
