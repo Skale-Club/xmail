@@ -155,6 +155,15 @@ npm run db:studio        # Open Drizzle Studio
   one-to-one transactional email from a verified native outreach inbox — not campaign traffic, no
   warmup/sending-limit bookkeeping and no open/click tracking injection.
 
+### Hermes Prospecting Gateway
+The LLM agent (Hermes) drives prospecting through `/api/agent/outreach/*` only — a
+capability-scoped, org-bound credential with no send and no activation capability.
+**Before analyzing, debugging or changing anything in that pipeline, read
+[`docs/outreach-hermes-system-map.md`](docs/outreach-hermes-system-map.md)** — it maps the
+files, the ten authority gates, the invariants (each with a one-command proof), the
+production prerequisites and the currently-open findings, so the analysis does not have to
+be rebuilt from scratch. Keep its "achados abertos" table and audit date current.
+
 ### Frontend Patterns
 - All admin pages under `/admin/*` route
 - React Query for server state (auto-refetch, cache invalidation)
