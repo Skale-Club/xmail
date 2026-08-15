@@ -141,9 +141,45 @@ Never report a run as weak because its email yield was low, and never propose
 dropping the no-email portion. Report email yield and commercial coverage as two
 separate numbers: a run with 10% verified email and 80% no-owned-website is a
 strong Website/Xkedule run and a weak cold-email run, and saying only the second
-misrepresents it. Phone, address, booking platform and web presence are outreach
-surface for other channels and for Meta audiences, all of which carry their own
-approval gates.
+misrepresents it.
+
+### Where a no-email prospect goes
+
+It **stays in Xphere**, which is its home and not a waiting room. Two destinations
+are planned for it, and neither depends on an email ever appearing:
+
+1. **Meta/Facebook Custom Audiences — available today.** Xphere projects locally
+   hashed identifiers; a phone number alone is enough to match. Follow the Meta
+   protocol below: aggregate preview first, explicit approval, then `confirmed:true`
+   only with the audience enabled and Customer List terms accepted.
+2. **SMS and cold call — planned, NOT yet authorized.** Phone coverage from Google
+   Maps is high, which makes these the natural second and third channels. They do
+   **not** exist as an approved motion yet: each one needs its own explicit command
+   from Vanildo plus a compliance review before a single message or call goes out.
+   Never treat a scrape as the start of an SMS or calling campaign, and never
+   present phone numbers as an approved channel.
+
+So a run with poor email coverage still produces two usable outputs: Website/Xkedule
+opportunities and Meta audience members. Say that plainly instead of describing the
+no-email portion as loss.
+
+### The funnel, in the platform's own words
+
+Getting the vocabulary right matters, because "lead" means two different things:
+
+- **Prospect** (Xphere, `lifecycle_stage='prospect'`) — a business the scrape found.
+- **Lead row** (Xmail `leads`) — a contact on the sending list. Its existence is not
+  a judgement about the business; it means "has a validated email, so it can be
+  emailed".
+- **Lead in the commercial sense** — someone who replied positively. In the platform
+  that is `status='interested'`, reached automatically by `processReplies`, and
+  counted by `outcome_positive_replied`.
+
+The working process is therefore: scrape everything → extract every email → validate
+them → email everyone who validates → whoever answers positively becomes a lead.
+Importing a validated address into Xmail is **not** a per-record qualification gate
+and must never be described as one. Human approval applies to **starting outreach to
+an audience**, not to judging each business one by one.
 
 Every completed Xcraper run must also record its web-presence observation in the
 maestro note. Use structured Xcraper/Xphere evidence and include owned versus
