@@ -216,8 +216,6 @@ jobs:
               -e MAIL_TLS_KEY_PATH="/etc/letsencrypt/live/mx.skale.club/privkey.pem" \
               -e APP_COMPANY_NAME="${{ secrets.APP_COMPANY_NAME }}" \
               -e APP_APPLICATION_NAME="${{ secrets.APP_APPLICATION_NAME }}" \
-              # SMTP_HOST/SMTP_USER ausentes de proposito: sem eles a entrega vai direta ao MX e assina
-              # com o DKIM do proprio dominio, alinhando SPF+DKIM+DMARC. Ver build-deploy.yml.
               -e SMTP_PORT="${{ secrets.SMTP_PORT }}" \
               -e SMTP_PASS="${{ secrets.SMTP_PASS }}" \
               -e SMTP_FROM="${{ secrets.SMTP_FROM }}" \
@@ -385,8 +383,6 @@ jobs:
                   -e MAIL_TLS_KEY_PATH="/etc/letsencrypt/live/mx.skale.club/privkey.pem" \
                   -e APP_COMPANY_NAME="${{ secrets.APP_COMPANY_NAME }}" \
                   -e APP_APPLICATION_NAME="${{ secrets.APP_APPLICATION_NAME }}" \
-                  # SMTP_HOST/SMTP_USER ausentes de proposito: sem eles a entrega vai direta ao MX e assina
-                  # com o DKIM do proprio dominio, alinhando SPF+DKIM+DMARC. Ver build-deploy.yml.
                   -e SMTP_PORT="${{ secrets.SMTP_PORT }}" \
                   -e SMTP_PASS="${{ secrets.SMTP_PASS }}" \
                   -e SMTP_FROM="${{ secrets.SMTP_FROM }}" \

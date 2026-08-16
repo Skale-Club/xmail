@@ -131,6 +131,16 @@ jobs:
               echo "Coolify network detected"
             fi
 
+            # Saida de e-mail: SMTP_HOST e SMTP_USER NAO sao passados ao container de proposito.
+            # Sem eles a plataforma resolve o MX de cada destinatario e entrega direto, assinando
+            # com a chave DKIM do dominio remetente — medido no Gmail em 2026-08-16:
+            # dkim=pass header.i=@skale.club, spf=pass smtp.mailfrom=info@skale.club, dmarc=pass.
+            # Por relay de terceiro o corpo era reescrito e a nossa assinatura chegava como
+            # dkim=neutral (body hash did not verify).
+            # Pre-requisitos ja satisfeitos neste host: porta 25 de SAIDA liberada pela Hetzner e
+            # PTR de 49.13.197.250 = mx.skale.club. Testes no .env.example.
+            # ROLLBACK: re-adicionar as duas linhas -e SMTP_HOST=... e -e SMTP_USER=... na lista
+            # de -e abaixo (os secrets continuam no repositorio).
             run_app_container() {
               NAME="$1"
               IMAGE="$2"
@@ -168,16 +178,6 @@ jobs:
                 -e MAIL_TLS_KEY_PATH="/etc/letsencrypt/live/mx.skale.club/privkey.pem" \
                 -e APP_COMPANY_NAME="${{ secrets.APP_COMPANY_NAME }}" \
                 -e APP_APPLICATION_NAME="${{ secrets.APP_APPLICATION_NAME }}" \
-                # SMTP_HOST/SMTP_USER deliberadamente AUSENTES: sem eles a plataforma entrega
-                # direto no MX do destinatário e assina com o DKIM do próprio domínio remetente,
-                # o que alinha SPF+DKIM+DMARC (medido em 2026-08-16: dkim=pass header.i=@skale.club,
-                # spf=pass smtp.mailfrom=info@skale.club, dmarc=pass, caixa de entrada do Gmail).
-                # Via relay de terceiro, o corpo era reescrito e o DKIM do nosso domínio chegava
-                # como `dkim=neutral (body hash did not verify)`.
-                # Pré-requisitos, já satisfeitos neste host: porta 25 de SAÍDA liberada pela Hetzner
-                # e PTR de 49.13.197.250 = mx.skale.club. Testes no .env.example.
-                # ROLLBACK: reintroduzir as duas linhas abaixo (os secrets continuam no repo).
-                #   -e SMTP_HOST="${{ secrets.SMTP_HOST }}" -e SMTP_USER="${{ secrets.SMTP_USER }}"
                 -e SMTP_PASS="${{ secrets.SMTP_PASS }}" \
                 -e SMTP_FROM="${{ secrets.SMTP_FROM }}" \
                 -e FRONTEND_URL="${{ secrets.FRONTEND_URL }}" \
