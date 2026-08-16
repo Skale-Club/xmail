@@ -198,7 +198,9 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 | 14 | Média | `prospects_list` do MCP do Xphere **não devolve** `web_presence_type`, `booking_platform`, `location` nem `phone`. A segmentação comercial que decide entre cold email e proposta de Website/Xkedule não pode ser produzida pelo agente | lado Xphere — ver [contrato](xphere-xmail-contract.md) |
 | 15 | Média | O Xphere não envia `enrichedCount` nem `coverage` em `/external-runs`. O Xmail já aceita ambos; enquanto não chegarem, `enriched_count` fica 0 e o alerta `enriched_count_never_populated` permanece firing | lado Xphere |
 | 16 | Info | `hermes -z` (CLI) **não usa a cadeia de fallback** que o gateway usa: filtra a credencial em cooldown e reporta `No Codex credentials stored`, que não é o rate-limit em que a cadeia dispara. Workaround testado: `--provider opencode-go -m kimi-k3` | `hermes/README.md` gotcha 7 |
-| 17 | Info | Rampa de warm-up em 0/14 nas 7 caixas em 2026-08-15. O mesh envia; o contador avança na virada UTC. Ativação de campanha destravada em ~14 dias, ou com `OUTREACH_ALLOW_UNWARMED_ACTIVATION=true` | tempo, não bug |
+| 17 | Info | Rampa de warm-up em 0/14 nas 7 caixas em 2026-08-15 (1/14 em 2026-08-16 — avançou). O mesh envia; o contador avança na virada UTC. Ativação de campanha destravada em ~14 dias, ou com `OUTREACH_ALLOW_UNWARMED_ACTIVATION=true` | tempo, não bug |
+| 18 | ~~Alta~~ | ~~Groom cego na direção native→Gmail~~ — **resolvido em 2026-08-16**. O relay Brevo das caixas nativas reescreve o `Message-ID` (`<uuid@smtp-relay.sendinblue.com>`) e o groom só procurava pelo nosso `w.…@dominio`: 7/7 mensagens native→Gmail presas em `sent`, as de `info@xkedule.com` 100% na pasta Spam sem resgate, e o audit dizendo "spam 0%". Agora `lib/warmup/detect.ts` casa também por envelope (remetente + assunto exato + janela); `groomed` no log conta só o que foi localizado e há `undetected`; o audit mostra "aguardando detecção". Ver §9 | `jobs/processWarmup.ts`, `lib/warmup/detect.ts` |
+| 19 | ~~Média~~ | ~~`runWithLock` com lock de sessão através do pooler transaction-mode~~ — **resolvido em 2026-08-16**: `pg_try_advisory_xact_lock` dentro de `BEGIN…COMMIT` na conexão reservada (o pooler pina o backend durante a transação). Antes, ~50% dos ticks de **todos** os jobs logavam `already running … skipping` (851 em 6h) sem nada rodando. Validado contra o pooler de prod com chave descartável: lock visto ocupado durante o corpo, 20/20 livre após o COMMIT | `src/server/lib/cron-lock.ts` |
 
 ### Correções aplicadas em 2026-08-15
 
@@ -270,9 +272,24 @@ dos participantes não acumula ruído. Envios do mesh usam `warmup_sent_today` (
 de campanha) e contam como dia de envio real na rampa via `resetDailyLimits`.
 
 Módulos: `lib/warmup/plan.ts` (alvos/pares/jitter, puro), `lib/warmup/content.ts` (texto, puro),
-`jobs/processWarmup.ts` (I/O). Operação: `scripts/warmup-mesh.ts` (`--list`, `--enable`,
-`--enable-provider`, `--add-native`, `--disable`); auditoria: `scripts/warmup-audit.ts`
-(estado por caixa + taxa de spam do mesh). Outlook ainda não participa (arquivar exige Graph).
+`lib/warmup/detect.ts` (localizar a cópia entregue, puro), `jobs/processWarmup.ts` (I/O).
+
+**Detecção tem duas chaves, e a segunda não é opcional.** As caixas nativas enviam pelo relay
+Brevo, que **reescreve o `Message-ID`** (`<uuid@smtp-relay.sendinblue.com>`); a busca por header só
+funciona quando o caminho preserva o id (Gmail→nativa preserva). Sem a chave de envelope
+(remetente + assunto exato + janela −30min/+24h em torno do `sent_at`), toda a direção
+native→Gmail fica invisível — e invisível é pior que ausente, porque o que cai em Spam não é
+resgatado e o audit reporta "spam 0%". Foi o estado real em 2026-08-16 (achado #18). A chave de
+envelope é segura porque o SEND nunca repete um par no mesmo dia e "Re: agenda" não é igual a
+"agenda". `In-Reply-To` da resposta aponta para o NOSSO id (é o que a pasta Enviados do remetente
+conhece); `References` lista o nosso e o entregue.
+
+Leia o log `outreach.warmup.tick` assim: `groomed` = mensagens LOCALIZADAS e tratadas no tick;
+`undetected` = examinadas e não achadas em nenhuma pasta (viram `failed/missing` após 3 dias).
+
+Operação: `scripts/warmup-mesh.ts` (`--list`, `--enable`, `--enable-provider`, `--add-native`,
+`--disable`); auditoria: `scripts/warmup-audit.ts` (estado por caixa, taxa de spam do mesh e
+"aguardando detecção"). Outlook ainda não participa (arquivar exige Graph).
 
 **Ainda não existe:** ingestão de estado de warm-up de vendor externo (`provider_ref` segue só
 comentário) e métrica de inbox placement fora do mesh. Warm-up feito por vendor é invisível ao
@@ -280,6 +297,9 @@ contador — é para isso que existem `warmup_source='vendor'` + atestação (`w
 
 **Estado verificado em 2026-08-15:** o mesh envia. As 7 caixas (`info@skale.club`,
 `info@xkedule.com` e as 5 de `tryskaleclub.com`) registraram envio real no mesmo tick.
+**2026-08-16:** 24 envios/24h, rampa 1/14 em todas; Gmail→nativa 15/15 arquivadas (4 respondidas);
+native→Gmail 0/7 detectadas até a correção do achado #18 (a de `info@xkedule.com` estava caindo
+em Spam no Gmail — a partir do deploy o groom passa a resgatar).
 
 O que bloqueia **campanha** hoje é só a rampa: `warmup_current_day` avança um dia por dia COM envio
 real, então uma caixa nova leva `warmup_days` dias até a ativação passar — override de ops em

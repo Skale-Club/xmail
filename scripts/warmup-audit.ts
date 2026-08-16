@@ -1,10 +1,10 @@
 /**
  * Read-only audit: "o warm-up está realmente aquecendo alguma caixa?"
  *
- * O sistema atual só tem uma RAMPA DE LIMITE (effectiveDailyLimit em
- * src/server/lib/outreach-delivery-policy.ts). Não existe warm-up real (troca de mensagens
- * entre caixas, seed pool, resgate de spam). Este script mostra, com dados, a diferença
- * entre o que a rampa acha que aconteceu e o que de fato foi enviado.
+ * Mostra a RAMPA DE LIMITE (effectiveDailyLimit em src/server/lib/outreach-delivery-policy.ts)
+ * por caixa, o volume real de campanha, e — quando a migration 058 está aplicada — o estado do
+ * mesh de warm-up (jobs/processWarmup.ts): enviados, onde caíram, respondidos, arquivados e o
+ * que ainda não foi detectado do lado do destinatário.
  *
  * Uso:
  *   npx tsx scripts/warmup-audit.ts            # DATABASE_URL vem do .env
@@ -146,7 +146,10 @@ async function main(): Promise<void> {
                        count(*) FILTER (WHERE detected_folder = 'inbox')::int             AS landed_inbox,
                        count(*) FILTER (WHERE replied_at IS NOT NULL)::int                AS replied,
                        count(*) FILTER (WHERE archived_at IS NOT NULL)::int               AS archived,
-                       count(*) FILTER (WHERE status = 'failed')::int                     AS failed
+                       count(*) FILTER (WHERE status = 'failed')::int                     AS failed,
+                       count(*) FILTER (WHERE status IN ('sent','rescued') AND detected_at IS NULL)::int AS awaiting,
+                       count(*) FILTER (WHERE status IN ('sent','rescued') AND detected_at IS NULL
+                                          AND sent_at < now() - interval '6 hours')::int   AS awaiting_stale
                 FROM warmup_messages`
             const participants = await sql<{ email: string; warmup_only: boolean }[]>`
                 SELECT email, warmup_only FROM email_accounts
@@ -156,6 +159,19 @@ async function main(): Promise<void> {
             const delivered = mesh.landed_inbox + mesh.landed_spam
             const spamRate = delivered > 0 ? ((mesh.landed_spam / delivered) * 100).toFixed(1) : '—'
             console.log(`24h: ${mesh.sent_24h} enviados | inbox ${mesh.landed_inbox} | spam ${mesh.landed_spam} (${spamRate}%) | respondidos ${mesh.replied} | arquivados ${mesh.archived} | falhas ${mesh.failed}`)
+            console.log(`aguardando detecção: ${mesh.awaiting} (${mesh.awaiting_stale} há mais de 6h)`)
+            if (mesh.awaiting_stale > 0) {
+                // A taxa de spam acima só conta o que o groom ENXERGOU. Se há mensagens velhas sem
+                // detecção, o número está incompleto — foi assim que "spam 0%" escondeu 100% de spam
+                // na direção native→Gmail em 2026-08-16 (Message-ID reescrito pelo relay).
+                console.log('⚠️  Há mensagens antigas sem detecção: a taxa de spam acima é parcial. Veja `undetected` no log outreach.warmup.tick.')
+                const stale = await sql<{ from_email: string; to_address: string; n: number }[]>`
+                    SELECT fa.email AS from_email, w.to_address, count(*)::int AS n
+                    FROM warmup_messages w JOIN email_accounts fa ON fa.id = w.from_account_id
+                    WHERE w.status IN ('sent','rescued') AND w.detected_at IS NULL AND w.sent_at < now() - interval '6 hours'
+                    GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10`
+                for (const row of stale) console.log(`   - ${row.from_email} → ${row.to_address}: ${row.n}`)
+            }
             if (participants.length < 2) {
                 console.log('⚠️  Mesh precisa de pelo menos 2 caixas habilitadas (scripts/warmup-mesh.ts --enable …).')
             }

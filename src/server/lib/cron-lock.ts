@@ -30,26 +30,36 @@ export function computeLockKey(name: string): bigint {
 /**
  * Runs `fn` only if the named advisory lock can be acquired immediately.
  *
- * Behavior:
- *   - If `pg_try_advisory_lock` returns false (lock already held by THIS or
- *     ANOTHER process/session), logs a skip message and returns without error.
- *   - If acquired, runs `fn` and releases the lock in a `finally` block on
- *     the SAME reserved connection (required for `pg_advisory_unlock` to match
- *     the session that acquired the lock).
- *   - On `kill -9` / process crash, the underlying postgres-js connection dies
- *     and Postgres releases the advisory lock automatically (session-scoped) —
- *     no orphan-lock risk.
+ * The lock is TRANSACTION-scoped (`pg_try_advisory_xact_lock` inside an explicit
+ * `BEGIN … COMMIT` on one reserved connection), not session-scoped. That is
+ * deliberate: production reaches Postgres through the Supabase pooler in
+ * transaction mode (`:6543`), where every statement outside a transaction may
+ * land on a DIFFERENT backend. With `pg_try_advisory_lock`/`pg_advisory_unlock`
+ * that meant the lock was taken on backend A and the unlock ran on backend B —
+ * A kept the lock forever, and from then on roughly every other tick of EVERY
+ * job (whichever landed on a backend other than A) logged
+ * "already running … skipping" while nothing was running. Inside an open
+ * transaction the pooler pins the backend, so lock, body and release all see
+ * the same session, and COMMIT (or the connection dying) always frees it.
  *
- * Never throws on lock-acquisition or unlock failure — those are logged and
+ * Behavior:
+ *   - If the lock is already held by another tick/process, logs a skip
+ *     message and returns without error.
+ *   - If acquired, runs `fn` and commits (releasing the lock) in `finally`.
+ *   - On `kill -9` / process crash, the connection dies and Postgres rolls the
+ *     transaction back, releasing the lock — no orphan-lock risk.
+ *   - Session-scoped holders (`pg_advisory_lock` on the same key) still contend
+ *     with this lock: session and xact advisory locks share one lock space.
+ *
+ * Never throws on lock-acquisition or release failure — those are logged and
  * swallowed so a single cron tick failure does not crash the scheduler.
  * Errors thrown by `fn` itself propagate to the caller.
  */
 export async function runWithLock(jobName: string, fn: () => Promise<unknown>): Promise<void> {
     const key = computeLockKey(jobName)
 
-    // Reserve a single connection so lock and unlock target the same session.
-    // postgres-js .reserve() returns a tagged-template SQL function with a
-    // .release() method to return the connection to the pool.
+    // Reserve a single connection so BEGIN, the lock and COMMIT travel on the
+    // same client connection (and therefore the same pooled backend).
     let reserved: Awaited<ReturnType<typeof queryClient.reserve>>
     try {
         reserved = await queryClient.reserve()
@@ -64,16 +74,21 @@ export async function runWithLock(jobName: string, fn: () => Promise<unknown>): 
 
     try {
         let acquired = false
+        let inTransaction = false
         try {
-            const rows = await reserved`SELECT pg_try_advisory_lock(${keyParam}::bigint) AS got`
+            await reserved`BEGIN`
+            inTransaction = true
+            const rows = await reserved`SELECT pg_try_advisory_xact_lock(${keyParam}::bigint) AS got`
             const first = rows[0] as { got?: boolean } | undefined
             acquired = Boolean(first?.got)
         } catch (lockErr) {
             console.error(`[cron-lock] ${jobName} failed to acquire lock:`, lockErr)
+            if (inTransaction) await endTransaction(jobName, reserved, 'ROLLBACK')
             return
         }
 
         if (!acquired) {
+            await endTransaction(jobName, reserved, 'ROLLBACK')
             console.log(`[cron-lock] ${jobName} already running on another process/tick, skipping`)
             return
         }
@@ -81,11 +96,8 @@ export async function runWithLock(jobName: string, fn: () => Promise<unknown>): 
         try {
             await fn()
         } finally {
-            try {
-                await reserved`SELECT pg_advisory_unlock(${keyParam}::bigint)`
-            } catch (unlockErr) {
-                console.error(`[cron-lock] ${jobName} unlock failed:`, unlockErr)
-            }
+            // Ending the transaction is what releases the xact lock.
+            await endTransaction(jobName, reserved, 'COMMIT')
         }
     } finally {
         // Always return the reserved connection to the pool.
@@ -94,5 +106,17 @@ export async function runWithLock(jobName: string, fn: () => Promise<unknown>): 
         } catch (releaseErr) {
             console.error(`[cron-lock] ${jobName} connection release failed:`, releaseErr)
         }
+    }
+}
+
+async function endTransaction(
+    jobName: string,
+    reserved: Awaited<ReturnType<typeof queryClient.reserve>>,
+    verb: 'COMMIT' | 'ROLLBACK',
+): Promise<void> {
+    try {
+        await reserved.unsafe(verb)
+    } catch (endErr) {
+        console.error(`[cron-lock] ${jobName} ${verb} failed:`, endErr)
     }
 }

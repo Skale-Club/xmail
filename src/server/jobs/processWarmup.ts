@@ -9,8 +9,10 @@
  *          Volume, espaçamento e conteúdo vêm de `lib/warmup/plan.ts` e `lib/warmup/content.ts` —
  *          determinísticos por semente, sem custo de LLM.
  *
- *  GROOM — do lado do destinatário, localiza cada mensagem pelo Message-ID (nenhum header
- *          X-Warmup: marcador próprio denunciaria o tráfego), e executa o ciclo que um humano
+ *  GROOM — do lado do destinatário, localiza cada mensagem pelo Message-ID e, quando o caminho de
+ *          entrega o reescreveu (o relay Brevo das caixas nativas faz isso), pelo envelope
+ *          remetente+assunto+janela — ver `lib/warmup/detect.ts`; nenhum header X-Warmup:
+ *          marcador próprio denunciaria o tráfego. Depois executa o ciclo que um humano
  *          engajado executaria: caiu em Spam → move para a Inbox (o sinal mais forte que existe);
  *          na Inbox → marca como lida, responde uma fração em thread e ARQUIVA — o inbox de quem
  *          participa não acumula ruído de aquecimento.
@@ -40,6 +42,12 @@ import { runWithLock } from '../lib/cron-lock'
 import { createLogger } from '../lib/logger'
 import { sendComposedOutreachMessage } from '../lib/outreach-provider'
 import { generateWarmupContent, generateWarmupReply, replySubject } from '../lib/warmup/content'
+import {
+    DETECTION_WINDOW_BEFORE_MS,
+    normalizeMessageId,
+    pickDeliveredCopy,
+    type ExpectedDelivery,
+} from '../lib/warmup/detect'
 import {
     hashFraction,
     remainingWarmupQuota,
@@ -252,12 +260,25 @@ interface GroomContext {
     now: Date
 }
 
-async function maybeReply(message: WarmupMessage, context: GroomContext): Promise<boolean> {
+/**
+ * `deliveredMessageId` é o Message-ID como a cópia chegou ao destinatário — igual ao nosso quando
+ * o caminho preservou, o do relay quando reescreveu. `In-Reply-To` aponta para o NOSSO id (é o que
+ * a caixa do remetente tem na pasta Enviados, e é ela quem vai ler a resposta); `References` lista
+ * os dois, para que o lado que só conhece o id reescrito também encadeie.
+ */
+async function maybeReply(
+    message: WarmupMessage,
+    context: GroomContext,
+    deliveredMessageId: string | null,
+): Promise<boolean> {
     if (message.repliedAt || !shouldReply(message.messageId)) return false
     const sender = context.senderByAccountId.get(message.fromAccountId)
     if (!sender) return false
     const reply = generateWarmupReply(message.messageId)
     const replyMessageId = `w.${randomUUID()}@${context.recipientMesh.domain}`
+    const references = [message.messageId]
+    const delivered = normalizeMessageId(deliveredMessageId)
+    if (delivered && delivered !== normalizeMessageId(message.messageId)) references.push(delivered)
     const result = await sendComposedOutreachMessage(context.recipientMesh.account, {
         from: { address: context.recipientMesh.account.email, name: context.recipientMesh.account.displayName ?? null },
         to: [sender.account.email],
@@ -265,9 +286,20 @@ async function maybeReply(message: WarmupMessage, context: GroomContext): Promis
         text: reply.text,
         messageId: replyMessageId,
         inReplyTo: message.messageId,
-        references: [message.messageId],
+        references,
     })
     return result.accepted
+}
+
+function expectedDeliveryOf(message: WarmupMessage, context: GroomContext): ExpectedDelivery | null {
+    const sender = context.senderByAccountId.get(message.fromAccountId)
+    if (!sender || !message.sentAt) return null
+    return {
+        fromAddress: sender.account.email,
+        subject: message.subject,
+        sentAt: message.sentAt,
+        messageId: message.messageId,
+    }
 }
 
 async function finalizeMessage(
@@ -295,9 +327,27 @@ function classifyImapFolders(folders: Array<{ path: string; specialUse?: string;
     return { junkPath, archivePath }
 }
 
-async function groomImapAccount(context: GroomContext, pending: WarmupMessage[]): Promise<void> {
+/** Cópia entregue localizada numa pasta IMAP. */
+interface ImapHit {
+    uid: number
+    /** Message-ID como chegou (sem colchetes), para o `References` da resposta. */
+    deliveredMessageId: string | null
+}
+
+async function giveUpIfExpired(message: WarmupMessage, context: GroomContext, where: string): Promise<void> {
+    if (context.now.getTime() - (message.sentAt?.getTime() ?? 0) > DETECTION_GIVE_UP_MS) {
+        await finalizeMessage(message, context, {
+            status: 'failed',
+            detectedFolder: 'missing',
+            lastError: `not found in ${where} within the detection window`,
+        })
+    }
+}
+
+/** Devolve quantas mensagens de `pending` foram localizadas (e tratadas) na caixa. */
+async function groomImapAccount(context: GroomContext, pending: WarmupMessage[]): Promise<number> {
     const { account } = context.recipientMesh
-    if (!account.imapHost || !account.imapUsername || !account.imapPassword) return
+    if (!account.imapHost || !account.imapUsername || !account.imapPassword) return 0
 
     const client = new ImapFlow({
         host: account.imapHost,
@@ -307,19 +357,27 @@ async function groomImapAccount(context: GroomContext, pending: WarmupMessage[])
         logger: false,
     })
     await client.connect()
+    let detected = 0
     try {
         const folders = await client.list()
         const { junkPath, archivePath } = classifyImapFolders(folders as never)
 
         for (const message of pending) {
-            const inInbox = await searchImapFolder(client, 'INBOX', message.messageId)
-            if (inInbox !== null) {
+            const expected = expectedDeliveryOf(message, context)
+            if (!expected) {
+                await giveUpIfExpired(message, context, 'inbox or spam')
+                continue
+            }
+
+            const inInbox = await locateInImapFolder(client, 'INBOX', expected)
+            if (inInbox) {
+                detected += 1
                 // Na Inbox: lê, talvez responde, arquiva. A ordem importa — é a sequência humana.
                 const lock = await client.getMailboxLock('INBOX')
                 try {
-                    await client.messageFlagsAdd(String(inInbox), ['\\Seen'], { uid: true })
-                    const replied = await maybeReply(message, context)
-                    if (archivePath) await client.messageMove(String(inInbox), archivePath, { uid: true })
+                    await client.messageFlagsAdd(String(inInbox.uid), ['\\Seen'], { uid: true })
+                    const replied = await maybeReply(message, context, inInbox.deliveredMessageId)
+                    if (archivePath) await client.messageMove(String(inInbox.uid), archivePath, { uid: true })
                     await finalizeMessage(message, context, {
                         status: 'archived',
                         detectedAt: message.detectedAt ?? context.now,
@@ -334,13 +392,14 @@ async function groomImapAccount(context: GroomContext, pending: WarmupMessage[])
             }
 
             if (junkPath) {
-                const inJunk = await searchImapFolder(client, junkPath, message.messageId)
-                if (inJunk !== null) {
+                const inJunk = await locateInImapFolder(client, junkPath, expected)
+                if (inJunk) {
+                    detected += 1
                     // Spam → Inbox: o resgate fica visível para o provedor. Arquivar só no
                     // próximo tick, para a mensagem "viver" um pouco na Inbox depois do resgate.
                     const lock = await client.getMailboxLock(junkPath)
                     try {
-                        await client.messageMove(String(inJunk), 'INBOX', { uid: true })
+                        await client.messageMove(String(inJunk.uid), 'INBOX', { uid: true })
                     } finally {
                         lock.release()
                     }
@@ -359,42 +418,71 @@ async function groomImapAccount(context: GroomContext, pending: WarmupMessage[])
                 }
             }
 
-            if (context.now.getTime() - (message.sentAt?.getTime() ?? 0) > DETECTION_GIVE_UP_MS) {
-                await finalizeMessage(message, context, {
-                    status: 'failed',
-                    detectedFolder: 'missing',
-                    lastError: 'not found in inbox or spam within the detection window',
-                })
-            }
+            await giveUpIfExpired(message, context, 'inbox or spam')
         }
     } finally {
         try { await client.logout() } catch { /* ignore */ }
     }
+    return detected
 }
 
-async function searchImapFolder(client: ImapFlow, path: string, messageId: string): Promise<number | null> {
+/**
+ * Localiza a cópia entregue de `expected` numa pasta: primeiro por Message-ID (com e sem
+ * colchetes — alguns servidores indexam sem), depois por envelope, para o caso em que o relay
+ * reescreveu o id. A busca por envelope pede FROM + SUBJECT + SINCE ao servidor (barato, e o
+ * SUBJECT do IMAP é substring: "agenda" também traz "Re: agenda") e refina no cliente com
+ * igualdade exata e janela de tempo — ver `pickDeliveredCopy`.
+ */
+async function locateInImapFolder(client: ImapFlow, path: string, expected: ExpectedDelivery): Promise<ImapHit | null> {
     const lock = await client.getMailboxLock(path)
     try {
-        const found = await client.search({ header: { 'message-id': `<${messageId}>` } }, { uid: true })
-        if (found && found.length > 0) return found[found.length - 1]
-        // Alguns servidores indexam o header sem os colchetes.
-        const bare = await client.search({ header: { 'message-id': messageId } }, { uid: true })
-        return bare && bare.length > 0 ? bare[bare.length - 1] : null
+        for (const form of [`<${expected.messageId}>`, expected.messageId]) {
+            const found = await client.search({ header: { 'message-id': form } }, { uid: true })
+            if (found && found.length > 0) {
+                return { uid: found[found.length - 1], deliveredMessageId: expected.messageId }
+            }
+        }
+
+        const since = new Date(expected.sentAt.getTime() - DETECTION_WINDOW_BEFORE_MS)
+        since.setUTCHours(0, 0, 0, 0)
+        const candidatesUids = await client.search(
+            { from: expected.fromAddress, subject: expected.subject, since },
+            { uid: true },
+        )
+        if (!candidatesUids || candidatesUids.length === 0) return null
+
+        const candidates: Array<{ uid: number; fromAddress: string | null; subject: string | null; date: Date | null; messageId: string | null }> = []
+        // Só as mais recentes: o par manda no máximo uma por dia, então poucas bastam.
+        for (const uid of candidatesUids.slice(-10)) {
+            const fetched = await client.fetchOne(String(uid), { envelope: true }, { uid: true })
+            const envelope = fetched?.envelope
+            if (!envelope) continue
+            candidates.push({
+                uid,
+                fromAddress: envelope.from?.[0]?.address ?? null,
+                subject: envelope.subject ?? null,
+                date: envelope.date ? new Date(envelope.date) : null,
+                messageId: envelope.messageId ?? null,
+            })
+        }
+        const hit = pickDeliveredCopy(candidates, expected)
+        return hit ? { uid: hit.uid, deliveredMessageId: normalizeMessageId(hit.messageId) || null } : null
     } finally {
         lock.release()
     }
 }
 
-async function groomNativeAccount(context: GroomContext, pending: WarmupMessage[]): Promise<void> {
+/** Devolve quantas mensagens de `pending` foram localizadas (e tratadas) na caixa nativa. */
+async function groomNativeAccount(context: GroomContext, pending: WarmupMessage[]): Promise<number> {
     const { account } = context.recipientMesh
     // Caixa nativa: o dono é um usuário da plataforma; a correspondência vive em mail_messages.
     const owner = await db.query.users.findFirst({ where: eq(users.email, account.email), columns: { id: true } })
-    if (!owner) return
+    if (!owner) return 0
     const mailbox = await db.query.mailboxes.findFirst({
         where: and(eq(mailboxes.userId, owner.id), eq(mailboxes.email, account.email)),
         columns: { id: true },
     })
-    if (!mailbox) return
+    if (!mailbox) return 0
     const folders = await db.query.mailFolders.findMany({
         where: eq(mailFolders.mailboxId, mailbox.id),
         columns: { id: true, type: true },
@@ -402,29 +490,47 @@ async function groomNativeAccount(context: GroomContext, pending: WarmupMessage[
     const folderByType = new Map(folders.map((folder) => [folder.type, folder.id]))
     const inboxId = folderByType.get('inbox')
     const archiveId = folderByType.get('archive')
-    if (!inboxId) return
+    if (!inboxId) return 0
 
+    let detected = 0
     for (const message of pending) {
-        const stored = await db.query.mailMessages.findFirst({
+        const expected = expectedDeliveryOf(message, context)
+        if (!expected) {
+            await giveUpIfExpired(message, context, 'native mailbox')
+            continue
+        }
+
+        let stored = await db.query.mailMessages.findFirst({
             where: and(
                 eq(mailMessages.mailboxId, mailbox.id),
                 inArray(mailMessages.messageId, [`<${message.messageId}>`, message.messageId]),
             ),
         })
         if (!stored) {
-            if (context.now.getTime() - (message.sentAt?.getTime() ?? 0) > DETECTION_GIVE_UP_MS) {
-                await finalizeMessage(message, context, {
-                    status: 'failed',
-                    detectedFolder: 'missing',
-                    lastError: 'not found in native mailbox within the detection window',
-                })
-            }
+            // Mesmo fallback do IMAP: remetente + assunto + janela, para o caso de o id ter sido
+            // reescrito no caminho (hoje só o relay das nativas faz isso, mas o custo é uma query).
+            const candidates = await db.query.mailMessages.findMany({
+                where: and(
+                    eq(mailMessages.mailboxId, mailbox.id),
+                    eq(mailMessages.fromAddress, expected.fromAddress),
+                    gte(mailMessages.receivedAt, new Date(expected.sentAt.getTime() - DETECTION_WINDOW_BEFORE_MS)),
+                ),
+                limit: 20,
+            })
+            stored = pickDeliveredCopy(
+                candidates.map((row) => ({ row, fromAddress: row.fromAddress, subject: row.subject, date: row.receivedAt, messageId: row.messageId })),
+                expected,
+            )?.row
+        }
+        if (!stored) {
+            await giveUpIfExpired(message, context, 'native mailbox')
             continue
         }
 
+        detected += 1
         // O MX nativo não reclassifica para spam (greylist é pré-aceitação), então o caminho aqui
         // é o feliz: ler, talvez responder, arquivar.
-        const replied = await maybeReply(message, context)
+        const replied = await maybeReply(message, context, normalizeMessageId(stored.messageId) || null)
         await db.update(mailMessages)
             .set({ isRead: true, ...(archiveId ? { folderId: archiveId } : {}) })
             .where(eq(mailMessages.id, stored.id))
@@ -438,9 +544,15 @@ async function groomNativeAccount(context: GroomContext, pending: WarmupMessage[
             archivedAt: archiveId ? context.now : null,
         })
     }
+    return detected
 }
 
-async function runGroomPhase(mesh: MeshAccount[], now: Date): Promise<number> {
+/**
+ * Devolve `groomed` = mensagens LOCALIZADAS e tratadas neste tick (antes contava as pendentes
+ * examinadas, o que fazia um groom cego parecer produtivo) e `undetected` = as que seguem sem
+ * aparecer em nenhuma pasta.
+ */
+async function runGroomPhase(mesh: MeshAccount[], now: Date): Promise<{ groomed: number; undetected: number }> {
     const meshById = new Map(mesh.map((entry) => [entry.account.id, entry]))
     const awaiting = await db.query.warmupMessages.findMany({
         where: and(
@@ -449,7 +561,7 @@ async function runGroomPhase(mesh: MeshAccount[], now: Date): Promise<number> {
         ),
         limit: 200,
     })
-    if (awaiting.length === 0) return 0
+    if (awaiting.length === 0) return { groomed: 0, undetected: 0 }
 
     const byRecipient = new Map<string, WarmupMessage[]>()
     for (const message of awaiting) {
@@ -459,20 +571,23 @@ async function runGroomPhase(mesh: MeshAccount[], now: Date): Promise<number> {
     }
 
     let groomed = 0
+    let undetected = 0
     for (const [toAccountId, pending] of byRecipient) {
         const recipientMesh = meshById.get(toAccountId)
         if (!recipientMesh) continue
         const context: GroomContext = { recipientMesh, senderByAccountId: meshById, now }
         try {
+            let detected = 0
             if (recipientMesh.account.provider === 'native') {
-                await groomNativeAccount(context, pending)
+                detected = await groomNativeAccount(context, pending)
             } else if (recipientMesh.account.provider === 'smtp') {
-                await groomImapAccount(context, pending)
+                detected = await groomImapAccount(context, pending)
             } else {
                 // Outlook entra no mesh numa fase futura (arquivar exige Graph API, não IMAP).
                 continue
             }
-            groomed += pending.length
+            groomed += detected
+            undetected += pending.length - detected
         } catch (error) {
             const err = error instanceof Error ? error : new Error(String(error))
             log.error({
@@ -482,22 +597,22 @@ async function runGroomPhase(mesh: MeshAccount[], now: Date): Promise<number> {
             }, 'warm-up groom failed for account')
         }
     }
-    return groomed
+    return { groomed, undetected }
 }
 
 // ============================================================
 // Entry point
 // ============================================================
 
-export async function processWarmupMesh(now = new Date()): Promise<{ sent: number; groomed: number }> {
+export async function processWarmupMesh(now = new Date()): Promise<{ sent: number; groomed: number; undetected: number }> {
     const mesh = await loadMeshAccounts()
-    if (mesh.length < 2) return { sent: 0, groomed: 0 }
+    if (mesh.length < 2) return { sent: 0, groomed: 0, undetected: 0 }
     const sent = await runSendPhase(mesh, now)
-    const groomed = await runGroomPhase(mesh, now)
-    if (sent > 0 || groomed > 0) {
-        log.info({ action: 'outreach.warmup.tick', meshSize: mesh.length, sent, groomed }, 'warm-up tick')
+    const { groomed, undetected } = await runGroomPhase(mesh, now)
+    if (sent > 0 || groomed > 0 || undetected > 0) {
+        log.info({ action: 'outreach.warmup.tick', meshSize: mesh.length, sent, groomed, undetected }, 'warm-up tick')
     }
-    return { sent, groomed }
+    return { sent, groomed, undetected }
 }
 
 export async function runWarmupMeshWithLock(): Promise<void> {
