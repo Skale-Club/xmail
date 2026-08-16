@@ -337,6 +337,26 @@ Portanto **esvaziar `SMTP_HOST`/`SMTP_USER` hoje derruba todo o envio, em silên
 (3) confirmar os dois com os testes do `.env.example`; só então limpar as variáveis. O alerta de
 silêncio (`lib/outreach-silence.ts`) é a rede que pega uma queda total de envio.
 
+Os dois passos exigem o console da Hetzner, que roda o anti-bot **Heray** — ele trava em
+"Verifying…" num navegador automatizado, e contornar detecção de bot está fora de questão. Ou o
+operador faz à mão, ou cria um API token do Hetzner Cloud e o rDNS vira uma chamada de API
+(`POST /v1/servers/{id}/actions/change_dns_ptr`); a liberação da porta 25 é ticket de suporte e não
+tem API.
+
+### SPF: o include de terceiro foi removido em 2026-08-16
+
+`skale.club` e `xkedule.com` publicavam `include:spf.skaleclub.com`. Esse host é **CNAME para
+`easthamptonhigh.org`**, domínio de terceiro cujo SPF autoriza `api.lizardlink.com`,
+`api.superherosunman.com` e outros — ou seja, esses domínios delegavam autorização de envio a
+desconhecidos. Agora publicam `v=spf1 mx include:spf.brevo.com …` (o `include:mailgun.org` do
+`skale.club` foi mantido: os subdomínios `mail.`/`m.`/`send.` ainda usam Mailgun). O
+`_dmarc.xkedule.com` estava em `p=quarantine` sem DKIM alinhado — tudo que saía do domínio ia para
+Spam por política, não por reputação; baixado para `p=none` até a saída direta alinhar o DKIM.
+Só então subir de volta para `quarantine` e depois `reject`.
+
+Cuidado ao ler a zona do `skale.club`: existem 4 TXT de SPF e 3 de DMARC, mas em SUBDOMÍNIOS
+(`mail.`, `m.`, `send.`) — não são duplicatas no apex e não causam `permerror`.
+
 O que bloqueia **campanha** hoje é só a rampa: `warmup_current_day` avança um dia por dia COM envio
 real, então uma caixa nova leva `warmup_days` dias até a ativação passar — override de ops em
 `OUTREACH_ALLOW_UNWARMED_ACTIVATION=true`. Note a distinção que confunde: a rampa bloqueia o **G9**
