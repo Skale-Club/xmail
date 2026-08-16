@@ -323,25 +323,42 @@ lista de migração (`endenemy`, `skleanings`, `stuscle`) tinham e-mail na Hosti
 para cá — MX, SPF e DKIM da Hostinger removidos. Inbound conferido por handshake SMTP: o MX aceita
 `info@` de cada domínio e devolve `550 User unknown` para endereço inexistente.
 
-### Saída de e-mail: por que ainda passa por relay
+### Saída de e-mail: entrega direta desde 2026-08-16
 
-`native-send.ts`/`smtp-server.ts` usam relay quando `SMTP_HOST`+`SMTP_USER` existem, e tentam
-ENTREGA DIRETA quando não existem. Direta é melhor (assina com a chave DKIM do próprio domínio →
-DMARC alinha sem terceiro), mas em 2026-08-16 ela é impossível neste host: **a porta 25 de saída
-da Hetzner está bloqueada** — `gmail-smtp-in.l.google.com:25` e `mx1.hostinger.com:25` dão timeout
-de dentro do container, enquanto `smtp-relay.brevo.com:587` responde `220`. Além disso o PTR do IP
-é o genérico `static.250.197.13.49.clients.your-server.de`, e não `mx.skale.club`.
+A plataforma entrega **direto no MX do destinatário** e assina com a chave DKIM do domínio
+remetente. `lib/outbound-transport.ts` é o único ponto que decide isso: com `SMTP_HOST`+`SMTP_USER`
+setados usa relay; sem eles resolve o MX e entrega. Os quatro caminhos de saída passam por ele
+(`native-send.ts`, `smtp-server.ts`, `jobs/processQueue.ts`, `lib/route-matcher.ts`).
 
-Portanto **esvaziar `SMTP_HOST`/`SMTP_USER` hoje derruba todo o envio, em silêncio**. Para migrar:
-(1) pedir à Hetzner a liberação da porta 25 de saída; (2) apontar o rDNS do IP para `mx.skale.club`;
-(3) confirmar os dois com os testes do `.env.example`; só então limpar as variáveis. O alerta de
-silêncio (`lib/outreach-silence.ts`) é a rede que pega uma queda total de envio.
+Medido no Gmail depois da virada, mensagem de `info@skale.club`:
 
-Os dois passos exigem o console da Hetzner, que roda o anti-bot **Heray** — ele trava em
-"Verifying…" num navegador automatizado, e contornar detecção de bot está fora de questão. Ou o
-operador faz à mão, ou cria um API token do Hetzner Cloud e o rDNS vira uma chamada de API
-(`POST /v1/servers/{id}/actions/change_dns_ptr`); a liberação da porta 25 é ticket de suporte e não
-tem API.
+```
+dkim=pass  header.i=@skale.club header.s=skaleclub
+spf=pass   smtp.mailfrom=info@skale.club  (client-ip=49.13.197.250)
+dmarc=pass header.from=skale.club                    → caixa de entrada
+```
+
+Pelo relay anterior era `dkim=pass header.i=@brevosend.com` mais
+`dkim=neutral (body hash did not verify) header.i=@skale.club`: o relay reescrevia o corpo, então
+a nossa assinatura nunca fechava e o alinhamento vinha do domínio dele, não do nosso.
+
+**Dois pré-requisitos, ambos satisfeitos neste host** — e sem eles a entrega direta falha:
+porta 25 de SAÍDA liberada (a Hetzner bloqueia por padrão; liberada pelo próprio console em
+Limits → Request change → Unblock ports, validação automática em minutos) e PTR de
+`49.13.197.250` = `mx.skale.club`, *forward-confirmed*. Testes no `.env.example`.
+
+> **Duas armadilhas que este código já pisou.** (1) O fallback antigo era
+> `nodemailer.createTransport({ direct: true })` — **o nodemailer 6 não tem transporte direto**
+> (era pacote separado na era v2/v3); a opção é ignorada, o smtp-connection assume
+> `host: 'localhost'` e a mensagem batia na porta 25 do nosso próprio container. O sintoma era um
+> erro de TLS enganoso citando o NOSSO certificado. Por isso `resolveMxHosts()` resolve o MX
+> explicitamente e tenta os hosts em ordem de preferência. (2) `processQueue.ts` e
+> `route-matcher.ts` **desistiam em silêncio** sem `SMTP_HOST` (um `return` com warning e um
+> `if (host)` sem `else`) — invisível enquanto havia relay, perda de mensagem depois da virada.
+
+Rollback: reintroduzir `-e SMTP_HOST`/`-e SMTP_USER` no `run_app_container()` do
+`build-deploy.yml` (os secrets seguem no repo). `NATIVE_DKIM_SIGN=always|never` força ou desliga a
+assinatura própria quando há relay.
 
 ### SPF: o include de terceiro foi removido em 2026-08-16
 

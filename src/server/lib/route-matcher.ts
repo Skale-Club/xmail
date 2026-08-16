@@ -14,6 +14,7 @@ import { routes, smtpEndpoints, httpEndpoints, addressEndpoints, domains } from 
 import { eq, and } from 'drizzle-orm'
 import { decryptSecret } from './crypto'
 import nodemailer from 'nodemailer'
+import { sendOutbound } from './outbound-transport'
 import { v4 as uuidv4 } from 'uuid'
 import { messages } from '../../db/schema'
 import { incrementStat } from './tracking'
@@ -251,22 +252,13 @@ export async function deliverViaRoutes(
 
         if (endpoint.type === 'address' && endpoint.config) {
             const cfg = endpoint.config as { emailAddress: string }
-            const host = process.env.SMTP_HOST
-            if (host) {
-                const transporter = nodemailer.createTransport({
-                    host,
-                    port: parseInt(process.env.SMTP_PORT || '587'),
-                    secure: false,
-                    auth: process.env.SMTP_USER && process.env.SMTP_PASS
-                        ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-                        : undefined,
-                })
-
-                await transporter.sendMail({
-                    envelope: { from: '', to: [cfg.emailAddress] },
-                    raw: rawEmail,
-                })
-            }
+            // Encaminhamento de rota usa o mesmo transporte de saida do resto da plataforma. O
+            // `if (host)` sem `else` que existia aqui deixava a rota de encaminhamento parada e
+            // muda quando nao havia relay — a mensagem sumia sem log e sem erro.
+            await sendOutbound(
+                { envelope: { from: '', to: [cfg.emailAddress] }, raw: rawEmail },
+                [cfg.emailAddress],
+            )
         }
 
         if (endpoint.type === 'http' && endpoint.config) {

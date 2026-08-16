@@ -14,13 +14,13 @@
  * (SPF/DKIM alignment) is critical. See PR description for details.
  */
 
-import nodemailer from 'nodemailer'
 import { db } from '../../db'
 import { mailboxes, mailFolders, mailMessages } from '../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
 import { allocateUidForNewMessage } from './move-messages'
 import { getDkimConfigForEmail, toNodemailerDkim } from './dkim'
 import { shouldSkipOwnDkimForRelay } from './relay-dkim-policy'
+import { describeOutbound, isRelayConfigured, sendOutbound } from './outbound-transport'
 import { jsonbParam } from './jsonb'
 
 export interface StoreMessageData {
@@ -49,7 +49,7 @@ export async function relayMessage(
     toAddresses: string[],
     rawEmail: Buffer
 ): Promise<void> {
-    const usingRelay = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER)
+    const usingRelay = isRelayConfigured()
     const skipOwnDkim = usingRelay && shouldSkipOwnDkimForRelay(process.env.SMTP_HOST)
     const dkimConfig = skipOwnDkim ? null : await getDkimConfigForEmail(fromAddress)
     const dkim = dkimConfig ? toNodemailerDkim(dkimConfig) : undefined
@@ -61,45 +61,20 @@ export async function relayMessage(
         console.warn(`[Send:Relay] ⚠️  No DKIM key for ${fromAddress} — message will be unsigned`)
     }
 
-    if (usingRelay) {
-        console.log(`[Send:Relay] Using SMTP relay: host=${process.env.SMTP_HOST} port=${process.env.SMTP_PORT || '587'} user=${process.env.SMTP_USER}`)
-        console.log(`[Send:Relay] Envelope: from=${fromAddress} to=[${toAddresses.join(', ')}]`)
-        const transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port: parseInt(process.env.SMTP_PORT || '587'),
-            secure: false,
-            auth: {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASS,
-            },
+    console.log(`[Send:Relay] Using ${describeOutbound()}`)
+    console.log(`[Send:Relay] Envelope: from=${fromAddress} to=[${toAddresses.join(', ')}]`)
+    try {
+        const result = await sendOutbound(
+            { envelope: { from: fromAddress, to: toAddresses }, raw: rawEmail },
+            toAddresses,
             dkim,
-        })
-
-        const info = await transporter.sendMail({
-            envelope: { from: fromAddress, to: toAddresses },
-            raw: rawEmail,
-        })
-        console.log(`[Send:Relay] SMTP relay SUCCESS:`, info.response || info.messageId)
-    } else {
-        console.log(`[Send:Relay] ⚠️  NO SMTP_HOST/SMTP_USER configured — attempting DIRECT delivery`)
-        console.log(`[Send:Relay] MAIL_DOMAIN=${process.env.MAIL_DOMAIN || 'localhost'} from=${fromAddress} to=[${toAddresses.join(', ')}]`)
-        console.log(`[Send:Relay] Direct delivery requires: port 25 open, valid MX records, not blocked by ISP`)
-        const transporter = nodemailer.createTransport({
-            direct: true,
-            name: process.env.MAIL_DOMAIN || 'localhost',
-            dkim,
-        } as nodemailer.TransportOptions)
-
-        try {
-            const info = await transporter.sendMail({
-                envelope: { from: fromAddress, to: toAddresses },
-                raw: rawEmail,
-            })
-            console.log(`[Send:Relay] Direct delivery SUCCESS:`, info.response || info.messageId)
-        } catch (directErr) {
-            console.error(`[Send:Relay] Direct delivery FAILED:`, directErr)
-            throw directErr
-        }
+        )
+        console.log(`[Send:Relay] SUCCESS via ${result.via}:`, result.response)
+    } catch (sendErr) {
+        // Entrega direta falha por porta 25 bloqueada, PTR errado ou recusa do destino. Propagar
+        // é essencial: quem chama grava o erro e o alerta de silêncio enxerga a queda.
+        console.error(`[Send:Relay] FAILED via ${describeOutbound()}:`, sendErr)
+        throw sendErr
     }
 }
 

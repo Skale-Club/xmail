@@ -1,4 +1,4 @@
-import { createTransport } from 'nodemailer'
+import { describeOutbound, isRelayConfigured, sendOutbound } from '../lib/outbound-transport'
 import { db } from '../../db'
 import { deliveries, messages, organizations } from '../../db/schema'
 import { eq, and, inArray } from 'drizzle-orm'
@@ -84,22 +84,11 @@ async function processDelivery(
             return
         }
 
-        const host = process.env.SMTP_HOST
-        const port = parseInt(process.env.SMTP_PORT || '587')
-        const user = process.env.SMTP_USER
-        const pass = process.env.SMTP_PASS
-
-        if (!host) {
-            console.warn('[processQueue] SMTP_HOST not configured, skipping delivery')
-            return
-        }
-
-        const transporter = createTransport({
-            host,
-            port,
-            secure: port === 465,
-            auth: user && pass ? { user, pass } : undefined,
-        })
+        // Sem relay configurado isto NAO desiste: cai para entrega direta ao MX do destinatario.
+        // O `return` silencioso que existia aqui ('SMTP_HOST not configured, skipping delivery')
+        // descartava a mensagem sem marcar falha — invisivel enquanto havia relay, perda de
+        // mensagem no dia em que a plataforma passou a entregar direto.
+        console.log(`[processQueue] Delivering via ${describeOutbound()}`)
 
         const fromAddress = message.fromAddress || process.env.SMTP_FROM || ''
 
@@ -109,7 +98,7 @@ async function processDelivery(
             contentType: att.contentType,
         }))
 
-        const result = await transporter.sendMail({
+        const result = await sendOutbound({
             from: fromAddress,
             to: delivery.rcptTo,
             subject: message.subject || '',
@@ -118,7 +107,7 @@ async function processDelivery(
             headers: message.headers as Record<string, string> || {},
             attachments: attachments.length > 0 ? attachments : undefined,
             messageId: message.messageId || undefined,
-        })
+        }, [delivery.rcptTo])
 
         const now = new Date()
 
@@ -126,8 +115,9 @@ async function processDelivery(
             .set({
                 status: 'sent',
                 sentAt: now,
-                sentWithSsl: port === 465,
-                output: result.messageId || null,
+                // Entrega direta negocia STARTTLS na 25; via relay, SSL implícito só na 465.
+                sentWithSsl: isRelayConfigured() && parseInt(process.env.SMTP_PORT || '587') === 465,
+                output: result.response || null,
             })
             .where(eq(deliveries.id, delivery.id))
 

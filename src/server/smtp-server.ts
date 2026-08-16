@@ -8,7 +8,6 @@
  */
 
 import { SMTPServer } from 'smtp-server'
-import nodemailer from 'nodemailer'
 import { v4 as uuidv4 } from 'uuid'
 import { db } from '../db'
 import { mailboxes, mailFolders, mailMessages } from '../db/schema'
@@ -22,6 +21,7 @@ import { emitFolderChange } from './lib/mail-events'
 import { allocateNextUid, recomputeFolderCounts } from './lib/folder-counts'
 import { getDkimConfigForEmail, toNodemailerDkim } from './lib/dkim'
 import { shouldSkipOwnDkimForRelay } from './lib/relay-dkim-policy'
+import { describeOutbound, isRelayConfigured, sendOutbound } from './lib/outbound-transport'
 import { jsonbParam } from './lib/jsonb'
 
 // Find the companion mailboxes entry (for folder/message storage)
@@ -95,11 +95,10 @@ async function relayMessage(
     toAddresses: string[],
     rawEmail: Buffer
 ): Promise<void> {
-    // DKIM signing config (per-sender-domain). Falls through to unsigned if
-    // the domain has no key or isn't registered. Skipped when the relay rewrites the
-    // body (see shouldSkipOwnDkimForRelay) — the relay signs on its own.
-    const usingRelay = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER)
-    const skipOwnDkim = usingRelay && shouldSkipOwnDkimForRelay(process.env.SMTP_HOST)
+    // DKIM signing config (per-sender-domain). Falls through to unsigned if the domain has no
+    // key or isn't registered. Skipped when the relay rewrites the body (see
+    // shouldSkipOwnDkimForRelay) — the relay signs on its own and ours would fail the body hash.
+    const skipOwnDkim = isRelayConfigured() && shouldSkipOwnDkimForRelay(process.env.SMTP_HOST)
     const dkimConfig = skipOwnDkim ? null : await getDkimConfigForEmail(fromAddress)
     const dkim = dkimConfig ? toNodemailerDkim(dkimConfig) : undefined
     if (skipOwnDkim) {
@@ -110,44 +109,17 @@ async function relayMessage(
         console.warn(`[SMTP:Relay] ⚠️  No DKIM key for ${fromAddress} — message will be unsigned`)
     }
 
-    // Use system SMTP relay if configured, otherwise try direct delivery
-    if (usingRelay) {
-        console.log(`[SMTP:Relay] Using SMTP relay: host=${process.env.SMTP_HOST} port=${process.env.SMTP_PORT || '587'} user=${process.env.SMTP_USER}`)
-        const transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port: parseInt(process.env.SMTP_PORT || '587'),
-            secure: false,
-            auth: {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASS,
-            },
+    console.log(`[SMTP:Relay] Using ${describeOutbound()} from=${fromAddress} to=[${toAddresses.join(', ')}]`)
+    try {
+        const result = await sendOutbound(
+            { envelope: { from: fromAddress, to: toAddresses }, raw: rawEmail },
+            toAddresses,
             dkim,
-        })
-
-        const info = await transporter.sendMail({
-            envelope: { from: fromAddress, to: toAddresses },
-            raw: rawEmail,
-        })
-        console.log(`[SMTP:Relay] SUCCESS:`, info.response || info.messageId)
-    } else {
-        console.log(`[SMTP:Relay] ⚠️  NO SMTP_HOST/SMTP_USER — attempting DIRECT delivery from=${fromAddress} to=[${toAddresses.join(', ')}]`)
-        // Direct delivery (requires proper MX setup)
-        const transporter = nodemailer.createTransport({
-            direct: true,
-            name: process.env.MAIL_DOMAIN || 'localhost',
-            dkim,
-        } as nodemailer.TransportOptions)
-
-        try {
-            const info = await transporter.sendMail({
-                envelope: { from: fromAddress, to: toAddresses },
-                raw: rawEmail,
-            })
-            console.log(`[SMTP:Relay] Direct delivery SUCCESS:`, info.response || info.messageId)
-        } catch (directErr) {
-            console.error(`[SMTP:Relay] Direct delivery FAILED:`, directErr)
-            throw directErr
-        }
+        )
+        console.log(`[SMTP:Relay] SUCCESS via ${result.via}:`, result.response)
+    } catch (sendErr) {
+        console.error(`[SMTP:Relay] FAILED via ${describeOutbound()}:`, sendErr)
+        throw sendErr
     }
 }
 
