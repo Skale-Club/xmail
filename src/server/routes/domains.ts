@@ -6,6 +6,7 @@ import { eq, and } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
 import { isPlatformAdmin } from '../lib/admin'
 import { resolveMx, resolveTxt, resolveCname } from '../lib/dns-resolver'
+import { isAcceptableSpf, SPF_REQUIREMENT_MESSAGE } from '../lib/spf-policy'
 
 const MAIL_HOST = process.env.MAIL_HOST || 'mx.skaleclub.com'
 
@@ -185,9 +186,9 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
         const verificationFound = rootTxt.some((r) => r === expectedToken)
         const verificationStatus = verificationFound ? 'verified' as const : 'failed' as const
 
-        const spfFound = rootTxt.some((r) => r.startsWith('v=spf1') && r.includes('spf.skaleclub.com'))
+        const spfFound = rootTxt.some(isAcceptableSpf)
         const spfStatus = spfFound ? 'verified' : 'failed'
-        const spfError = spfFound ? null : 'SPF record not found or does not include spf.skaleclub.com'
+        const spfError = spfFound ? null : SPF_REQUIREMENT_MESSAGE
 
         const dkimFound = dkimTxt.length > 0 && dkimTxt.some((r) => r.startsWith('v=DKIM1'))
         const dkimStatus = dkimFound ? 'verified' : 'failed'

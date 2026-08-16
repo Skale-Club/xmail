@@ -1,10 +1,16 @@
 /**
- * Cria caixas nativas dedicadas ao warm-up (seeds) — usuário da plataforma + mailbox nativa +
- * conta de outreach `provider='native'`, `warmup_source='internal'`, `warmup_only=true`.
+ * Cria caixas nativas — usuário da plataforma + mailbox nativa + conta de outreach
+ * `provider='native'`. Por padrão a caixa entra no mesh de warm-up como seed dedicada
+ * (`warmup_source='internal'`, `warmup_only=true`, isto é: nunca recebe campanha).
  *
  * Uso:
  *   npx tsx scripts/warmup-seed-native.ts contato@skale.club agenda@xkedule.com …
  *   npx tsx scripts/warmup-seed-native.ts --dry-run contato@skale.club
+ *   npx tsx scripts/warmup-seed-native.ts --no-mesh info@stuscle.com    # caixa principal da empresa
+ *
+ * `--no-mesh` cria a caixa de trabalho normal: fora do mesh (`warmup_source='none'`) e sem
+ * `warmup_only`, para o inbox principal de uma empresa — que é lido por gente e não deve receber
+ * o tráfego sintético de aquecimento.
  *
  * Pré-condições por endereço: o domínio existe em `domains` com `verification_status='verified'`
  * (é dele que sai a organização), e o e-mail ainda não é usuário. Idempotente: se o usuário/
@@ -26,6 +32,7 @@ import { createClient } from '@supabase/supabase-js'
 import postgres from 'postgres'
 
 const DRY_RUN = process.argv.includes('--dry-run')
+const NO_MESH = process.argv.includes('--no-mesh')
 const emails = process.argv.slice(2).filter((arg) => !arg.startsWith('--')).map((e) => e.trim().toLowerCase())
 
 function localPartName(email: string): string {
@@ -119,7 +126,9 @@ async function main(): Promise<void> {
             }
             console.log(`   mailbox ${mailbox.id} com pastas padrão`)
 
-            // 4. Conta de outreach nativa no mesh, warm-up only (mesma forma de warmup-mesh.ts --add-native --only)
+            // 4. Conta de outreach nativa. No mesh como seed dedicada, ou fora dele com --no-mesh
+            // (inbox principal de empresa: lido por gente, não recebe tráfego de aquecimento).
+            const meshSource = NO_MESH ? 'none' : 'internal'
             const [account] = await sql<{ email: string }[]>`
                 INSERT INTO email_accounts (
                     organization_id, email, provider, mailbox_provider, status, verified_at,
@@ -128,14 +137,16 @@ async function main(): Promise<void> {
                 ) VALUES (
                     ${dom.organization_id}, ${email}, 'native', 'manual', 'verified', now(),
                     50, true, 14,
-                    'internal', true, now()
+                    ${meshSource}, ${!NO_MESH}, now()
                 )
                 ON CONFLICT (organization_id, lower(email)) DO UPDATE SET
-                    warmup_source = 'internal', warmup_only = true,
+                    warmup_source = ${meshSource}, warmup_only = ${!NO_MESH},
                     warmup_started_at = coalesce(email_accounts.warmup_started_at, now()),
                     updated_at = now()
                 RETURNING email`
-            console.log(`   ✅ seed no mesh (warm-up only): ${account.email}`)
+            console.log(NO_MESH
+                ? `   ✅ caixa principal (fora do mesh): ${account.email}`
+                : `   ✅ seed no mesh (warm-up only): ${account.email}`)
         }
     } finally {
         await sql.end({ timeout: 5 })
