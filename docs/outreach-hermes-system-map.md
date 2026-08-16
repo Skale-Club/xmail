@@ -301,6 +301,21 @@ contador — é para isso que existem `warmup_source='vendor'` + atestação (`w
 native→Gmail 0/7 detectadas até a correção do achado #18 (a de `info@xkedule.com` estava caindo
 em Spam no Gmail — a partir do deploy o groom passa a resgatar).
 
+**Mesh ampliado em 2026-08-16 — 19 caixas em 7 domínios.** Antes eram 7 caixas em 2 domínios de
+fato distintos, e o pareador (que prioriza outro domínio *e* outro provedor) só conseguia formar
+pares Gmail↔nativa: as 5 do `tryskaleclub.com` nunca se aqueciam entre si. Foram provisionados
+`fluenverse.com`, `xareable.com`, `xphere.app` e `xtimator.com` (org + DKIM + DNS completo) com
+duas seeds `warmup_only` cada (`contato@`, `agenda@`), mais quatro em `skale.club`/`xkedule.com`.
+As caixas `info@` de cada domínio são o **inbox principal da empresa** e ficam FORA do mesh
+(`warmup_source='none'`) — gente lê essas caixas, e tráfego sintético de aquecimento ali é ruído;
+`info@skale.club` e `info@xkedule.com` foram retiradas do mesh nessa mesma data. Provisionamento:
+`scripts/add-domain.ts` (org+DKIM+checklist DNS) e `scripts/warmup-seed-native.ts`
+(`--no-mesh` para a caixa principal, sem flag para seed).
+
+O super admin não precisa de vínculo por org para ler essas caixas: `checkUserMailboxAccess`
+(`routes/mail/mailboxes.ts`) dá a `users.is_admin` acesso a qualquer mailbox, e a listagem devolve
+todas. `skale.club@gmail.com` é admin e dono de todas as orgs.
+
 O que bloqueia **campanha** hoje é só a rampa: `warmup_current_day` avança um dia por dia COM envio
 real, então uma caixa nova leva `warmup_days` dias até a ativação passar — override de ops em
 `OUTREACH_ALLOW_UNWARMED_ACTIVATION=true`. Note a distinção que confunde: a rampa bloqueia o **G9**
