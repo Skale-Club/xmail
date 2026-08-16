@@ -81,6 +81,13 @@ export function shouldReply(messageId: string, rate: number = WARMUP_REPLY_RATE)
 /**
  * Ordena destinatários candidatos pelo valor de reputação que entregam ao remetente.
  * Melhor primeiro: outro domínio + outro provedor > outro domínio > mesmo domínio.
+ *
+ * **Empate é desempatado por remetente, não pela ordem do banco.** Com um mesh de N caixas de um
+ * lado e M do outro, todos os N remetentes veem os mesmos M candidatos com a mesma pontuação; sem
+ * desempate, a ordenação estável faz todos escolherem o MESMO primeiro endereço, e a distribuição
+ * de recebimento fica torta (uma caixa recebe tudo, as outras nada — e como quem responde é quem
+ * recebe, as caixas ociosas nunca produzem o sinal de engajamento). O hash de (remetente,
+ * destinatário) dá a cada remetente uma ordem própria e estável entre ticks.
  */
 export function rankRecipients(sender: WarmupSender, recipients: WarmupRecipient[]): WarmupRecipient[] {
     return [...recipients]
@@ -91,9 +98,10 @@ export function rankRecipients(sender: WarmupSender, recipients: WarmupRecipient
                 && Boolean(sender.providerHint)
                 && recipient.providerHint !== sender.providerHint
             const score = (differentDomain ? 2 : 0) + (differentProvider ? 1 : 0)
-            return { recipient, score }
+            const tiebreak = hashFraction(`${sender.accountId}:${recipient.accountId}`)
+            return { recipient, score, tiebreak }
         })
-        .sort((a, b) => b.score - a.score)
+        .sort((a, b) => (b.score - a.score) || (a.tiebreak - b.tiebreak))
         .map((entry) => entry.recipient)
 }
 

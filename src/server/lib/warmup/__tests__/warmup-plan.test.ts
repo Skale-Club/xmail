@@ -78,6 +78,24 @@ describe('rankRecipients', () => {
         ])
     })
 
+    it('spreads ties across senders instead of giving everyone the same first pick', () => {
+        // 8 caixas empatadas (mesmo score) e 5 remetentes: sem desempate por remetente, os 5
+        // escolheriam a mesma primeira caixa e as outras 7 nunca receberiam — nem responderiam.
+        const pool = Array.from({ length: 8 }, (_, i) => recipient(`seed${i}@stuscle.com`, 'native'))
+        const firstPicks = new Set(
+            Array.from({ length: 5 }, (_, i) =>
+                rankRecipients(sender({ accountId: `sender-${i}` }), pool)[0].address),
+        )
+        expect(firstPicks.size).toBeGreaterThan(1)
+    })
+
+    it('is stable for the same sender across calls', () => {
+        const pool = Array.from({ length: 6 }, (_, i) => recipient(`seed${i}@stuscle.com`, 'native'))
+        const once = rankRecipients(sender(), pool).map((r) => r.address)
+        const twice = rankRecipients(sender(), pool).map((r) => r.address)
+        expect(once).toEqual(twice)
+    })
+
     it('never returns the sender itself', () => {
         const ranked = rankRecipients(sender(), [recipient('a@tryskaleclub.com', 'gmail')])
         expect(ranked).toHaveLength(0)

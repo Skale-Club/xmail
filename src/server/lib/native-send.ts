@@ -20,6 +20,7 @@ import { mailboxes, mailFolders, mailMessages } from '../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
 import { allocateUidForNewMessage } from './move-messages'
 import { getDkimConfigForEmail, toNodemailerDkim } from './dkim'
+import { shouldSkipOwnDkimForRelay } from './relay-dkim-policy'
 import { jsonbParam } from './jsonb'
 
 export interface StoreMessageData {
@@ -48,15 +49,19 @@ export async function relayMessage(
     toAddresses: string[],
     rawEmail: Buffer
 ): Promise<void> {
-    const dkimConfig = await getDkimConfigForEmail(fromAddress)
+    const usingRelay = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER)
+    const skipOwnDkim = usingRelay && shouldSkipOwnDkimForRelay(process.env.SMTP_HOST)
+    const dkimConfig = skipOwnDkim ? null : await getDkimConfigForEmail(fromAddress)
     const dkim = dkimConfig ? toNodemailerDkim(dkimConfig) : undefined
-    if (dkim) {
+    if (skipOwnDkim) {
+        console.log(`[Send:Relay] Own DKIM skipped: relay ${process.env.SMTP_HOST} rewrites the body and signs on its own (NATIVE_DKIM_SIGN=always to override)`)
+    } else if (dkim) {
         console.log(`[Send:Relay] DKIM enabled: selector=${dkim.keySelector} domain=${dkim.domainName}`)
     } else {
         console.warn(`[Send:Relay] ⚠️  No DKIM key for ${fromAddress} — message will be unsigned`)
     }
 
-    if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+    if (usingRelay) {
         console.log(`[Send:Relay] Using SMTP relay: host=${process.env.SMTP_HOST} port=${process.env.SMTP_PORT || '587'} user=${process.env.SMTP_USER}`)
         console.log(`[Send:Relay] Envelope: from=${fromAddress} to=[${toAddresses.join(', ')}]`)
         const transporter = nodemailer.createTransport({

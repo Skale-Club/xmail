@@ -21,6 +21,7 @@ import { isIpLocked, recordAuthFailure, clearAuthFailures } from './lib/auth-thr
 import { emitFolderChange } from './lib/mail-events'
 import { allocateNextUid, recomputeFolderCounts } from './lib/folder-counts'
 import { getDkimConfigForEmail, toNodemailerDkim } from './lib/dkim'
+import { shouldSkipOwnDkimForRelay } from './lib/relay-dkim-policy'
 import { jsonbParam } from './lib/jsonb'
 
 // Find the companion mailboxes entry (for folder/message storage)
@@ -95,17 +96,22 @@ async function relayMessage(
     rawEmail: Buffer
 ): Promise<void> {
     // DKIM signing config (per-sender-domain). Falls through to unsigned if
-    // the domain has no key or isn't registered.
-    const dkimConfig = await getDkimConfigForEmail(fromAddress)
+    // the domain has no key or isn't registered. Skipped when the relay rewrites the
+    // body (see shouldSkipOwnDkimForRelay) — the relay signs on its own.
+    const usingRelay = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER)
+    const skipOwnDkim = usingRelay && shouldSkipOwnDkimForRelay(process.env.SMTP_HOST)
+    const dkimConfig = skipOwnDkim ? null : await getDkimConfigForEmail(fromAddress)
     const dkim = dkimConfig ? toNodemailerDkim(dkimConfig) : undefined
-    if (dkim) {
+    if (skipOwnDkim) {
+        console.log(`[SMTP:Relay] Own DKIM skipped: relay ${process.env.SMTP_HOST} rewrites the body and signs on its own (NATIVE_DKIM_SIGN=always to override)`)
+    } else if (dkim) {
         console.log(`[SMTP:Relay] DKIM enabled: selector=${dkim.keySelector} domain=${dkim.domainName}`)
     } else {
         console.warn(`[SMTP:Relay] ⚠️  No DKIM key for ${fromAddress} — message will be unsigned`)
     }
 
     // Use system SMTP relay if configured, otherwise try direct delivery
-    if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+    if (usingRelay) {
         console.log(`[SMTP:Relay] Using SMTP relay: host=${process.env.SMTP_HOST} port=${process.env.SMTP_PORT || '587'} user=${process.env.SMTP_USER}`)
         const transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST,
