@@ -140,6 +140,31 @@ npm run db:audit         # Audit schema drift between schema.ts and the DB
 - Click tracking: URL rewriting with base64url-encoded redirect (`/t/click/:token?u=...`)
 - Both respond immediately, process tracking asynchronously
 
+### Mail Message UIDs (native mailboxes)
+
+`mail_messages.remote_uid` is the IMAP UID our own IMAP server serves to clients
+(Thunderbird et al). It is **folder-scoped**: unique inside the folder, ascending, and
+always strictly below that folder's `uid_next` (the UIDNEXT we advertise). The unique
+index `mail_message_folder_uid_unique` enforces the uniqueness half.
+
+- **Never change `folder_id` on its own.** Every folder change goes through
+  `moveMessagesToFolder()` in `src/server/lib/move-messages.ts`, which allocates a fresh
+  UID from the destination inside a transaction. Setting `folder_id` alone imports the
+  source folder's UID and leaves the destination advertising a UIDNEXT below UIDs it
+  already holds; it also collides with the unique index, and the MX insert path uses
+  `ON CONFLICT DO NOTHING`, so inbound mail is dropped silently.
+- **Never insert with a null `remote_uid`.** A UID-less row cannot be addressed by
+  `UID EXPUNGE`, so once it reaches Trash it is undeletable over IMAP — this was the
+  2026-08-16 bug where Thunderbird could not delete from Lixeira/Spam. Use
+  `allocateUidForNewMessage()` (or `allocateNextUid()` on the MX/SMTP paths).
+- **Mirrored mailboxes are the exception.** When `mailboxes.is_native = false`,
+  `remote_uid` belongs to the *remote* server and is the dedup key `mail-sync.ts` matches
+  on. Both helpers detect this and leave the UID alone.
+- **`is_deleted` means only the IMAP `\Deleted` flag** — a client asked for this message
+  to be expunged. Do not reuse it as an app-level soft delete: `EXPUNGE`/`CLOSE` hard-delete
+  every flagged row, so anything the backend flags gets destroyed on the client's next
+  folder switch. `cleanupMessages.ts` used to do exactly that to aged-out spam.
+
 ### Outreach Email Accounts
 - `email_accounts.provider` is `'smtp'` (default, stored+encrypted SMTP/IMAP creds),
   `'outlook'` (OAuth via `src/server/routes/outlook.ts`), or `'native'`.
@@ -214,7 +239,7 @@ All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql
 - **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/0000_dear_wolverine.sql`. The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
 - **Do NOT add Drizzle relations / constraints expecting them to apply automatically.** The TS-side schema is for type information; the DB side comes from the SQL migration.
 
-**Numbering convention:** Migrations are sequential integers. As of 2026-08-15 the database is applied through `059_normalize_double_encoded_jsonb.sql` (verified against `supabase_migrations.schema_migrations`); the next free number is `060`. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+**Numbering convention:** Migrations are sequential integers. As of 2026-08-16 the files run through `061_repair_mail_message_uids.sql`; the next free number is `062`. `060_backfill_lead_source_run_id.sql` and `061` are the most recent additions — re-verify what is actually applied against `supabase_migrations.schema_migrations` before assuming. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
 
 > **Resolved collision (2026-08-15):** `051_warmup_engine.sql` shared its prefix with the
 > already-applied `051_prospecting_journey_and_costs.sql`. Because the ledger keys on the numeric

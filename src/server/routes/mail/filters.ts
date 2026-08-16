@@ -4,6 +4,7 @@ import { eq, and, desc } from 'drizzle-orm'
 import { db } from '../../../db'
 import { mailFilters, mailMessages, mailFolders } from '../../../db/schema'
 import { checkUserMailboxAccess } from './mailboxes'
+import { moveMessagesToFolder } from '../../lib/move-messages'
 
 const router = Router()
 
@@ -65,6 +66,9 @@ function evaluateCondition(condition: FilterCondition, message: any): boolean {
 
 async function applyFilter(message: any, actions: FilterAction[]): Promise<void> {
     const updates: any = { updatedAt: new Date() }
+    // Folder changes are applied through moveMessagesToFolder, which reallocates
+    // the IMAP UID in the destination — see lib/move-messages.ts.
+    let destinationFolderId: string | null = null
 
     for (const action of actions) {
         switch (action.action) {
@@ -94,7 +98,7 @@ async function applyFilter(message: any, actions: FilterAction[]): Promise<void>
                     ),
                 })
                 if (archiveFolder) {
-                    updates.folderId = archiveFolder.id
+                    destinationFolderId = archiveFolder.id
                 }
                 break
             }
@@ -107,7 +111,7 @@ async function applyFilter(message: any, actions: FilterAction[]): Promise<void>
                         ),
                     })
                     if (targetFolder) {
-                        updates.folderId = targetFolder.id
+                        destinationFolderId = targetFolder.id
                     }
                 }
                 break
@@ -118,6 +122,10 @@ async function applyFilter(message: any, actions: FilterAction[]): Promise<void>
         await db.update(mailMessages)
             .set(updates)
             .where(eq(mailMessages.id, message.id))
+    }
+
+    if (destinationFolderId) {
+        await moveMessagesToFolder([message.id], destinationFolderId)
     }
 }
 

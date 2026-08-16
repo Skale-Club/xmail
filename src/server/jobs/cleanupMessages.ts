@@ -3,6 +3,7 @@
 import { db } from '../../db'
 import { messages, deliveries, outreachEmails, webhookRequests, mailMessages, mailFolders } from '../../db/schema'
 import { lt, eq, and, or, inArray, isNull } from 'drizzle-orm'
+import { recomputeFolderCounts } from '../lib/folder-counts'
 
 let running = false
 
@@ -66,58 +67,46 @@ export async function cleanupOldMessages(): Promise<void> {
             outreachDeleted += oldOutreach.length
         }
 
-        // Soft-delete spam emails older than 30 days
+        // Hard-delete spam and trash emails older than 30 days.
+        //
+        // Spam used to be *soft*-deleted here by setting is_deleted = true. That column
+        // is also how the native IMAP server represents the \Deleted flag, so every
+        // aged-out spam message showed up in Thunderbird already flagged for deletion —
+        // and the next EXPUNGE or CLOSE the client sent wiped them for good, at a moment
+        // nobody chose. Same retention window, but now the removal is explicit and
+        // is_deleted means only what IMAP says it means: a client flagged this message.
         let spamDeleted = 0
-        while (true) {
-            const oldSpamMessages = await db
-                .select({ id: mailMessages.id })
-                .from(mailMessages)
-                .innerJoin(mailFolders, eq(mailMessages.folderId, mailFolders.id))
-                .where(and(
-                    eq(mailFolders.type, 'spam'),
-                    eq(mailMessages.isDeleted, false),
-                    or(
-                        lt(mailMessages.receivedAt, spamCutoff),
-                        and(isNull(mailMessages.receivedAt), lt(mailMessages.createdAt, spamCutoff))
-                    )
-                ))
-                .limit(BATCH_SIZE)
+        let trashDeleted = 0
+        const touchedFolderIds = new Set<string>()
 
-            if (oldSpamMessages.length === 0) break
+        for (const folderType of ['spam', 'trash'] as const) {
+            while (true) {
+                const expired = await db
+                    .select({ id: mailMessages.id, folderId: mailMessages.folderId })
+                    .from(mailMessages)
+                    .innerJoin(mailFolders, eq(mailMessages.folderId, mailFolders.id))
+                    .where(and(
+                        eq(mailFolders.type, folderType),
+                        or(
+                            lt(mailMessages.receivedAt, spamCutoff),
+                            and(isNull(mailMessages.receivedAt), lt(mailMessages.createdAt, spamCutoff))
+                        )
+                    ))
+                    .limit(BATCH_SIZE)
 
-            const spamIds = oldSpamMessages.map((message) => message.id)
+                if (expired.length === 0) break
 
-            await db.update(mailMessages)
-                .set({ isDeleted: true, updatedAt: new Date() })
-                .where(inArray(mailMessages.id, spamIds))
+                await db.delete(mailMessages)
+                    .where(inArray(mailMessages.id, expired.map((message) => message.id)))
 
-            spamDeleted += oldSpamMessages.length
+                for (const message of expired) touchedFolderIds.add(message.folderId)
+                if (folderType === 'spam') spamDeleted += expired.length
+                else trashDeleted += expired.length
+            }
         }
 
-        // Hard-delete trash emails older than 30 days
-        let trashDeleted = 0
-        while (true) {
-            const oldTrashMessages = await db
-                .select({ id: mailMessages.id })
-                .from(mailMessages)
-                .innerJoin(mailFolders, eq(mailMessages.folderId, mailFolders.id))
-                .where(and(
-                    eq(mailFolders.type, 'trash'),
-                    or(
-                        lt(mailMessages.receivedAt, spamCutoff),
-                        and(isNull(mailMessages.receivedAt), lt(mailMessages.createdAt, spamCutoff))
-                    )
-                ))
-                .limit(BATCH_SIZE)
-
-            if (oldTrashMessages.length === 0) break
-
-            const trashIds = oldTrashMessages.map((message) => message.id)
-
-            await db.delete(mailMessages)
-                .where(inArray(mailMessages.id, trashIds))
-
-            trashDeleted += oldTrashMessages.length
+        for (const folderId of touchedFolderIds) {
+            await recomputeFolderCounts(folderId)
         }
 
         // Clean old webhook request logs

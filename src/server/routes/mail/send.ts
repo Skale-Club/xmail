@@ -13,6 +13,7 @@ import { findLocalUser } from '../../lib/native-mail'
 import { processInboundEmail, deliverViaRoutes } from '../../lib/route-matcher'
 import { relayMessage, storeMessage } from '../../lib/native-send'
 import { jsonbParam } from '../../lib/jsonb'
+import { allocateUidForNewMessage } from '../../lib/move-messages'
 
 const router = Router()
 
@@ -444,7 +445,11 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
                 updatedAt: new Date(),
             }).where(eq(mailMessages.id, existingDraft.id)).returning()
         } else {
-            [savedMessage] = await db.insert(mailMessages).values({
+            // A draft is served over IMAP like any other message, so it needs a
+            // folder-scoped UID — a NULL one is unaddressable by UID EXPUNGE.
+            const draftUid = await allocateUidForNewMessage(mailboxId, draftsFolder.id)
+
+            ;[savedMessage] = await db.insert(mailMessages).values({
                 mailboxId,
                 folderId: draftsFolder.id,
                 messageId,
@@ -461,6 +466,7 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
                 hasAttachments: normalizedAttachments.length > 0,
                 attachments: jsonbParam(normalizedAttachments),
                 isDraft: true,
+                remoteUid: draftUid,
                 remoteDate: new Date(),
                 receivedAt: new Date(),
             }).returning()

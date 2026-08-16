@@ -808,9 +808,13 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
     // ── STORE ──
     if (cmd === 'STORE') {
         if (session.selectedReadOnly) { sendLine(socket, `${tag} NO Folder is read-only`); return }
-        const match = args.match(/^(\S+)\s+([+-]?FLAGS(?:\.SILENT)?)\s+(.+)$/)
+        // IMAP atoms are case-insensitive (RFC 3501 §9) and Thunderbird sends
+        // "+Flags" / "-Flags" — matching only uppercase answered BAD to every
+        // flag change it made, including the \Deleted that precedes an expunge.
+        const match = args.match(/^(\S+)\s+([+-]?FLAGS(?:\.SILENT)?)\s+(.+)$/i)
         if (!match) { sendLine(socket, `${tag} BAD STORE syntax error`); return }
-        const [, seqSet, flagOp, flagList] = match
+        const [, seqSet, rawFlagOp, flagList] = match
+        const flagOp = rawFlagOp.toUpperCase()
 
         const msgs = await loadFolderMessages(session.selectedFolderId!)
 
@@ -1162,7 +1166,10 @@ async function handleUidCommand(
     let maxUid = 0
     msgs.forEach((m, i) => {
         const uid = m.remoteUid ?? (i + 1)
-        byUid.set(uid, { msg: m, seqNum: i + 1 })
+        // A synthesized UID can land on a real one. Rows with a real UID sort
+        // first (NULLs last in the ORDER BY), so first-write-wins keeps the real
+        // message addressable instead of letting a UID-less row shadow it.
+        if (!byUid.has(uid)) byUid.set(uid, { msg: m, seqNum: i + 1 })
         if (uid > maxUid) maxUid = uid
     })
 
@@ -1205,9 +1212,11 @@ async function handleUidCommand(
 
     if (subCmd === 'STORE') {
         if (session.selectedReadOnly) { sendLine(socket, `${tag} NO Folder is read-only`); return }
-        const match = subArgs.match(/^(\S+)\s+([+-]?FLAGS(?:\.SILENT)?)\s+(.+)$/)
+        // Case-insensitive: Thunderbird sends "uid store 4 +Flags (\Deleted)".
+        const match = subArgs.match(/^(\S+)\s+([+-]?FLAGS(?:\.SILENT)?)\s+(.+)$/i)
         if (!match) { sendLine(socket, `${tag} BAD UID STORE syntax error`); return }
-        const [, uidSet, flagOp, flagList] = match
+        const [, uidSet, rawFlagOp, flagList] = match
+        const flagOp = rawFlagOp.toUpperCase()
         const flagStr = flagList.replace(/[()]/g, '').toUpperCase()
         const silent = flagOp.includes('.SILENT')
         const flags = flagStr.split(/\s+/)
@@ -1427,13 +1436,23 @@ async function handleUidCommand(
 
         // Size `*` against the largest UID in the selected mailbox.
         const withDeleted = await loadFolderMessages(session.selectedFolderId!)
+        // A legacy row can still carry remote_uid = NULL. It is served to the
+        // client under the same synthesized UID that FETCH and STORE report
+        // (sequence number), so it has to be expungeable under that UID too —
+        // requiring a non-null remote_uid here made those rows permanently
+        // undeletable over IMAP: the client marked \Deleted, we answered OK, and
+        // the message stayed. Messages written today always have a real UID.
+        const entries = withDeleted.map((msg, index) => ({
+            msg,
+            seqNum: index + 1,
+            uid: msg.remoteUid ?? index + 1,
+        }))
         let maxUidAll = maxUid
-        for (const m of withDeleted) { if ((m.remoteUid ?? 0) > maxUidAll) maxUidAll = m.remoteUid ?? 0 }
+        for (const entry of entries) { if (entry.uid > maxUidAll) maxUidAll = entry.uid }
         const targetUids = new Set(parseSequenceSet(set, maxUidAll || 1))
 
-        const removed = withDeleted
-            .map((msg, index) => ({ msg, seqNum: index + 1 }))
-            .filter(({ msg }) => msg.isDeleted && msg.remoteUid != null && targetUids.has(msg.remoteUid))
+        const removed = entries
+            .filter(({ msg, uid }) => msg.isDeleted && targetUids.has(uid))
             .sort((a, b) => b.seqNum - a.seqNum)
 
         if (removed.length > 0) {

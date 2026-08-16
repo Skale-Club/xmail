@@ -18,6 +18,7 @@ import nodemailer from 'nodemailer'
 import { db } from '../../db'
 import { mailboxes, mailFolders, mailMessages } from '../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
+import { allocateUidForNewMessage } from './move-messages'
 import { getDkimConfigForEmail, toNodemailerDkim } from './dkim'
 import { jsonbParam } from './jsonb'
 
@@ -98,9 +99,13 @@ export async function relayMessage(
 }
 
 /**
- * Store a message in a folder for a mailbox (mirrors smtp-server.ts's storeMessage,
- * simplified for programmatically-composed outbound copies — no remoteUid allocation
- * since these are not synced from a remote IMAP server).
+ * Store a message in a folder for a mailbox (mirrors smtp-server.ts's storeMessage).
+ *
+ * These copies are composed locally rather than synced from a remote IMAP server, but
+ * they still need a folder-scoped UID: our own IMAP server serves this folder to
+ * Thunderbird, and a row with remote_uid = NULL cannot be addressed by UID at all —
+ * `UID EXPUNGE` skips it, so the message becomes impossible to delete over IMAP once
+ * it reaches Trash. See lib/move-messages.ts.
  */
 export async function storeMessage(
     mailboxId: string,
@@ -119,6 +124,8 @@ export async function storeMessage(
         console.warn(`[Send] storeMessage: folder type '${folderType}' not found for mailbox ${mailboxId}`)
         return
     }
+
+    const assignedUid = await allocateUidForNewMessage(mailboxId, folder.id)
 
     await db.insert(mailMessages).values({
         mailboxId,
@@ -140,6 +147,7 @@ export async function storeMessage(
         attachments: jsonbParam(data.attachments ?? []),
         isRead,
         isDraft: false,
+        remoteUid: assignedUid,
         remoteDate: new Date(),
         receivedAt: new Date(),
     }).onConflictDoNothing()

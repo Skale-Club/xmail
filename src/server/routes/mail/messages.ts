@@ -8,6 +8,7 @@ import { checkUserMailboxAccess } from './mailboxes'
 import { mailMessageToListItem } from '../../lib/mail'
 import { runFiltersOnMessage } from './filters'
 import { decryptSecret } from '../../lib/crypto'
+import { deleteMessagesPermanently, moveMessagesToFolder } from '../../lib/move-messages'
 
 const router = Router()
 
@@ -435,8 +436,7 @@ router.delete('/:mailboxId/messages/:messageId', async (req: Request, res: Respo
         })
 
         if (currentFolder?.type === 'trash') {
-            await db.delete(mailMessages)
-                .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
+            await deleteMessagesPermanently([messageId], mailboxId)
 
             return res.json({ success: true, permanentlyDeleted: true })
         }
@@ -447,9 +447,7 @@ router.delete('/:mailboxId/messages/:messageId', async (req: Request, res: Respo
         }
 
         // Update DB first so the UI stays consistent, then move on remote in background
-        await db.update(mailMessages)
-            .set({ folderId: trashFolder.id, updatedAt: new Date() })
-            .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
+        await moveMessagesToFolder([messageId], trashFolder.id)
 
         res.json({ success: true })
 
@@ -499,9 +497,7 @@ router.post('/:mailboxId/messages/:messageId/restore', async (req: Request, res:
             return res.status(400).json({ error: 'Inbox folder is not available for this mailbox' })
         }
 
-        await db.update(mailMessages)
-            .set({ folderId: inboxFolder.id, updatedAt: new Date() })
-            .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
+        await moveMessagesToFolder([messageId], inboxFolder.id)
 
         res.json({ success: true })
 
@@ -555,9 +551,7 @@ router.post('/:mailboxId/messages/:messageId/archive', async (req: Request, res:
             return res.status(400).json({ error: 'Archive folder is not available for this mailbox' })
         }
 
-        await db.update(mailMessages)
-            .set({ folderId: archiveFolder.id, updatedAt: new Date() })
-            .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
+        await moveMessagesToFolder([messageId], archiveFolder.id)
 
         res.json({ success: true })
 
@@ -614,9 +608,7 @@ router.post('/:mailboxId/messages/:messageId/spam', async (req: Request, res: Re
             return res.status(400).json({ error: `Target ${isSpam ? 'spam' : 'inbox'} folder is not available for this mailbox` })
         }
 
-        await db.update(mailMessages)
-            .set({ folderId: targetFolder.id, updatedAt: new Date() })
-            .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
+        await moveMessagesToFolder([messageId], targetFolder.id)
 
         res.json({ success: true })
 
@@ -661,9 +653,16 @@ router.post('/:mailboxId/messages/:messageId/move', async (req: Request, res: Re
             return res.status(400).json({ error: 'Folder does not belong to this mailbox' })
         }
 
-        await db.update(mailMessages)
-            .set({ folderId: data.folderId, updatedAt: new Date() })
-            .where(and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)))
+        // Scoped to the mailbox so a foreign message id cannot be moved through here.
+        const owned = await db.query.mailMessages.findFirst({
+            where: and(eq(mailMessages.id, messageId), eq(mailMessages.mailboxId, mailboxId)),
+            columns: { id: true },
+        })
+        if (!owned) {
+            return res.status(404).json({ error: 'Message not found' })
+        }
+
+        await moveMessagesToFolder([messageId], targetFolder.id)
 
         res.json({ success: true })
     } catch (error) {
@@ -699,6 +698,9 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
 
         const updateData: Record<string, unknown> = { updatedAt: new Date() }
         let remoteTargetFolder: { id: string; remoteId: string } | null = null
+        // Folder changes never ride along in `updateData`: they go through
+        // moveMessagesToFolder so each message gets a UID from the destination.
+        let destinationFolderId: string | null = null
 
         switch (data.action) {
             case 'archive': {
@@ -707,14 +709,14 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
                     return res.status(400).json({ error: 'Archive folder is not available for this mailbox' })
                 }
 
-                updateData.folderId = archiveFolder.id
+                destinationFolderId = archiveFolder.id
                 remoteTargetFolder = archiveFolder
                 break
             }
             case 'spam': {
                 const spamFolder = await resolveSpamFolder(mailboxId, mailbox.isNative)
                 if (spamFolder) {
-                    updateData.folderId = spamFolder.id
+                    destinationFolderId = spamFolder.id
                     remoteTargetFolder = spamFolder
                 }
                 break
@@ -722,7 +724,7 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
             case 'unspam': {
                 const unspamInboxFolder = await resolveInboxFolder(mailboxId)
                 if (unspamInboxFolder) {
-                    updateData.folderId = unspamInboxFolder.id
+                    destinationFolderId = unspamInboxFolder.id
                     remoteTargetFolder = unspamInboxFolder
                 }
                 break
@@ -730,7 +732,7 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
             case 'restore': {
                 const inboxFolder = await resolveInboxFolder(mailboxId)
                 if (inboxFolder) {
-                    updateData.folderId = inboxFolder.id
+                    destinationFolderId = inboxFolder.id
                     remoteTargetFolder = inboxFolder
                 }
                 break
@@ -756,17 +758,14 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
                 const nonTrashMsgs = batchMessages.filter((m) => batchFoldersById.get(m.folderId)?.type !== 'trash')
 
                 if (trashMsgs.length > 0) {
-                    await db.delete(mailMessages)
-                        .where(inArray(mailMessages.id, trashMsgs.map((m) => m.id)))
+                    await deleteMessagesPermanently(trashMsgs.map((m) => m.id), mailboxId)
                 }
 
                 if (nonTrashMsgs.length > 0) {
                     const trashFolder = await resolveTrashFolder(mailboxId, mailbox.isNative)
                     if (trashFolder) {
                         // Update DB first, then move on remote in background
-                        await db.update(mailMessages)
-                            .set({ folderId: trashFolder.id, updatedAt: new Date() })
-                            .where(inArray(mailMessages.id, nonTrashMsgs.map((m) => m.id)))
+                        await moveMessagesToFolder(nonTrashMsgs.map((m) => m.id), trashFolder.id)
 
                         if (!mailbox.isNative && trashFolder.remoteId) {
                             (async () => {
@@ -797,16 +796,19 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
         }
 
         if (data.folderId && ['archive', 'spam', 'unspam', 'restore'].includes(data.action)) {
-            updateData.folderId = data.folderId
             const overrideFolder = await db.query.mailFolders.findFirst({
                 where: and(
                     eq(mailFolders.mailboxId, mailboxId),
                     eq(mailFolders.id, data.folderId)
                 ),
             })
-            if (overrideFolder) {
-                remoteTargetFolder = overrideFolder
+            // Silently trusting data.folderId would let a caller park messages in
+            // another mailbox's folder; only an override we could verify is used.
+            if (!overrideFolder) {
+                return res.status(400).json({ error: 'Folder does not belong to this mailbox' })
             }
+            destinationFolderId = overrideFolder.id
+            remoteTargetFolder = overrideFolder
         }
 
         // Capture source folder mapping BEFORE DB update (needed for background IMAP move)
@@ -838,9 +840,19 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
         }
 
         // Update DB first so the UI stays consistent
-        await db.update(mailMessages)
-            .set(updateData)
-            .where(and(inArray(mailMessages.id, data.messageIds), eq(mailMessages.mailboxId, mailboxId)))
+        if (Object.keys(updateData).length > 1) {
+            await db.update(mailMessages)
+                .set(updateData)
+                .where(and(inArray(mailMessages.id, data.messageIds), eq(mailMessages.mailboxId, mailboxId)))
+        }
+
+        if (destinationFolderId) {
+            const owned = await db.query.mailMessages.findMany({
+                where: and(inArray(mailMessages.id, data.messageIds), eq(mailMessages.mailboxId, mailboxId)),
+                columns: { id: true },
+            })
+            await moveMessagesToFolder(owned.map((m) => m.id), destinationFolderId)
+        }
 
         for (const messageId of data.messageIds) {
             await runFiltersOnMessage(messageId)

@@ -112,6 +112,20 @@ async function seedMessage(uid: number, subject: string) {
     `
 }
 
+/** A row as the native send/draft paths used to write them: no remote_uid. */
+async function seedMessageWithoutUid(subject: string) {
+    await sql`
+        INSERT INTO mail_messages (
+            mailbox_id, folder_id, message_id, subject, from_address,
+            to_addresses, remote_uid, received_at, is_read, is_deleted
+        ) VALUES (
+            ${IDS.mailbox}::uuid, ${IDS.inbox}::uuid, ${`<no-uid-${subject}@example.test>`},
+            ${subject}, 'sender@example.test', '[{"address":"imap-delete@example.test"}]'::jsonb,
+            NULL, NOW() + INTERVAL '10 seconds', false, false
+        )
+    `
+}
+
 beforeAll(async () => {
     assertSafeTestDatabaseUrl(testDatabaseUrl, { runGuard })
     process.env.DATABASE_URL = testDatabaseUrl
@@ -311,6 +325,75 @@ describe('native IMAP deletion semantics', () => {
         } finally {
             client.close()
         }
+    })
+
+    it('expunges a legacy row that carries no UID', async () => {
+        // Rows written by the native send/draft paths had remote_uid = NULL. They
+        // are served under a synthesized UID (their sequence number), but UID
+        // EXPUNGE used to require a real UID and skipped them: the client marked
+        // \Deleted, got OK, and the message stayed forever. This is the exact
+        // shape of message that made Trash undeletable from Thunderbird.
+        await seedMessageWithoutUid('Legacy')
+        const client = await RawImapClient.connect(port)
+        try {
+            await client.command('P1', `LOGIN "${EMAIL}" "${PASSWORD}"`)
+            expect((await client.command('P2', 'SELECT "INBOX"')).join('\n')).toContain('* 4 EXISTS')
+            expect((await client.command('P3', 'UID STORE 4 +FLAGS.SILENT (\\Deleted)')).at(-1)).toMatch(/^P3 OK/)
+            expect(await client.command('P4', 'UID EXPUNGE 4')).toEqual([
+                '* 4 EXPUNGE',
+                'P4 OK UID EXPUNGE completed',
+            ])
+        } finally {
+            client.close()
+        }
+
+        const [remaining] = await sql<{ count: number }[]>`
+            SELECT count(*)::int AS count FROM mail_messages
+            WHERE folder_id = ${IDS.inbox}::uuid AND remote_uid IS NULL
+        `
+        expect(remaining.count).toBe(0)
+    })
+
+    it('accepts the flag operation in any case, as Thunderbird sends it', async () => {
+        // IMAP atoms are case-insensitive (RFC 3501 §9) and Thunderbird sends
+        // "+Flags", not "+FLAGS".
+        const client = await RawImapClient.connect(port)
+        try {
+            await client.command('Q1', `LOGIN "${EMAIL}" "${PASSWORD}"`)
+            await client.command('Q2', 'SELECT "INBOX"')
+            expect((await client.command('Q3', 'UID STORE 2 +Flags (\\Deleted)')).at(-1))
+                .toMatch(/^Q3 OK/)
+            expect((await client.command('Q4', 'UID FETCH 2 (FLAGS)')).join('\n'))
+                .toMatch(/FLAGS \(\\Deleted\) UID 2/)
+            expect((await client.command('Q5', 'uid store 2 -Flags (\\Deleted)')).at(-1))
+                .toMatch(/^Q5 OK/)
+        } finally {
+            client.close()
+        }
+    })
+
+    it('reallocates the UID when the app moves a message between folders', async () => {
+        // Setting folder_id alone imported the source folder's UID into the
+        // destination, leaving Trash holding UIDs at or above its own UIDNEXT.
+        const { moveMessagesToFolder } = await import('../lib/move-messages')
+
+        const [source] = await sql<{ id: string }[]>`
+            SELECT id FROM mail_messages
+            WHERE folder_id = ${IDS.inbox}::uuid AND remote_uid = 3
+        `
+        await moveMessagesToFolder([source.id], IDS.trash)
+
+        const [moved] = await sql<{ folder_id: string; remote_uid: number }[]>`
+            SELECT folder_id, remote_uid FROM mail_messages WHERE id = ${source.id}::uuid
+        `
+        const [trash] = await sql<{ uid_next: number }[]>`
+            SELECT uid_next FROM mail_folders WHERE id = ${IDS.trash}::uuid
+        `
+
+        expect(moved.folder_id).toBe(IDS.trash)
+        expect(moved.remote_uid).toBe(1)
+        expect(trash.uid_next).toBe(2)
+        expect(moved.remote_uid).toBeLessThan(trash.uid_next)
     })
 
     it('copies into a folder with an independent UID namespace', async () => {
