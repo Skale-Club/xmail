@@ -455,8 +455,8 @@ async function locateInImapFolder(client: ImapFlow, path: string, expected: Expe
         // Só as mais recentes: o par manda no máximo uma por dia, então poucas bastam.
         for (const uid of candidatesUids.slice(-10)) {
             const fetched = await client.fetchOne(String(uid), { envelope: true }, { uid: true })
-            const envelope = fetched?.envelope
-            if (!envelope) continue
+            if (!fetched || !fetched.envelope) continue
+            const envelope = fetched.envelope
             candidates.push({
                 uid,
                 fromAddress: envelope.from?.[0]?.address ?? null,
