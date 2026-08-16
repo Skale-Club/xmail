@@ -316,6 +316,27 @@ O super admin não precisa de vínculo por org para ler essas caixas: `checkUser
 (`routes/mail/mailboxes.ts`) dá a `users.is_admin` acesso a qualquer mailbox, e a listagem devolve
 todas. `skale.club@gmail.com` é admin e dono de todas as orgs.
 
+**Oito domínios na plataforma desde 2026-08-16**, todos verificados nos seis checks (verificação,
+SPF, DKIM, DMARC, MX, return-path): `skale.club`, `xkedule.com`, `endenemy.com`, `fluenverse.com`,
+`skleanings.com`, `stuscle.com`, `xareable.com`, `xphere.app`, `xtimator.com`. Os três primeiros da
+lista de migração (`endenemy`, `skleanings`, `stuscle`) tinham e-mail na Hostinger e foram cortados
+para cá — MX, SPF e DKIM da Hostinger removidos. Inbound conferido por handshake SMTP: o MX aceita
+`info@` de cada domínio e devolve `550 User unknown` para endereço inexistente.
+
+### Saída de e-mail: por que ainda passa por relay
+
+`native-send.ts`/`smtp-server.ts` usam relay quando `SMTP_HOST`+`SMTP_USER` existem, e tentam
+ENTREGA DIRETA quando não existem. Direta é melhor (assina com a chave DKIM do próprio domínio →
+DMARC alinha sem terceiro), mas em 2026-08-16 ela é impossível neste host: **a porta 25 de saída
+da Hetzner está bloqueada** — `gmail-smtp-in.l.google.com:25` e `mx1.hostinger.com:25` dão timeout
+de dentro do container, enquanto `smtp-relay.brevo.com:587` responde `220`. Além disso o PTR do IP
+é o genérico `static.250.197.13.49.clients.your-server.de`, e não `mx.skale.club`.
+
+Portanto **esvaziar `SMTP_HOST`/`SMTP_USER` hoje derruba todo o envio, em silêncio**. Para migrar:
+(1) pedir à Hetzner a liberação da porta 25 de saída; (2) apontar o rDNS do IP para `mx.skale.club`;
+(3) confirmar os dois com os testes do `.env.example`; só então limpar as variáveis. O alerta de
+silêncio (`lib/outreach-silence.ts`) é a rede que pega uma queda total de envio.
+
 O que bloqueia **campanha** hoje é só a rampa: `warmup_current_day` avança um dia por dia COM envio
 real, então uma caixa nova leva `warmup_days` dias até a ativação passar — override de ops em
 `OUTREACH_ALLOW_UNWARMED_ACTIVATION=true`. Note a distinção que confunde: a rampa bloqueia o **G9**
