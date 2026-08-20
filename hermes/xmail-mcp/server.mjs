@@ -162,7 +162,7 @@ const tools = [
   },
   {
     name: 'xmail_assess_prospect_candidate',
-    description: 'Persist an auditable qualification/personalization proposal with evidence. Advisory only: it cannot enroll, activate or send.',
+    description: 'Persist an auditable qualification/personalization proposal with evidence. Advisory only: it cannot enroll, activate or send. Report prompt_tokens/completion_tokens whenever the actual LLM usage for this assessment is known, so the spend is attributed; omit both when usage is unknown rather than sending 0, since 0 is recorded as a real (false) claim of zero cost.',
     inputSchema: {
       type: 'object', required: ['candidateId', 'idempotencyKey', 'modelProvider', 'modelName', 'recommendation', 'confidence', 'rationale'], additionalProperties: false,
       properties: {
@@ -182,6 +182,8 @@ const tools = [
           type: 'array', maxItems: 4,
           items: { type: 'string', enum: ['possible_prompt_injection', 'insufficient_evidence', 'unverifiable_claim', 'sensitive_personal_data'] },
         },
+        prompt_tokens: { type: 'integer', minimum: 0, description: 'Actual prompt tokens spent producing this assessment, if known. Omit when unknown; do not send 0 unless usage was genuinely zero.' },
+        completion_tokens: { type: 'integer', minimum: 0, description: 'Actual completion tokens spent producing this assessment, if known. Omit when unknown; do not send 0 unless usage was genuinely zero.' },
       },
     },
   },
@@ -330,7 +332,9 @@ async function callTool(name, args = {}) {
     }
     case 'xmail_request_enrichment_approval': return request('/approvals/prospect-enrichment', { method: 'POST', body: args })
     case 'xmail_assess_prospect_candidate': {
-      const { candidateId, ...body } = args
+      const { candidateId, prompt_tokens, completion_tokens, ...body } = args
+      if (prompt_tokens !== undefined) body.promptTokens = prompt_tokens
+      if (completion_tokens !== undefined) body.completionTokens = completion_tokens
       return request(`/prospecting/candidates/${encodeURIComponent(candidateId)}/assessments`, { method: 'POST', body })
     }
     case 'xmail_list_prospect_assessments': return request(`/prospecting/candidates/${encodeURIComponent(args.candidateId)}/assessments`)

@@ -24,7 +24,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { ImapFlow } from 'imapflow'
-import { and, eq, gte, inArray, lt, sql } from 'drizzle-orm'
+import { and, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import {
     emailAccounts,
@@ -56,6 +56,7 @@ import {
     type WarmupRecipient,
     type WarmupSender,
 } from '../lib/warmup/plan'
+import { decideWarmupSendOutcome } from '../lib/warmup/retry'
 
 const log = createLogger('outreach.warmup')
 
@@ -165,15 +166,133 @@ function dueForNextSend(sender: WarmupSender, lastSentAtRaw: unknown, now: Date)
 // Fase SEND
 // ============================================================
 
+/**
+ * Writes back the outcome of one send attempt (fresh or retry) and reports whether it landed.
+ *
+ * Success always resolves to `status: 'sent'` and bumps the sender's daily count, exactly as
+ * before. Failure now goes through `decideWarmupSendOutcome` (lib/warmup/retry.ts) instead of an
+ * unconditional `status: 'failed'`: a 4xx (or an unclassifiable failure) stays `pending` with a
+ * scheduled `nextAttemptAt` and only becomes `failed` once it is a real 5xx or the attempt cap is
+ * hit. `attemptsSoFar` is the row's `attempts` value BEFORE this call — always 0 for a brand-new
+ * message, whatever the row already has for a retry.
+ */
+async function recordSendOutcome(
+    rowId: string,
+    senderAccountId: string,
+    result: Awaited<ReturnType<typeof sendComposedOutreachMessage>>,
+    attemptsSoFar: number,
+    now: Date,
+): Promise<boolean> {
+    if (result.accepted) {
+        await db.update(warmupMessages)
+            .set({ status: 'sent', sentAt: now, attempts: attemptsSoFar + 1, nextAttemptAt: null, updatedAt: now })
+            .where(eq(warmupMessages.id, rowId))
+        await db.update(emailAccounts)
+            .set({
+                warmupSentToday: sql`${emailAccounts.warmupSentToday} + 1`,
+                warmupStartedAt: sql`coalesce(${emailAccounts.warmupStartedAt}, now())`,
+                updatedAt: now,
+            })
+            .where(eq(emailAccounts.id, senderAccountId))
+        return true
+    }
+
+    const outcome = decideWarmupSendOutcome({ failure: result.failure, attemptsSoFar, now })
+    await db.update(warmupMessages)
+        .set({
+            status: outcome.status,
+            attempts: outcome.attempts,
+            nextAttemptAt: outcome.nextAttemptAt,
+            lastError: outcome.lastError.slice(0, 1000),
+            updatedAt: now,
+        })
+        .where(eq(warmupMessages.id, rowId))
+
+    if (outcome.status === 'failed') {
+        log.warn({
+            action: 'outreach.warmup.send_failed',
+            fromAccountId: senderAccountId,
+            attempts: outcome.attempts,
+            error: outcome.lastError,
+        }, 'warm-up send rejected by provider (terminal or attempt cap reached)')
+    } else {
+        log.info({
+            action: 'outreach.warmup.send_retry_scheduled',
+            fromAccountId: senderAccountId,
+            attempts: outcome.attempts,
+            nextAttemptAt: outcome.nextAttemptAt,
+            error: outcome.lastError,
+        }, 'warm-up send failed temporarily, retry scheduled')
+    }
+    return false
+}
+
+/**
+ * Resends every `pending` message whose backoff has elapsed. Reuses the ORIGINAL `messageId` (an
+ * MTA retry is the same message, not a new one) and regenerates the same body from it —
+ * `generateWarmupContent` is deterministic by seed (content.ts), so this reproduces byte-identical
+ * text without needing to have stored the body anywhere.
+ */
+async function runRetryPhase(mesh: MeshAccount[], now: Date): Promise<number> {
+    const meshById = new Map(mesh.map((m) => [m.account.id, m]))
+
+    const due = await db.query.warmupMessages.findMany({
+        where: and(
+            eq(warmupMessages.status, 'pending'),
+            gt(warmupMessages.attempts, 0),
+            // Typed operators, not a raw `sql` template with a Date bound in — see the comment on
+            // dueForNextSend's caller below for why a raw template with a Date breaks the driver.
+            or(isNull(warmupMessages.nextAttemptAt), lte(warmupMessages.nextAttemptAt, now)),
+        ),
+        limit: 50,
+    })
+    if (due.length === 0) return 0
+
+    let retried = 0
+    for (const row of due) {
+        const senderMesh = meshById.get(row.fromAccountId)
+        if (!senderMesh) {
+            // Sender left the mesh (removed, un-verified) since this message was queued —
+            // nothing left to retry with.
+            await db.update(warmupMessages)
+                .set({ status: 'failed', lastError: 'sender account no longer in warm-up mesh', updatedAt: now })
+                .where(eq(warmupMessages.id, row.id))
+            continue
+        }
+
+        const content = generateWarmupContent(row.messageId)
+        const result = await sendComposedOutreachMessage(senderMesh.account, {
+            from: { address: senderMesh.account.email, name: senderMesh.account.displayName ?? null },
+            to: [row.toAddress],
+            subject: content.subject,
+            text: content.text,
+            messageId: row.messageId,
+        })
+        if (await recordSendOutcome(row.id, senderMesh.account.id, result, row.attempts, now)) retried += 1
+    }
+    return retried
+}
+
 async function runSendPhase(mesh: MeshAccount[], now: Date): Promise<number> {
     if (!withinSendWindow(now) || mesh.length < 2) return 0
 
+    // Retries first: a due message gets another attempt before this sender is considered for a
+    // brand-new one, so a backing-off pair doesn't also accumulate fresh sends on top.
+    let sent = await runRetryPhase(mesh, now)
+
+    const retryingAccountIds = new Set((await db.query.warmupMessages.findMany({
+        where: and(eq(warmupMessages.status, 'pending'), gt(warmupMessages.attempts, 0)),
+        columns: { fromAccountId: true },
+    })).map((row) => row.fromAccountId))
+
     const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-    let sent = 0
 
     for (const senderMesh of mesh) {
         const sender = toSender(senderMesh)
         if (remainingWarmupQuota(sender) <= 0) continue
+        // A retry is already scheduled (not yet due, or this tick's retry attempt just failed
+        // again) — let it resolve before piling on a fresh send to a possibly-different recipient.
+        if (retryingAccountIds.has(sender.accountId)) continue
 
         const [today] = await db.select({
             // Tipado como unknown de propósito: o driver devolve string aqui, não Date. Ver toDate().
@@ -220,32 +339,7 @@ async function runSendPhase(mesh: MeshAccount[], now: Date): Promise<number> {
             messageId,
         })
 
-        if (result.accepted) {
-            await db.update(warmupMessages)
-                .set({ status: 'sent', sentAt: new Date(), updatedAt: new Date() })
-                .where(eq(warmupMessages.id, row.id))
-            await db.update(emailAccounts)
-                .set({
-                    warmupSentToday: sql`${emailAccounts.warmupSentToday} + 1`,
-                    warmupStartedAt: sql`coalesce(${emailAccounts.warmupStartedAt}, now())`,
-                    updatedAt: new Date(),
-                })
-                .where(eq(emailAccounts.id, sender.accountId))
-            sent += 1
-        } else {
-            await db.update(warmupMessages)
-                .set({
-                    status: 'failed',
-                    lastError: (result.failure?.message ?? 'provider rejected').slice(0, 1000),
-                    updatedAt: new Date(),
-                })
-                .where(eq(warmupMessages.id, row.id))
-            log.warn({
-                action: 'outreach.warmup.send_failed',
-                fromAccountId: sender.accountId,
-                error: result.failure?.message,
-            }, 'warm-up send rejected by provider')
-        }
+        if (await recordSendOutcome(row.id, sender.accountId, result, row.attempts, now)) sent += 1
     }
     return sent
 }

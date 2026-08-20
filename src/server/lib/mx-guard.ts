@@ -58,6 +58,58 @@ export async function isSpamhausListed(ip: string): Promise<boolean> {
     }
 }
 
+// ─── Own-mesh sender exemption ────────────────────────────────────────────────
+
+/**
+ * Is `from` one of the platform's own, currently-verified mailboxes?
+ *
+ * The warm-up mesh (processWarmup.ts) sends between accounts we provision and verify, and every
+ * platform domain's MX record points at this same server (mx.skale.club) — so the mesh greylists
+ * itself on every new sender/recipient pair (see `shouldGreylist` below). This predicate is the
+ * exemption gate; the call site is `mx-server.ts`'s `onRcptTo`, kept next to the pre-existing
+ * `hasDeliveredFromSender` exemption rather than folded into `shouldGreylist` itself, so
+ * `shouldGreylist` stays a pure "has enough time elapsed" policy and every "who gets to skip
+ * this" decision lives in one place at the call site.
+ *
+ * "Our own" is checked against an EXACT, case-insensitive match on a currently `verified`
+ * `email_accounts.email` row — not domain membership. A domain-only check (does `from`'s domain
+ * appear in `domains`?) would exempt a forged `MAIL FROM` using any invented local-part under a
+ * domain we own: our domains and their MX records are public DNS, and RCPT TO happens before
+ * SPF/DKIM/DMARC are evaluated (`verifyInbound` only runs later, in `onData`, once the body is
+ * available) — so nothing at this stage tells a genuine mesh sender apart from a stranger who
+ * merely typed one of our domains after the `@`. Requiring an exact match against a real,
+ * presently-verified account is a materially narrower target: the forger has to already know one
+ * specific active internal address, and the exemption disappears automatically the moment that
+ * mailbox is deprovisioned or falls out of `verified` status.
+ *
+ * The connecting IP is intentionally NOT part of this gate, even though it is available to the
+ * caller. Mesh accounts originate from heterogeneous infrastructure: native accounts direct-
+ * deliver from this same host (outbound-transport.ts), but SMTP-provider mesh accounts relay
+ * through their own provider's servers (Gmail's, Outlook's, ...) and connect from THAT provider's
+ * outbound IPs, not ours. There is no single "our IP" to pin the exemption to without either
+ * rejecting legitimate mesh traffic from non-native accounts or the pin doing nothing. The caller
+ * still logs the IP on exemption for observability, per the SEC review that flagged this class of
+ * self-exemption as worth watching.
+ *
+ * Fails closed: a DB error here denies the exemption, so on error a legit mesh message just waits
+ * out the normal greylist hold like any other new pair — never silently bypasses it.
+ */
+export async function isOwnMeshSender(from: string): Promise<boolean> {
+    const address = from.trim().toLowerCase()
+    if (!address || !address.includes('@')) return false
+    try {
+        const rows = await queryClient<{ id: string }[]>`
+            SELECT id FROM email_accounts
+            WHERE lower(email) = ${address} AND status = 'verified'
+            LIMIT 1
+        `
+        return rows.length > 0
+    } catch (err) {
+        console.error('[MX] own-mesh-sender lookup error, failing closed (not exempt):', (err as Error)?.message)
+        return false
+    }
+}
+
 // ─── Greylisting ─────────────────────────────────────────────────────────────
 
 const GREY_HOLD_MINUTES = 5

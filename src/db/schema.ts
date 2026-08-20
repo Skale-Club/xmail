@@ -2812,6 +2812,10 @@ export const warmupMessages = pgTable('warmup_messages', {
     repliedAt: timestamp('replied_at'),
     archivedAt: timestamp('archived_at'),
     lastError: text('last_error'),
+    // Migration 062. attempts=0 means never attempted; a 4xx/unclassifiable send failure bumps
+    // attempts and sets nextAttemptAt instead of failing immediately — see lib/warmup/retry.ts.
+    attempts: integer('attempts').default(0).notNull(),
+    nextAttemptAt: timestamp('next_attempt_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({

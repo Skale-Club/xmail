@@ -41,7 +41,7 @@ export const runCoverageSchema = z.object({
 
 export type RunCoverage = z.infer<typeof runCoverageSchema>
 
-export const externalRunSchema = z.object({
+const externalRunObjectSchema = z.object({
     // Only value for now — xcraper/Apify is the only run source that has ever shipped a
     // lead in production. See migration 054's header comment.
     provider: z.literal('xcraper'),
@@ -50,6 +50,23 @@ export const externalRunSchema = z.object({
     query: z.string().trim().min(1).max(500).optional(),
     location: z.string().trim().min(1).max(200).optional(),
     resultCount: z.number().int().min(0).optional(),
+    /**
+     * How many prospects xcraper/Apify created or updated at the SOURCE system for this
+     * run. This is NOT the number of leads that reached xmail — in production those two
+     * numbers diverge badly (e.g. 30/23/25 ingested at the source vs. 0 leads landing in
+     * xmail), because a prospect can fail email enrichment, dedupe against an existing
+     * lead, or simply never reach `POST /api/outreach/leads/bulk-import`. The xmail-side
+     * number is derived separately, from the attribution join
+     * (`leads.custom_fields->>'source_run_id' = prospecting_runs.idempotency_key`) that
+     * `src/server/jobs/measureProspectingOutcomes.ts` performs — never read this field as
+     * a proxy for it.
+     */
+    ingestedCount: z.number().int().min(0).optional(),
+    /**
+     * @deprecated Legacy name for `ingestedCount`. Kept only because the
+     * currently-deployed Xphere still sends this field under this name — new producers
+     * should send `ingestedCount`. If both are present, `ingestedCount` wins.
+     */
     importedCount: z.number().int().min(0).optional(),
     // The ACTUAL total cost the provider (Apify) reported for this run, in USD — not a
     // unit price. See outreach-costs.ts's `amountMicrosOverride`.
@@ -57,9 +74,26 @@ export const externalRunSchema = z.object({
     actorId: z.string().trim().min(1).max(200).optional(),
     template: z.string().trim().min(1).max(200).optional(),
     hypothesis: hypothesisSchema.optional(),
-    /** Quantos resultados passaram por enriquecimento de contato. Popula `enriched_count`. */
+    /**
+     * Quantos resultados passaram por enriquecimento de contato. Popula `enriched_count`.
+     * Opcional de propósito e SEM fallback para 0: o Xphere ainda não envia isto, e
+     * omitir precisa continuar ausente (não virar zero) para que o alerta
+     * `enriched_count_never_populated` (outreach-silence.ts) continue disparando enquanto
+     * ninguém está de fato medindo enriquecimento. Ver o comentário em prospecting.ts.
+     */
     enrichedCount: z.number().int().min(0).optional(),
     coverage: runCoverageSchema.optional(),
 })
+
+/**
+ * `ingestedCount` in the parsed output is always the resolved value — preferring the
+ * new `ingestedCount` input field over the deprecated `importedCount` alias when both are
+ * sent. The raw `importedCount` input field is intentionally dropped from the output so
+ * every downstream reader (the route, tests) has exactly one field to consult.
+ */
+export const externalRunSchema = externalRunObjectSchema.transform(({ importedCount, ingestedCount, ...rest }) => ({
+    ...rest,
+    ingestedCount: ingestedCount ?? importedCount,
+}))
 
 export type ExternalRunInput = z.infer<typeof externalRunSchema>

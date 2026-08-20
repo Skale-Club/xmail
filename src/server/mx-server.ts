@@ -30,6 +30,7 @@ import {
     checkConnectRate,
     isSpamhausListed,
     shouldGreylist,
+    isOwnMeshSender,
     hasValidFromHeader,
     isDateTooOld,
 } from './lib/mx-guard'
@@ -228,6 +229,14 @@ export function createMXServer() {
                 }
 
                 if (localMailboxId && await hasDeliveredFromSender(localMailboxId, from)) {
+                    return callback()
+                }
+
+                // Our own warm-up mesh sends between our own verified inboxes, all routing back
+                // to this same MX — without this, the mesh greylists itself. See isOwnMeshSender
+                // for why this checks an exact email_accounts match rather than domain ownership.
+                if (await isOwnMeshSender(from)) {
+                    console.log(`[MX] Own-mesh sender exempted from greylist: ip=${ip} from=${from} to=${rcpt}`)
                     return callback()
                 }
 

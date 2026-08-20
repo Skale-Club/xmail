@@ -75,6 +75,41 @@ describe('externalRunSchema', () => {
     })
 })
 
+describe('ingestedCount / importedCount (contrato Xphere→Xmail, 2026-08-20)', () => {
+    // ingestedCount counts prospects created/updated at the SOURCE system (xcraper/Apify),
+    // NOT leads that reached xmail — see the doc comment on the schema and on the route.
+    // importedCount is kept only as a deprecated alias so the currently-deployed Xphere
+    // (which still sends this field name) keeps working.
+
+    it('accepts ingestedCount and resolves it onto the output', () => {
+        const parsed = externalRunSchema.parse(validInput({ ingestedCount: 30, importedCount: undefined }))
+        expect(parsed.ingestedCount).toBe(30)
+    })
+
+    it('still accepts importedCount as a deprecated alias', () => {
+        const parsed = externalRunSchema.parse(validInput({ importedCount: 12, ingestedCount: undefined }))
+        expect(parsed.ingestedCount).toBe(12)
+    })
+
+    it('prefers ingestedCount when both are sent', () => {
+        const parsed = externalRunSchema.parse(validInput({ ingestedCount: 30, importedCount: 12 }))
+        expect(parsed.ingestedCount).toBe(30)
+    })
+
+    it('leaves ingestedCount undefined when neither field is sent', () => {
+        const parsed = externalRunSchema.parse({ provider: 'xcraper', externalRunId: 'run-neither' })
+        expect(parsed.ingestedCount).toBeUndefined()
+    })
+
+    it('rejects a negative ingestedCount', () => {
+        expect(() => externalRunSchema.parse(validInput({ ingestedCount: -1, importedCount: undefined }))).toThrow()
+    })
+
+    it('rejects a non-integer ingestedCount', () => {
+        expect(() => externalRunSchema.parse(validInput({ ingestedCount: 1.5, importedCount: undefined }))).toThrow()
+    })
+})
+
 describe('cobertura do run (contrato Xphere→Xmail, 2026-08-15)', () => {
     it('aceita enrichedCount e coverage completos', () => {
         const parsed = externalRunSchema.parse({

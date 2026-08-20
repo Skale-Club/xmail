@@ -45,4 +45,17 @@ describe('Hermes MCP capability contract', () => {
             expect(tool.inputSchema).toMatchObject({ type: 'object', additionalProperties: false })
         }
     })
+
+    it('lets the assessment tool optionally report LLM token usage', () => {
+        const tool = listHermesTools().find((entry) => entry.name === 'xmail_assess_prospect_candidate')
+        expect(tool).toBeDefined()
+        const schema = tool!.inputSchema as {
+            required?: string[]
+            properties: Record<string, { type: string; minimum?: number }>
+        }
+        for (const property of ['prompt_tokens', 'completion_tokens']) {
+            expect(schema.properties[property]).toMatchObject({ type: 'integer', minimum: 0 })
+            expect(schema.required ?? []).not.toContain(property)
+        }
+    })
 })

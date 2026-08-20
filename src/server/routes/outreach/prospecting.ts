@@ -7,6 +7,7 @@ import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-ac
 import { recordCost } from '../../lib/outreach-costs'
 import { jsonbParam } from '../../lib/jsonb'
 import { externalRunSchema } from '../../lib/prospecting/external-run'
+import { emptyAdvisory, loadAdvisory } from '../../lib/prospecting/advisory'
 import { recordRunEvent, RUN_EVENT_CODES } from '../../lib/prospecting/journey'
 
 const router = Router()
@@ -81,6 +82,16 @@ router.get('/runs/:id/candidates', async (req, res) => {
 // requireOutreachWrite tenant-scope enforcement as every other outreach route — there
 // is no separate/weaker check for the service-key path (see CLAUDE.md Authentication
 // Flow: authorization is JS-side, the DB role bypasses RLS).
+//
+// `input.ingestedCount` (accepting the deprecated `importedCount` alias — see
+// external-run.ts) is how many prospects xcraper/Apify created or updated at the SOURCE
+// system for this run, NOT how many leads reached xmail. It is still written into the
+// `imported_count` column below, unchanged. Do not read it as "leads imported into
+// xmail" — that number is derived from the attribution join
+// (`leads.custom_fields->>'source_run_id' = prospecting_runs.idempotency_key`) that
+// `src/server/jobs/measureProspectingOutcomes.ts` performs, and in production the two
+// numbers diverge badly (source-side counts of 30/23/25 against 0 leads that actually
+// landed in xmail).
 // ============================================================
 
 router.post('/external-runs', async (req, res) => {
@@ -111,7 +122,7 @@ router.post('/external-runs', async (req, res) => {
                 template: input.template ?? null,
             }),
             discoveredCount: input.resultCount ?? 0,
-            importedCount: input.importedCount ?? 0,
+            importedCount: input.ingestedCount ?? 0,
             // Ausente continua ausente: sem enrichedCount o contador fica 0 e o alerta
             // `enriched_count_never_populated` (outreach-silence.ts) permanece firing. Preencher
             // com zero como se fosse medicao esconderia exatamente o que precisa ser visto.
@@ -140,14 +151,30 @@ router.post('/external-runs', async (req, res) => {
             // ledgers below: neither is re-recorded, so a replay can never double-bill.
             const [reconciled] = await db.update(prospectingRuns).set({
                 discoveredCount: input.resultCount ?? replay.discoveredCount,
-                importedCount: input.importedCount ?? replay.importedCount,
+                importedCount: input.ingestedCount ?? replay.importedCount,
                 enrichedCount: input.enrichedCount ?? replay.enrichedCount,
                 updatedAt: new Date(),
             }).where(and(
                 eq(prospectingRuns.id, replay.id),
                 eq(prospectingRuns.organizationId, organizationId),
             )).returning()
-            return res.status(200).json({ run: reconciled ?? replay, idempotentReplay: true })
+            const finalReplayRun = reconciled ?? replay
+            // Advisory on the replay path too — unlike the Apollo pre-flight case this
+            // route mirrors, a caller retrying registration should still get the learning,
+            // not just the caller that happened to create the row. Same never-break
+            // contract as below: on failure fall back to the shared empty shape.
+            let advisory
+            try {
+                advisory = await loadAdvisory(db, {
+                    organizationId,
+                    searchFilters: finalReplayRun.searchFilters,
+                    excludeRunId: finalReplayRun.id,
+                })
+            } catch (advisoryError) {
+                console.error('External-run advisory failed:', advisoryError instanceof Error ? advisoryError.message : advisoryError)
+                advisory = emptyAdvisory()
+            }
+            return res.status(200).json({ run: finalReplayRun, idempotentReplay: true, advisory })
         }
 
         await recordRunEvent(db, {
@@ -159,7 +186,7 @@ router.post('/external-runs', async (req, res) => {
                 provider: input.provider,
                 externalRunId: input.externalRunId,
                 resultCount: input.resultCount ?? 0,
-                importedCount: input.importedCount ?? 0,
+                importedCount: input.ingestedCount ?? 0,
                 costUsd: input.costUsd ?? null,
                 // `code` e valor de maquina, entao a cobertura vai no detail e fica agregavel por
                 // GROUP BY code depois. null quando o produtor nao mandou — nunca zero inventado.
@@ -187,7 +214,25 @@ router.post('/external-runs', async (req, res) => {
             })
         }
 
-        res.status(201).json({ run: created, idempotentReplay: false })
+        // Prior-run learning, folded directly into this response — mirrors
+        // agent-prospecting.ts's POST /searches (which never runs in production; this
+        // /external-runs route is where the real Hermes/Xphere flow can actually see it).
+        // Must never break or delay run registration: the run, its event, and its cost
+        // entry are already committed above, so a failure here only degrades this
+        // additive field.
+        let advisory
+        try {
+            advisory = await loadAdvisory(db, {
+                organizationId,
+                searchFilters: created.searchFilters,
+                excludeRunId: created.id,
+            })
+        } catch (advisoryError) {
+            console.error('External-run advisory failed:', advisoryError instanceof Error ? advisoryError.message : advisoryError)
+            advisory = emptyAdvisory()
+        }
+
+        res.status(201).json({ run: created, idempotentReplay: false, advisory })
     } catch (error) {
         if (error instanceof z.ZodError) return res.status(400).json({ error: 'Validation error', details: error.errors })
         console.error('Error registering external prospecting run:', error)
