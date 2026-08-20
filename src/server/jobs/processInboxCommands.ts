@@ -301,7 +301,10 @@ export async function processDueReminders(deps: {
 // lazily so this module stays importable (e.g. in .db tests) without DATABASE_URL.
 export async function runInboxCommandsWithLock(): Promise<void> {
     const { runWithLock } = await import('../lib/cron-lock')
+    // jobs/index.ts schedules this every minute — cron-lock's 10-minute default budget would let
+    // a hang eat up to 10 skipped ticks before it self-heals. 2 minutes bounds that to a couple of
+    // ticks, which is still generous for what should be a fast dispatch loop.
     await runWithLock(INBOX_COMMANDS_LOCK_NAME, async () => {
         await processInboxCommands()
-    })
+    }, { timeoutMs: 2 * 60 * 1000 })
 }

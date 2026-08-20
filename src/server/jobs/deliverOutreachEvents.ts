@@ -94,5 +94,8 @@ export async function deliverOutreachEventsToXphere(): Promise<void> {
 }
 
 export async function runOutreachEventDeliveryWithLock(): Promise<void> {
-    await runWithLock('deliverOutreachEventsToXphere', deliverOutreachEventsToXphere)
+    // jobs/index.ts schedules this every minute — cron-lock's 10-minute default budget would let
+    // a hung outbound HTTP call to Xphere eat up to 10 skipped ticks before it self-heals. 2
+    // minutes bounds that to a couple of ticks.
+    await runWithLock('deliverOutreachEventsToXphere', deliverOutreachEventsToXphere, { timeoutMs: 2 * 60 * 1000 })
 }

@@ -77,5 +77,8 @@ export async function enforceDeliverabilityGuardrails(now: Date = new Date()): P
 }
 
 export async function runDeliverabilityGuardrailsWithLock(): Promise<void> {
-    await runWithLock('enforceDeliverabilityGuardrails', enforceDeliverabilityGuardrails)
+    // jobs/index.ts schedules this every 10 minutes — the same as cron-lock's default budget.
+    // 8 minutes leaves a margin so the lock reliably clears before the next scheduled tick instead
+    // of racing it.
+    await runWithLock('enforceDeliverabilityGuardrails', enforceDeliverabilityGuardrails, { timeoutMs: 8 * 60 * 1000 })
 }

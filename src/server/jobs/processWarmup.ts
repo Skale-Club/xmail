@@ -616,7 +616,11 @@ export async function processWarmupMesh(now = new Date()): Promise<{ sent: numbe
 }
 
 export async function runWarmupMeshWithLock(): Promise<void> {
+    // jobs/index.ts schedules this every 10 minutes — the same as cron-lock's default budget, so
+    // a hang would still hold the lock right up to (or past) the next tick. This is one of the
+    // three jobs that actually got stuck this way (2026-08-18, SMTP/IMAP send-detect-groom hang);
+    // 8 minutes leaves a 2-minute margin so the lock reliably clears before the next scheduled run.
     await runWithLock(WARMUP_LOCK_NAME, async () => {
         await processWarmupMesh()
-    })
+    }, { timeoutMs: 8 * 60 * 1000 })
 }

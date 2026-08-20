@@ -17,6 +17,7 @@ function metrics(overrides: Partial<SilenceMetrics> = {}): SilenceMetrics {
         enrichedRunsWithoutLeads: 0,
         enrichedRunsWithoutEnrichmentCount: 0,
         doubleEncodedJsonbColumns: [],
+        staleAdvisoryLocks: [],
         ...overrides,
     }
 }
@@ -76,6 +77,39 @@ describe('jsonb duplo-codificado', () => {
     })
 })
 
+describe('lock advisory presa (runWithLock estourou o timeout, ou algo além dele segura a chave)', () => {
+    it('alerta como crítico e nomeia o job e por quanto tempo', () => {
+        // O defeito real: replies/bounces/warm-up ficaram idle in transaction por dias segurando a
+        // lock advisory, e o único sintoma era a linha rotineira de "skipping".
+        const alerts = buildSilenceAlerts(
+            metrics({ staleAdvisoryLocks: [{ jobName: 'outreach-replies-processor', heldForSeconds: 3600 }] }),
+            NOW,
+        )
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'critical', kind: 'stale_advisory_lock' })
+        expect(alerts[0].message).toContain('outreach-replies-processor')
+        expect(alerts[0].message).toContain('60min')
+    })
+
+    it('lista mais de uma lock presa ao mesmo tempo', () => {
+        const alerts = buildSilenceAlerts(
+            metrics({
+                staleAdvisoryLocks: [
+                    { jobName: 'outreach-replies-processor', heldForSeconds: 3600 },
+                    { jobName: 'warmup-mesh-processor', heldForSeconds: 120 },
+                ],
+            }),
+            NOW,
+        )
+        expect(alerts[0].message).toContain('outreach-replies-processor')
+        expect(alerts[0].message).toContain('warmup-mesh-processor')
+    })
+
+    it('fica calado sem lock presa', () => {
+        expect(kinds(metrics({ staleAdvisoryLocks: [] }))).toEqual([])
+    })
+})
+
 describe('runs enriched sem resultado', () => {
     it('avisa quando um run enriched não tem lead atribuível', () => {
         const alerts = buildSilenceAlerts(metrics({ enrichedRunsWithoutLeads: 2 }), NOW)
@@ -105,6 +139,7 @@ describe('vários defeitos ao mesmo tempo', () => {
             warmupSends24h: 0,
             credentialKeyMismatches24h: 5,
             doubleEncodedJsonbColumns: ['leads.custom_fields'],
+            staleAdvisoryLocks: [{ jobName: 'outreach-bounces-processor', heldForSeconds: 900 }],
             enrichedRunsWithoutLeads: 2,
             enrichedRunsWithoutEnrichmentCount: 2,
         }), NOW)
@@ -113,10 +148,11 @@ describe('vários defeitos ao mesmo tempo', () => {
             'warmup_mesh_silent',
             'credential_key_mismatch',
             'double_encoded_jsonb',
+            'stale_advisory_lock',
             'enriched_runs_without_leads',
             'enriched_count_never_populated',
         ])
-        expect(alerts.filter((a) => a.severity === 'critical')).toHaveLength(3)
+        expect(alerts.filter((a) => a.severity === 'critical')).toHaveLength(4)
         expect(alerts.every((a) => a.since === NOW.toISOString())).toBe(true)
     })
 })

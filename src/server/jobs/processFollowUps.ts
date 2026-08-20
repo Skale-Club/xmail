@@ -61,6 +61,9 @@ async function drainLegacyFollowUps(): Promise<number> {
 const FOLLOWUP_PROCESSOR_LOCK_NAME = 'outreach-followups-processor'
 
 export async function runFollowUpsProcessorWithLock(): Promise<void> {
+    // jobs/index.ts schedules this every 10 minutes — the same as cron-lock's default budget.
+    // 8 minutes leaves a margin so the lock reliably clears before the next scheduled tick instead
+    // of racing it.
     await runWithLock(FOLLOWUP_PROCESSOR_LOCK_NAME, async () => {
         const result = await processFollowUps()
         if (result.autonomous.claimable > 0 || result.legacyDrained > 0) {
@@ -70,5 +73,5 @@ export async function runFollowUpsProcessorWithLock(): Promise<void> {
                 legacyDrained: result.legacyDrained,
             }, 'autonomous AI follow-up tick complete')
         }
-    })
+    }, { timeoutMs: 8 * 60 * 1000 })
 }
