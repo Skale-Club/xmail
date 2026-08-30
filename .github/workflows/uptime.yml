@@ -1,0 +1,172 @@
+name: Uptime
+
+# Layer 1 of the alerting design: the ONLY layer that survives the app dying.
+#
+# Every in-app alert path — the error-spike detector, the ops watchdog, the
+# crash handlers — runs inside the process it is meant to report on. A crashed,
+# hung, or OOM-killed container cannot tell anyone it is gone. This job runs on
+# GitHub's infrastructure, outside the container, outside Hetzner, outside the
+# network path, so it still notices and still has a route to Telegram.
+#
+# It probes two things that fail independently:
+#
+#   * HTTP  — mail.skale.club/health/ready, behind Traefik on :9001.
+#   * SMTP/IMAP — ports 25, 587 and 993 on mx.skale.club, which are raw TCP
+#     published straight from the container and bypass Traefik entirely. This
+#     is a MAIL server: the HTTP app can be perfectly healthy while nothing can
+#     send or receive mail, and no HTTP check would ever notice.
+#
+# ALERTS ONLY ON TRANSITIONS. One message when it goes down, one when it comes
+# back — never one per check. The open `outage` issue IS the state: it is
+# already the per-outage record, so reading the transition from it avoids a
+# second source of truth that could be evicted independently.
+#
+# NOTE: GitHub's cron is best-effort (runs can lag 5-15 min under load; minutes
+# are offset from :00 to dodge congestion) and schedules are auto-disabled after
+# 60 days without repo activity.
+
+on:
+  schedule:
+    - cron: '3,18,33,48 * * * *'   # every 15 min, offset from :00
+  workflow_dispatch:
+    inputs:
+      force_failure:
+        description: 'Set to "true" to force a failed probe and test the alert path end to end'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+  issues: write   # the failure step files/updates the outage issue below
+
+concurrency:
+  group: xmail-uptime
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout probe scripts
+        uses: actions/checkout@v4
+
+      # Restored BEFORE the probe on purpose. During an outage the panel is
+      # unreachable, and this cached copy is the only way the alert can be
+      # addressed to anywhere. Restoring afterwards would be useless.
+      - name: Restore cached alert credentials
+        uses: actions/cache/restore@v4
+        with:
+          path: .alert-creds
+          key: xmail-tg-creds-none
+          restore-keys: |
+            xmail-tg-creds-
+
+      - name: Resolve alert credentials
+        id: creds
+        env:
+          APP_URL: ${{ vars.APP_URL || 'https://mail.skale.club' }}
+          MONITOR_API_TOKEN: ${{ secrets.MONITOR_API_TOKEN }}
+          FALLBACK_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          FALLBACK_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: bash scripts/resolve-alert-credentials.sh
+
+      - name: Probe HTTP and mail ports
+        id: probe
+        env:
+          APP_URL: ${{ vars.APP_URL || 'https://mail.skale.club' }}
+          MAIL_HOST: ${{ vars.MAIL_HOST || 'mx.skale.club' }}
+          FORCE_FAILURE: ${{ github.event.inputs.force_failure || 'false' }}
+        run: bash scripts/check-uptime.sh
+
+      # Only after a green probe, and only when the panel actually handed us
+      # something new. Cache keys are immutable, so "changed" is expressed as a
+      # new key derived from the credential hash — the steady state saves
+      # nothing rather than churning ~96 entries a day.
+      - name: Cache alert credentials for the next outage
+        if: success() && steps.creds.outputs.creds_hash != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .alert-creds
+          key: xmail-tg-creds-${{ steps.creds.outputs.creds_hash }}
+
+      # ONE issue per outage: the first failure files it, later failures comment
+      # on it, recovery closes it. A run in a red list is easy to miss; an open
+      # issue is not — and whether THIS run starts the outage is also what
+      # decides whether Telegram gets pushed.
+      - name: File or update the outage issue
+        id: outage
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_URL: ${{ vars.APP_URL || 'https://mail.skale.club' }}
+          FAILED_CHECKS: ${{ steps.probe.outputs.failed_checks }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create outage --color B60205 \
+            --description "Production probe is failing" 2>/dev/null || true
+          existing=$(gh issue list --label outage --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "new_outage=false" >> "$GITHUB_OUTPUT"
+            gh issue comment "$existing" --body "Still failing (${FAILED_CHECKS:-unknown}) — $RUN_URL"
+          else
+            echo "new_outage=true" >> "$GITHUB_OUTPUT"
+            gh issue create --label outage \
+              --title "Production probe failing on $APP_URL" \
+              --body "$(printf '%s\n' \
+                "Failing checks: \`${FAILED_CHECKS:-unknown}\`" \
+                "" \
+                "First failing run: $RUN_URL" \
+                "" \
+                "Filed automatically by \`.github/workflows/uptime.yml\`; it closes itself once the probe passes again, and later failures are added as comments rather than new issues." \
+                "" \
+                "If only the mail ports are failing, the HTTP app is fine and the container is running — check the TLS cert paths and whether the mail servers bound at startup (\`docker logs xmail | grep -i 'servers failed to start'\`)." \
+                "" \
+                "If the app is hung rather than crashed, there is no exception to find — a hang throws nothing. Redeploy to restart the container, then read the logs for the window before it stopped answering.")"
+          fi
+
+      # The push that reaches a phone. The issue above is the durable record but
+      # nothing about it is loud. Fires ONLY on the down transition, so a long
+      # outage is one message rather than one every 15 minutes.
+      #
+      # Never fails the run: telegram-notify.sh always exits 0. This workflow's
+      # own conclusions are read as outage history, so a bad token must not be
+      # able to colour a run and make a healthy app look like it is flapping.
+      - name: Push the outage to Telegram
+        if: failure() && steps.outage.outputs.new_outage == 'true'
+        env:
+          APP_URL: ${{ vars.APP_URL || 'https://mail.skale.club' }}
+          FAILED_CHECKS: ${{ steps.probe.outputs.failed_checks }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/telegram-notify.sh "🚨 <b>Xmail is DOWN</b>" \
+            "Failing: ${FAILED_CHECKS:-unknown}\n\nChecked from GitHub Actions, outside the server — so this alert survives the app, the container and the host being gone.\n\n${RUN_URL}"
+
+      # Recovery closes the loop, so an open `outage` issue always means "down
+      # right now" rather than decaying into a stale one nobody trusts.
+      - name: Close the outage issue on recovery
+        id: recovery
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          existing=$(gh issue list --label outage --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" --comment "Probe is green again — $RUN_URL"
+            echo "recovered=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only after an outage that was actually announced. A green run following
+      # a green run says nothing, and a channel that reports "still fine" every
+      # 15 minutes is one people stop reading.
+      - name: Push the recovery to Telegram
+        if: success() && steps.recovery.outputs.recovered == 'true'
+        env:
+          APP_URL: ${{ vars.APP_URL || 'https://mail.skale.club' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/telegram-notify.sh "✅ <b>Xmail is back UP</b>" \
+            "${APP_URL} and the mail ports are answering again.\n\n${RUN_URL}"

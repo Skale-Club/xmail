@@ -212,7 +212,22 @@ Required: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `VIT
 > raises `CredentialKeyMismatchError`, which names the affected record instead of surfacing Node's
 > bare `Unsupported state or unable to authenticate data`.
 
-Optional: `PORT` (default 9001), `NODE_ENV`, `JWT_SECRET`, `FRONTEND_URL` (default http://localhost:9000), `SMTP_HOST/PORT/USER/PASS/FROM`, `R2_ACCOUNT_ID`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY` (Cloudflare R2 object storage for inbox attachments + branding assets via `src/server/lib/object-storage.ts`; falls back to Supabase Storage when unset) plus `R2_PUBLIC_BASE_URL` (public domain of the branding-assets bucket) and optional `R2_ENDPOINT` override, `XMAIL_SERVICE_KEY` (machine-to-machine auth for the Xphere orchestrator on `/api/outreach/*`, fails closed if unset), `XMAIL_SERVICE_USER_ID`/`XMAIL_SERVICE_ORGANIZATION_ID` (bind the service key to a server-configured principal + organization; the client cannot choose its own identity or tenant, and all three must be set together or machine auth stays disabled), `XPHERE_EVENTS_URL`/`XPHERE_EVENTS_API_KEY` (outbound outreach event notifications to Xphere; both required together)
+Optional: `PORT` (default 9001), `NODE_ENV`, `JWT_SECRET`, `FRONTEND_URL` (default http://localhost:9000), `SMTP_HOST/PORT/USER/PASS/FROM`, `R2_ACCOUNT_ID`/`R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY` (Cloudflare R2 object storage for inbox attachments + branding assets via `src/server/lib/object-storage.ts`; falls back to Supabase Storage when unset) plus `R2_PUBLIC_BASE_URL` (public domain of the branding-assets bucket) and optional `R2_ENDPOINT` override, `XMAIL_SERVICE_KEY` (machine-to-machine auth for the Xphere orchestrator on `/api/outreach/*`, fails closed if unset), `XMAIL_SERVICE_USER_ID`/`XMAIL_SERVICE_ORGANIZATION_ID` (bind the service key to a server-configured principal + organization; the client cannot choose its own identity or tenant, and all three must be set together or machine auth stays disabled), `XPHERE_EVENTS_URL`/`XPHERE_EVENTS_API_KEY` (outbound outreach event notifications to Xphere; both required together), `MONITOR_API_TOKEN` (shared secret letting the external uptime probe read the Telegram alert credentials back out of the admin panel via `GET /api/admin/integrations/monitor-config`; without it that endpoint returns 503 — see below), `ERROR_SPIKE_THRESHOLD`/`ERROR_SPIKE_COOLDOWN_MS`/`OPS_ALERT_REPEAT_MS`/`QUEUE_STALL_MINUTES`/`RSS_WARN_MB`/`DISK_WARN_PERCENT` (alert tuning)
+
+### Telegram Ops Alerting
+
+Three layers with deliberately overlapping blind spots — external (GitHub Actions, the only
+one that survives the app dying), internal (crashes, stalled queue, memory, disk, mail servers
+failing to bind), and aggregated (one alert per error *rate*, never per error). **The bot token
+and chat id live in the admin panel (`system_integrations`, `/admin/integrations`), never in
+env** — the token is encrypted with `OUTLOOK_TOKEN_ENCRYPTION_KEY`, so writing it from a local
+server pointed at the production database produces an undecryptable row. Ports 25/587/993 are
+raw TCP outside Traefik, so the external probe checks 587/993 directly; port 25 is not probed
+because GitHub-hosted runners block outbound 25. The error-spike threshold (60 per 5 min) was
+**measured** against production on 2026-08-30: 770 errors/24h, mean 2.67 per window, peak 23 —
+that peak being a recurring `outreach.inbound.account_error` defect, not load. **Lower it to
+~15 once that defect is fixed.** Full rationale, setup and troubleshooting in
+[`docs/TELEGRAM-ALERTS.md`](docs/TELEGRAM-ALERTS.md).
 
 See `.env.example` for full list.
 

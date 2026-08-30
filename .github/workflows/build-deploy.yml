@@ -195,6 +195,9 @@ jobs:
                 -e R2_ACCESS_KEY_ID="${{ secrets.R2_ACCESS_KEY_ID }}" \
                 -e R2_SECRET_ACCESS_KEY="${{ secrets.R2_SECRET_ACCESS_KEY }}" \
                 -e R2_PUBLIC_BASE_URL="${{ secrets.R2_PUBLIC_BASE_URL }}" \
+                -e MONITOR_API_TOKEN="${{ secrets.MONITOR_API_TOKEN }}" \
+                -e TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+                -e TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}" \
                 --label "traefik.enable=${TRAEFIK_ENABLED}" \
                 --label "traefik.docker.network=coolify" \
                 --label "traefik.http.routers.${NAME}.rule=Host(\`mail.skale.club\`)" \
@@ -328,3 +331,57 @@ jobs:
             echo "::endgroup::"
 
             echo "DEPLOYED version $DEPLOY_VERSION at $DEPLOYED_AT"
+
+      # ── Deploy notification ────────────────────────────────────────────────
+      # A failed deploy leaves production running the PREVIOUS image (the
+      # rollout above rolls back), so nothing is broken and nothing external
+      # notices — the uptime probe stays green. Without this, a failed deploy
+      # is a red run in a list nobody reads, and the fix silently never ships.
+      #
+      # Credentials come from the admin panel, cached the same way the uptime
+      # probe caches them: on a FAILED deploy the app may be unreachable, so a
+      # live panel read cannot be relied on.
+      - name: Restore cached alert credentials
+        if: always()
+        uses: actions/cache/restore@v4
+        with:
+          path: .alert-creds
+          key: xmail-tg-creds-none
+          restore-keys: |
+            xmail-tg-creds-
+
+      - name: Resolve alert credentials
+        if: always()
+        id: creds
+        env:
+          APP_URL: ${{ vars.APP_URL || 'https://mail.skale.club' }}
+          MONITOR_API_TOKEN: ${{ secrets.MONITOR_API_TOKEN }}
+          FALLBACK_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          FALLBACK_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: bash scripts/resolve-alert-credentials.sh
+
+      # Commit metadata is passed through the ENVIRONMENT, never interpolated
+      # into the script body. A ${{ }} expression inside `run:` is substituted
+      # as text before bash parses the line, so a commit message containing a
+      # quote or a backtick would become executable shell.
+      - name: Notify Telegram of the deploy result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          COMMIT_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          # First line only: a long body would push the useful part of the
+          # alert past Telegram's fold.
+          subject=$(printf '%s' "${COMMIT_MSG:-}" | head -n1)
+          details="<code>${COMMIT_SHA:0:7}</code> by ${ACTOR:-unknown}\n${subject}\n\n${RUN_URL}"
+
+          if [ "${JOB_STATUS}" = "success" ]; then
+            bash scripts/telegram-notify.sh "🚀 <b>Xmail deploy OK</b>" "${details}"
+          else
+            bash scripts/telegram-notify.sh "🚨 <b>Xmail deploy FAILED</b>" \
+              "${details}\n\nProduction is still running the previous image."
+          fi

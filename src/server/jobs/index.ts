@@ -17,6 +17,7 @@ import { runApprovalExpiryWithLock } from './expireOutreachApprovals'
 import { runWarmupMeshWithLock } from './processWarmup'
 import { runAmortizeSubscriptionCostsWithLock } from './amortizeSubscriptionCosts'
 import { runMeasureProspectingOutcomesWithLock } from './measureProspectingOutcomes'
+import { runAlertWatchdog } from './alertWatchdog'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
 import { createLogger } from '../lib/logger'
@@ -274,9 +275,24 @@ export function startJobs(): void {
         })
     }, { timezone: 'UTC' })
 
+    // Ops alert watchdog — the "alert on silence" half of layer 2. Evaluates
+    // states that produce no error of their own (a queue that stops draining,
+    // memory climbing toward the OOM killer, a filling disk) and reports each
+    // as a transition. Five minutes matches the shortest stall window worth
+    // acting on without making the checks themselves a load source.
+    cron.schedule('*/5 * * * *', () => {
+        runAlertWatchdog().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.warn({
+                action: 'ops.watchdog.tick_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'alert watchdog failed')
+        })
+    }, { timezone: 'UTC' })
+
     log.info({
         action: 'outreach.jobs.scheduler_ready',
-        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am, amortizeSubscriptionCosts=monthly-1st-04:00-UTC, measureProspectingOutcomes=every-6h-UTC',
+        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am, amortizeSubscriptionCosts=monthly-1st-04:00-UTC, measureProspectingOutcomes=every-6h-UTC, alertWatchdog=5min',
     }, 'scheduler ready')
 
     // Phase 23 (AI-03): log the GLOBAL autonomous-automation kill-control posture once at startup
