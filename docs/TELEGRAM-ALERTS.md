@@ -27,7 +27,7 @@ painel continua a ser o único sítio onde se editam as credenciais.
 
 | Alerta | Camada | Origem | Quando |
 | --- | --- | --- | --- |
-| 🚨 Xmail is DOWN / ✅ back UP | externa | GitHub Actions | `/health/ready` ou as portas 587/993 não respondem, de 15 em 15 min |
+| 🚨 Xmail is DOWN / ✅ back UP | externa | GitHub Actions | `/health/ready` ou as portas 587/993 não respondem; no máximo de 15 em 15 min, ver a ressalva abaixo |
 | 🚀 Deploy OK / 🚨 Deploy FAILED | externa | GitHub Actions | cada push para `main` |
 | 💥 Xmail crashed | interna | `install-alerting.ts` | `uncaughtException` — o processo vai morrer |
 | ⚠️ Unhandled promise rejection | interna | `install-alerting.ts` | promessa rejeitada sem `catch` — o processo **continua vivo** |
@@ -78,6 +78,28 @@ estão vivos e acessíveis da internet.
 
 Se um dia houver um runner self-hosted que consiga sair na 25, basta
 `PROBE_PORT_25=true`.
+
+### "De 15 em 15 minutos" é um teto, não uma promessa
+
+O agendador do GitHub é *best-effort*: as corridas são enfileiradas, atrasadas
+sob carga e **descartadas** em vez de recuperadas. Medido neste repositório, o
+`keepalive` semanal — marcado para as 00:00 — arrancou de facto às **04:46,
+01:42, 01:40 e 02:04** em quatro semanas seguidas. E nas duas horas seguintes à
+entrada deste workflow, **oito slots de 15 minutos passaram sem uma única
+corrida**.
+
+Isto não invalida o desenho, mas muda o que se pode esperar dele:
+
+- A camada externa existe para **sobreviver à app estar morta**. Nesse cenário
+  todas as outras camadas estão mortas também, e ser avisado uma hora depois é
+  incomparavelmente melhor do que não ser avisado.
+- A **deteção rápida enquanto a app está viva** é trabalho da camada interna,
+  que corre de 5 em 5 minutos dentro do processo e não depende do GitHub.
+
+Se algum dia a latência da camada externa passar a ser inaceitável, a saída não
+é baixar o cron — é um sondador fora do GitHub (um cron no próprio Hetzner a
+apontar para fora, ou um serviço de uptime externo) a chamar o mesmo
+`scripts/check-uptime.sh`.
 
 ---
 
@@ -190,7 +212,7 @@ veria ~12% dos erros.
 | Fonte usada pela sonda externa | **painel** — `credentials resolved from: panel` |
 | Cache de credenciais no Actions | populado, portanto a sonda alerta com a app em baixo |
 | Secrets `MONITOR_API_TOKEN`, `TELEGRAM_*` | criados; os dois últimos são fallback |
-| Workflow `Uptime` | ativo, de 15 em 15 min |
+| Workflow `Uptime` | ativo; cadência-teto de 15 min, na prática muito mais lenta |
 
 O ciclo de transição foi provado de ponta a ponta: uma falha forçada abriu a
 issue `outage` e enviou 🚨; a execução seguinte fechou-a e enviou ✅.
@@ -409,5 +431,5 @@ DISK_WARN_PERCENT=85            # limiar de ocupação do disco
 | `scripts/telegram-notify.sh` | emissor do CI; sai sempre com 0 |
 | `scripts/resolve-alert-credentials.sh` | painel → cache → secrets |
 | `scripts/check-uptime.sh` | a sonda: HTTP + portas 587/993 |
-| `.github/workflows/uptime.yml` | camada externa, de 15 em 15 minutos |
+| `.github/workflows/uptime.yml` | camada externa; cadência-teto de 15 minutos |
 | `.github/workflows/build-deploy.yml` | notificação de deploy (últimos passos) |

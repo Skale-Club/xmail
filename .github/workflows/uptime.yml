@@ -21,9 +21,21 @@ name: Uptime
 # already the per-outage record, so reading the transition from it avoids a
 # second source of truth that could be evicted independently.
 #
-# NOTE: GitHub's cron is best-effort (runs can lag 5-15 min under load; minutes
-# are offset from :00 to dodge congestion) and schedules are auto-disabled after
-# 60 days without repo activity.
+# CADENCE IS A CEILING, NOT A PROMISE. GitHub's scheduler is best-effort: runs
+# are queued, delayed under load, and dropped outright rather than caught up.
+# Measured on THIS repository, the weekly keepalive job — scheduled for 00:00 —
+# actually started at 04:46, 01:42, 01:40 and 02:04 on four consecutive weeks.
+# Delays of one to four hours are normal here, and in the two hours after this
+# workflow first landed, eight consecutive 15-minute slots produced no run.
+#
+# So read '*/15' as "as often as GitHub feels like it, at most every 15 min".
+# That is still the right design: this layer exists to survive the app being
+# dead, where being told an hour late beats never being told at all, and every
+# in-app layer is dead in exactly that scenario. Fast detection while the app
+# is alive is the internal layer's job, not this one's.
+#
+# Schedules are also auto-disabled after 60 days without repo activity, and
+# minutes are offset from :00 to dodge the worst congestion.
 
 on:
   schedule:
