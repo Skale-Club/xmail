@@ -17,7 +17,7 @@ import {
 } from '../error-spike-alert'
 
 /** Matches the module's default; the env var is not set under test. */
-const THRESHOLD = 60
+const THRESHOLD = 15
 const T0 = 1_700_000_000_000
 
 describe('normalizeEventName', () => {
@@ -63,9 +63,11 @@ describe('recordError', () => {
     })
 
     it('names the most frequent events, so the alert says WHAT broke', () => {
-        // Split relative to THRESHOLD so retuning the threshold cannot silently
-        // stop this case from reaching the alert at all.
-        const minor = 12
+        // Both counts scale with THRESHOLD: a fixed split would either stop
+        // reaching the alert when the threshold rises, or — as happened when it
+        // dropped from 60 to 15 — quietly make the "minor" event the larger of
+        // the two and turn the ordering assertion below into its own opposite.
+        const minor = Math.max(2, Math.floor(THRESHOLD / 5))
         for (let i = 0; i < THRESHOLD - minor; i += 1) recordError('database unreachable', T0)
         for (let i = 0; i < minor; i += 1) recordError('r2 upload failed', T0)
         expect(sent).toHaveLength(1)

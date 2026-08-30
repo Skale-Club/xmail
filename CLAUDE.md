@@ -223,11 +223,13 @@ and chat id live in the admin panel (`system_integrations`, `/admin/integrations
 env** — the token is encrypted with `OUTLOOK_TOKEN_ENCRYPTION_KEY`, so writing it from a local
 server pointed at the production database produces an undecryptable row. Ports 25/587/993 are
 raw TCP outside Traefik, so the external probe checks 587/993 directly; port 25 is not probed
-because GitHub-hosted runners block outbound 25. The error-spike threshold (60 per 5 min) was
-**measured** against production on 2026-08-30: 770 errors/24h, mean 2.67 per window, peak 23 —
-that peak being a recurring `outreach.inbound.account_error` defect, not load. **Lower it to
-~15 once that defect is fixed.** Full rationale, setup and troubleshooting in
-[`docs/TELEGRAM-ALERTS.md`](docs/TELEGRAM-ALERTS.md).
+because GitHub-hosted runners block outbound 25. The error-spike threshold (15 per 5 min) is
+**measured, never guessed**: production showed 770 errors/24h with a recurring peak of 23 until
+the `outreach.inbound.account_error` defect behind it was fixed, after which the floor fell to
+zero and the threshold came down from 60 to 15 with it. **Recalibrate the same way whenever the
+floor moves** — read a day of `error_spike.baseline` log lines, and fix a new recurring defect
+rather than raising the threshold past it, which would mute everything else too. Full rationale,
+setup and troubleshooting in [`docs/TELEGRAM-ALERTS.md`](docs/TELEGRAM-ALERTS.md).
 
 See `.env.example` for full list.
 
