@@ -35,7 +35,7 @@ painel continua a ser o único sítio onde se editam as credenciais.
 | 🐌 Outbound queue is stalled | interna | `jobs/alertWatchdog.ts` | mensagens por enviar há mais de 15 min |
 | 🧠 Memory is high | interna | `jobs/alertWatchdog.ts` | RSS acima de 1024 MB |
 | 💾 Disk is filling up | interna | `jobs/alertWatchdog.ts` | sistema de ficheiros acima de 85% |
-| 🔥 Error spike | agregada | `error-spike-alert.ts` | mais de 25 erros em 5 min |
+| 🔥 Error spike | agregada | `error-spike-alert.ts` | mais de 15 erros em 5 min |
 
 Cada alerta de estado tem a sua mensagem de recuperação (✅). Nenhum deles
 repete enquanto a condição se mantém — ver "Fadiga de alerta" abaixo.

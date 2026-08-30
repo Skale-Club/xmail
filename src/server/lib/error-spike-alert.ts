@@ -28,8 +28,9 @@
  *   docker logs xmail --since 24h 2>&1 | grep error_spike.baseline
  *
  * — and set ERROR_SPIKE_THRESHOLD to roughly an order of magnitude above the
- * median. The default below is deliberately conservative and NOT yet measured
- * against this project; see docs/TELEGRAM-ALERTS.md.
+ * median. The default below HAS been measured against this project, twice, on
+ * either side of the defect that dominated the first reading; the constant's
+ * own comment carries both numbers. See docs/TELEGRAM-ALERTS.md.
  *
  * State is per-process and in memory. A restart resets it, which is correct: a
  * fresh process has no history to compare against, and a restart is itself
