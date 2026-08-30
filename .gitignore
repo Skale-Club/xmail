@@ -73,3 +73,8 @@ outputs/
 plans/
 tmp
 temp
+
+# Transient body file written by scripts/telegram-notify.sh (removed on exit).
+.tg-notify-*.txt
+# Alert credentials cached by the uptime workflow.
+.alert-creds/

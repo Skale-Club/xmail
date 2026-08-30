@@ -52,6 +52,9 @@ import { runReadinessChecks } from './lib/health'
 import { getMailTLSOptions } from './lib/mail-tls'
 import { createApiAuthMiddleware } from './lib/api-auth'
 import { describeServiceAuthState } from './lib/service-auth'
+import { installAlerting } from './lib/install-alerting'
+import { alertOps } from './lib/ops-alert'
+import { escapeHtml } from './lib/telegram'
 
 const app = express()
 const PORT = process.env.PORT || 9001
@@ -361,6 +364,10 @@ if (existsSync(clientDist)) {
 app.listen(PORT, async () => {
     console.log(`Server running on port ${PORT}`)
 
+    // Install the in-app alert taps first, so a crash during the rest of
+    // startup is still reported rather than becoming an unexplained restart.
+    await installAlerting()
+
     // Warn if no platform admin exists
     try {
         const adminUser = await db.query.users.findFirst({ where: eq(users.isAdmin, true) })
@@ -387,7 +394,24 @@ app.listen(PORT, async () => {
                     runningImapServer!.start()
                 })
         } catch (err) {
-            console.warn('⚠️  SMTP/IMAP/MX servers failed to start:', (err as Error).message)
+            const message = (err as Error).message
+            console.warn('⚠️  SMTP/IMAP/MX servers failed to start:', message)
+            // The most important alert in the system. Ports 25/587/993 are raw
+            // TCP, published straight from the container and bypassing Traefik
+            // entirely — so the HTTP uptime probe stays perfectly green while
+            // the mail server, which is the actual product, is not listening.
+            // Nothing outside this process can detect it over HTTP.
+            void alertOps(
+                'mail.servers_failed_to_start',
+                '📮 <b>Xmail: mail servers did NOT start</b>',
+                [
+                    `SMTP (587), IMAP (993) and/or MX (25) failed to bind.`,
+                    '',
+                    `<b>Error:</b> ${escapeHtml(message)}`,
+                    '',
+                    '<i>The HTTP app on :9001 is still up, so the uptime probe will stay green. Mail is not being received or sent.</i>',
+                ].join('\n'),
+            )
         }
     } else {
         console.log('ℹ️  SMTP/IMAP/MX servers disabled (ENABLE_MAIL_SERVER=false)')

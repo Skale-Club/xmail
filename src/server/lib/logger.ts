@@ -19,9 +19,44 @@
  */
 
 import pino, { type Logger } from 'pino'
+import { emitError } from './error-taps'
 
 const isDev = process.env.NODE_ENV !== 'production'
 const level = process.env.LOG_LEVEL || (isDev ? 'debug' : 'info')
+
+/** pino's numeric level for `error`; `fatal` is 60 and also counts. */
+const ERROR_LEVEL = 50
+
+/**
+ * Taps every error-level log line for the spike detector (layer 3).
+ *
+ * Attached as a pino hook rather than at the ~35 `log.error` call sites so no
+ * future one can forget to opt in, and so nothing about existing call sites
+ * changes. Hooks are inherited by child loggers, so `createLogger(...)` is
+ * covered automatically.
+ *
+ * The tap runs BEFORE the log is written and swallows everything: a failure to
+ * count an error must never prevent that error from being logged.
+ */
+const hooks = {
+    logMethod(this: unknown, args: unknown[], method: (...a: unknown[]) => void, lvl: number) {
+        if (lvl >= ERROR_LEVEL) {
+            try {
+                const first = args[0]
+                const action = first && typeof first === 'object' && 'action' in first
+                    ? String((first as { action: unknown }).action)
+                    : null
+                const message = typeof args[1] === 'string'
+                    ? args[1]
+                    : typeof first === 'string' ? first : 'unknown'
+                emitError(action ?? message)
+            } catch {
+                /* never let instrumentation break logging */
+            }
+        }
+        method.apply(this, args)
+    },
+}
 
 // Production: default JSON serialisation to stdout.
 // Development: pretty transport. We use transport (not prettyPrint, which was removed in pino v7+).
@@ -29,6 +64,7 @@ export const logger: Logger = pino(
     isDev
         ? {
             level,
+            hooks,
             transport: {
                 target: 'pino-pretty',
                 options: {
@@ -40,6 +76,7 @@ export const logger: Logger = pino(
         }
         : {
             level,
+            hooks,
             // Production: include hostname (Docker container id) and pid so multi-instance deploys
             // can disambiguate log lines from each replica.
             base: { pid: process.pid, hostname: process.env.HOSTNAME || undefined },

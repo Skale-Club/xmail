@@ -234,6 +234,9 @@ jobs:
               -e R2_ACCESS_KEY_ID="${{ secrets.R2_ACCESS_KEY_ID }}" \
               -e R2_SECRET_ACCESS_KEY="${{ secrets.R2_SECRET_ACCESS_KEY }}" \
               -e R2_PUBLIC_BASE_URL="${{ secrets.R2_PUBLIC_BASE_URL }}" \
+              -e MONITOR_API_TOKEN="${{ secrets.MONITOR_API_TOKEN }}" \
+              -e TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+              -e TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}" \
               --label "traefik.enable=true" \
               --label "traefik.docker.network=coolify" \
               --label "traefik.http.routers.xmail.rule=Host(\`mail.skale.club\`)" \
@@ -401,6 +404,9 @@ jobs:
                   -e R2_ACCESS_KEY_ID="${{ secrets.R2_ACCESS_KEY_ID }}" \
                   -e R2_SECRET_ACCESS_KEY="${{ secrets.R2_SECRET_ACCESS_KEY }}" \
                   -e R2_PUBLIC_BASE_URL="${{ secrets.R2_PUBLIC_BASE_URL }}" \
+                  -e MONITOR_API_TOKEN="${{ secrets.MONITOR_API_TOKEN }}" \
+                  -e TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+                  -e TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}" \
                   --label "traefik.enable=true" \
                   --label "traefik.docker.network=coolify" \
                   --label "traefik.http.routers.xmail.rule=Host(\`mail.skale.club\`)" \
