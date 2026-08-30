@@ -167,17 +167,24 @@ veria ~12% dos erros.
 
 ## Configuração
 
-**Estado atual (2026-08-30): já está tudo ligado exceto a linha do painel.**
+**Estado atual (2026-08-30): tudo ligado e verificado em produção.**
 
-Os secrets do repositório `MONITOR_API_TOKEN`, `TELEGRAM_BOT_TOKEN` e
-`TELEGRAM_CHAT_ID` estão criados, e os dois últimos são passados ao contentor
-pelos workflows de deploy. Isso significa que **as três camadas funcionam pelo
-fallback de ambiente** assim que o deploy correr — sem depender do painel.
+| Peça | Estado |
+| --- | --- |
+| Linha do painel (`system_integrations`) | escrita, `telegram_enabled = true`, chat `8664810189` |
+| Fonte usada pela app | **painel** — `[alerting] … credentials from the admin panel` |
+| Fonte usada pela sonda externa | **painel** — `credentials resolved from: panel` |
+| Cache de credenciais no Actions | populado, portanto a sonda alerta com a app em baixo |
+| Secrets `MONITOR_API_TOKEN`, `TELEGRAM_*` | criados; os dois últimos são fallback |
+| Workflow `Uptime` | ativo, de 15 em 15 min |
 
-### 1. Registar as credenciais no painel (recomendado, opcional)
+O ciclo de transição foi provado de ponta a ponta: uma falha forçada abriu a
+issue `outage` e enviou 🚨; a execução seguinte fechou-a e enviou ✅.
 
-O painel tem precedência sobre o ambiente: preenchê-lo passa a ser o único sítio
-onde se edita o destino, e deixa de ser preciso um deploy para mudar o chat id.
+### 1. Registar as credenciais no painel — feito
+
+O painel tem precedência sobre o ambiente: é o único sítio onde se edita o
+destino, e mudá-lo não exige deploy.
 
 Em produção, **/admin/integrations**:
 
@@ -242,6 +249,32 @@ O cache só é reescrito quando o painel devolve algo diferente: as chaves de
 cache são imutáveis, por isso "mudou" exprime-se como uma chave nova derivada do
 hash das credenciais. O estado normal não grava nada, em vez de acumular ~96
 entradas por dia.
+
+### Se a sonda disser `resolved from: secrets` em vez de `panel`
+
+Significa que `/monitor-config` não devolveu credenciais utilizáveis. A cadeia
+degrada em silêncio de propósito — o alerta continua a ser entregue — por isso
+esta linha do log é o único sinal. Três causas, por ordem de probabilidade:
+
+1. **`MONITOR_API_TOKEN` diferente** entre o secret do repositório e o
+   contentor. Sem ele no contentor o endpoint responde `503`.
+2. **A rota deixou de estar na allowlist** de `src/server/lib/api-auth.ts`.
+   O gate JWT global de `/api` corre antes do router, por isso responde `401`
+   antes de o handler chegar a ler o seu próprio `x-monitor-token`. Foi assim
+   que este endpoint ficou inalcançável desde a migration `023` (maio/2026) até
+   **2026-08-30** — morto duas vezes, já que a variável também não existia.
+   Pôr a rota na allowlist não a torna pública: o handler exige o token com
+   comparação em tempo constante e falha fechado sem a variável.
+3. **`telegram_enabled` a `false`** no painel, que o script trata como
+   "não configurado" e cai para o passo seguinte.
+
+Diagnóstico direto, de dentro do contentor:
+
+```bash
+ssh root@<host> "docker exec -e U=http://localhost:9001/api/admin/integrations/monitor-config -e H=x-monitor-token xmail node -e \"fetch(process.env.U,{headers:{[process.env.H]:process.env.MONITOR_API_TOKEN}}).then(r=>r.text().then(t=>console.log(r.status)))\""
+```
+
+`200` é o esperado; `401` é a causa 2; `503` é a causa 1.
 
 ---
 
