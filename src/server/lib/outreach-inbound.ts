@@ -607,11 +607,15 @@ function rows<T>(result: unknown): T[] {
     return Array.isArray(result) ? result as T[] : []
 }
 
+// The driver's return types are NOT taken on faith here. `uid_validity` and
+// `last_uid` are declared `string | number` because postgres-js hands back int8 as a
+// string; `last_received_at` is declared the same way for the same reason, learned the
+// harder way — see toDate.
 interface CursorRow {
     delta_cursor: string | null
     uid_validity: string | number | null
     last_uid: string | number | null
-    last_received_at: Date | null
+    last_received_at: Date | string | null
     last_provider_message_id: string | null
 }
 
@@ -619,6 +623,32 @@ function toNumber(value: string | number | null): number | null {
     if (value === null) return null
     const parsed = Number(value)
     return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
+ * Normalizes a timestamp column back into a real Date.
+ *
+ * `outreach_provider_cursors.last_received_at` is a genuine `timestamp` column and was
+ * typed `Date` end to end, yet production returned the string `"2026-08-29 04:16:43"` —
+ * Postgres's text rendering, not even ISO. Everything downstream assumed a Date, so
+ * `sqlTimestamp(after)` threw on every native inbound tick: ~770 errors a day, every
+ * account, and almost certainly no replies ingested into native inboxes for as long as
+ * it lasted. Nothing caught it because every declaration in the chain said `Date` and
+ * the unit tests mock the store.
+ *
+ * `toNumber` above exists for exactly this class of surprise with integers. This is the
+ * timestamp twin it should have had from the start: the mapping out of a raw row is the
+ * boundary where the driver's word stops being trusted.
+ *
+ * An unparseable value degrades to null — a cursor that restarts from the beginning
+ * re-reads mail that is already deduplicated by `outreach_provider_events`, whereas
+ * throwing here would take the whole account's ingestion down, which is the failure
+ * being fixed.
+ */
+function toDate(value: Date | string | number | null): Date | null {
+    if (value === null) return null
+    const parsed = value instanceof Date ? value : new Date(value)
+    return Number.isNaN(parsed.getTime()) ? null : parsed
 }
 
 export function createSqlInboundEventStore(
@@ -672,7 +702,7 @@ export function createSqlInboundEventStore(
                 deltaCursor: row.delta_cursor,
                 uidValidity: toNumber(row.uid_validity),
                 lastUid: toNumber(row.last_uid),
-                lastReceivedAt: row.last_received_at,
+                lastReceivedAt: toDate(row.last_received_at),
                 lastProviderMessageId: row.last_provider_message_id,
             }
         },
