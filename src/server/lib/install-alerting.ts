@@ -9,7 +9,7 @@
 import { recordError, normalizeEventName } from './error-spike-alert'
 import { setErrorSink } from './error-taps'
 import { alertOps } from './ops-alert'
-import { escapeHtml, isTelegramConfigured } from './telegram'
+import { escapeHtml, getTelegramConfigSource } from './telegram'
 
 let installed = false
 
@@ -116,10 +116,12 @@ export async function installAlerting(): Promise<void> {
     tapConsoleError()
     installCrashHandlers()
 
-    const configured = await isTelegramConfigured()
-    console.log(
-        configured
-            ? '[alerting] Telegram alerts ACTIVE (credentials from the admin panel).'
-            : '[alerting] Telegram alerts INACTIVE — configure them at /admin/integrations and enable the toggle. Error taps are installed either way.',
-    )
+    const source = await getTelegramConfigSource()
+    if (source === 'panel') {
+        console.log('[alerting] Telegram alerts ACTIVE — credentials from the admin panel.')
+    } else if (source === 'env') {
+        console.log('[alerting] Telegram alerts ACTIVE — credentials from the ENVIRONMENT fallback; the admin panel row is absent or disabled, so editing it there will take precedence once set.')
+    } else {
+        console.log('[alerting] Telegram alerts INACTIVE — configure them at /admin/integrations and enable the toggle. Error taps are installed either way.')
+    }
 }

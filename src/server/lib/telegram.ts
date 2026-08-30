@@ -228,3 +228,15 @@ export async function sendTelegram(title: string, body = ''): Promise<SendResult
 export async function isTelegramConfigured(): Promise<boolean> {
     return (await getConfig()) !== null
 }
+
+/**
+ * Which source the credentials came from, or null when unconfigured.
+ *
+ * Exists so the startup line can say 'panel' or 'env' truthfully rather than
+ * naming one of them unconditionally. An ops message that misreports where its
+ * own configuration came from is worse than no message: it is the line someone
+ * will trust while debugging why the panel edit had no effect.
+ */
+export async function getTelegramConfigSource(): Promise<'panel' | 'env' | null> {
+    return (await getConfig())?.source ?? null
+}
