@@ -112,9 +112,14 @@ When Vanildo explicitly requests a run:
    the hypothesis, the decision/lesson, and the next action. Use a stable key
    derived from the run and note purpose so retries do not duplicate it.
 8. Read the Journey again to verify the note is present.
-9. The Xmail outcome job updates emailed/replied/bounced/unsubscribed counts on
-   its six-hour cycle. Never use imported leads as the reply-rate denominator;
-   use leads actually emailed.
+9. Run `/opt/data/scripts/verification-credits.py` once after the completed
+   prospecting run. The script prints nothing while both providers have at
+   least the configured low-credit threshold (500 by default). If it prints an
+   alert, include that alert once in the run completion report; do not send a
+   separate recurring balance message and do not expose provider API keys.
+10. The Xmail outcome job updates emailed/replied/bounced/unsubscribed counts on
+    its six-hour cycle. Never use imported leads as the reply-rate denominator;
+    use leads actually emailed.
 
 Facts, costs, and outcomes are distinct. Never invent a missing cost, rewrite a
 hypothesis after seeing results, or describe a small sample as conclusive.
