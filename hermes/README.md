@@ -87,10 +87,13 @@ fazer no navegador"):
 > Xphere o Hermes consegue enrolar e ativar campanhas — o gate ali é o
 > `confirmed:true` + aprovação humana no chat, não uma restrição de capability.
 
-### Crons ativos (2026-08)
+### Crons configurados (2026-08)
 
 - `hermes-memories-backup` — 02:00 ET diário, `scripts/hermes-backup.sh`, modo no-agent.
-- `email-verification-credits` — 09:00 ET diário, `verification-credits.py`, modo no-agent.
+- `email-verification-credits` — **pausado** desde 2026-08-21. A checagem de
+  `verification-credits.py` agora ocorre uma vez ao final de cada rodada de
+  prospecção e só é incluída no relatório quando algum saldo fica abaixo do
+  limite configurado (500 por padrão) ou chega a zero.
 - `weekly-health-check` — **pausado** desde 2026-08-10 (custo recorrente).
 
 ## Notion + Health Check semanal (adicionado 2026-07-08)

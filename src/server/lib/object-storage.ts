@@ -63,6 +63,15 @@ async function getR2Client(): Promise<import('@aws-sdk/client-s3').S3Client> {
                 accessKeyId: process.env.R2_ACCESS_KEY_ID!,
                 secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
             },
+            // A stuck request must fail, never hang. The SDK ships with no request
+            // timeout and a 50-socket pool, so one socket that is never released stays
+            // checked out for the life of the process; enough of them and every later
+            // call queues behind them with nothing to break the wait.
+            requestHandler: {
+                connectionTimeout: 5_000,
+                requestTimeout: 30_000,
+                httpsAgent: { maxSockets: 200 },
+            },
         })
     }
     return r2Client
