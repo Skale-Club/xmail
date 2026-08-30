@@ -49,32 +49,36 @@ const WINDOW_MS = 5 * 60_000
 /**
  * Errors within one window before it counts as a spike.
  *
- * MEASURED against production on 2026-08-30, over the preceding 24 hours:
+ * MEASURED against production twice on 2026-08-30, on either side of a fix.
+ *
+ * Before, over the preceding 24 hours:
  *
  *   total error-level lines      770
  *   mean per 5-minute window     2.67
- *   busiest 5-minute window      23
- *   how often that peak recurs   ~32×/day, almost exactly every 45 minutes
+ *   busiest 5-minute window      23, recurring ~32×/day
  *
- * That peak is not random load. It is a single recurring defect —
- * `outreach.inbound.account_error`, a `value?.toISOString is not a function`
- * thrown once per native outreach account on every inbound-processing pass —
- * which accounts for ~398 of the last 400 errors. Until it is fixed it is the
- * structural noise floor, and any threshold at or below ~25 would fire on it
- * every 45 minutes and get the channel muted within a day.
+ * That peak was not load. It was one defect — `outreach.inbound.account_error`,
+ * a `value?.toISOString is not a function` thrown once per native outreach
+ * account on every inbound pass — accounting for ~398 of every 400 errors. It
+ * forced the threshold up to 60 just to clear its noise floor, which is the
+ * cost of calibrating against a system you have not fixed yet.
  *
- * 60 sits ~2.6× above that recurring burst and ~22× above the mean, so the
- * known noise stays silent while a genuinely broken endpoint — which produces
- * hundreds a minute — trips it immediately. The signal is the jump, not the
- * errors.
+ * After the fix, in 35 minutes spanning a run that ingested 608 backlogged
+ * messages: **zero** error-level lines, and all 29 native cursors reporting
+ * success. The floor is now genuinely near zero.
  *
- * ONCE `outreach.inbound.account_error` IS FIXED, re-read a day of
- * `error_spike.baseline` lines and lower this to roughly 15; leaving it at 60
- * against a near-zero floor would make the detector insensitive.
+ * So 15. It is still far above a quiet baseline, and low enough that a broken
+ * endpoint — which produces hundreds a minute — trips it inside one window.
+ * The signal is the jump, not the errors; when the floor drops, the threshold
+ * has to drop with it or the detector goes blind.
+ *
+ * If a NEW recurring defect ever lifts the floor again, resist raising this to
+ * clear it: the alert would go quiet about everything else at the same time.
+ * Read a day of `error_spike.baseline` lines, then fix the defect.
  */
 const SPIKE_THRESHOLD = Number(process.env.ERROR_SPIKE_THRESHOLD) > 0
     ? Math.floor(Number(process.env.ERROR_SPIKE_THRESHOLD))
-    : 60
+    : 15
 
 /**
  * Silence after firing. An outage lasts longer than one window, and repeating

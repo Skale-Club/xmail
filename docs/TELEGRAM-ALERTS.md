@@ -123,9 +123,9 @@ docker logs xmail --since 24h 2>&1 | grep -ac '"level":"error"'
 docker logs xmail --since 24h -t 2>&1 | grep -a '"level":"error"' | awk '{print substr($1,1,13) "-" int(substr($1,15,2)/5)}' | sort | uniq -c | sort -rn | head
 ```
 
-### O pico não é carga: é um defeito recorrente
+### O pico não era carga: era um defeito recorrente
 
-Agrupando por `action`, **398 dos últimos 400 erros** são o mesmo:
+Agrupando por `action`, **398 dos últimos 400 erros** eram o mesmo:
 
 ```text
 outreach.inbound.account_error
@@ -134,20 +134,34 @@ TypeError: value?.toISOString is not a function
 ```
 
 Um erro por conta de outreach nativa, em cada passagem do processador de
-entrada. É a **base de ruído estrutural** enquanto não for corrigido — e a razão
-pela qual o valor provisório inicial de 25 estava errado: ficava 2 acima do pico
-recorrente e teria disparado de 45 em 45 minutos, silenciando o canal no
-primeiro dia.
+entrada — e, na prática, **nenhuma resposta a entrar nas caixas nativas**. Era a
+base de ruído estrutural, e a razão pela qual o valor provisório inicial de 25
+estava errado: ficava 2 acima do pico recorrente e teria disparado de 45 em 45
+minutos, silenciando o canal no primeiro dia.
 
-### Portanto: 60
+Foi corrigido no mesmo dia (`toDate` em `outreach-inbound.ts`). A corrida
+seguinte ingeriu **608 mensagens** que estavam retidas, com `errors: 0`.
 
-`ERROR_SPIKE_THRESHOLD=60` fica ~2,6× acima do pico recorrente e ~22× acima da
-média. O ruído conhecido não fala; um endpoint partido — que produz centenas por
-minuto — dispara de imediato. O sinal é o salto, não os erros.
+### A segunda medição, depois da correção
 
-> **Quando o `outreach.inbound.account_error` for corrigido**, a base cai para
-> perto de zero e 60 passa a ser insensível. Relê um dia de `error_spike.baseline`
-> e baixa para ~15.
+35 minutos, abrangendo essa corrida de 608 mensagens:
+
+| Métrica | Valor |
+| --- | --- |
+| Linhas de nível `error` | **0** |
+| Cursores nativos com erro | **0 de 29** |
+
+### Portanto: 15
+
+`ERROR_SPIKE_THRESHOLD=15`. Continua bem acima de uma base silenciosa, e baixo o
+suficiente para um endpoint partido — centenas de erros por minuto — disparar
+dentro de uma janela. O sinal é o salto, não os erros.
+
+> **Quando a base se move, o limiar move-se com ela.** 60 era o preço de calibrar
+> contra um sistema ainda por arranjar; mantê-lo com a base a zero deixaria o
+> detetor cego. E se um defeito recorrente novo levantar a base outra vez, a
+> resposta é **corrigir o defeito**, não subir o limiar acima dele — isso
+> silenciaria tudo o resto ao mesmo tempo.
 
 O módulo continua a medir-se a si próprio: de hora a hora escreve uma linha com
 `meanErrorsPerWindow`, `maxErrorsPerWindow` e o `configuredThreshold` em vigor.
