@@ -32,6 +32,15 @@ const PUBLIC_ROUTES: { method: string; path: string }[] = [
     { method: 'POST', path: '/api/auth/refresh' },
     { method: 'GET', path: '/api/system/branding' },
     { method: 'GET', path: '/api/system/mail-server-info' },
+    // Read-only alert-credential handoff for the external uptime probe, which runs on
+    // GitHub Actions and has no Supabase user to authenticate as. It is NOT unauthenticated:
+    // the handler requires an `x-monitor-token` matching MONITOR_API_TOKEN through a
+    // timing-safe compare, and returns 503 when that variable is unset, so it fails closed.
+    // It is listed here because the JWT gate below would otherwise 401 the request before
+    // the handler could ever read its own header — which is exactly what happened. The
+    // endpoint shipped with migration 023 in May 2026 and was unreachable until 2026-08-30:
+    // dead twice over, since MONITOR_API_TOKEN was also unset everywhere.
+    { method: 'GET', path: '/api/admin/integrations/monitor-config' },
 ]
 
 // GET-only autodiscover config (Apple .mobileconfig); a prefix because the path carries a query.
