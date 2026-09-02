@@ -21,7 +21,7 @@ import { emitFolderChange } from './lib/mail-events'
 import { allocateNextUid, recomputeFolderCounts } from './lib/folder-counts'
 import { getDkimConfigForEmail, toNodemailerDkim } from './lib/dkim'
 import { shouldSkipOwnDkimForRelay } from './lib/relay-dkim-policy'
-import { describeOutbound, isRelayConfigured, sendOutbound } from './lib/outbound-transport'
+import { describeOutbound, describeSendFailure, isRelayConfigured, sendOutbound } from './lib/outbound-transport'
 import { jsonbParam } from './lib/jsonb'
 
 // Find the companion mailboxes entry (for folder/message storage)
@@ -118,7 +118,7 @@ async function relayMessage(
         )
         console.log(`[SMTP:Relay] SUCCESS via ${result.via}:`, result.response)
     } catch (sendErr) {
-        console.error(`[SMTP:Relay] FAILED via ${describeOutbound()}:`, sendErr)
+        console.error(`[SMTP:Relay] FAILED (${describeSendFailure(sendErr)}) via ${describeOutbound()}:`, sendErr)
         throw sendErr
     }
 }

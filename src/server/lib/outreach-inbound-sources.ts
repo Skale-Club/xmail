@@ -10,7 +10,6 @@
  * user's read state. Nothing here reads isRead/\Seen and nothing here writes them.
  */
 
-import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { and, asc, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
@@ -23,6 +22,7 @@ import {
     type OutlookMailbox,
 } from '../../db/schema'
 import { decryptSecret } from './crypto'
+import { createImapClient } from './imap-client'
 import { sqlTimestamp } from './sql-timestamp'
 import { createLogger } from './logger'
 import { runWithLock } from './cron-lock'
@@ -294,16 +294,20 @@ export function createImapInboundSource(account: ImapInboundAccount): InboundSou
     return {
         provider: 'smtp',
         async fetchPage(cursor, pageSize) {
-            const client = new ImapFlow({
+            // createImapClient: crash guard + bounded timeouts — see lib/imap-client.ts.
+            const client = createImapClient({
                 host: account.imapHost,
-                port: account.imapPort || 993,
-                secure: account.imapSecure !== false,
+                port: account.imapPort,
+                secure: account.imapSecure,
                 auth: { user: account.imapUsername, pass: decryptSecret(account.imapPassword) },
-                logger: false,
-                connectionTimeout: IMAP_CONNECT_TIMEOUT_MS,
-                greetingTimeout: IMAP_GREETING_TIMEOUT_MS,
-                socketTimeout: IMAP_SOCKET_TIMEOUT_MS,
-            })
+                // The generic defaults in imap-client.ts are a ceiling for paths with no
+                // budget; this one has a measured budget, so it keeps the constants above.
+                timeouts: {
+                    connectionTimeout: IMAP_CONNECT_TIMEOUT_MS,
+                    greetingTimeout: IMAP_GREETING_TIMEOUT_MS,
+                    socketTimeout: IMAP_SOCKET_TIMEOUT_MS,
+                },
+            }, { emailAccountId: account.id, purpose: 'inbound-ingest' })
 
             const runFetch = async (): Promise<InboundSourcePage> => {
                 try {

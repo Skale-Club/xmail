@@ -204,22 +204,42 @@ curl -sS -o /dev/null -w "%{http_code}\n" "$SUPABASE_URL/auth/v1/health"
 
 ### Mode 3: `/health/ready` itself times out or hangs
 
-**Symptom:** Probe client reports timeout (no HTTP response at all).
+**Symptom:** Probe client reports timeout (no HTTP response at all — the
+external probe logs `HTTP /health/ready → 000`).
 
-**Likely causes:**
+Since 2026-09-02 this should be rare: the database probe inside
+`runReadinessChecks` is bounded to 10 s (`READINESS_DB_TIMEOUT_MS`), the auth
+probe to 5 s, so a hung dependency produces a **503 with a body** naming it
+rather than no response. If you still see `000`:
 
 1. **Process is wedged** — event loop blocked. Liveness (`/health`) will
-   also fail; pod will be restarted by orchestrator.
+   also fail. Docker only restarts on exit, so redeploy to bounce it.
 2. **Node process out of memory** — check container memory metrics; bump
    limits or fix the leak.
-3. **Both DB *and* Auth probes timing out simultaneously** — `runReadinessChecks`
-   uses `Promise.allSettled` so it bounds latency to the slowest probe.
-   Typical worst case is ~10s; longer suggests a layer-4 issue (NAT/SNAT
-   exhaustion, DNS resolver hang).
+3. **Traefik/Coolify not routing** — `curl http://localhost:9001/health` on the
+   host answers while `https://mail.skale.club/health` does not.
 
 **Triage:** Use `/health` to disambiguate. If `/health` responds quickly but
-`/health/ready` hangs, the issue is downstream (DB or Auth). If both hang,
-the issue is the Node process.
+`/health/ready` returns 503, the issue is downstream (DB or Auth) and the
+body says which. If both hang, the issue is the Node process or the proxy.
+
+#### The 2026-09-01 case: database hung, process alive
+
+For ten hours `/health/ready` gave `000` while ports 587/993 stayed green.
+Every query had stopped returning; nothing restarts a process for that. The
+`db-liveness` watchdog (`src/server/lib/db-liveness.ts`) now probes
+`select 1` through the application pool every 30 s and, after 5 minutes of
+continuous failure, exits non-zero so `--restart unless-stopped` brings up a
+fresh process with fresh connections. What to expect in Telegram: 🛑 after
+the second failed probe, ♻️ at the exit, ✅ once queries answer again.
+
+```bash
+docker logs xmail --since 2h 2>&1 | grep -a 'db.liveness'
+```
+
+If the container restarts every few minutes, the database itself is down
+(status.supabase.com); the restarts stop on their own when it returns.
+`DB_LIVENESS_EXIT_AFTER_MS=0` disables the exit and keeps the alerts.
 
 ---
 

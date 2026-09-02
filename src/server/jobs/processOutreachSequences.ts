@@ -17,6 +17,7 @@ import {
 import { incrementCampaignStats } from '../lib/outreach-sender'
 import { generateOutreachToken } from '../lib/outreach-tokens'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
+import { OutboundCircuit } from '../lib/outbound-circuit'
 
 const log = createLogger('outreach.processor')
 const TICK_HISTORY_SIZE = 100
@@ -205,7 +206,21 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
         }
     }
 
+    // Trips after consecutive TRANSPORT failures (port 25 blocked, DNS down, …) and ends the
+    // tick: nothing later in the batch would fare better, every extra attempt costs a lead one
+    // of its retries, and the alert channel needs one summary, not one line per lead. Leads
+    // left unprocessed keep their next_scheduled_at and are picked up by the next tick.
+    const circuit = new OutboundCircuit()
+
     for (const campaignLead of pendingLeads) {
+        if (circuit.open) {
+            log.error({
+                action: 'outreach.processor.outbound_circuit_open',
+                consecutiveTransportFailures: circuit.consecutiveTransportFailures,
+                remaining: pendingLeads.length - result.processed,
+            }, 'outbound transport is failing for every send; ending this tick early')
+            break
+        }
         result.processed++
         try {
             const { campaign, lead } = campaignLead
@@ -320,6 +335,7 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 continue
             }
             if (dispatchResult.status === 'retry_scheduled') {
+                circuit.record(dispatchResult.code)
                 await db.update(campaignLeads)
                     .set({ nextScheduledAt: dispatchResult.nextAttemptAt, updatedAt: new Date() })
                     .where(eq(campaignLeads.id, campaignLead.id))
@@ -332,6 +348,7 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 continue
             }
             if (dispatchResult.status === 'held' || dispatchResult.status === 'exhausted' || dispatchResult.status === 'failed') {
+                circuit.record(dispatchResult.status === 'failed' ? dispatchResult.code : null)
                 await db.update(campaignLeads)
                     .set({ nextScheduledAt: null, updatedAt: new Date() })
                     .where(eq(campaignLeads.id, campaignLead.id))
@@ -339,6 +356,7 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 continue
             }
 
+            circuit.record(null)
             const sentAt = new Date()
             const progressAdvanced = await finalizeCampaignDispatchProgress({
                 freshSend: dispatchResult.status === 'sent',
