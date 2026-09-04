@@ -78,3 +78,4 @@ temp
 .tg-notify-*.txt
 # Alert credentials cached by the uptime workflow.
 .alert-creds/
+.baseline/

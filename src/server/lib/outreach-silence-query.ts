@@ -6,10 +6,14 @@
 
 import { sql } from 'drizzle-orm'
 import { db } from '../../db'
-import { computeLockKey, KNOWN_LOCK_NAMES } from './cron-lock'
+import { computeLockKey, getInFlightJobs, getRecentJobTimeouts, KNOWN_LOCK_NAMES } from './cron-lock'
 import type { SilenceMetrics } from './outreach-silence'
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
+/** Janela do check "funil parado" — ver FUNNEL_STALLED_RUN_AGE_DAYS em outreach-silence.ts. */
+const SEVEN_DAYS_MS = 7 * ONE_DAY_MS
+/** Janela do check de custo sem preço — o suficiente para cobrir uma amortização mensal inteira. */
+const THIRTY_FIVE_DAYS_MS = 35 * ONE_DAY_MS
 
 /**
  * `runWithLock` (cron-lock.ts) now bounds every job body to at most 10 minutes by default (some
@@ -25,6 +29,8 @@ const STALE_LOCK_THRESHOLD_MS = 15 * 60 * 1000
 
 export async function computeSilenceMetrics(now: Date = new Date()): Promise<SilenceMetrics> {
     const cutoff24h = new Date(now.getTime() - ONE_DAY_MS).toISOString()
+    const cutoff7d = new Date(now.getTime() - SEVEN_DAYS_MS).toISOString()
+    const cutoff35d = new Date(now.getTime() - THIRTY_FIVE_DAYS_MS).toISOString()
     const staleLockCutoff = new Date(now.getTime() - STALE_LOCK_THRESHOLD_MS).toISOString()
 
     const raw = await db.execute(sql`
@@ -68,7 +74,38 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
             (SELECT count(*) FROM mail_messages
                 WHERE jsonb_typeof(headers) = 'string') AS bad_mail_headers,
             (SELECT count(*) FROM outreach_provider_events
-                WHERE jsonb_typeof(to_addresses) = 'string') AS bad_event_to_addresses
+                WHERE jsonb_typeof(to_addresses) = 'string') AS bad_event_to_addresses,
+            -- Funnel stalled (kind: funnel_stalled) -- see FUNNEL_STALLED_RUN_AGE_DAYS in
+            -- outreach-silence.ts. Same source_run_id join as measureProspectingOutcomes.ts,
+            -- just over a 7-day window instead of 24h.
+            (SELECT count(*) FROM prospecting_runs r
+                WHERE r.created_at < ${cutoff7d}
+                  AND NOT EXISTS (
+                      SELECT 1 FROM leads l
+                      WHERE l.custom_fields ->> 'source_run_id' = r.idempotency_key
+                  )) AS stale_prospecting_runs_without_leads,
+            (SELECT coalesce(max(extract(epoch from (${now.toISOString()}::timestamptz - r.created_at)) / 86400), 0)::int
+                FROM prospecting_runs r
+                WHERE r.created_at < ${cutoff7d}
+                  AND NOT EXISTS (
+                      SELECT 1 FROM leads l
+                      WHERE l.custom_fields ->> 'source_run_id' = r.idempotency_key
+                  )) AS oldest_stale_prospecting_run_days,
+            (SELECT count(*) FROM email_accounts
+                WHERE warmup_source = 'internal' AND status = 'verified'
+                  AND warmup_current_day >= warmup_days) AS ramped_warmup_inboxes,
+            (SELECT count(*) FROM outreach_emails
+                WHERE sent_at IS NOT NULL AND sent_at >= ${cutoff7d}) AS outreach_sends_7d,
+            -- Unpriced cost (kind: unpriced_cost_share) -- see UNPRICED_COST_SHARE_THRESHOLD in
+            -- outreach-silence.ts. 35-day window to span one full monthly amortization.
+            (SELECT count(*) FROM outreach_cost_entries
+                WHERE occurred_at >= ${cutoff35d}) AS cost_entries_35d,
+            (SELECT count(*) FROM outreach_cost_entries
+                WHERE occurred_at >= ${cutoff35d}
+                  AND detail ->> 'rate_missing' = 'true') AS unpriced_cost_entries_35d,
+            (SELECT coalesce(jsonb_agg(DISTINCT category), '[]'::jsonb) FROM outreach_cost_entries
+                WHERE occurred_at >= ${cutoff35d}
+                  AND detail ->> 'rate_missing' = 'true') AS unpriced_cost_categories_35d
     `)
 
     const rows = (Array.isArray(raw) ? raw : (raw as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>
@@ -93,6 +130,8 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
         }
     })
 
+    const unpricedCostCategories = (row['unpriced_cost_categories_35d'] ?? []) as string[]
+
     return {
         warmupEligibleInboxes: n('warmup_eligible_inboxes'),
         warmupSends24h: n('warmup_sends_24h'),
@@ -100,6 +139,17 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
         enrichedRunsWithoutLeads: n('enriched_runs_without_leads'),
         enrichedRunsWithoutEnrichmentCount: n('enriched_runs_without_enrichment_count'),
         doubleEncodedJsonbColumns: doubleEncoded,
+        // In-memory, not SQL -- see JOB_TIMEOUT_RATE_THRESHOLD_PER_HOUR in outreach-silence.ts.
+        recentJobTimeouts: getRecentJobTimeouts(now),
+        // In-memory, not SQL -- see ORPHANED_JOBS_THRESHOLD in outreach-silence.ts.
+        inFlightJobs: getInFlightJobs(now),
+        staleProspectingRunsWithoutLeads: n('stale_prospecting_runs_without_leads'),
+        oldestStaleProspectingRunAgeDays: n('oldest_stale_prospecting_run_days'),
+        rampedWarmupInboxes: n('ramped_warmup_inboxes'),
+        outreachSends7d: n('outreach_sends_7d'),
+        costEntries35d: n('cost_entries_35d'),
+        unpricedCostEntries35d: n('unpriced_cost_entries_35d'),
+        unpricedCostCategories,
         staleAdvisoryLocks,
     }
 }

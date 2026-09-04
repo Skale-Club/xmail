@@ -42,7 +42,7 @@ docker build -t xmail:local .
 docker compose up
 
 # Production deploy: automatic on git push to main
-git push origin main   # triggers .github/workflows/deploy-hetzner.yml
+git push origin main   # triggers .github/workflows/build-deploy.yml (deploy-hetzner.yml is LEGACY)
 ```
 
 ### Relevant GitHub Secrets

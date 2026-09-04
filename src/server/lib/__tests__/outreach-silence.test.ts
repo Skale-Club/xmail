@@ -18,6 +18,15 @@ function metrics(overrides: Partial<SilenceMetrics> = {}): SilenceMetrics {
         enrichedRunsWithoutEnrichmentCount: 0,
         doubleEncodedJsonbColumns: [],
         staleAdvisoryLocks: [],
+        recentJobTimeouts: { windowMs: 60 * 60 * 1000, total: 0, byJob: {} },
+        inFlightJobs: { inFlight: 0, orphaned: 0, oldestAgeMs: null, orphansByJob: {} },
+        staleProspectingRunsWithoutLeads: 0,
+        oldestStaleProspectingRunAgeDays: 0,
+        rampedWarmupInboxes: 0,
+        outreachSends7d: 0,
+        costEntries35d: 0,
+        unpricedCostEntries35d: 0,
+        unpricedCostCategories: [],
         ...overrides,
     }
 }
@@ -129,6 +138,191 @@ describe('runs enriched sem resultado', () => {
             NOW,
         )
         expect(alerts.every((a) => a.severity === 'warning')).toBe(true)
+    })
+})
+
+describe('taxa de timeout de job (job_timeout_rate)', () => {
+    it('fica calado na base saudável — 8/h é o pior caso plausível de 7-8/dia', () => {
+        const alerts = buildSilenceAlerts(
+            metrics({
+                recentJobTimeouts: {
+                    windowMs: 60 * 60 * 1000,
+                    total: 8,
+                    byJob: { 'outreach-replies-processor': 5, 'outreach-bounces-processor': 3 },
+                },
+            }),
+            NOW,
+        )
+        expect(alerts).toEqual([])
+    })
+
+    it('fica calado numa instalação nova/vazia', () => {
+        expect(kinds(metrics({ recentJobTimeouts: { windowMs: 60 * 60 * 1000, total: 0, byJob: {} } }))).toEqual([])
+    })
+
+    it('alerta como crítico acima do limiar e nomeia o pior ofensor', () => {
+        // O defeito real: o timeout do runWithLock libera a lock via COMMIT, então
+        // stale_advisory_lock não vê nada — este check existe exatamente para esse buraco.
+        const alerts = buildSilenceAlerts(
+            metrics({
+                recentJobTimeouts: {
+                    windowMs: 60 * 60 * 1000,
+                    total: 13,
+                    byJob: { 'outreach-replies-processor': 9, 'outreach-bounces-processor': 4 },
+                },
+            }),
+            NOW,
+        )
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'critical', kind: 'job_timeout_rate' })
+        expect(alerts[0].message).toContain('13 job timeout(s)')
+        expect(alerts[0].message).toContain('outreach-replies-processor (9)')
+        expect(alerts[0].message).toContain('stale_advisory_lock does not catch this')
+    })
+})
+
+describe('corpos de job órfãos (orphaned_job_bodies)', () => {
+    it('fica calado com zero órfãos', () => {
+        expect(kinds(metrics({
+            inFlightJobs: { inFlight: 3, orphaned: 0, oldestAgeMs: 5000, orphansByJob: {} },
+        }))).toEqual([])
+    })
+
+    it('fica calado na base saudável — até 2 órfãos momentâneos (os dois jobs sem timeout de socket)', () => {
+        const alerts = buildSilenceAlerts(
+            metrics({
+                inFlightJobs: {
+                    inFlight: 2,
+                    orphaned: 2,
+                    oldestAgeMs: 4000,
+                    orphansByJob: { 'outreach-replies-processor': 1, 'outreach-bounces-processor': 1 },
+                },
+            }),
+            NOW,
+        )
+        expect(alerts).toEqual([])
+    })
+
+    it('alerta como crítico acima do limiar, nomeando o pior ofensor e a idade do mais antigo', () => {
+        // O defeito real: 2026-09-01/02 — runWithLock libera a lock no timeout mas não cancela o
+        // corpo do job, e a promise órfã continua rodando por horas segurando uma conexão do pool.
+        const alerts = buildSilenceAlerts(
+            metrics({
+                inFlightJobs: {
+                    inFlight: 5,
+                    orphaned: 5,
+                    oldestAgeMs: 14 * 60 * 60 * 1000, // 14h — a idade real do incidente
+                    orphansByJob: { 'outreach-replies-processor': 3, 'outreach-bounces-processor': 2 },
+                },
+            }),
+            NOW,
+        )
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'critical', kind: 'orphaned_job_bodies' })
+        expect(alerts[0].message).toContain('5 orphaned job body(ies)')
+        expect(alerts[0].message).toContain('14h')
+        expect(alerts[0].message).toContain('outreach-replies-processor (3)')
+    })
+
+    it('formata a idade do órfão mais antigo em minutos quando menor que uma hora', () => {
+        const alerts = buildSilenceAlerts(
+            metrics({
+                inFlightJobs: {
+                    inFlight: 3,
+                    orphaned: 3,
+                    oldestAgeMs: 5 * 60 * 1000,
+                    orphansByJob: { 'warmup-mesh-processor': 3 },
+                },
+            }),
+            NOW,
+        )
+        expect(alerts[0].message).toContain('5min')
+    })
+
+    it('não dispara pela mera acumulação de corpos em voo sem nenhum órfão confirmado', () => {
+        // inFlight alto mas orphaned=0 é regime saudável — jobs rodando, nenhum estourou o budget.
+        expect(kinds(metrics({
+            inFlightJobs: { inFlight: 12, orphaned: 0, oldestAgeMs: 30_000, orphansByJob: {} },
+        }))).toEqual([])
+    })
+})
+
+describe('funil parado (funnel_stalled)', () => {
+    it('fica calado numa instalação nova/vazia — sem run e sem caixa rampada', () => {
+        expect(kinds(metrics())).toEqual([])
+    })
+
+    it('fica calado com caixa rampada mas envios recentes existindo', () => {
+        expect(kinds(metrics({ rampedWarmupInboxes: 3, outreachSends7d: 5 }))).toEqual([])
+    })
+
+    it('avisa quando há runs antigos sem lead atribuído, com contagem e idade', () => {
+        const alerts = buildSilenceAlerts(
+            metrics({ staleProspectingRunsWithoutLeads: 5, oldestStaleProspectingRunAgeDays: 20 }),
+            NOW,
+        )
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'warning', kind: 'funnel_stalled' })
+        expect(alerts[0].message).toContain('5 prospecting run(s)')
+        expect(alerts[0].message).toContain('oldest 20d')
+    })
+
+    it('avisa quando o mesh está totalmente rampado e nada foi enviado em 7 dias', () => {
+        // O defeito real: 20 dias de mesh saudável e ativo, zero linhas em outreach_emails desde
+        // sempre — as caixas estão prontas e nada as usa.
+        const alerts = buildSilenceAlerts(metrics({ rampedWarmupInboxes: 4, outreachSends7d: 0 }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'warning', kind: 'funnel_stalled' })
+        expect(alerts[0].message).toContain('4 warm-up inbox(es)')
+        expect(alerts[0].message).toContain('sent 0 message(s)')
+    })
+
+    it('não dispara pela mera ausência de caixa rampada, mesmo com zero envios', () => {
+        // Sem caixa rampada, zero envios é o correto (nada terminou de esquentar ainda).
+        expect(kinds(metrics({ rampedWarmupInboxes: 0, outreachSends7d: 0 }))).toEqual([])
+    })
+
+    it('junta as duas frentes numa única mensagem quando ambas disparam', () => {
+        const alerts = buildSilenceAlerts(
+            metrics({
+                staleProspectingRunsWithoutLeads: 2,
+                oldestStaleProspectingRunAgeDays: 9,
+                rampedWarmupInboxes: 1,
+                outreachSends7d: 0,
+            }),
+            NOW,
+        )
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0].message).toContain('2 prospecting run(s)')
+        expect(alerts[0].message).toContain('1 warm-up inbox(es)')
+    })
+})
+
+describe('custo sem preço (unpriced_cost_share)', () => {
+    it('fica calado numa instalação nova/vazia — sem lançamento nenhum', () => {
+        expect(kinds(metrics({ costEntries35d: 0, unpricedCostEntries35d: 0 }))).toEqual([])
+    })
+
+    it('fica calado abaixo da amostra mínima, mesmo com 100% sem preço', () => {
+        // Poucos lançamentos logo após o go-live não podem já ler como "maioria sem preço".
+        expect(kinds(metrics({ costEntries35d: 3, unpricedCostEntries35d: 3, unpricedCostCategories: ['inbox_subscription'] }))).toEqual([])
+    })
+
+    it('fica calado com um único provedor desconhecido — share abaixo da maioria', () => {
+        expect(kinds(metrics({ costEntries35d: 34, unpricedCostEntries35d: 10, unpricedCostCategories: ['domain'] }))).toEqual([])
+    })
+
+    it('avisa quando a maioria da janela está sem preço, com contagem e categorias', () => {
+        // O defeito real: 29 de 34 lançamentos de inbox_subscription sem preço — os
+        // USD 12,50/mês reportados ficam ~7x abaixo do gasto real.
+        const alerts = buildSilenceAlerts(
+            metrics({ costEntries35d: 34, unpricedCostEntries35d: 29, unpricedCostCategories: ['inbox_subscription'] }),
+            NOW,
+        )
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'warning', kind: 'unpriced_cost_share' })
+        expect(alerts[0].message).toContain('29 of 34 cost entries')
+        expect(alerts[0].message).toContain('inbox_subscription')
     })
 })
 
