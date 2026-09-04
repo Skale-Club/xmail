@@ -23,7 +23,10 @@ const logMock = vi.hoisted(() => ({
     debug: vi.fn(),
 }))
 
-vi.mock('../../../db', () => ({ db: {}, queryClient: { reserve: reserveMock } }))
+// runWithLock now reserves from jobQueryClient (db/index.ts), not queryClient — see cron-lock.ts's
+// import change. Both are mocked; queryClient stays present (used as getPoolSnapshot's default
+// arg) even though this file's tests always pass getPoolSnapshot an explicit client.
+vi.mock('../../../db', () => ({ db: {}, queryClient: { reserve: reserveMock }, jobQueryClient: { reserve: reserveMock } }))
 vi.mock('../logger', () => ({ createLogger: () => logMock }))
 
 import { getInFlightJobs, getPoolSnapshot, getRecentJobTimeouts, JOB_TIMEOUT_BUDGETS_MS, runWithLock } from '../cron-lock'

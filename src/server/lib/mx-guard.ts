@@ -13,13 +13,125 @@
 import { promises as dns } from 'dns'
 import { queryClient } from '../../db'
 
+// ─── Own-host exemption for the connect-rate limit ───────────────────────────
+//
+// 2026-09 incident: 840 "Invalid greeting ... 421 4.7.0 Too many connections from your IP" over
+// 7 days, 838 of them in one post-restart burst on 2026-09-02. Every one of those 421s was our
+// OWN `checkConnectRate` below, rejecting our OWN warm-up mesh: mesh sends route between our own
+// inboxes, every platform domain's MX points at this same server, and a drained post-restart
+// backlog opens connections faster than CONN_MAX/CONN_WINDOW_MS allows. Nothing was permanently
+// lost (the 4xx retry always won eventually) but the mesh was fighting itself.
+//
+// This is the connect-time sibling of `isOwnMeshSender` below, which exempts the same mesh from
+// greylisting at RCPT TO. It can't be reused here: RCPT TO knows the envelope sender, so it can
+// check an exact `email_accounts` match; `onConnect` fires before any sender is known, so the
+// only signal available is the source IP. Hence a distinct exemption, keyed on IP instead.
+//
+// "Our own host" is three non-overlapping signals, all derived from configuration/DNS rather
+// than a hardcoded literal:
+//   - loopback (127.0.0.0/8, ::1) — a same-container process connecting via the loopback route.
+//   - the Docker bridge range (172.16.0.0/12, where Docker allocates the default `bridge`
+//     network and every user-defined network including `coolify`) — a container-to-container
+//     hop that never leaves the host's internal networking.
+//   - MAIL_HOST's currently-resolved public IP(s) — MAIL_HOST is the name our own MX/PTR records
+//     point at (see CLAUDE.md "Mail identity"); this covers self-connections that hairpin back in
+//     over the public interface rather than staying on loopback. Re-resolved periodically (see
+//     `refreshOwnHostIpCache`) rather than resolved once at startup, so a host migration that
+//     changes the A record doesn't leave a stale exemption (or a stale miss) in place forever.
+//     Deliberately reuses the existing `MAIL_HOST` env var already wired into the container
+//     (see build-deploy.yml's `run_app_container`) instead of introducing a new one.
+//
+// TRADE-OFF (be conservative reading this): this removes a DoS guard — the very thing this
+// function exists for — for any traffic that *appears* to originate from our own IP. What still
+// stands guard for everyone else: Spamhaus DNSBL (`isSpamhausListed`, right below, unaffected),
+// greylisting for any sender that isn't an exact, currently-verified mesh account
+// (`isOwnMeshSender`/`shouldGreylist`), and SPF/DKIM/DMARC alignment checked at DATA
+// (`verifyInbound`, in mx-server.ts's `onData`) once the full message is available. An attacker
+// cannot simply claim to be one of these IPs to ride this exemption: `session.remoteAddress` is
+// populated from the actual TCP connection's source address at the kernel level, not from
+// anything the client sends over the wire — to make the accepted connection's packets carry a
+// forged source IP the attacker would need to complete the full TCP three-way handshake (SYN,
+// SYN-ACK, ACK) as that forged address, which requires seeing the SYN-ACK (and its
+// server-generated sequence number) in order to ACK it; that traffic is routed back toward the
+// real owner of the claimed IP, not to the attacker. Blind (off-path) TCP sequence-number
+// prediction to forge a fully-established connection this way is a known but now-impractical
+// attack against modern OSes' randomized initial sequence numbers, and is a wholly different
+// (and far harder) threat than the source-IP spoofing that works fine for connectionless UDP.
+
+const DOCKER_BRIDGE_MIN_OCTET = 16 // Docker allocates bridge networks from 172.16.0.0/12
+const DOCKER_BRIDGE_MAX_OCTET = 31
+
+/** Strips an IPv4-mapped-IPv6 prefix ("::ffff:127.0.0.1" → "127.0.0.1") some Node dual-stack
+ * sockets report; a no-op for anything else. */
+function normalizeIp(ip: string): string {
+    const lower = ip.toLowerCase()
+    return lower.startsWith('::ffff:') ? lower.slice('::ffff:'.length) : lower
+}
+
+function isLoopbackIp(ip: string): boolean {
+    return ip === '::1' || ip === '127.0.0.1' || ip.startsWith('127.')
+}
+
+function isDockerBridgeIp(ip: string): boolean {
+    const match = /^172\.(\d{1,3})\./.exec(ip)
+    if (!match) return false
+    const second = Number(match[1])
+    return second >= DOCKER_BRIDGE_MIN_OCTET && second <= DOCKER_BRIDGE_MAX_OCTET
+}
+
+/** Background-refreshed cache of MAIL_HOST's currently-resolved IPv4 address(es), read
+ * synchronously by `isOwnHostIp` — connect-time checks must stay non-blocking, so this is never
+ * looked up inline. Starts empty (so a slow/failed first resolution just means the public-IP
+ * signal is unavailable yet; loopback/bridge checks are unaffected) and is populated by
+ * `refreshOwnHostIpCache`. */
+let ownHostIps = new Set<string>()
+
+const OWN_HOST_REFRESH_MS = 5 * 60 * 1000
+
+/** Re-resolves MAIL_HOST and replaces the cache. Exported so tests can await one resolution
+ * deterministically instead of racing a background timer. On failure the PREVIOUS cache is left
+ * untouched — a transient DNS blip must not silently revoke a working exemption (or, in the
+ * inverse case, fabricate one from an empty cache misread as "not our IP"). */
+export async function refreshOwnHostIpCache(): Promise<void> {
+    const host = process.env.MAIL_HOST
+    if (!host) return
+    try {
+        const addrs = await dns.resolve4(host)
+        ownHostIps = new Set(addrs)
+    } catch (err) {
+        console.error('[MX] failed to resolve MAIL_HOST for own-host-IP exemption:', (err as Error)?.message)
+    }
+}
+
+void refreshOwnHostIpCache()
+const ownHostRefreshTimer = setInterval(() => { void refreshOwnHostIpCache() }, OWN_HOST_REFRESH_MS)
+ownHostRefreshTimer.unref()
+
+/**
+ * Is `ip` this host itself — loopback, the Docker bridge range, or MAIL_HOST's currently-resolved
+ * public IP? See the block comment above for what this is for and its trade-off.
+ */
+export function isOwnHostIp(ip: string): boolean {
+    const normalized = normalizeIp(ip)
+    if (isLoopbackIp(normalized)) return true
+    if (isDockerBridgeIp(normalized)) return true
+    return ownHostIps.has(normalized)
+}
+
 // ─── Connection rate limit ───────────────────────────────────────────────────
 
 const connectsByIp = new Map<string, { count: number; windowStart: number }>()
 const CONN_WINDOW_MS = 60_000
 const CONN_MAX = 10
 
+/**
+ * Sliding-window per-IP connection cap. Exempts our own host entirely (see `isOwnHostIp` above)
+ * — the exemption is checked first and short-circuits before touching `connectsByIp`, so our own
+ * mesh traffic never even occupies a slot in the map, and every other IP is rate-limited exactly
+ * as before.
+ */
 export function checkConnectRate(ip: string): boolean {
+    if (isOwnHostIp(ip)) return true
     const now = Date.now()
     const entry = connectsByIp.get(ip)
     if (!entry || now - entry.windowStart > CONN_WINDOW_MS) {

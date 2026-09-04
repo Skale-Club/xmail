@@ -321,6 +321,17 @@ export function buildSilenceAlerts(metrics: SilenceMetrics, now: Date = new Date
     // Aviso: um lançamento de custo com detail.rate_missing=true é gasto real gravado a zero —
     // ver outreach-costs.ts. Um provedor isolado sem rate cadastrada é esperado; a maioria da
     // janela sem preço não é.
+    //
+    // Transiente esperado (2026-09-04, migration 063): os 29 lançamentos de inbox_subscription
+    // gravados em 2026-09-01 para contas provider='native' (mailboxes self-hosted, custo marginal
+    // genuinamente zero) foram escritos ANTES da rate 'native' existir no price book, então ainda
+    // carregam rate_missing=true — outreach_cost_entries é append-only e congela o custo no
+    // momento da escrita (ver migration 051), então essas linhas antigas ficam como estão, não são
+    // reescritas. Este alerta continua disparando sobre elas até a amortização de 2026-10-01
+    // gravar linhas 'native' já precificadas e as linhas antigas saírem da janela de 35 dias.
+    // Isso é esperado e se autorresolve — NÃO abaixar o limiar nem excluir essas linhas para
+    // silenciar o alerta enquanto isso não acontece; qualquer uma das duas cegaria o alerta
+    // também para gasto genuinamente sem preço.
     if (metrics.costEntries35d >= MIN_COST_ENTRIES_FOR_SHARE_CHECK) {
         const share = metrics.unpricedCostEntries35d / metrics.costEntries35d
         if (share > UNPRICED_COST_SHARE_THRESHOLD) {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
-import { queryClient } from '../../db'
+import { jobQueryClient } from '../../db'
 import { createLogger } from './logger'
 
 // SEC-04 — cross-process / multi-tick cron mutual exclusion via Postgres advisory locks.
@@ -153,7 +153,10 @@ export interface PoolSnapshot {
  * upgrade. Any shape that doesn't match — including the whole client being unrecognizable —
  * degrades to `null` rather than throwing: metric collection must never break a job.
  */
-export function getPoolSnapshot(client: unknown = queryClient): PoolSnapshot | null {
+// Defaults to jobQueryClient, NOT queryClient: since Fase 2 every job reserves from the
+// jobs pool, so reporting the request-path pool here would log a number that has nothing
+// to do with the connections the job actually consumed.
+export function getPoolSnapshot(client: unknown = jobQueryClient): PoolSnapshot | null {
     try {
         const candidate = client as {
             options?: { max?: unknown }
@@ -539,9 +542,13 @@ export async function runWithLock(
 
     // Reserve a single connection so BEGIN, the lock and COMMIT travel on the
     // same client connection (and therefore the same pooled backend).
-    let reserved: Awaited<ReturnType<typeof queryClient.reserve>>
+    // Reserve from jobQueryClient (see src/db/index.ts), NOT the request-path queryClient — jobs
+    // pin one connection for their whole run, which is exactly the pattern the transaction
+    // pooler behind queryClient/DATABASE_URL is unsuited for. See db/index.ts's comment above
+    // jobQueryClient for the full rationale and pool-size arithmetic.
+    let reserved: Awaited<ReturnType<typeof jobQueryClient.reserve>>
     try {
-        reserved = await queryClient.reserve()
+        reserved = await jobQueryClient.reserve()
     } catch (reserveErr) {
         log.error(
             { action: 'cron.lock.reserve_failed', jobName, error: errorInfo(reserveErr) },
@@ -656,7 +663,7 @@ export async function runWithLock(
 
 async function endTransaction(
     jobName: string,
-    reserved: Awaited<ReturnType<typeof queryClient.reserve>>,
+    reserved: Awaited<ReturnType<typeof jobQueryClient.reserve>>,
     verb: 'COMMIT' | 'ROLLBACK',
 ): Promise<void> {
     try {

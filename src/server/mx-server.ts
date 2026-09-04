@@ -31,6 +31,7 @@ import {
     isSpamhausListed,
     shouldGreylist,
     isOwnMeshSender,
+    isOwnHostIp,
     hasValidFromHeader,
     isDateTooOld,
 } from './lib/mx-guard'
@@ -182,7 +183,15 @@ export function createMXServer() {
         async onConnect(session, callback) {
             const ip = session.remoteAddress || 'unknown'
 
-            if (!checkConnectRate(ip)) {
+            // Our own warm-up mesh routes between our own inboxes, all pointed at this same MX —
+            // a drained post-restart backlog can open connections faster than the rate limit
+            // allows, rate-limiting ourselves (measured: 838 of 840 "Invalid greeting" errors in
+            // one 2026-09-02 burst). See isOwnHostIp in mx-guard.ts for the exemption signals and
+            // the trade-off (this removes a DoS guard for our own apparent IP; Spamhaus,
+            // greylisting for anyone else, and SPF/DKIM/DMARC at DATA still stand).
+            if (isOwnHostIp(ip)) {
+                console.log(`[MX] Own-host connection exempted from connect-rate limit: ip=${ip}`)
+            } else if (!checkConnectRate(ip)) {
                 console.log(`[MX] Rate-limited: ${ip}`)
                 return callback(smtpError('4.7.0 Too many connections from your IP', 421))
             }

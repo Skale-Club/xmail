@@ -24,6 +24,7 @@ interface FakeAccountRow {
     id: string
     organizationId: string
     email: string
+    provider: string
     mailboxProvider: string | null
 }
 
@@ -32,6 +33,7 @@ function accountRow(overrides: Partial<FakeAccountRow> = {}): FakeAccountRow {
         id: 'acct-1',
         organizationId: 'org-1',
         email: 'a@example.com',
+        provider: 'smtp',
         mailboxProvider: 'icemail',
         ...overrides,
     }
@@ -89,6 +91,37 @@ describe('amortizeSubscriptionCosts', () => {
         await amortizeSubscriptionCosts(new Date('2026-08-13T00:00:00.000Z'))
 
         expect(recordCostMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ provider: null }))
+    })
+
+    it('records a native account (provider=native) with cost-provider "native", regardless of mailboxProvider', async () => {
+        // mailbox_provider defaults to 'manual' in the schema for every native account (it was
+        // never set to anything else) — the job must key off `provider`, not this label.
+        queryClientMock.mockResolvedValue([accountRow({ provider: 'native', mailboxProvider: 'manual' })])
+        recordCostMock.mockResolvedValue(costResult())
+
+        await amortizeSubscriptionCosts(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(recordCostMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ provider: 'native' }))
+    })
+
+    it('still records an icemail (provider=smtp) account with cost-provider "icemail"', async () => {
+        queryClientMock.mockResolvedValue([accountRow({ provider: 'smtp', mailboxProvider: 'icemail' })])
+        recordCostMock.mockResolvedValue(costResult())
+
+        await amortizeSubscriptionCosts(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(recordCostMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ provider: 'icemail' }))
+    })
+
+    it('does not let mailbox_provider="manual" leak into the cost entry for a native account', async () => {
+        queryClientMock.mockResolvedValue([accountRow({ provider: 'native', mailboxProvider: 'manual' })])
+        recordCostMock.mockResolvedValue(costResult())
+
+        await amortizeSubscriptionCosts(new Date('2026-08-13T00:00:00.000Z'))
+
+        const call = recordCostMock.mock.calls[0][1]
+        expect(call.provider).not.toBe('manual')
+        expect(call.provider).toBe('native')
     })
 
     it('pins occurredAt to the first instant of the billing month, not now()', async () => {

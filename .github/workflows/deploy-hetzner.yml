@@ -207,6 +207,7 @@ jobs:
               -e SUPABASE_ANON_KEY="${{ secrets.SUPABASE_ANON_KEY }}" \
               -e SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
               -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+              -e DIRECT_URL="${{ secrets.DIRECT_URL }}" \
               -e JWT_SECRET="${{ secrets.JWT_SECRET }}" \
               -e ENCRYPTION_KEY="${{ secrets.ENCRYPTION_KEY }}" \
               -e OUTLOOK_TOKEN_ENCRYPTION_KEY="${{ secrets.OUTLOOK_TOKEN_ENCRYPTION_KEY }}" \
@@ -377,6 +378,7 @@ jobs:
                   -e SUPABASE_ANON_KEY="${{ secrets.SUPABASE_ANON_KEY }}" \
                   -e SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
                   -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+                  -e DIRECT_URL="${{ secrets.DIRECT_URL }}" \
                   -e JWT_SECRET="${{ secrets.JWT_SECRET }}" \
                   -e ENCRYPTION_KEY="${{ secrets.ENCRYPTION_KEY }}" \
                   -e OUTLOOK_TOKEN_ENCRYPTION_KEY="${{ secrets.OUTLOOK_TOKEN_ENCRYPTION_KEY }}" \

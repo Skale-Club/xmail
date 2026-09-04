@@ -50,8 +50,73 @@ export const queryClient = postgres(connectionString, {
     },
 })
 
+// ─── Job query client — a SEPARATE pool for background jobs (cron-lock.ts's runWithLock) ───────
+//
+// `queryClient` above is sized and configured for the HTTP request path: many short-lived
+// transactions against Supabase's TRANSACTION pooler (DATABASE_URL, port 6543), which is exactly
+// what Supavisor's transaction mode is designed for.
+//
+// `runWithLock` in cron-lock.ts does the opposite: it calls `.reserve()` to pin ONE connection
+// for the entire job body — `BEGIN` → `pg_try_advisory_xact_lock` → the job's own (sometimes
+// multi-minute) work → `COMMIT` — a long-lived, session-scoped usage pattern that a transaction
+// pooler is explicitly not built for (Supavisor can and does recycle/reassign backend
+// connections between statements in that mode). Production showed 61 CONNECTION_DESTROYED /
+// ECONNRESET errors over 7 days, clustered on incident days, consistent with exactly that.
+//
+// `DIRECT_URL` (already used by drizzle.config.ts and scripts/verify-tables.ts for the same
+// "bypass the transaction pooler" reason) is preferred here; when it is unset this falls back to
+// `DATABASE_URL` — today's behavior, unchanged. This also isolates jobs' connection usage from
+// the request path entirely: a pile-up of long-running or orphaned job bodies (see cron-lock.ts's
+// in-flight/orphan tracking, added for the 2026-09-01/02 incident) can no longer exhaust
+// `queryClient`'s pool and starve the HTTP API along with it.
+//
+// POOL SIZE ARITHMETIC: cron-lock.ts's own comment on `runWithLock` records a MEASURED peak of
+// "up to 10 concurrent bodies" (e.g. warmup-mesh-processor and outreach-replies-processor
+// overlapping) across the 17 registered cron jobs — each concurrent body holds exactly one
+// reserved connection for its whole run. 10 (measured peak) + 2 (headroom for a manual one-off
+// script or a health probe sharing this same pool) = 12. Jobs are FEW and LONG (multi-second to
+// multi-minute bodies on a 1-minute-or-slower tick, not the high-frequency short queries the
+// request path makes), so this deliberately stays far below `queryClient`'s pool of 20 — a
+// larger pool here would buy nothing but more idle connections held open against Supabase's
+// shared connection ceiling.
+//
+// `prepare: false` unless PROVABLY not a transaction pooler: `DIRECT_URL`, when set, is expected
+// to be a non-transaction-pooler connection (e.g. Supabase's session pooler on port 5432, which
+// DOES support prepared statements) — but this file has no reliable way to prove that from an
+// arbitrary connection string, and a wrong guess would reintroduce the exact "prepared statement
+// does not exist" failure mode `prepare: false` exists to prevent on `queryClient` above. Kept
+// false unconditionally on both the `DIRECT_URL` and `DATABASE_URL` branches.
+const directConnectionString = process.env.DIRECT_URL
+const jobConnectionString = directConnectionString || connectionString
+console.log(
+    `[DB] jobQueryClient using ${directConnectionString ? 'DIRECT_URL' : 'DATABASE_URL (DIRECT_URL not set)'}`
+)
+
+export const jobQueryClient = postgres(jobConnectionString, {
+    max: 12, // see POOL SIZE ARITHMETIC above: 10 measured peak concurrent job bodies + 2 headroom
+    idle_timeout: Number(process.env.DB_IDLE_TIMEOUT_SECONDS || 300),
+    connect_timeout: Number(process.env.DB_CONNECT_TIMEOUT_SECONDS || 30),
+    max_lifetime: Number(process.env.DB_MAX_LIFETIME_SECONDS || 60 * 30),
+    // Must stay false unless proven otherwise — see the comment above.
+    prepare: false,
+    debug: isDev,
+    transform: {
+        undefined: null,
+    },
+    onnotice: (notice) => {
+        if (isDev) {
+            console.log('[DB Notice][jobs]', notice.message)
+        }
+    },
+    onclose: (connectionId) => {
+        if (isDev) {
+            console.log('[DB][jobs] Connection closed:', connectionId)
+        }
+    },
+})
+
 // Create Drizzle instance with logger in development
-export const db = drizzle(queryClient, { 
+export const db = drizzle(queryClient, {
     schema,
     logger: isDev ? {
         logQuery: (query, params) => {

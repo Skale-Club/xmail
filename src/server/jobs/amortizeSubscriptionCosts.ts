@@ -9,6 +9,14 @@ interface EmailAccountRow {
     id: string
     organizationId: string
     email: string
+    /** Sending mechanism (smtp / outlook / native) — see column comment in src/db/schema.ts. */
+    provider: string
+    /**
+     * Sourcing vendor label. Defaults to 'manual' in the schema even when nothing was ever
+     * set, so it is NOT a reliable signal that a mailbox was actually purchased manually —
+     * see the `provider === 'native'` branch below, which is why we don't price off this
+     * column alone.
+     */
     mailboxProvider: string | null
 }
 
@@ -60,7 +68,8 @@ export async function amortizeSubscriptionCosts(now: Date = new Date()): Promise
     let rows: EmailAccountRow[]
     try {
         rows = await queryClient<EmailAccountRow[]>`
-            SELECT id::text, organization_id::text AS "organizationId", email, mailbox_provider AS "mailboxProvider"
+            SELECT id::text, organization_id::text AS "organizationId", email, provider,
+                   mailbox_provider AS "mailboxProvider"
             FROM email_accounts
         `
     } catch (error) {
@@ -75,13 +84,21 @@ export async function amortizeSubscriptionCosts(now: Date = new Date()): Promise
     summary.accounts = rows.length
 
     for (const row of rows) {
+        // A native mailbox is self-hosted on the platform's own MX, on a domain the company
+        // already owns — it was never purchased from anyone and has no marginal cost. Price
+        // it against the 'native' rate (seeded at 0, migration 063) rather than
+        // `mailboxProvider`, which is a free-text sourcing-vendor label whose schema DEFAULT
+        // is 'manual' — indistinguishable, on a native account, from an unset value. Every
+        // other provider keeps resolving its rate off `mailboxProvider` exactly as before.
+        const costProvider = row.provider === 'native' ? 'native' : (row.mailboxProvider ?? null)
+
         const result = await recordCost(db, {
             organizationId: row.organizationId,
             category: 'inbox_subscription',
             basis: 'amortized',
             quantity: 1,
             unit: 'month',
-            provider: row.mailboxProvider ?? null,
+            provider: costProvider,
             emailAccountId: row.id,
             dedupKey: inboxSubscriptionDedupKey(row.id, occurredAt),
             occurredAt,
