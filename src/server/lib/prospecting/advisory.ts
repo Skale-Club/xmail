@@ -17,6 +17,7 @@
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import { db } from '../../../db'
 import { prospectCandidates, prospectingRuns } from '../../../db/schema'
+import { extractExpectedMetrics, scoreHypothesis } from './hypothesis-scoring'
 
 // ============================================================
 // db parameter typing
@@ -38,6 +39,7 @@ export type AdvisoryWarningCode =
     | 'segment_low_email_yield'
     | 'segment_no_replies'
     | 'segment_high_bounce'
+    | 'segment_hypothesis_refuted'
 
 export interface AdvisoryWarning {
     code: AdvisoryWarningCode
@@ -60,11 +62,27 @@ export interface AdvisoryReplyRate {
     n: number
 }
 
+/**
+ * Rollup of how often the pool's PRIOR runs' own stated hypotheses (see hypothesis.ts /
+ * hypothesis-scoring.ts) turned out to hold up. Only runs that stated an `expected`
+ * (scored via `scoreHypothesis`) count toward `scored_runs` — a run with no hypothesis at
+ * all contributes nothing here, the same way it contributes nothing to `warnings`.
+ */
+export interface AdvisoryHypothesisHistory {
+    scored_runs: number
+    confirmed: number
+    refuted: number
+    inconclusive: number
+}
+
 export interface Advisory {
     similar_runs: number
     scope: AdvisoryScope
     sample: AdvisorySample
     reply_rate: AdvisoryReplyRate | null
+    /** `null` when no prior run in the pool stated a scoreable hypothesis — additive
+     *  field, never required. */
+    hypothesis_history: AdvisoryHypothesisHistory | null
     warnings: AdvisoryWarning[]
 }
 
@@ -76,6 +94,7 @@ export function emptyAdvisory(): Advisory {
         scope: 'none',
         sample: { imported: 0, emailed: 0, replied: 0, bounced: 0, verified_email_rate: null },
         reply_rate: null,
+        hypothesis_history: null,
         warnings: [],
     }
 }
@@ -96,6 +115,11 @@ export interface AdvisoryPriorRun {
     candidatesObserved: number
     /** Candidates whose emailStatus is 'verified' or 'likely'. */
     candidatesVerifiedOrLikely: number
+    /** `prospecting_runs.discovered_count` — feeds the "discovered" hypothesis metric. */
+    discoveredCount: number
+    /** This run's own stated `hypothesis.expected` (see hypothesis-scoring.ts's
+     *  `extractExpectedMetrics`), or `null` when the run never stated one. */
+    hypothesisExpected: Record<string, string | number> | null
 }
 
 // Loose shape of the `filters` object accepted by POST /prospecting/searches
@@ -120,6 +144,13 @@ const MINIMUM_CANDIDATES_FOR_YIELD_WARNING = 25
 const LOW_EMAIL_YIELD_THRESHOLD = 0.30
 const HIGH_BOUNCE_RATE_THRESHOLD = 0.05
 const WILSON_Z = 1.96
+
+// Hypothesis-history warning: a single refuted run is not a trend — a stated hypothesis
+// is recorded once PER RUN (not per lead), so this floor is deliberately much lower than
+// MINIMUM_SAMPLE_FOR_PERFORMANCE_WARNINGS (which counts leads). Below this many SCORED
+// runs, refutations are surfaced in `hypothesis_history` for inspection but never promoted
+// to a `warnings` entry.
+const MINIMUM_SCORED_RUNS_FOR_HYPOTHESIS_WARNING = 3
 
 function normalizeToken(value: unknown): string | null {
     if (typeof value !== 'string') return null
@@ -249,6 +280,43 @@ function buildWarnings(pool: {
 }
 
 /**
+ * Scores each pool run's OWN stated hypothesis (if any) against that run's own final
+ * counters, and rolls the verdicts up into a summary. Returns `null` when no run in the
+ * pool ever stated a scoreable `expected` — the same "nothing to say" signal
+ * `hypothesis_history: null` carries on `Advisory`.
+ *
+ * This intentionally scores each run against ITS OWN measured values (not the pool's
+ * combined sample) — a hypothesis is a claim about that one run's segment, and averaging
+ * it into the pool sum would blur which run(s) actually confirmed or refuted it.
+ */
+function summarizeHypothesisHistory(pool: AdvisoryPriorRun[]): AdvisoryHypothesisHistory | null {
+    let confirmed = 0
+    let refuted = 0
+    let inconclusive = 0
+
+    for (const run of pool) {
+        if (!run.hypothesisExpected) continue
+
+        const score = scoreHypothesis(run.hypothesisExpected, {
+            discoveredCount: run.discoveredCount,
+            emailedCount: run.emailed,
+            repliedCount: run.replied,
+            attributedLeadCount: run.candidatesObserved,
+            verifiedOrLikelyLeadCount: run.candidatesVerifiedOrLikely,
+        })
+
+        if (score.overall === 'confirmed') confirmed++
+        else if (score.overall === 'refuted') refuted++
+        else inconclusive++
+    }
+
+    const scoredRuns = confirmed + refuted + inconclusive
+    if (scoredRuns === 0) return null
+
+    return { scored_runs: scoredRuns, confirmed, refuted, inconclusive }
+}
+
+/**
  * Pure core: given already-fetched prior-run stats and the filters for the run about to
  * be issued, decides which pool of history to learn from and summarizes it.
  *
@@ -274,12 +342,26 @@ export function buildAdvisory(priorRuns: AdvisoryPriorRun[], currentFilters: unk
     const candidatesVerifiedOrLikely = sumBy(pool, (row) => row.candidatesVerifiedOrLikely)
     const verifiedEmailRate = candidatesObserved > 0 ? candidatesVerifiedOrLikely / candidatesObserved : null
 
+    const warnings = buildWarnings({ emailed, replied, bounced, candidatesObserved, verifiedEmailRate })
+
+    const hypothesisHistory = summarizeHypothesisHistory(pool)
+    // A single refuted run is not a trend: below MINIMUM_SCORED_RUNS_FOR_HYPOTHESIS_WARNING,
+    // the refutation is still visible in `hypothesis_history` for inspection, but it is not
+    // promoted to a `warnings` entry that reads as an established pattern.
+    if (hypothesisHistory && hypothesisHistory.refuted > 0 && hypothesisHistory.scored_runs >= MINIMUM_SCORED_RUNS_FOR_HYPOTHESIS_WARNING) {
+        warnings.push({
+            code: 'segment_hypothesis_refuted',
+            evidence: `${hypothesisHistory.refuted} of ${hypothesisHistory.scored_runs} prior run(s) with a stated hypothesis in this segment refuted it (n=${hypothesisHistory.scored_runs}).`,
+        })
+    }
+
     return {
         similar_runs: similarRuns.length,
         scope,
         sample: { imported, emailed, replied, bounced, verified_email_rate: verifiedEmailRate },
         reply_rate: wilsonScoreInterval(replied, emailed),
-        warnings: buildWarnings({ emailed, replied, bounced, candidatesObserved, verifiedEmailRate }),
+        hypothesis_history: hypothesisHistory,
+        warnings,
     }
 }
 
@@ -311,6 +393,8 @@ export async function loadAdvisory(dbClient: DbClient, input: LoadAdvisoryInput)
             outcomeEmailed: prospectingRuns.outcomeEmailed,
             outcomeReplied: prospectingRuns.outcomeReplied,
             outcomeBounced: prospectingRuns.outcomeBounced,
+            discoveredCount: prospectingRuns.discoveredCount,
+            hypothesis: prospectingRuns.hypothesis,
         })
         .from(prospectingRuns)
         .where(and(...runConditions))
@@ -343,6 +427,8 @@ export async function loadAdvisory(dbClient: DbClient, input: LoadAdvisoryInput)
             bounced: run.outcomeBounced,
             candidatesObserved: counts?.total ?? 0,
             candidatesVerifiedOrLikely: counts?.verifiedOrLikely ?? 0,
+            discoveredCount: run.discoveredCount,
+            hypothesisExpected: extractExpectedMetrics(run.hypothesis),
         }
     })
 

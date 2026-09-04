@@ -10,6 +10,8 @@ function priorRun(overrides: Partial<AdvisoryPriorRun> = {}): AdvisoryPriorRun {
         bounced: 0,
         candidatesObserved: 0,
         candidatesVerifiedOrLikely: 0,
+        discoveredCount: 0,
+        hypothesisExpected: null,
         ...overrides,
     }
 }
@@ -71,6 +73,7 @@ describe('buildAdvisory: pool selection / scope', () => {
             scope: 'none',
             sample: { imported: 0, emailed: 0, replied: 0, bounced: 0, verified_email_rate: null },
             reply_rate: null,
+            hypothesis_history: null,
             warnings: [],
         })
     })
@@ -262,5 +265,91 @@ describe('buildAdvisory: warnings', () => {
         expect(highBounce?.evidence).toContain('50')
         const lowYield = performance.warnings.find((w) => w.code === 'segment_low_email_yield')
         expect(lowYield?.evidence).toContain('50')
+    })
+})
+
+describe('buildAdvisory: hypothesis_history', () => {
+    it('is null when no prior run in the pool stated a hypothesis', () => {
+        const run = priorRun({ searchFilters: {}, emailed: 40, replied: 4 })
+        const advisory = buildAdvisory([run], {})
+        expect(advisory.hypothesis_history).toBeNull()
+    })
+
+    it('scores each run against its OWN measured values and rolls verdicts up', () => {
+        const confirmedRun = priorRun({
+            searchFilters: {},
+            emailed: 100,
+            replied: 10,
+            hypothesisExpected: { reply_rate: '>=0.05' },
+        })
+        const refutedRun = priorRun({
+            searchFilters: {},
+            emailed: 100,
+            replied: 1,
+            hypothesisExpected: { reply_rate: '>=0.05' },
+        })
+        const noHypothesisRun = priorRun({ searchFilters: {}, emailed: 50, replied: 5 })
+
+        const advisory = buildAdvisory([confirmedRun, refutedRun, noHypothesisRun], {})
+        expect(advisory.hypothesis_history).toEqual({
+            scored_runs: 2,
+            confirmed: 1,
+            refuted: 1,
+            inconclusive: 0,
+        })
+    })
+
+    it('counts a hypothesis whose expectation could not be computed yet as inconclusive', () => {
+        const run = priorRun({
+            searchFilters: {},
+            emailed: 0,
+            replied: 0,
+            hypothesisExpected: { reply_rate: '>=0.05' },
+        })
+        const advisory = buildAdvisory([run], {})
+        expect(advisory.hypothesis_history).toEqual({ scored_runs: 1, confirmed: 0, refuted: 0, inconclusive: 1 })
+    })
+
+    it('does NOT emit segment_hypothesis_refuted for a single refuted run — one run is not a trend', () => {
+        const run = priorRun({
+            searchFilters: {},
+            emailed: 100,
+            replied: 0,
+            hypothesisExpected: { reply_rate: '>=0.05' },
+        })
+        const advisory = buildAdvisory([run], {})
+        expect(advisory.hypothesis_history).toMatchObject({ scored_runs: 1, refuted: 1 })
+        expect(advisory.warnings.map((w) => w.code)).not.toContain('segment_hypothesis_refuted')
+    })
+
+    it('emits segment_hypothesis_refuted once at least 3 scored runs include a refutation', () => {
+        const refuted = (n: number) => priorRun({
+            searchFilters: {},
+            emailed: 100,
+            replied: n,
+            hypothesisExpected: { reply_rate: '>=0.05' },
+        })
+        const runs = [refuted(0), refuted(10), refuted(1)] // refuted, confirmed, refuted
+        const advisory = buildAdvisory(runs, {})
+        expect(advisory.hypothesis_history).toEqual({ scored_runs: 3, confirmed: 1, refuted: 2, inconclusive: 0 })
+        const warning = advisory.warnings.find((w) => w.code === 'segment_hypothesis_refuted')
+        expect(warning).toBeDefined()
+        expect(warning!.evidence).toContain('2')
+        expect(warning!.evidence).toContain('3')
+    })
+
+    it('surfaces hypothesis_history even when the reply-count sample is below the insufficient_data floor', () => {
+        // Below MINIMUM_SAMPLE_FOR_PERFORMANCE_WARNINGS (30 emailed), only insufficient_data
+        // is emitted for the lead-count-based warnings — but hypothesis scoring is a
+        // per-run signal, not a per-lead one, so it must still be surfaced additively.
+        const runs = [
+            priorRun({ searchFilters: {}, emailed: 5, replied: 0, hypothesisExpected: { reply_rate: '>=0.05' } }),
+            priorRun({ searchFilters: {}, emailed: 5, replied: 0, hypothesisExpected: { reply_rate: '>=0.05' } }),
+            priorRun({ searchFilters: {}, emailed: 5, replied: 0, hypothesisExpected: { reply_rate: '>=0.05' } }),
+        ]
+        const advisory = buildAdvisory(runs, {})
+        expect(advisory.warnings.map((w) => w.code)).toContain('insufficient_data')
+        expect(advisory.hypothesis_history).toEqual({ scored_runs: 3, confirmed: 0, refuted: 3, inconclusive: 0 })
+        expect(advisory.warnings.map((w) => w.code)).toContain('segment_hypothesis_refuted')
     })
 })

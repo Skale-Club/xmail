@@ -28,6 +28,7 @@ function sourceRow(overrides: Partial<Parameters<typeof aggregateRunOutcomes>[0]
         importedAs: 'created' as const,
         leadId: 'lead-1',
         leadStatus: 'contacted',
+        emailVerificationStatus: null,
         sentAt: null,
         repliedAt: null,
         bouncedAt: null,
@@ -51,6 +52,8 @@ function runSnapshot(overrides: Partial<{
     outcomePositiveReplied: number
     outcomeBounced: number
     outcomeUnsubscribed: number
+    discoveredCount: number
+    hypothesis: Record<string, unknown> | null
 }> = {}) {
     return {
         id: 'run-1',
@@ -60,6 +63,8 @@ function runSnapshot(overrides: Partial<{
         outcomePositiveReplied: 0,
         outcomeBounced: 0,
         outcomeUnsubscribed: 0,
+        discoveredCount: 0,
+        hypothesis: null,
         ...overrides,
     }
 }
@@ -171,6 +176,42 @@ describe('aggregateRunOutcomes', () => {
         ])
         expect(result.get('run-1')).toMatchObject({ outcomeReplied: 2, outcomePositiveReplied: 1 })
     })
+
+    // ------------------------------------------------------------
+    // Hypothesis-scoring follow-up: attributedLeadCount / verifiedOrLikelyLeadCount
+    // ------------------------------------------------------------
+
+    it('counts every attributed lead, verified/likely or not, toward attributedLeadCount', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ leadId: 'lead-a', emailVerificationStatus: 'verified' }),
+            sourceRow({ leadId: 'lead-b', emailVerificationStatus: 'invalid' }),
+            sourceRow({ leadId: 'lead-c', emailVerificationStatus: null }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ attributedLeadCount: 3, verifiedOrLikelyLeadCount: 1 })
+    })
+
+    it('counts both verified and likely as verifiedOrLikelyLeadCount', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ leadId: 'lead-a', emailVerificationStatus: 'verified' }),
+            sourceRow({ leadId: 'lead-b', emailVerificationStatus: 'likely' }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ attributedLeadCount: 2, verifiedOrLikelyLeadCount: 2 })
+    })
+
+    it('counts a lead toward attribution even when it was never emailed', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ leadId: 'lead-a', emailVerificationStatus: 'verified', sentAt: null }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ attributedLeadCount: 1, verifiedOrLikelyLeadCount: 1, outcomeEmailed: 0 })
+    })
+
+    it('does not double count a lead attributed via both paths toward attributedLeadCount', () => {
+        const result = aggregateRunOutcomes([
+            sourceRow({ leadId: 'lead-both', importedAs: 'created', emailVerificationStatus: 'verified' }),
+            customFieldRow({ leadId: 'lead-both', emailVerificationStatus: 'verified' }),
+        ])
+        expect(result.get('run-1')).toMatchObject({ attributedLeadCount: 1, verifiedOrLikelyLeadCount: 1 })
+    })
 })
 
 describe('measureProspectingOutcomes', () => {
@@ -260,5 +301,126 @@ describe('measureProspectingOutcomes', () => {
 
         expect(summary).toEqual({ examined: 1, updated: 1 })
         expect(recordRunEventsMock).not.toHaveBeenCalled()
+    })
+
+    // ------------------------------------------------------------
+    // Hypothesis-scoring follow-up
+    // ------------------------------------------------------------
+
+    it('emits outcome.hypothesis_confirmed when the reply-rate expectation newly becomes met', async () => {
+        const hypothesis = { expected: { reply_rate: '>=0.03' } }
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 0, outcomeReplied: 0, hypothesis })])
+            .mockResolvedValueOnce([
+                sourceRow({ leadId: 'lead-a', sentAt: '2026-08-01T00:00:00.000Z', repliedAt: '2026-08-02T00:00:00.000Z' }),
+            ])
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 1, outcomeReplied: 1, hypothesis })])
+
+        const summary = await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(summary).toEqual({ examined: 1, updated: 1 })
+        const events = recordRunEventsMock.mock.calls[0][1]
+        const hypothesisEvent = events.find((e: { code: string }) => e.code === RUN_EVENT_CODES.outcome.HYPOTHESIS_CONFIRMED)
+        expect(hypothesisEvent).toBeDefined()
+        expect(hypothesisEvent.organizationId).toBe('org-1')
+        expect(hypothesisEvent.runId).toBe('run-1')
+        expect(hypothesisEvent.detail.overall).toBe('confirmed')
+        expect(hypothesisEvent.detail.metrics).toEqual([
+            expect.objectContaining({ metric: 'reply_rate', actual: 1, verdict: 'met' }),
+        ])
+        expect(hypothesisEvent.summary).toContain('reply_rate')
+    })
+
+    it('emits outcome.hypothesis_refuted when an expectation is not met, naming the failing metric with expected vs actual', async () => {
+        const hypothesis = { expected: { discovered: '>=30', reply_rate: '>=0.50' } }
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ discoveredCount: 40, outcomeEmailed: 0, outcomeReplied: 0, hypothesis })])
+            .mockResolvedValueOnce([
+                sourceRow({ leadId: 'lead-a', sentAt: '2026-08-01T00:00:00.000Z', repliedAt: '2026-08-02T00:00:00.000Z' }),
+                sourceRow({ leadId: 'lead-b', sentAt: '2026-08-01T00:00:00.000Z' }),
+                sourceRow({ leadId: 'lead-c', sentAt: '2026-08-01T00:00:00.000Z' }),
+            ])
+            .mockResolvedValueOnce([runSnapshot({ discoveredCount: 40, outcomeEmailed: 3, outcomeReplied: 1, hypothesis })])
+
+        const summary = await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(summary).toEqual({ examined: 1, updated: 1 })
+        const events = recordRunEventsMock.mock.calls[0][1]
+        const hypothesisEvent = events.find((e: { code: string }) => e.code === RUN_EVENT_CODES.outcome.HYPOTHESIS_REFUTED)
+        expect(hypothesisEvent).toBeDefined()
+        expect(hypothesisEvent.detail.overall).toBe('refuted')
+        // discovered (>=30, actual 40) is met; reply_rate (>=0.50, actual 1/3 ≈ 0.333) is
+        // the one that fails — the payload must name it with expected vs actual, not
+        // merely assert a refutation happened.
+        const replyRateMetric = hypothesisEvent.detail.metrics.find((m: { metric: string }) => m.metric === 'reply_rate')
+        expect(replyRateMetric).toMatchObject({ metric: 'reply_rate', expected: '>=0.50', verdict: 'not_met' })
+        expect(replyRateMetric.actual).toBeCloseTo(1 / 3, 5)
+        const discoveredMetric = hypothesisEvent.detail.metrics.find((m: { metric: string }) => m.metric === 'discovered')
+        expect(discoveredMetric).toMatchObject({ verdict: 'met', actual: 40 })
+        expect(hypothesisEvent.summary).toContain('reply_rate')
+        expect(hypothesisEvent.summary).toContain('>=0.50')
+    })
+
+    it('does not emit a hypothesis event when the run has no stated hypothesis', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 0, hypothesis: null })])
+            .mockResolvedValueOnce([sourceRow({ sentAt: '2026-08-01T00:00:00.000Z' })])
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 1, hypothesis: null })])
+
+        await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        const events = recordRunEventsMock.mock.calls[0][1]
+        expect(events.some((e: { code: string }) => e.code.startsWith('outcome.hypothesis'))).toBe(false)
+    })
+
+    it('does not emit a hypothesis event when the run has a hypothesis but no expected metrics', async () => {
+        const hypothesis = { premise: 'some premise', basis: 'some basis' }
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 0, hypothesis })])
+            .mockResolvedValueOnce([sourceRow({ sentAt: '2026-08-01T00:00:00.000Z' })])
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 1, hypothesis })])
+
+        await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        const events = recordRunEventsMock.mock.calls[0][1]
+        expect(events.some((e: { code: string }) => e.code.startsWith('outcome.hypothesis'))).toBe(false)
+    })
+
+    it('does not re-emit a hypothesis event when the verdict is unchanged across a pass (still zero-denominator)', async () => {
+        // reply_rate expectation stays unknown before and after because emailedCount is 0
+        // both times (the run's leads were only ever bounced, never emailed) — overall
+        // stays 'inconclusive' throughout, which never emits.
+        const hypothesis = { expected: { reply_rate: '>=0.03' } }
+        const unchanged = runSnapshot({ outcomeEmailed: 0, outcomeReplied: 0, outcomeBounced: 1, hypothesis })
+        queryClientMock
+            .mockResolvedValueOnce([unchanged])
+            .mockResolvedValueOnce([sourceRow({ leadId: 'lead-a', bouncedAt: '2026-08-01T00:00:00.000Z' })])
+            .mockResolvedValueOnce([unchanged])
+
+        await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(recordRunEventsMock).not.toHaveBeenCalled()
+    })
+
+    it('does not re-emit a hypothesis event once a verdict has stabilized (only counts grew, verdict unchanged)', async () => {
+        // Both before and after, reply_rate (>=0.03) is comfortably met — 1/10 before,
+        // 2/20 after are both 'met', so overall stays 'confirmed' both times despite the
+        // raw actual/reason values differing. A naive diff on the raw numbers would
+        // re-emit here; the categorical-signature comparison must not. outcomeEmailed and
+        // outcomeReplied DO change, so outcome.emailed/outcome.replied still fire — this
+        // test only asserts no hypothesis event rides along with them.
+        const hypothesis = { expected: { reply_rate: '>=0.03' } }
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 10, outcomeReplied: 1, hypothesis })])
+            .mockResolvedValueOnce([
+                sourceRow({ leadId: 'lead-a', sentAt: '2026-08-01T00:00:00.000Z', repliedAt: '2026-08-02T00:00:00.000Z' }),
+            ])
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 20, outcomeReplied: 2, hypothesis })])
+
+        await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(recordRunEventsMock).toHaveBeenCalledTimes(1)
+        const events = recordRunEventsMock.mock.calls[0][1]
+        expect(events.some((e: { code: string }) => e.code.startsWith('outcome.hypothesis'))).toBe(false)
     })
 })

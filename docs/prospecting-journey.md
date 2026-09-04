@@ -100,7 +100,7 @@ overlapping windows, and that tie-break is what keeps the answer unambiguous.
 
 | Category | Status |
 | --- | --- |
-| `inbox_subscription` | icemail, USD 2.50/inbox/month. 5 inboxes ⇒ **USD 12.50/month**, posted by the monthly amortization job |
+| `inbox_subscription` | icemail, USD 2.50/inbox/month. 5 inboxes ⇒ **USD 12.50/month**, posted by the monthly amortization job. A `provider = 'native'` mailbox (self-hosted on our own MX, on a domain the company already owns) is priced at an **explicit zero** (migration 063), not left unpriced — see "Zero is not absence" below |
 | `lead_source` | provider-agnostic (renamed from `apollo_credits` in migration 054 — the real production source is xcraper/Apify, not Apollo). An xcraper run posts its **actual** reported cost via `amountMicrosOverride`, not a rate-book estimate; Apollo enrichment still posts an estimated ceiling and remains otherwise unpriced |
 | `email_verification` | MillionVerifier at USD 0.0037/credit — the 10k entry package (migration 056, superseding 055's 0.0005). **An estimate, not a confirmed purchase**: tiers span ~8× and stacking bonuses (+10% auto top-up, 1M free per 5M) put the true effective rate below any sticker. Chosen because it is the likeliest tier at pilot scale and errs high, so spend can only be overstated. **Quantity must be credits the provider reports as consumed, not emails submitted**: MillionVerifier charges only for conclusive results, never for risky (unknown/catch-all) ones |
 | `llm_tokens` | rate not yet seeded; Codex uses OAuth and Kimi is a flat fallback plan, so both are accounted as amortized rather than per-token today |
@@ -112,6 +112,30 @@ produce a confident report that is wrong, which is worse than an incomplete one.
 
 Inbox cost is amortized monthly at a full month per inbox with no proration, keyed
 `inbox:<accountId>:<YYYY-MM>` so re-running mid-month writes nothing.
+
+### Zero is not absence
+
+A native mailbox (`email_accounts.provider = 'native'`) was never bought from anyone — no
+vendor invoice, no per-inbox subscription, nothing metered. Before migration 063,
+`amortizeSubscriptionCosts` had no rate to resolve for these accounts and wrote every one of
+them with `detail.rate_missing = true`. That flag means *"we don't know the price of this,"*
+which is a different claim from *"this costs nothing,"* and conflating the two produced a
+false ~7× understatement claim in an earlier cost analysis — 29 of 38 entries carried
+`rate_missing`, almost all of them native mailboxes whose true cost was zero, not unknown.
+
+Migration `063_seed_native_inbox_rate.sql` seeds an explicit `unit_cost_micros = 0` rate for
+`provider = 'native'`, `category = 'inbox_subscription'`. The job now keys the rate lookup off
+`email_accounts.provider` (the actual sending mechanism) rather than `mailbox_provider` (a
+free-text sourcing-vendor label that schema-defaults to `'manual'` even when nothing was ever
+set, and is therefore indistinguishable from an unset value on a native account). This is
+deliberately narrow: only `inbox_subscription` for `provider = 'native'` is priced at zero. The
+real costs behind those inboxes — the domains they sit on, the MX/IMAP infrastructure they run
+on — live in the still-unpriced `domain` and `infrastructure` categories and are not invented
+here. The 29 rows already written before the migration existed keep their `rate_missing = true`
+forever (the ledger is append-only and freezes cost at write time); the `unpriced_cost_share`
+silence detector (`src/server/lib/outreach-silence.ts`) keeps firing on them until the next
+monthly amortization writes correctly-priced rows and the old ones age out of its 35-day
+window — expected and self-resolving, not a bug to chase.
 
 ## Attribution: the rules that keep the numbers honest
 
@@ -140,10 +164,18 @@ would silently produce duplicate leads and false `'created'` attributions.
 
 ## The advisory: learning that cannot be skipped
 
-Prior-run statistics are returned **in the response of `POST /prospecting/searches`** —
-the call the agent already makes — rather than in a separate endpoint it has to remember
-to query. An optional lookup gets skipped; a field in the response you already receive
-does not.
+Prior-run statistics are returned **in the response of the run-registration call**, rather
+than in a separate endpoint the caller has to remember to query. An optional lookup gets
+skipped; a field in the response you already receive does not.
+
+`agent-prospecting.ts`'s `POST /searches` was the original home for this — it still carries
+the advisory — but it drives Apollo interactively and has never run in production. The real
+production path is `POST /api/outreach/prospecting/external-runs`
+(`src/server/routes/outreach/prospecting.ts`), which Xphere calls after xcraper has already
+scraped and imported a run, and the advisory rides that response too — on **both** the
+`201` (run created) and the `200` (idempotent replay) path. That parity is deliberate: a
+caller retrying registration (a source repairing/reconciling its own import) should still get
+the learning, not just whichever call happened to create the row.
 
 ```jsonc
 "advisory": {
@@ -170,12 +202,13 @@ Every warning's `evidence` states its sample size, so a reader can always discou
 
 The advisory never blocks or delays a run: any failure falls back to an empty advisory.
 
-### Known limitation
+### Known limitation (resolved for `/external-runs`)
 
-The advisory is returned on the `201` (run created) path only. An idempotent replay
-(`200`/`202`, `idempotentReplay: true`) does not carry it. This is defensible — the
-advisory is a *pre-flight* signal and on a replay the search already ran — but it does
-mean a client that lost the original response never sees it.
+This used to say the advisory was returned on the `201` (run created) path only, and that
+an idempotent replay (`200`, `idempotentReplay: true`) never carried it. That gap is closed
+for `POST /external-runs` — see above, both paths now call `loadAdvisory`. It still applies
+to `agent-prospecting.ts`'s `POST /searches`, which has never run in production, so the gap
+is dormant rather than fixed there.
 
 ## The hypothesis field
 
@@ -216,16 +249,52 @@ GROUP BY 1 ORDER BY 2 DESC;
 
 | | |
 | --- | --- |
+| `046_prospecting_pipeline.sql` | `prospecting_runs`/`prospect_candidates`, and the `UNIQUE (organization_id, provider, idempotency_key)` constraint that every run-creation path (`/searches`, `/external-runs`) still relies on for idempotent replay |
 | `051_prospecting_journey_and_costs.sql` | hypothesis, outcome counters, `imported_as`, assessment tokens, run events, cost rates + entries |
 | `052_lead_email_normalization.sql` | `CHECK (email = lower(email))` on leads |
 | `053_seed_cost_rates.sql` | seeds the icemail inbox rate |
+| `054_generalize_prospecting_providers.sql` | widens `provider`/category constraints beyond Apollo-only, renames `apollo_credits` → `lead_source` — this is what makes `POST /external-runs` (a non-Apollo, non-interactive registration path) possible at all |
+| `060_backfill_lead_source_run_id.sql` | stamps `custom_fields.source_run_id` onto existing leads, reconciling the key mismatch between what Xmail reads (`source_run_id`) and what Xphere had been sending (`xcraper_run_id`) |
+| `063_seed_native_inbox_rate.sql` | seeds the zero rate for `provider = 'native'` inboxes — see "Zero is not absence" above |
 
-All three are applied in production. The production migration ledger is current through
-`056_prospecting_external_run_id.sql`, which also makes external run registration
-idempotent across Xcraper, Xphere, and Xmail.
+The production migration ledger is current through `063_seed_native_inbox_rate.sql`. This
+doc previously cited a `056_prospecting_external_run_id.sql` for external-run idempotency;
+no such file exists (`056` is
+`056_email_verification_rate_entry_tier.sql`) — the idempotency constraint external runs
+actually rely on was added earlier, by `046`, and generalized to non-Apollo providers by
+`054`. Always check `supabase/migrations/` directly rather than trusting a filename cited
+in prose — re-verify what is actually applied against
+`supabase_migrations.schema_migrations` before assuming, per `CLAUDE.md`.
 
 For Xcraper imports, Xphere registers the run automatically through
 `POST /api/outreach/prospecting/external-runs`. The Xcraper search id becomes
 `external_run_id`, its measured `cost_usd` becomes an actual lead-source cost entry,
 and `source_run_id` follows each imported Xmail lead so the six-hour outcome job can
 attribute emails, replies, bounces, and unsubscribes to the originating run.
+
+The `imported_count` column is populated from the request body's `ingestedCount` field
+(`src/server/lib/prospecting/external-run.ts`). `importedCount` is still accepted as a
+**deprecated alias** — the currently-deployed Xphere still sends the field under that
+name — but when both are present `ingestedCount` wins, and the raw `importedCount` input
+key is dropped from the parsed output entirely so every downstream reader (the route,
+tests) has exactly one field to consult. Whichever name it arrives under, remember this
+is how many prospects xcraper/Apify created or updated at the **source** system for this
+run, not how many leads reached xmail — those two numbers diverge badly in production
+(see "Real production numbers" below), because a prospect can fail email enrichment,
+dedupe against an existing lead, or simply never reach
+`POST /api/outreach/leads/bulk-import`. The xmail-side count is the separate attribution
+join `measureProspectingOutcomes` performs — never read `imported_count` as a proxy for
+it.
+
+## Real production numbers (as of 2026-09-04)
+
+As of this writing, the pipeline described above has run in production but not yet
+produced outreach: **5** external runs registered, **138** businesses discovered at the
+source (xcraper/Apify), **2** leads actually attributed into xmail via `source_run_id`,
+**USD 0.74** of Apify spend actually recorded (an `amountMicrosOverride`-based actual, not
+an estimate). The campaign built from these leads is still in **draft** — it has not been
+activated, so **zero** sends have gone out. These numbers are the concrete illustration of
+why `imported_count` (138 at the source) and the attribution-joined lead count (2 in
+xmail) must never be conflated, and why `funnel_stalled` (see the postmortem at
+`docs/postmortem-2026-09-01-cron-stall.md`) is watching for exactly this shape of outcome
+at scale.

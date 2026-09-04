@@ -79,6 +79,13 @@ export const RUN_EVENT_CODES = Object.freeze({
         REPLIED: 'outcome.replied',
         BOUNCED: 'outcome.bounced',
         UNSUBSCRIBED: 'outcome.unsubscribed',
+        // Phase 31 follow-up (hypothesis scoring, src/server/lib/prospecting/hypothesis-scoring.ts):
+        // a run's stated `hypothesis.expected` was scored against its measured outcomes and the
+        // OVERALL verdict changed since the last measurement pass. Emitted only on a verdict
+        // transition, never on every 6-hourly recompute, and never for 'inconclusive' (there is
+        // nothing to narrate about "we still don't know").
+        HYPOTHESIS_CONFIRMED: 'outcome.hypothesis_confirmed',
+        HYPOTHESIS_REFUTED: 'outcome.hypothesis_refuted',
     }),
 } satisfies Record<ProspectingRunEventPhase, Record<string, string>>)
 
@@ -122,6 +129,9 @@ const DEFAULT_LEVEL_OVERRIDES: Partial<Record<RunEventCode, ProspectingRunEventL
     [RUN_EVENT_CODES.enrich.NO_EMAIL]: 'warn',
     [RUN_EVENT_CODES.score.CANDIDATE_BELOW_THRESHOLD]: 'warn',
     [RUN_EVENT_CODES.enrich.CREDIT_CEILING_REACHED]: 'warn',
+    // A refutation is worth a warn — it says a stated premise did not hold up. A
+    // confirmation stays at the 'info' default (no override needed).
+    [RUN_EVENT_CODES.outcome.HYPOTHESIS_REFUTED]: 'warn',
 }
 
 /** Returns the default level for a code (used when the caller does not pass one explicitly). */

@@ -2,6 +2,7 @@ import { db, queryClient } from '../../db'
 import { runWithLock } from '../lib/cron-lock'
 import { createLogger } from '../lib/logger'
 import { sqlTimestampValue } from '../lib/sql-timestamp'
+import { extractExpectedMetrics, scoreHypothesis, type HypothesisScore } from '../lib/prospecting/hypothesis-scoring'
 import { recordRunEvents, RUN_EVENT_CODES, type RecordRunEventInput } from '../lib/prospecting/journey'
 
 const log = createLogger('outreach.prospecting.measure_outcomes')
@@ -60,6 +61,11 @@ interface RunOutcomeSourceRow {
     importedAs: 'created' | 'existing' | null
     leadId: string | null
     leadStatus: string | null
+    // Hypothesis-scoring follow-up: feeds the `verified_email_rate` metric in
+    // hypothesis-scoring.ts. Read straight off `leads.email_verification_status` for
+    // whichever lead this row resolved to — 'unknown'/'unavailable'/'invalid'/null all
+    // count as "not verified or likely" the same way.
+    emailVerificationStatus: string | null
     sentAt: string | Date | null
     repliedAt: string | Date | null
     bouncedAt: string | Date | null
@@ -74,6 +80,19 @@ export interface RunOutcomeCounters {
     outcomeUnsubscribed: number
 }
 
+/**
+ * Hypothesis-scoring follow-up: the run's attributed-lead counts that back the
+ * `verified_email_rate` metric. Kept separate from `RunOutcomeCounters` because these
+ * two fields have no corresponding `prospecting_runs` column — they are recomputed fresh
+ * on every pass from `leads.email_verification_status` and never written back to the DB.
+ */
+export interface RunLeadAttribution {
+    attributedLeadCount: number
+    verifiedOrLikelyLeadCount: number
+}
+
+export interface RunAggregate extends RunOutcomeCounters, RunLeadAttribution {}
+
 const ZERO_COUNTERS: RunOutcomeCounters = {
     outcomeEmailed: 0,
     outcomeReplied: 0,
@@ -81,6 +100,14 @@ const ZERO_COUNTERS: RunOutcomeCounters = {
     outcomeBounced: 0,
     outcomeUnsubscribed: 0,
 }
+
+const ZERO_AGGREGATE: RunAggregate = {
+    ...ZERO_COUNTERS,
+    attributedLeadCount: 0,
+    verifiedOrLikelyLeadCount: 0,
+}
+
+const VERIFIED_OR_LIKELY = new Set(['verified', 'likely'])
 
 /**
  * Reduces raw joined (candidate|custom-field x outreach-email) rows into per-run outcome
@@ -101,10 +128,16 @@ const ZERO_COUNTERS: RunOutcomeCounters = {
  * - `outcomeEmailed` only counts leads with at least one `sentAt` — a lead that was
  *   imported but never emailed contributes to no counter, keeping the denominator honest.
  * - `outcomePositiveReplied` additionally requires the lead's current `status === 'interested'`.
+ * - Also rolls up `RunLeadAttribution` (attributed-lead count + verified-or-likely count)
+ *   for the hypothesis-scoring `verified_email_rate` metric — every distinct attributed
+ *   lead counts toward the denominator regardless of whether it was ever emailed, since
+ *   the question that metric answers is "how enrichable was this segment", not "how well
+ *   did the campaign perform".
  */
-export function aggregateRunOutcomes(rows: RunOutcomeSourceRow[]): Map<string, RunOutcomeCounters> {
+export function aggregateRunOutcomes(rows: RunOutcomeSourceRow[]): Map<string, RunAggregate> {
     interface LeadState {
         leadStatus: string | null
+        emailVerificationStatus: string | null
         emailed: boolean
         replied: boolean
         bounced: boolean
@@ -125,27 +158,39 @@ export function aggregateRunOutcomes(rows: RunOutcomeSourceRow[]): Map<string, R
 
         let state = leads.get(row.leadId)
         if (!state) {
-            state = { leadStatus: row.leadStatus, emailed: false, replied: false, bounced: false, unsubscribed: false }
+            state = {
+                leadStatus: row.leadStatus,
+                emailVerificationStatus: row.emailVerificationStatus,
+                emailed: false,
+                replied: false,
+                bounced: false,
+                unsubscribed: false,
+            }
             leads.set(row.leadId, state)
         }
         if (row.leadStatus) state.leadStatus = row.leadStatus
+        if (row.emailVerificationStatus) state.emailVerificationStatus = row.emailVerificationStatus
         if (row.sentAt) state.emailed = true
         if (row.repliedAt) state.replied = true
         if (row.bouncedAt) state.bounced = true
         if (row.unsubscribedAt) state.unsubscribed = true
     }
 
-    const result = new Map<string, RunOutcomeCounters>()
+    const result = new Map<string, RunAggregate>()
     for (const [runId, leads] of leadsByRun) {
-        const counters: RunOutcomeCounters = { ...ZERO_COUNTERS }
+        const aggregate: RunAggregate = { ...ZERO_AGGREGATE }
         for (const state of leads.values()) {
-            if (state.emailed) counters.outcomeEmailed++
-            if (state.replied) counters.outcomeReplied++
-            if (state.replied && state.leadStatus === 'interested') counters.outcomePositiveReplied++
-            if (state.bounced) counters.outcomeBounced++
-            if (state.unsubscribed) counters.outcomeUnsubscribed++
+            if (state.emailed) aggregate.outcomeEmailed++
+            if (state.replied) aggregate.outcomeReplied++
+            if (state.replied && state.leadStatus === 'interested') aggregate.outcomePositiveReplied++
+            if (state.bounced) aggregate.outcomeBounced++
+            if (state.unsubscribed) aggregate.outcomeUnsubscribed++
+            aggregate.attributedLeadCount++
+            if (state.emailVerificationStatus && VERIFIED_OR_LIKELY.has(state.emailVerificationStatus)) {
+                aggregate.verifiedOrLikelyLeadCount++
+            }
         }
-        result.set(runId, counters)
+        result.set(runId, aggregate)
     }
     return result
 }
@@ -157,6 +202,13 @@ export function aggregateRunOutcomes(rows: RunOutcomeSourceRow[]): Map<string, R
 interface RunSnapshotRow extends RunOutcomeCounters {
     id: string
     organizationId: string
+    // Hypothesis-scoring follow-up. `discoveredCount` never changes once a run reaches
+    // 'imported' (this job doesn't recompute it), but it's read alongside the outcome
+    // counters so both the "before" and "after" hypothesis score are built from a single
+    // consistent row shape. `hypothesis` is the raw jsonb blob (see hypothesis.ts) —
+    // `extractExpectedMetrics` pulls `expected` out of it defensively.
+    discoveredCount: number
+    hypothesis: Record<string, unknown> | null
 }
 
 export interface MeasureProspectingOutcomesSummary {
@@ -199,6 +251,95 @@ function buildOutcomeEvents(before: Map<string, RunSnapshotRow>, after: RunSnaps
 }
 
 /**
+ * A verdict "signature" used only to decide whether to emit — the overall verdict plus
+ * each metric's categorical verdict, deliberately EXCLUDING the raw `actual`/`reason`
+ * values. Those drift on every single incremental reply/send even when nothing about the
+ * verdict itself has changed, and diffing on them would re-emit on almost every 6-hourly
+ * pass — exactly the "drowns the narrative" failure this function exists to avoid.
+ */
+function hypothesisSignature(score: HypothesisScore): string {
+    return JSON.stringify({
+        overall: score.overall,
+        metrics: score.metrics.map((m) => ({ metric: m.metric, verdict: m.verdict })),
+    })
+}
+
+/**
+ * Builds `outcome.hypothesis_*` events for runs whose stated hypothesis verdict changed
+ * since the last measurement pass.
+ *
+ * Reconstructs the "before" score from the previously-persisted outcome counters (the
+ * same `before` snapshot `buildOutcomeEvents` uses) and the "after" score from the
+ * freshly-written ones. `discoveredCount` and the lead-attribution counts
+ * (`attributedLeadCount`/`verifiedOrLikelyLeadCount`) have no historical "before" value —
+ * `discoveredCount` never changes after import, and the attribution counts are recomputed
+ * fresh every pass rather than persisted — so the same current values are used on both
+ * sides; only `outcomeEmailed`/`outcomeReplied` actually differ between before and after.
+ * This still correctly catches every real transition, since a run only starts confirming
+ * or refuting its reply-rate/verified-email-rate expectations as emailed/replied counts
+ * accumulate across passes.
+ */
+function buildHypothesisEvents(
+    before: Map<string, RunSnapshotRow>,
+    after: RunSnapshotRow[],
+    aggregates: Map<string, RunAggregate>,
+): RecordRunEventInput[] {
+    const events: RecordRunEventInput[] = []
+
+    for (const row of after) {
+        const prev = before.get(row.id)
+        if (!prev) continue
+
+        const expected = extractExpectedMetrics(row.hypothesis)
+        if (!expected) continue
+
+        const attribution = aggregates.get(row.id) ?? ZERO_AGGREGATE
+
+        const beforeScore = scoreHypothesis(expected, {
+            discoveredCount: row.discoveredCount,
+            emailedCount: prev.outcomeEmailed,
+            repliedCount: prev.outcomeReplied,
+            attributedLeadCount: attribution.attributedLeadCount,
+            verifiedOrLikelyLeadCount: attribution.verifiedOrLikelyLeadCount,
+        })
+        const afterScore = scoreHypothesis(expected, {
+            discoveredCount: row.discoveredCount,
+            emailedCount: row.outcomeEmailed,
+            repliedCount: row.outcomeReplied,
+            attributedLeadCount: attribution.attributedLeadCount,
+            verifiedOrLikelyLeadCount: attribution.verifiedOrLikelyLeadCount,
+        })
+
+        // No journey code fits "we no longer know" (see the module doc above), and outcome
+        // counters never decrease, so a transition INTO 'inconclusive' should not occur in
+        // practice — skip it defensively rather than guess a code for it.
+        if (afterScore.overall === 'inconclusive') continue
+        if (hypothesisSignature(beforeScore) === hypothesisSignature(afterScore)) continue
+
+        const code = afterScore.overall === 'confirmed'
+            ? RUN_EVENT_CODES.outcome.HYPOTHESIS_CONFIRMED
+            : RUN_EVENT_CODES.outcome.HYPOTHESIS_REFUTED
+
+        // Name WHICH expectation failed (or held) and by how much, not merely that one did.
+        const failing = afterScore.metrics.filter((m) => m.verdict === 'not_met')
+        const met = afterScore.metrics.filter((m) => m.verdict === 'met')
+        const summary = failing.length > 0
+            ? `hypothesis refuted: ${failing.map((m) => `${m.metric} expected ${m.expected}, ${m.reason}`).join('; ')}`
+            : `hypothesis confirmed: ${met.map((m) => `${m.metric} expected ${m.expected}, ${m.reason}`).join('; ')}`
+
+        events.push({
+            organizationId: row.organizationId,
+            runId: row.id,
+            code,
+            summary,
+            detail: { overall: afterScore.overall, metrics: afterScore.metrics },
+        })
+    }
+
+    return events
+}
+
+/**
  * Recomputes outcome_* counters for every 'imported' prospecting run from source-of-truth
  * tables and writes them back in one batched UPDATE. Never throws — every failure mode is
  * caught, logged, and returns a summary reflecting whatever partial progress was made.
@@ -216,7 +357,9 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
                 outcome_replied AS "outcomeReplied",
                 outcome_positive_replied AS "outcomePositiveReplied",
                 outcome_bounced AS "outcomeBounced",
-                outcome_unsubscribed AS "outcomeUnsubscribed"
+                outcome_unsubscribed AS "outcomeUnsubscribed",
+                discovered_count AS "discoveredCount",
+                hypothesis
             FROM prospecting_runs
             WHERE status = 'imported'
         `
@@ -249,6 +392,7 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
                 pc.imported_as AS "importedAs",
                 pc.lead_id::text AS "leadId",
                 l.status::text AS "leadStatus",
+                l.email_verification_status AS "emailVerificationStatus",
                 oe.sent_at AS "sentAt",
                 oe.replied_at AS "repliedAt",
                 oe.bounced_at AS "bouncedAt",
@@ -274,6 +418,7 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
                 NULL::text AS "importedAs",
                 l.id::text AS "leadId",
                 l.status::text AS "leadStatus",
+                l.email_verification_status AS "emailVerificationStatus",
                 oe.sent_at AS "sentAt",
                 oe.replied_at AS "repliedAt",
                 oe.bounced_at AS "bouncedAt",
@@ -300,9 +445,9 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
     // Every run in `before` gets an update row, defaulting to zero counters when it has no
     // attributable ('created', non-null leadId) candidates at all — that run was genuinely
     // examined and should still get outcome_last_measured_at bumped.
-    const updateRows: (RunOutcomeCounters & { id: string })[] = before.map((run) => ({
+    const updateRows: (RunAggregate & { id: string })[] = before.map((run) => ({
         id: run.id,
-        ...(aggregates.get(run.id) ?? ZERO_COUNTERS),
+        ...(aggregates.get(run.id) ?? ZERO_AGGREGATE),
     }))
 
     const ids = updateRows.map((r) => r.id)
@@ -341,7 +486,9 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
                 prospecting_runs.outcome_replied AS "outcomeReplied",
                 prospecting_runs.outcome_positive_replied AS "outcomePositiveReplied",
                 prospecting_runs.outcome_bounced AS "outcomeBounced",
-                prospecting_runs.outcome_unsubscribed AS "outcomeUnsubscribed"
+                prospecting_runs.outcome_unsubscribed AS "outcomeUnsubscribed",
+                prospecting_runs.discovered_count AS "discoveredCount",
+                prospecting_runs.hypothesis
         `
     } catch (error) {
         const e = error instanceof Error ? error : new Error(String(error))
@@ -354,7 +501,10 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
 
     summary.updated = after.length
 
-    const events = buildOutcomeEvents(beforeById, after)
+    const events = [
+        ...buildOutcomeEvents(beforeById, after),
+        ...buildHypothesisEvents(beforeById, after, aggregates),
+    ]
     if (events.length > 0) {
         await recordRunEvents(db, events)
     }
