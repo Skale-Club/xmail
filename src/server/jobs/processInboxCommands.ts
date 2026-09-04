@@ -300,11 +300,12 @@ export async function processDueReminders(deps: {
 // horizontal scale). Session-scoped, released automatically on crash. cron-lock is imported
 // lazily so this module stays importable (e.g. in .db tests) without DATABASE_URL.
 export async function runInboxCommandsWithLock(): Promise<void> {
-    const { runWithLock } = await import('../lib/cron-lock')
-    // jobs/index.ts schedules this every minute — cron-lock's 10-minute default budget would let
-    // a hang eat up to 10 skipped ticks before it self-heals. 2 minutes bounds that to a couple of
-    // ticks, which is still generous for what should be a fast dispatch loop.
+    const { JOB_TIMEOUT_BUDGETS_MS, runWithLock } = await import('../lib/cron-lock')
+    // jobs/index.ts schedules this every minute. 2026-09-04 (Fase 1 TASK 2): previously a 2-minute
+    // guess; retuned to the 30s floor — the 1.3-2s normal latency measured in production is so far
+    // below any reasonable budget that 5x it would be too tight (see JOB_TIMEOUT_BUDGETS_MS in
+    // cron-lock.ts for the rule and the full table). 30s still lands at half the 60s cadence.
     await runWithLock(INBOX_COMMANDS_LOCK_NAME, async () => {
         await processInboxCommands()
-    }, { timeoutMs: 2 * 60 * 1000 })
+    }, { timeoutMs: JOB_TIMEOUT_BUDGETS_MS.outreachInboxCommands })
 }

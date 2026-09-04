@@ -26,7 +26,7 @@ const logMock = vi.hoisted(() => ({
 vi.mock('../../../db', () => ({ db: {}, queryClient: { reserve: reserveMock } }))
 vi.mock('../logger', () => ({ createLogger: () => logMock }))
 
-import { getInFlightJobs, getPoolSnapshot, getRecentJobTimeouts, runWithLock } from '../cron-lock'
+import { getInFlightJobs, getPoolSnapshot, getRecentJobTimeouts, JOB_TIMEOUT_BUDGETS_MS, runWithLock } from '../cron-lock'
 
 interface ReservedMock {
     (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>
@@ -416,7 +416,15 @@ describe('getRecentJobTimeouts — in-memory ring for the silence detector (Task
         const run = runWithLock(jobName, fn, { timeoutMs })
         await vi.advanceTimersByTimeAsync(timeoutMs)
         await run
+        // Settle the orphaned body once this run has been recorded as a timeout. Several tests in
+        // this block call this helper back-to-back for the SAME jobName to model independent,
+        // separate timeout incidents — without settling, the second call would instead be caught
+        // by the Fase 1 TASK 1 overlap guard (a second attempt for a job whose previous orphaned
+        // body is still unsettled is skipped, not run), which is a different, already-covered
+        // scenario (see 'runWithLock — per-job overlap guard').
+        hang.resolve()
         vi.useRealTimers()
+        await new Promise((resolve) => setTimeout(resolve, 0))
     }
 
     it('returns zeros when nothing has timed out', () => {
@@ -516,12 +524,11 @@ describe('getInFlightJobs — in-flight/orphan job-body tracking (Fase 1 TASK 1)
         // hang.promise is deliberately left unsettled, same convention as the rest of this file.
     })
 
-    it('orphansByJob counts multiple orphans of the same job name — the incident\'s retry loop', async () => {
+    it('orphansByJob counts one orphan per job name; a second concurrent attempt for the SAME job is now blocked by the Fase 1 TASK 1 overlap guard instead of orphaning again', async () => {
         vi.useFakeTimers()
 
-        // Same job name timing out twice in a row: runWithLock releases the lock via COMMIT after
-        // the first timeout, so a second tick can acquire it again and orphan a second body —
-        // exactly the "timeout, release, retry, timeout again" pattern from 2026-09-01/02.
+        // First tick times out; hang1 is deliberately left unsettled, so its body is a confirmed
+        // orphan — exactly the "timeout, release" half of the 2026-09-01/02 incident's retry loop.
         const reserved1 = makeReserved()
         reserveMock.mockResolvedValue(reserved1)
         const hang1 = deferred<void>()
@@ -529,12 +536,14 @@ describe('getInFlightJobs — in-flight/orphan job-body tracking (Fase 1 TASK 1)
         await vi.advanceTimersByTimeAsync(5)
         await run1
 
-        const reserved2 = makeReserved()
-        reserveMock.mockResolvedValue(reserved2)
-        const hang2 = deferred<void>()
-        const run2 = runWithLock('repeat-offender-job', () => hang2.promise, { timeoutMs: 5 })
+        // Before the Fase 1 TASK 1 guard existed, a second tick here would have acquired the
+        // (already-released) lock and orphaned a SECOND body of the same job — the "retry" half
+        // of the incident's loop. The guard now blocks that outright: fn2 never even starts.
+        const fn2 = vi.fn(async () => {})
+        const run2 = runWithLock('repeat-offender-job', fn2, { timeoutMs: 5 })
         await vi.advanceTimersByTimeAsync(5)
         await run2
+        expect(fn2).not.toHaveBeenCalled()
 
         const reserved3 = makeReserved()
         reserveMock.mockResolvedValue(reserved3)
@@ -544,7 +553,9 @@ describe('getInFlightJobs — in-flight/orphan job-body tracking (Fase 1 TASK 1)
         await run3
 
         const stats = getInFlightJobs()
-        expect(stats.orphansByJob['repeat-offender-job']).toBe(2)
+        // Only hang1's entry — the guarded second attempt never started a body, so it never
+        // created (or could create) a second orphan entry for this job name.
+        expect(stats.orphansByJob['repeat-offender-job']).toBe(1)
         expect(stats.orphansByJob['unrelated-single-orphan-job']).toBe(1)
     })
 
@@ -576,5 +587,153 @@ describe('getInFlightJobs — in-flight/orphan job-body tracking (Fase 1 TASK 1)
         } else {
             expect(stats.oldestAgeMs).not.toBeNull()
         }
+    })
+})
+
+describe('runWithLock — per-job overlap guard (Fase 1 TASK 1)', () => {
+    /** Runs `jobName` with a tiny budget against a never-settling body, so it times out and the
+     * body itself is left orphaned (unsettled) — the exact precondition the overlap guard reacts
+     * to. Leaves fake timers active; callers switch back with `vi.useRealTimers()`. */
+    async function orphanJob(jobName: string, timeoutMs = 10): Promise<void> {
+        vi.useFakeTimers()
+        const reserved = makeReserved()
+        reserveMock.mockResolvedValue(reserved)
+        const hang = deferred<void>()
+        const run = runWithLock(jobName, () => hang.promise, { timeoutMs })
+        await vi.advanceTimersByTimeAsync(timeoutMs)
+        await run
+        // hang.promise is deliberately left unsettled — this IS the orphan.
+    }
+
+    it('skips a second run of the SAME job while the first orphaned body is still in flight, tagged skipped_orphan_running', async () => {
+        await orphanJob('overlap-guard-job')
+        vi.useRealTimers()
+
+        const fn2 = vi.fn(async () => {})
+        await runWithLock('overlap-guard-job', fn2, { timeoutMs: 60_000 })
+
+        // The guard fires before fn2 is ever invoked, and before a second connection is reserved
+        // — the whole point is to avoid starting (or even attempting to lock for) a second body.
+        expect(fn2).not.toHaveBeenCalled()
+        expect(reserveMock).toHaveBeenCalledTimes(1)
+
+        const warnCall = logMock.warn.mock.calls.find(([payload]) => (
+            (payload as { outcome?: unknown, jobName?: unknown }).outcome === 'skipped_orphan_running'
+            && (payload as { jobName?: unknown }).jobName === 'overlap-guard-job'
+        )) as [Record<string, unknown>, string] | undefined
+        expect(warnCall).toBeDefined()
+        const [payload, message] = warnCall!
+        expect(payload).toMatchObject({ action: 'cron.lock.run', jobName: 'overlap-guard-job', outcome: 'skipped_orphan_running' })
+        expect(typeof payload.runningForMs).toBe('number')
+        expect(payload.runningForMs as number).toBeGreaterThanOrEqual(0)
+        expect(message).toContain('still executing')
+        expect(message).toContain('ms after it started')
+    })
+
+    it('never confuses skipped_orphan_running with the routine skipped_contention outcome', async () => {
+        await orphanJob('distinct-outcome-job')
+        vi.useRealTimers()
+
+        await runWithLock('distinct-outcome-job', vi.fn(async () => {}))
+
+        // Only ever logged at `warn` for this outcome, never folded into the `info`-level
+        // contention path.
+        expect(logMock.info.mock.calls.some(([payload]) => (
+            (payload as { outcome?: unknown }).outcome === 'skipped_orphan_running'
+        ))).toBe(false)
+        expect(logMock.warn.mock.calls.some(([payload]) => (
+            (payload as { outcome?: unknown }).outcome === 'skipped_contention'
+        ))).toBe(false)
+    })
+
+    it('lets a DIFFERENT job run freely while another job is orphaned — the guard is per job name, never global', async () => {
+        await orphanJob('orphaned-job-x')
+        vi.useRealTimers()
+
+        const reserved2 = makeReserved()
+        reserveMock.mockResolvedValue(reserved2)
+        const fn2 = vi.fn(async () => {})
+        await runWithLock('unrelated-job-y', fn2, { timeoutMs: 60_000 })
+
+        expect(fn2).toHaveBeenCalledTimes(1)
+        expect(reserved2.calls).toContain('COMMIT')
+        expect(logMock.warn.mock.calls.some(([payload]) => (
+            (payload as { jobName?: unknown }).jobName === 'unrelated-job-y'
+        ))).toBe(false)
+    })
+
+    it('clears once the orphaned body finally settles, so the job resumes normally', async () => {
+        vi.useFakeTimers()
+        const reserved1 = makeReserved()
+        reserveMock.mockResolvedValue(reserved1)
+        const hang = deferred<void>()
+        const run1 = runWithLock('settles-later-job', () => hang.promise, { timeoutMs: 10 })
+        await vi.advanceTimersByTimeAsync(10)
+        await run1
+
+        vi.useRealTimers()
+        // A second tick right now is still guarded — the orphan has not settled yet.
+        const fnStillGuarded = vi.fn(async () => {})
+        await runWithLock('settles-later-job', fnStillGuarded, { timeoutMs: 60_000 })
+        expect(fnStillGuarded).not.toHaveBeenCalled()
+
+        // The orphaned body finally settles; let its `.then` (untrackInFlight) run.
+        hang.resolve()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        const reserved2 = makeReserved()
+        reserveMock.mockResolvedValue(reserved2)
+        const fnResumed = vi.fn(async () => {})
+        await runWithLock('settles-later-job', fnResumed, { timeoutMs: 60_000 })
+
+        expect(fnResumed).toHaveBeenCalledTimes(1)
+    })
+})
+
+describe('JOB_TIMEOUT_BUDGETS_MS — budgets retuned to measured production latency (Fase 1 TASK 2)', () => {
+    it('applies the stated rule (5x observed normal latency, 30s floor) per job', () => {
+        expect(JOB_TIMEOUT_BUDGETS_MS.warmupMeshProcessor).toBe(375_000) // 5 x 75s
+        expect(JOB_TIMEOUT_BUDGETS_MS.outreachRepliesProcessor).toBe(305_000) // 5 x 61s (slow end of 55-61s)
+        expect(JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor).toBe(30_000) // floor (5 x 1.6s ~= 8s)
+        expect(JOB_TIMEOUT_BUDGETS_MS.outreachInboxCommands).toBe(30_000) // floor (5 x 1.3-2s is single digits)
+        expect(JOB_TIMEOUT_BUDGETS_MS.deliverOutreachEventsToXphere).toBe(30_000) // floor (5 x 0.4s ~= 2s)
+    })
+
+    it('every configured budget stays comfortably above its own job\'s measured normal latency', () => {
+        // "Comfortably above" per the stated rule: at least the 30s floor, or the 5x multiple —
+        // whichever the rule actually produced for that job.
+        const normalLatencyMs: Record<keyof typeof JOB_TIMEOUT_BUDGETS_MS, number> = {
+            warmupMeshProcessor: 75_000,
+            outreachRepliesProcessor: 61_000,
+            outreachBouncesProcessor: 1_600,
+            outreachInboxCommands: 2_000,
+            deliverOutreachEventsToXphere: 400,
+        }
+        for (const job of Object.keys(JOB_TIMEOUT_BUDGETS_MS) as (keyof typeof JOB_TIMEOUT_BUDGETS_MS)[]) {
+            expect(JOB_TIMEOUT_BUDGETS_MS[job]).toBeGreaterThanOrEqual(normalLatencyMs[job] * 5)
+        }
+    })
+
+    it('is threaded through to an actual runWithLock timeout at the exact configured value', async () => {
+        vi.useFakeTimers()
+        const reserved = makeReserved()
+        reserveMock.mockResolvedValue(reserved)
+        const hang = deferred<void>()
+        const budget = JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor
+
+        const run = runWithLock('budget-applied-job', () => hang.promise, { timeoutMs: budget })
+
+        await vi.advanceTimersByTimeAsync(budget - 1)
+        expect(logMock.error.mock.calls.some(([payload]) => (
+            (payload as { action?: unknown }).action === 'cron.lock.job_timeout'
+        ))).toBe(false)
+
+        await vi.advanceTimersByTimeAsync(1)
+        await run
+        const timeoutCall = logMock.error.mock.calls.find(([payload]) => (
+            (payload as { action?: unknown }).action === 'cron.lock.job_timeout'
+        )) as [Record<string, unknown>] | undefined
+        expect(timeoutCall).toBeDefined()
+        expect(timeoutCall![0]).toMatchObject({ jobName: 'budget-applied-job', timeoutMs: budget })
     })
 })

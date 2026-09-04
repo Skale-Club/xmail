@@ -38,7 +38,7 @@ import {
 } from '../../db/schema'
 import { decryptSecret } from '../lib/crypto'
 import { recomputeFolderCounts } from '../lib/folder-counts'
-import { runWithLock } from '../lib/cron-lock'
+import { JOB_TIMEOUT_BUDGETS_MS, runWithLock } from '../lib/cron-lock'
 import { createLogger } from '../lib/logger'
 import { sendComposedOutreachMessage } from '../lib/outreach-provider'
 import { generateWarmupContent, generateWarmupReply, replySubject } from '../lib/warmup/content'
@@ -710,11 +710,11 @@ export async function processWarmupMesh(now = new Date()): Promise<{ sent: numbe
 }
 
 export async function runWarmupMeshWithLock(): Promise<void> {
-    // jobs/index.ts schedules this every 10 minutes — the same as cron-lock's default budget, so
-    // a hang would still hold the lock right up to (or past) the next tick. This is one of the
-    // three jobs that actually got stuck this way (2026-08-18, SMTP/IMAP send-detect-groom hang);
-    // 8 minutes leaves a 2-minute margin so the lock reliably clears before the next scheduled run.
+    // jobs/index.ts schedules this every 10 minutes. 2026-09-04 (Fase 1 TASK 2): retuned from the
+    // earlier 8-minute guess to 375s — 5x the 75s normal latency measured in production over a
+    // 35-minute/130-run window (see JOB_TIMEOUT_BUDGETS_MS in cron-lock.ts for the rule and the
+    // full table) — leaving a 225s margin before the next scheduled tick.
     await runWithLock(WARMUP_LOCK_NAME, async () => {
         await processWarmupMesh()
-    }, { timeoutMs: 8 * 60 * 1000 })
+    }, { timeoutMs: JOB_TIMEOUT_BUDGETS_MS.warmupMeshProcessor })
 }

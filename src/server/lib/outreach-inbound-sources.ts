@@ -37,6 +37,7 @@ import {
     resolveImapCursor,
     type InboundEventStore,
     type InboundSource,
+    type InboundSourcePage,
     type IngestResult,
     type NormalizedInboundMessage,
     type ProviderCursorState,
@@ -210,6 +211,77 @@ export interface ImapInboundAccount {
     imapSecure: boolean | null
 }
 
+// Every ImapFlow option below is confirmed present on the pinned version (imapflow
+// ^1.2.16 in package.json; 1.2.17 installed) via node_modules/imapflow/lib/imap-flow.d.ts
+// (ImapFlowOptions: connectionTimeout, greetingTimeout, socketTimeout) and cross-checked
+// against the implementation in node_modules/imapflow/lib/imap-flow.js, which also
+// confirms the error `.code` each one produces: 'CONNECT_TIMEOUT', 'GREETING_TIMEOUT',
+// and 'ETIMEOUT' (socket inactivity — this is the "Command failed" hang signature: the
+// server stops responding mid-command and the socket goes idle) respectively.
+//
+// Measured in production: a healthy pass over ~34 accounts (native + outlook + imap)
+// completes in 55-61s total, so a single IMAP account's page fetch is normally well
+// under a second once connected. The bounds below are generous enough for a
+// slow-but-working server yet far below the job's own 600s budget, so one hung account
+// fails on its own instead of the whole run riding it out to the timeout:
+//   - connect/greeting: ~10s is >10x a healthy fetch and still leaves headroom before
+//     the per-account deadline below.
+//   - socket inactivity: 15s catches a stalled command well before the account deadline.
+//   - account deadline: 20s is a backstop over the WHOLE fetchPage (connect through the
+//     last fetchOne), for a hang that isn't purely socket-level — e.g. anything that
+//     resolves at the TCP layer but never completes the awaited command. 600s / 20s = 30,
+//     so even a pathological run of simultaneous hangs fails close to (not past) budget
+//     rather than silently eating it one account at a time as the un-bounded client did.
+const IMAP_CONNECT_TIMEOUT_MS = 10_000
+const IMAP_GREETING_TIMEOUT_MS = 10_000
+const IMAP_SOCKET_TIMEOUT_MS = 15_000
+const IMAP_ACCOUNT_DEADLINE_MS = 20_000
+
+export type ImapInboundTimeoutPhase = 'connect' | 'greeting' | 'command' | 'overall_deadline'
+
+/**
+ * Thrown when an IMAP operation for one account is aborted by a timeout — either
+ * ImapFlow's own connect/greeting/socket bounds, or the overall per-account deadline
+ * wrapping the whole fetchPage. Names the account and the phase so an incident points
+ * straight at the culprit instead of requiring log archaeology (the 2026-09
+ * `outreach-replies-processor` hangs this replaces: 55-61s normally, 600s job timeout
+ * 7-8x/day with no error naming which account or step was stuck).
+ */
+export class ImapInboundTimeoutError extends Error {
+    readonly emailAccountId: string
+    readonly email: string
+    readonly phase: ImapInboundTimeoutPhase
+
+    constructor(
+        account: { id: string; email: string },
+        phase: ImapInboundTimeoutPhase,
+        cause?: unknown,
+    ) {
+        super(`IMAP ${phase} timed out for account ${account.email} (${account.id})`)
+        this.name = 'ImapInboundTimeoutError'
+        this.emailAccountId = account.id
+        this.email = account.email
+        this.phase = phase
+        if (cause !== undefined) {
+            // Non-standard-lib-typed but supported by Node/TS's Error since ES2022;
+            // set defensively rather than via the constructor options bag for wider
+            // TS-lib-target compatibility.
+            (this as { cause?: unknown }).cause = cause
+        }
+    }
+}
+
+/** Maps ImapFlow's own timeout error codes to the phase that produced them. */
+function classifyImapTimeout(error: unknown): ImapInboundTimeoutPhase | null {
+    const code = error && typeof error === 'object' && 'code' in error
+        ? (error as { code?: unknown }).code
+        : undefined
+    if (code === 'CONNECT_TIMEOUT') return 'connect'
+    if (code === 'GREETING_TIMEOUT') return 'greeting'
+    if (code === 'ETIMEOUT') return 'command'
+    return null
+}
+
 /**
  * UID-driven IMAP source.
  *
@@ -228,96 +300,147 @@ export function createImapInboundSource(account: ImapInboundAccount): InboundSou
                 secure: account.imapSecure !== false,
                 auth: { user: account.imapUsername, pass: decryptSecret(account.imapPassword) },
                 logger: false,
+                connectionTimeout: IMAP_CONNECT_TIMEOUT_MS,
+                greetingTimeout: IMAP_GREETING_TIMEOUT_MS,
+                socketTimeout: IMAP_SOCKET_TIMEOUT_MS,
             })
 
-            await client.connect()
-            try {
-                const lock = await client.getMailboxLock('INBOX')
+            const runFetch = async (): Promise<InboundSourcePage> => {
                 try {
-                    const mailbox = client.mailbox
-                    const uidValidity = mailbox && typeof mailbox !== 'boolean'
-                        ? Number(mailbox.uidValidity)
-                        : 0
-                    const resolved = resolveImapCursor(cursor, uidValidity)
+                    await client.connect()
+                } catch (error) {
+                    const phase = classifyImapTimeout(error)
+                    if (phase) throw new ImapInboundTimeoutError(account, phase, error)
+                    throw error
+                }
 
-                    if (resolved.reset) {
-                        log.warn({
-                            action: 'outreach.inbound.uidvalidity_reset',
-                            emailAccountId: account.id,
-                            storedUidValidity: cursor?.uidValidity ?? null,
-                            mailboxUidValidity: uidValidity,
-                        }, 'IMAP UIDVALIDITY changed; restarting from the beginning of the mailbox')
-                    }
+                try {
+                    const lock = await client.getMailboxLock('INBOX')
+                    try {
+                        const mailbox = client.mailbox
+                        const uidValidity = mailbox && typeof mailbox !== 'boolean'
+                            ? Number(mailbox.uidValidity)
+                            : 0
+                        const resolved = resolveImapCursor(cursor, uidValidity)
 
-                    // Strictly greater than the high-water mark: `startUid:*` would
-                    // re-fetch the last message forever on an idle mailbox.
-                    const searchFrom = resolved.startUid + 1
-                    const found = await client.search({ uid: `${searchFrom}:*` }, { uid: true })
-                    // imapflow returns false (not an empty array) when a search matches
-                    // nothing, and `n:*` always returns the last message even when its UID
-                    // is below n — hence the explicit floor.
-                    const pending = (found || [])
-                        .filter((uid: number) => uid >= searchFrom)
-                        .sort((a: number, b: number) => a - b)
-                        .slice(0, pageSize)
+                        if (resolved.reset) {
+                            log.warn({
+                                action: 'outreach.inbound.uidvalidity_reset',
+                                emailAccountId: account.id,
+                                storedUidValidity: cursor?.uidValidity ?? null,
+                                mailboxUidValidity: uidValidity,
+                            }, 'IMAP UIDVALIDITY changed; restarting from the beginning of the mailbox')
+                        }
 
-                    const messages: NormalizedInboundMessage[] = []
-                    // Aligned with `messages`: the cursor that is safe once messages[i] is
-                    // staged. Skipped-unfetchable UIDs below a message are covered by its
-                    // own UID, so resuming from it never re-reads staged mail.
-                    const messageCursors: ProviderCursorState[] = []
-                    let highWater = resolved.startUid
+                        // Strictly greater than the high-water mark: `startUid:*` would
+                        // re-fetch the last message forever on an idle mailbox.
+                        const searchFrom = resolved.startUid + 1
+                        const found = await client.search({ uid: `${searchFrom}:*` }, { uid: true })
+                        // imapflow returns false (not an empty array) when a search matches
+                        // nothing, and `n:*` always returns the last message even when its UID
+                        // is below n — hence the explicit floor.
+                        const pending = (found || [])
+                            .filter((uid: number) => uid >= searchFrom)
+                            .sort((a: number, b: number) => a - b)
+                            .slice(0, pageSize)
 
-                    for (const uid of pending) {
-                        try {
-                            const fetched = await client.fetchOne(uid.toString(), { source: true }, { uid: true })
-                            if (!fetched || typeof fetched === 'boolean' || !fetched.source) {
+                        const messages: NormalizedInboundMessage[] = []
+                        // Aligned with `messages`: the cursor that is safe once messages[i] is
+                        // staged. Skipped-unfetchable UIDs below a message are covered by its
+                        // own UID, so resuming from it never re-reads staged mail.
+                        const messageCursors: ProviderCursorState[] = []
+                        let highWater = resolved.startUid
+
+                        for (const uid of pending) {
+                            try {
+                                const fetched = await client.fetchOne(uid.toString(), { source: true }, { uid: true })
+                                if (!fetched || typeof fetched === 'boolean' || !fetched.source) {
+                                    highWater = Math.max(highWater, uid)
+                                    continue
+                                }
+                                const parsed = await simpleParser(fetched.source)
+                                messages.push(imapEventFromParsedMail(parsed, uid, resolved.uidValidity))
+                                messageCursors.push({
+                                    deltaCursor: null,
+                                    uidValidity: resolved.uidValidity,
+                                    lastUid: uid,
+                                    lastReceivedAt: null,
+                                    lastProviderMessageId: null,
+                                })
                                 highWater = Math.max(highWater, uid)
-                                continue
+                            } catch (error) {
+                                const err = error instanceof Error ? error : new Error(String(error))
+                                log.error({
+                                    action: 'outreach.inbound.imap_fetch_error',
+                                    uid,
+                                    emailAccountId: account.id,
+                                    error: { message: err.message },
+                                }, 'failed to fetch IMAP message')
+                                // Do NOT advance past a message we could not read — a
+                                // permanent parse failure would otherwise silently vanish.
+                                break
                             }
-                            const parsed = await simpleParser(fetched.source)
-                            messages.push(imapEventFromParsedMail(parsed, uid, resolved.uidValidity))
-                            messageCursors.push({
+                        }
+
+                        return {
+                            messages,
+                            nextCursor: {
                                 deltaCursor: null,
                                 uidValidity: resolved.uidValidity,
-                                lastUid: uid,
+                                lastUid: highWater,
                                 lastReceivedAt: null,
                                 lastProviderMessageId: null,
-                            })
-                            highWater = Math.max(highWater, uid)
-                        } catch (error) {
-                            const err = error instanceof Error ? error : new Error(String(error))
-                            log.error({
-                                action: 'outreach.inbound.imap_fetch_error',
-                                uid,
-                                emailAccountId: account.id,
-                                error: { message: err.message },
-                            }, 'failed to fetch IMAP message')
-                            // Do NOT advance past a message we could not read — a
-                            // permanent parse failure would otherwise silently vanish.
-                            break
+                            },
+                            getMessageCursor: (index) => messageCursors[index] ?? null,
                         }
+                    } finally {
+                        lock.release()
                     }
-
-                    return {
-                        messages,
-                        nextCursor: {
-                            deltaCursor: null,
-                            uidValidity: resolved.uidValidity,
-                            lastUid: highWater,
-                            lastReceivedAt: null,
-                            lastProviderMessageId: null,
-                        },
-                        getMessageCursor: (index) => messageCursors[index] ?? null,
-                    }
-                } finally {
-                    lock.release()
+                } catch (error) {
+                    if (error instanceof ImapInboundTimeoutError) throw error
+                    const phase = classifyImapTimeout(error)
+                    if (phase) throw new ImapInboundTimeoutError(account, phase, error)
+                    throw error
                 }
+            }
+
+            const fetchPromise = runFetch()
+            let deadlineTimer: ReturnType<typeof setTimeout>
+            const deadline = new Promise<never>((_resolve, reject) => {
+                deadlineTimer = setTimeout(() => {
+                    // Force the socket closed so runFetch's pending command actually
+                    // settles instead of leaking a connection that nothing is awaiting
+                    // any more. close() is synchronous and safe to call more than once.
+                    try {
+                        client.close()
+                    } catch {
+                        // Already closing/closed.
+                    }
+                    reject(new ImapInboundTimeoutError(account, 'overall_deadline'))
+                }, IMAP_ACCOUNT_DEADLINE_MS)
+            })
+
+            try {
+                return await Promise.race([fetchPromise, deadline])
             } finally {
+                clearTimeout(deadlineTimer!)
+                // If the deadline won the race, runFetch's promise is still settling in
+                // the background (Promise.race does not cancel the loser) — observe it
+                // so its eventual rejection never surfaces as an unhandled rejection.
+                fetchPromise.catch(() => {})
+                // The client must always be closed, on every path: success, a thrown
+                // error, or the deadline above. logout() is a graceful LOGOUT command;
+                // if the socket is already gone (deadline path, or a connect failure
+                // ImapFlow already tore down) it rejects immediately rather than
+                // hanging, so the fallback close() below is a fast no-op in that case.
                 try {
                     await client.logout()
                 } catch {
-                    // Ignore logout errors.
+                    try {
+                        client.close()
+                    } catch {
+                        // Nothing left to close.
+                    }
                 }
             }
         },

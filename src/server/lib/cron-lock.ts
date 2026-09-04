@@ -63,6 +63,55 @@ export const KNOWN_LOCK_NAMES: readonly string[] = [
  */
 const DEFAULT_JOB_TIMEOUT_MS = 10 * 60 * 1000
 
+// -----------------------------------------------------------------------------------------------
+// Fase 1 TASK 2 (2026-09-04) — budgets sized to measured production latency, kept in one place.
+//
+// The instrumentation landed in d5ba3e9 measured every job's normal latency in production over a
+// 35-minute / 130-run window (see the incident/task doc for the raw numbers). Every budget below
+// that has real measurement behind it is retuned from that data using ONE rule, applied uniformly:
+//
+//   timeoutMs = max(FLOOR_MS, 5 * observedNormalLatencyMs), rounded to a clean number.
+//
+// Why 5x: comfortably above every observed run (including the slow end of a measured range) so a
+// healthy tick is never killed by ordinary jitter, while still being a small enough multiple of
+// reality that a genuine hang is caught in a few minutes, not ten. Why a 30s floor: several of
+// these jobs normally finish in 1-2 seconds, and 5x that is only single-digit seconds — too tight
+// a budget would make the timeout trigger on ordinary noise (a slow query, a GC pause) rather than
+// an actual hang. 30s gives those jobs 15-75x their normal latency in headroom, which is still a
+// small fraction of their own cadence (see the ratio column below).
+//
+// Every value here also lands under the job's own cron cadence (jobs/index.ts) with margin, so a
+// hang is caught within roughly one cadence tick rather than silently spanning several:
+//
+//   job                          | normal latency | cadence | rule result | ratio to cadence
+//   warmup-mesh-processor        | 75s            | 600s    | 375s (5x)   | 62.5%
+//   outreach-replies-processor   | 55-61s         | 900s    | 305s (5x61) | 33.9%
+//   outreach-bounces-processor   | 1.6s           | 1800s   | 30s (floor) | 1.7%
+//   outreach-inbox-commands      | 1.3-2s         | 60s     | 30s (floor) | 50%
+//   deliverOutreachEventsToXphere| 0.4s           | 60s     | 30s (floor) | 50%
+//
+// `outreach-inbound-ingest` (src/server/lib/outreach-inbound-sources.ts, measured at ~55s normal /
+// 600s current budget — same rule would give ~305s) is deliberately NOT retuned here: that file is
+// owned by a parallel change, so it keeps its current default budget until that agent retunes it.
+//
+// Jobs with no measurement from this incident (amortizeSubscriptionCosts, expireOutreachApprovals,
+// materializeUnifiedInbox/backfillUnifiedInbox, measureProspectingOutcomes, reconcileOutreachEvents,
+// and processFollowUps/enforceDeliverabilityGuardrails, which already carry their own pre-existing
+// explicit overrides) are deliberately left untouched — retuning without a measured normal latency
+// would be a guess, not a fix, and is out of scope for this pass.
+//
+// Kept in one place (here) rather than as inline literals scattered across job files: every job
+// file below imports its own key from this object instead of hardcoding `{ timeoutMs: N }`, so the
+// next person retuning a budget has exactly one place to look and one place to change.
+// -----------------------------------------------------------------------------------------------
+export const JOB_TIMEOUT_BUDGETS_MS = {
+    warmupMeshProcessor: 375_000, // 5 x 75s observed normal latency
+    outreachRepliesProcessor: 305_000, // 5 x 61s (slow end of the observed 55-61s range)
+    outreachBouncesProcessor: 30_000, // 30s floor (5 x 1.6s would be ~8s — too tight)
+    outreachInboxCommands: 30_000, // 30s floor (5 x 1.3-2s would be single-digit seconds)
+    deliverOutreachEventsToXphere: 30_000, // 30s floor (5 x 0.4s would be ~2s)
+} as const
+
 /** Distinguishes "the timer won the race" from any value `fn()` could legitimately resolve with. */
 const JOB_TIMEOUT = Symbol('cron-lock-job-timeout')
 
@@ -282,7 +331,13 @@ export function getInFlightJobs(now: Date = new Date()): InFlightJobStats {
 // TASK 1 / TASK 3 — one structured completion line per run, and structured (not console) errors.
 // -----------------------------------------------------------------------------------------------
 
-type JobOutcome = 'completed' | 'timeout' | 'skipped_contention' | 'lock_failed' | 'error'
+type JobOutcome =
+    | 'completed'
+    | 'timeout'
+    | 'skipped_contention'
+    | 'skipped_orphan_running'
+    | 'lock_failed'
+    | 'error'
 
 /** Safe, serializable shape for an unknown thrown value. */
 function errorInfo(err: unknown): { message: string, stack?: string } {
@@ -301,6 +356,14 @@ function errorInfo(err: unknown): { message: string, stack?: string } {
  * and a pool snapshot adds no diagnostic value to "this tick did not run, another one holds the
  * lock." Every other outcome includes it — `getPoolSnapshot` is a synchronous, in-process,
  * never-throwing read, so the extra field costs nothing worth economizing.
+ *
+ * `skipped_orphan_running` (Fase 1 TASK 1) is a DIFFERENT, much rarer and more serious condition
+ * than `skipped_contention` and must never be folded into it: contention means the DB advisory
+ * lock is still held by an in-budget run; this outcome means the previous run of this exact job
+ * already blew its timeout budget (the lock was released) and its body is STILL executing,
+ * orphaned, in the background. Logged at `warn` (not `info`, unlike contention) precisely so it
+ * does not get lost in the routine-overlap noise — this is the guard that stops a second
+ * concurrent body of the same job from starting while the first is still running unbounded.
  *
  * Never throws: a failure to log a run's outcome must never surface as that run's failure.
  */
@@ -346,6 +409,16 @@ function logRun(jobName: string, outcome: JobOutcome, startedAt: number, extra?:
             // completed vs timed out" as one consistent shape, instead of splitting the single
             // highest-volume outcome into unstructured console lines nothing else can query.
             log.info(payload, `[cron-lock] ${jobName} already running on another process/tick, skipping`)
+        } else if (outcome === 'skipped_orphan_running') {
+            // `warn`, deliberately louder than `skipped_contention`'s `info` — this is the smoking
+            // gun for a job whose body is running past its own timeout budget, not routine overlap.
+            log.warn(
+                payload,
+                `[cron-lock] ${jobName} skipped: a previous run's body is still executing `
+                    + `${extra?.runningForMs ?? '?'}ms after it started (it already exceeded its own `
+                    + 'timeout budget and the advisory lock was released, but the orphaned body has not '
+                    + 'settled yet) — refusing to start a second concurrent body of the same job.',
+            )
         } else {
             log.info(payload, `[cron-lock] ${jobName} completed`)
         }
@@ -435,6 +508,34 @@ export async function runWithLock(
     const timeoutMs = options?.timeoutMs ?? DEFAULT_JOB_TIMEOUT_MS
     const key = computeLockKey(jobName)
     const startedAt = performance.now()
+
+    // Fase 1 TASK 1 (2026-09-04) — per-job overlap guard, checked BEFORE reserving a connection
+    // or touching the DB lock at all. This is the fix for the actual 2026-09-01/02-shaped bug: once
+    // a run's timeout fires, the `finally` below COMMITs and releases the advisory lock right away
+    // (see the BUDGET doc), so a later tick of the SAME job would otherwise acquire that lock
+    // cleanly and start a second concurrent body while the first orphaned one is still running —
+    // e.g. two IMAP scans over the same 34 mailboxes at once. The DB lock alone cannot prevent
+    // this: it only ever reflects the state of the (already-committed) transaction, not whether
+    // the JS body it used to guard is still executing. `inFlightEntries` is the only place that
+    // fact is visible, so the guard reads it here, per-job-name, before anything else happens.
+    //
+    // Scoped to CONFIRMED orphans (`timedOut === true`) only — never to every in-flight entry for
+    // this job. A body that is merely still running within its own budget is already handled by
+    // the ordinary `skipped_contention` path a few lines down (its transaction is still open, so
+    // the advisory lock is still held); folding that case in here too would misreport routine tick
+    // overlap as this rarer, more serious condition. Different job names never interfere with each
+    // other — `inFlightEntries` is filtered by `jobName`, so e.g. warmup-mesh-processor and
+    // outreach-replies-processor running at the same time (measured: up to 10 concurrent bodies)
+    // is completely unaffected.
+    const orphansOfThisJob = inFlightEntries.filter((e) => e.jobName === jobName && e.timedOut)
+    if (orphansOfThisJob.length > 0) {
+        // Report the OLDEST orphan's age — the longest-running one is the most useful number for
+        // an on-call human staring at this log line.
+        const oldestOrphan = orphansOfThisJob.reduce((oldest, e) => (e.startedAt < oldest.startedAt ? e : oldest))
+        const runningForMs = Date.now() - oldestOrphan.startedAt
+        logRun(jobName, 'skipped_orphan_running', startedAt, { runningForMs, orphanCount: orphansOfThisJob.length })
+        return
+    }
 
     // Reserve a single connection so BEGIN, the lock and COMMIT travel on the
     // same client connection (and therefore the same pooled backend).

@@ -25,7 +25,7 @@ import { createLogger } from '../lib/logger'
 import { buildSourceKey } from '../lib/unified-inbox/normalize'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { shouldNotifyOutreachEvent } from '../lib/outreach-settings'
-import { runWithLock } from '../lib/cron-lock'
+import { JOB_TIMEOUT_BUDGETS_MS, runWithLock } from '../lib/cron-lock'
 import {
     consumeClassifiedEvents,
     createDrizzleInboundEventStore,
@@ -149,9 +149,12 @@ export async function resolveReplyContextText(event: StoredProviderEvent): Promi
 const REPLY_PROCESSOR_LOCK_NAME = 'outreach-replies-processor'
 
 export async function runRepliesProcessorWithLock(): Promise<void> {
+    // jobs/index.ts schedules this every 15 minutes. 2026-09-04 (Fase 1 TASK 2): previously ran on
+    // cron-lock's 10-minute default; retuned to 305s — 5x the 55-61s normal latency measured in
+    // production (see JOB_TIMEOUT_BUDGETS_MS in cron-lock.ts for the rule and the full table).
     await runWithLock(REPLY_PROCESSOR_LOCK_NAME, async () => {
         await processReplies()
-    })
+    }, { timeoutMs: JOB_TIMEOUT_BUDGETS_MS.outreachRepliesProcessor })
 }
 
 export async function processReplies(): Promise<ProcessRepliesResult> {

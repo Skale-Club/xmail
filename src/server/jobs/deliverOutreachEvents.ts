@@ -1,7 +1,7 @@
 import { and, asc, eq, isNull, lt, lte, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import { outreachEventOutbox } from '../../db/schema'
-import { runWithLock } from '../lib/cron-lock'
+import { JOB_TIMEOUT_BUDGETS_MS, runWithLock } from '../lib/cron-lock'
 import { createLogger } from '../lib/logger'
 
 const REQUEST_TIMEOUT_MS = 5_000
@@ -94,8 +94,13 @@ export async function deliverOutreachEventsToXphere(): Promise<void> {
 }
 
 export async function runOutreachEventDeliveryWithLock(): Promise<void> {
-    // jobs/index.ts schedules this every minute — cron-lock's 10-minute default budget would let
-    // a hung outbound HTTP call to Xphere eat up to 10 skipped ticks before it self-heals. 2
-    // minutes bounds that to a couple of ticks.
-    await runWithLock('deliverOutreachEventsToXphere', deliverOutreachEventsToXphere, { timeoutMs: 2 * 60 * 1000 })
+    // jobs/index.ts schedules this every minute. 2026-09-04 (Fase 1 TASK 2): previously a 2-minute
+    // guess; retuned to the 30s floor — the 0.4s normal latency measured in production is so far
+    // below any reasonable budget that 5x it would be too tight (see JOB_TIMEOUT_BUDGETS_MS in
+    // cron-lock.ts for the rule and the full table). 30s still lands at half the 60s cadence.
+    await runWithLock(
+        'deliverOutreachEventsToXphere',
+        deliverOutreachEventsToXphere,
+        { timeoutMs: JOB_TIMEOUT_BUDGETS_MS.deliverOutreachEventsToXphere },
+    )
 }

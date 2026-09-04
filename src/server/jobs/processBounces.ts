@@ -25,7 +25,7 @@ import { eq, and, ne, sql, desc } from 'drizzle-orm'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { shouldNotifyOutreachEvent } from '../lib/outreach-settings'
-import { runWithLock } from '../lib/cron-lock'
+import { JOB_TIMEOUT_BUDGETS_MS, runWithLock } from '../lib/cron-lock'
 import {
     consumeClassifiedEvents,
     createDrizzleInboundEventStore,
@@ -346,9 +346,13 @@ export async function markAsBounced(
 const BOUNCE_PROCESSOR_LOCK_NAME = 'outreach-bounces-processor'
 
 export async function runBouncesProcessorWithLock(): Promise<void> {
+    // jobs/index.ts schedules this every 30 minutes. 2026-09-04 (Fase 1 TASK 2): previously ran on
+    // cron-lock's 10-minute default; retuned to the 30s floor — the 1.6s normal latency measured in
+    // production is so far below any reasonable budget that 5x it would be too tight (see
+    // JOB_TIMEOUT_BUDGETS_MS in cron-lock.ts for the rule and the full table).
     await runWithLock(BOUNCE_PROCESSOR_LOCK_NAME, async () => {
         await processBounces()
-    })
+    }, { timeoutMs: JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor })
 }
 
 export async function processBounces(): Promise<{ processed: number; bounces: number; errors: number }> {
