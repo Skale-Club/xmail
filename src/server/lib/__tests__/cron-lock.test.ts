@@ -360,17 +360,22 @@ describe('runWithLock — structured cron.lock.run completion logging (Task 1 / 
     })
 })
 
-describe('getPoolSnapshot — best-effort postgres-js pool introspection (Task 2)', () => {
-    it('reports the documented, stable `max` even when nothing else is observable', () => {
-        expect(getPoolSnapshot({ options: { max: 20 } })).toEqual({ max: 20, reserved: null, idle: null })
+describe('getPoolSnapshot — the configured ceiling is all postgres-js exposes (Task 2)', () => {
+    it('reports the documented, stable `max` and nothing else', () => {
+        expect(getPoolSnapshot({ options: { max: 20 } })).toEqual({ max: 20 })
     })
 
-    it('reads reserved/idle when a queues-shaped field happens to be present', () => {
+    it('does NOT resurrect reserved/idle even when a queues-shaped field is present', () => {
+        // postgres-js 3.4.8 never attaches `queues` to the client, so a probe for it only ever
+        // read null — and an always-null field reads as "nothing reserved" to a log skimmer.
+        // The fields were removed on purpose; this pins that a lookalike shape stays ignored.
         const snapshot = getPoolSnapshot({
             options: { max: 20 },
             queues: { reserved: { length: 3 }, open: { length: 5 } },
         })
-        expect(snapshot).toEqual({ max: 20, reserved: 3, idle: 5 })
+        expect(snapshot).toEqual({ max: 20 })
+        expect(snapshot).not.toHaveProperty('reserved')
+        expect(snapshot).not.toHaveProperty('idle')
     })
 
     it('degrades to null when max is missing or not a finite number', () => {
@@ -392,11 +397,6 @@ describe('getPoolSnapshot — best-effort postgres-js pool introspection (Task 2
             },
         }
         expect(getPoolSnapshot(poisoned)).toBeNull()
-    })
-
-    it('ignores a malformed queues field rather than throwing', () => {
-        const snapshot = getPoolSnapshot({ options: { max: 20 }, queues: 'not-an-object' })
-        expect(snapshot).toEqual({ max: 20, reserved: null, idle: null })
     })
 })
 

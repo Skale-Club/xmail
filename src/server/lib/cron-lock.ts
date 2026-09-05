@@ -122,57 +122,38 @@ const JOB_TIMEOUT = Symbol('cron-lock-job-timeout')
 export interface PoolSnapshot {
     /** Configured pool ceiling (`DB_POOL_MAX`, default 20). Documented, stable, always present. */
     max: number
-    /** Connections currently checked out via `.reserve()`-style bookkeeping, if observable. */
-    reserved: number | null
-    /** Connections currently idle/available, if observable. */
-    idle: number | null
 }
 
 /**
- * Best-effort snapshot of the postgres-js connection pool's occupancy, logged alongside every
- * job's completion so the "orphaned runs slowly exhaust the pool" hypothesis (see the incident
- * doc below `runWithLock`) can be checked against real numbers instead of inferred after the
- * fact from a process restart clearing it.
+ * The one thing postgres-js exposes about its pool: the configured ceiling. Logged alongside
+ * every job's completion so a reader can relate `inFlight`/`orphaned` (tracked in-process, see
+ * Fase 1 TASK 1 below) to the number of connections those jobs could possibly be holding.
  *
- * postgres-js (the `postgres` package, pinned to 3.4.8 as of writing) does NOT expose live
- * occupancy (reserved/idle/queued connection counts) anywhere on the object `postgres(...)`
- * returns — verified with `Object.getOwnPropertyNames(queryClient)`, which lists only
- * `types, typed, unsafe, notify, array, json, file, parameters, largeObject, subscribe, CLOSE,
- * END, PostgresError, options, reserve, listen, begin, close, end`. The library's live
- * connection queues (`open`, `reserved`, `busy`, `full`, `closed`, `connecting`, `ended` — see
- * postgres/src/index.js) exist only as variables closed over inside its internal `Postgres()`
- * factory and are never attached to the client object, so there is currently no supported *or*
- * unsupported way to read them from outside the library.
+ * This used to also carry `reserved` and `idle`, populated by a defensive probe for a
+ * `queues`-shaped field on the client. postgres-js (the `postgres` package, pinned to 3.4.8)
+ * keeps its live connection queues (`open`, `reserved`, `busy`, `full`, ...) as variables closed
+ * over inside its internal `Postgres()` factory and never attaches them to the returned client —
+ * verified at runtime on 2026-09-05: `sql.queues` is `undefined`, and `Object.keys(sql)` lists
+ * only `types, typed, unsafe, notify, array, json, file, parameters, largeObject, subscribe,
+ * CLOSE, END, PostgresError, options, reserve, listen, begin, close, end`. So the probe read
+ * `null` on every single log line, and a field that is always `null` is worse than no field:
+ * it reads as "healthy, nothing reserved" to anyone skimming the log, when it actually means
+ * "never measured". That is the exact silence-disguised-as-normal pattern the 2026-09-01 incident
+ * taught us to distrust, so the two fields were removed rather than left as a promise a future
+ * library version might keep. If occupancy is ever needed for real, it has to be counted on our
+ * side (wrap `reserve()`/`release()`), not read from the library.
  *
- * The only thing that IS exposed, documented and stable is static configuration
- * (`queryClient.options.max`), which this always reports. `reserved`/`idle` are populated only
- * by a best-effort, defensively-typed probe for a `queues`-shaped field, in case a different
- * postgres-js version ever attaches one directly to the client (some pool libraries do, under
- * names like this). That probe is NOT documented API, is expected to keep finding nothing on the
- * pinned version (both fields will read `null`), and MUST be re-verified after any `postgres`
- * upgrade. Any shape that doesn't match — including the whole client being unrecognizable —
- * degrades to `null` rather than throwing: metric collection must never break a job.
+ * Any shape that doesn't match — including the whole client being unrecognizable — degrades to
+ * `null` rather than throwing: metric collection must never break a job.
  */
-// Defaults to jobQueryClient, NOT queryClient: since Fase 2 every job reserves from the
-// jobs pool, so reporting the request-path pool here would log a number that has nothing
-// to do with the connections the job actually consumed.
 export function getPoolSnapshot(client: unknown = jobQueryClient): PoolSnapshot | null {
     try {
-        const candidate = client as {
-            options?: { max?: unknown }
-            queues?: { reserved?: { length?: unknown }, open?: { length?: unknown } }
-        } | null | undefined
+        const candidate = client as { options?: { max?: unknown } } | null | undefined
 
         const max = Number(candidate?.options?.max)
         if (!Number.isFinite(max)) return null
 
-        const reservedLength = candidate?.queues?.reserved?.length
-        const openLength = candidate?.queues?.open?.length
-        return {
-            max,
-            reserved: typeof reservedLength === 'number' ? reservedLength : null,
-            idle: typeof openLength === 'number' ? openLength : null,
-        }
+        return { max }
     } catch {
         return null
     }
@@ -237,8 +218,8 @@ export function getRecentJobTimeouts(now: Date = new Date()): JobTimeoutStats {
 // -----------------------------------------------------------------------------------------------
 // Fase 1 TASK 1 (2026-09-04) — in-flight / orphan job-body tracking.
 //
-// getPoolSnapshot above always reads {max: 20, reserved: null, idle: null} on the pinned
-// postgres-js 3.4.8 — the library exposes no live occupancy, so it cannot prove or disprove the
+// getPoolSnapshot above can only report the configured ceiling on the pinned postgres-js
+// 3.4.8 — the library exposes no live occupancy, so it cannot prove or disprove the
 // leading hypothesis for the 2026-09-01/02 incident (~30h, 317+307 job timeouts, cured only by a
 // Docker restart): that the timeout releases the advisory lock but does NOT cancel the job body
 // (see the BUDGET doc on runWithLock below), and the orphaned promise keeps running, keeps
