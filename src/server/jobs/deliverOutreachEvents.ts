@@ -1,4 +1,5 @@
-import { and, asc, eq, isNull, lt, lte, sql } from 'drizzle-orm'
+import { and, asc, eq, isNull, lt, lte, notExists } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import { db } from '../../db'
 import { outreachEventOutbox } from '../../db/schema'
 import { JOB_TIMEOUT_BUDGETS_MS, runWithLock } from '../lib/cron-lock'
@@ -14,32 +15,40 @@ function retryAt(attempt: number): Date {
     return new Date(Date.now() + delayMinutes * 60_000)
 }
 
+export function buildDeliverableOutreachEventsQuery(now: Date = new Date()) {
+    const priorEvent = alias(outreachEventOutbox, 'prior_outreach_event')
+
+    return db.select()
+        .from(outreachEventOutbox)
+        .where(and(
+            isNull(outreachEventOutbox.xphereDeliveredAt),
+            eq(outreachEventOutbox.xphereDeliveryEnabled, true),
+            lt(outreachEventOutbox.xphereAttempts, MAX_ATTEMPTS),
+            lte(outreachEventOutbox.xphereNextAttemptAt, now),
+            // Preserve order inside one aggregate while unrelated leads/campaigns continue.
+            notExists(
+                db.select({ id: priorEvent.id })
+                    .from(priorEvent)
+                    .where(and(
+                        eq(priorEvent.organizationId, outreachEventOutbox.organizationId),
+                        eq(priorEvent.aggregateType, outreachEventOutbox.aggregateType),
+                        eq(priorEvent.aggregateId, outreachEventOutbox.aggregateId),
+                        eq(priorEvent.xphereDeliveryEnabled, true),
+                        isNull(priorEvent.xphereDeliveredAt),
+                        lt(priorEvent.sequenceNumber, outreachEventOutbox.sequenceNumber),
+                    )),
+            ),
+        ))
+        .orderBy(asc(outreachEventOutbox.sequenceNumber))
+        .limit(BATCH_SIZE)
+}
+
 export async function deliverOutreachEventsToXphere(): Promise<void> {
     const url = process.env.XPHERE_EVENTS_URL?.trim()
     const apiKey = process.env.XPHERE_EVENTS_API_KEY?.trim()
     if (!url || !apiKey) return
 
-    const events = await db.query.outreachEventOutbox.findMany({
-        where: and(
-            isNull(outreachEventOutbox.xphereDeliveredAt),
-            eq(outreachEventOutbox.xphereDeliveryEnabled, true),
-            lt(outreachEventOutbox.xphereAttempts, MAX_ATTEMPTS),
-            lte(outreachEventOutbox.xphereNextAttemptAt, new Date()),
-            // Preserve order inside one aggregate while unrelated leads/campaigns continue.
-            sql`NOT EXISTS (
-                SELECT 1
-                FROM outreach_event_outbox AS prior
-                WHERE prior.organization_id = outreach_event_outbox.organization_id
-                  AND prior.aggregate_type = outreach_event_outbox.aggregate_type
-                  AND prior.aggregate_id = outreach_event_outbox.aggregate_id
-                  AND prior.xphere_delivery_enabled = true
-                  AND prior.xphere_delivered_at IS NULL
-                  AND prior.sequence_number < outreach_event_outbox.sequence_number
-            )`,
-        ),
-        orderBy: [asc(outreachEventOutbox.sequenceNumber)],
-        limit: BATCH_SIZE,
-    })
+    const events = await buildDeliverableOutreachEventsQuery()
 
     for (const event of events) {
         const attempt = event.xphereAttempts + 1
