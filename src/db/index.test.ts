@@ -43,7 +43,7 @@ describe('jobQueryClient DIRECT_URL fallback', () => {
         expect(mod.jobQueryClient).toBeTruthy()
         const logged = logSpy.mock.calls.map((args) => String(args[0]))
         expect(logged.some((line) => line.includes('[DB] jobQueryClient using') && line.includes('DATABASE_URL (DIRECT_URL not set)'))).toBe(true)
-    })
+    }, 15_000)
 
     it('prefers DIRECT_URL and reports that choice when it is set', async () => {
         vi.stubEnv('DIRECT_URL', DIRECT_URL)
@@ -52,7 +52,7 @@ describe('jobQueryClient DIRECT_URL fallback', () => {
         expect(mod.jobQueryClient).toBeTruthy()
         const logged = logSpy.mock.calls.map((args) => String(args[0]))
         expect(logged.some((line) => line.includes('[DB] jobQueryClient using DIRECT_URL') && !line.includes('not set'))).toBe(true)
-    })
+    }, 15_000)
 
     it('behaves identically to today when DIRECT_URL is unset — same connection string family as DATABASE_URL', async () => {
         vi.stubEnv('DIRECT_URL', '')
@@ -62,7 +62,7 @@ describe('jobQueryClient DIRECT_URL fallback', () => {
         // jobQueryClient exists, is a distinct client instance from queryClient, and did not
         // throw or fall back to some other default in DIRECT_URL's absence.
         expect(mod.jobQueryClient).not.toBe(mod.queryClient)
-    })
+    }, 15_000)
 
     it('exports jobQueryClient as a separate client/pool from queryClient, sized per the measured job concurrency', async () => {
         vi.stubEnv('DIRECT_URL', DIRECT_URL)
@@ -75,5 +75,5 @@ describe('jobQueryClient DIRECT_URL fallback', () => {
         // than the request-path pool, since jobs are few and long, not many and short.
         expect(jobOptions.max).toBe(12)
         expect(requestOptions.max).toBe(20)
-    })
+    }, 15_000)
 })

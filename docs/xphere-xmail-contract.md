@@ -5,7 +5,7 @@
 > a fonte de verdade sobre o que o Xphere precisa enviar. Toda mudança aqui exige atualizar
 > `src/server/lib/prospecting/external-run.ts` e os testes de contrato.
 >
-> Última revisão: **2026-08-15**.
+> Última revisão: **2026-09-05**.
 
 ## Por que este doc existe
 
@@ -16,7 +16,7 @@ As três divergências encontradas, e o que cada uma custou:
 | Xmail lê `source_run_id`, Xphere manda `xcraper_run_id` | **Todo** run de xcraper com `outcome_* = 0` para sempre; custo-por-resposta dividido por zero | Por acaso, ao auditar a atribuição |
 | `websiteInsights` nunca enviado | `{{websiteInsight}}` renderiza vazio, deixando um buraco no corpo do e-mail | Ao ler os textos da campanha |
 | Cobertura de e-mail sem campo no payload | Impossível responder "que % tem e-mail?" — decisão de custo recorrente feita às cegas | Ao tentar responder a pergunta |
-| A skill do Hermes manda usar campos que o `prospects_list` não devolve | O agente não consegue produzir a segmentação comercial e reporta "PENDING" | Ao chamar a ferramenta direto |
+| A skill antiga do Hermes mandava usar campos que o `prospects_list` não devolvia | O agente não conseguia produzir a segmentação comercial e reportava "PENDING" | Ao chamar a ferramenta direto; corrigido em 2026-09-05 |
 
 O denominador comum: **nenhuma delas dá erro**. O Xmail aceita o payload, grava o que reconhece e
 ignora o resto em silêncio. Um campo que não chega é indistinguível de um campo que chegou vazio.
@@ -40,35 +40,34 @@ sem reprocessar o ledger de custo.
   "actorId": "WnMxbsRLNbPeYL6ge",
   "resultCount": 25,
   "importedCount": 25,
-  "enrichedCount": 18,                      // ⚠️ NUNCA ENVIADO HOJE — ver abaixo
+  "enrichedCount": 18,                      // medido pelo Xcraper; zero também é uma medição válida
   "costUsd": 0.1551,                        // custo TOTAL real reportado pelo Apify, não unitário
   "hypothesis": { "premise": "…", "expected": {…}, "basis": "…" },
-  "coverage": {                             // ⚠️ NUNCA ENVIADO HOJE — ver abaixo
-    "emailFound": 18,
-    "emailVerified": 11,
-    "byWebPresence":     { "owned_website": 9, "booking_platform": 7, "social_only": 5 },
-    "byBookingPlatform": { "booksy": 4, "square": 3 },
-    "unclassified": 4
+  "coverage": {
+    "byWebPresence":     { "owned_website": 9, "booking_platform": 7, "social_profile": 5, "none": 4 },
+    "byBookingPlatform": { "Booksy": 4, "Square Appointments": 3 }
   }
 }
 ```
 
-### O que falta o Xphere mandar
+### Cobertura entregue hoje
 
-**`enrichedCount`** — quantos resultados passaram por enriquecimento de contato. Sem ele o
-`enriched_count` fica em zero mesmo num run `enriched`, que é um valor perfeitamente plausível e
-por isso escondeu o problema. É o número que responde "vale a pena pagar por `enriched`?".
+**`enrichedCount`** informa quantos resultados passaram por enriquecimento de contato. O Xcraper
+envia o valor sempre que foi medido, inclusive zero; omite somente quando a execução antiga não
+mediu a coluna.
 
-**`coverage`** — a distribuição que decide o que fazer com o run. Um run com 10% de e-mail e 80%
+**`coverage`** traz hoje a distribuição de presença web e plataforma de booking. Um run com 10% de e-mail e 80%
 sem site próprio é um run **forte** de Website/Xkedule e **fraco** de cold email; sem `coverage` os
 dois casos são indistinguíveis.
+
+`emailFound` e `emailVerified` continuam opcionais e não são inventados pelo intermediário: entram
+quando o produtor passar a medi-los no mesmo momento do run.
 
 > **`unclassified` nunca deve ser somado a "sem site".** Desconhecido é desconhecido. Tratá-lo como
 > ausência inventa cobertura comercial que ninguém mediu. O Xmail mantém o campo separado por isso.
 
-Enquanto não chegarem, os campos ficam ausentes e **visíveis**: o alerta
-`enriched_count_never_populated` em `lib/outreach-silence.ts` dispara no health endpoint. Ausência
-nunca é preenchida com zero como se fosse medição.
+Valores antigos ou não medidos continuam ausentes e **visíveis**. Ausência nunca é preenchida com
+zero como se fosse medição.
 
 ## Endpoint 2 — `POST /api/outreach/leads/bulk-import`
 
@@ -88,7 +87,7 @@ Cria as linhas da lista de envio. Máximo 1000 por chamada.
       "email_status": "ok",
       "email_verified_at": "2026-08-15T12:00:00Z",
       "email_verification_provider": "millionverifier",
-      "websiteInsights": { "en": "…", "pt": "…" }  // ⚠️ NUNCA ENVIADO HOJE
+      "websiteInsights": { "en": "…", "pt": "…" }
     }
   }]
 }
@@ -102,9 +101,9 @@ O job de outcome credita um lead ao run por:
 leads.custom_fields->>'source_run_id' = prospecting_runs.idempotency_key
 ```
 
-O Xphere carimba `xcraper_run_id`. O Xmail passou a **tolerar** os apelidos conhecidos e a extrair
-o id do próprio `source` (`lib/prospecting/source-run-id.ts`), então o pipeline funciona hoje —
-mas a tolerância é uma rede de segurança, não o contrato. **Mande `source_run_id`.**
+O Xphere carimba `source_run_id`. O Xmail ainda **tolera** os apelidos históricos e extrai o id do
+próprio `source` (`lib/prospecting/source-run-id.ts`), mas essa tolerância é apenas uma rede de
+segurança para registros antigos.
 
 Vale a mesma regra de primeiro toque que o Xmail aplica: uma vez gravado, nunca é sobrescrito por
 re-import. Deixar um run posterior reivindicar o lead faria dois runs contarem o mesmo humano.
@@ -115,39 +114,25 @@ re-import. Deixar um run posterior reivindicar o lead faria dois runs contarem o
 `content_language`, então o mesmo lead pode aparecer em campanhas de idiomas diferentes sem
 retrabalho. Uma string simples cai no caminho legado `websiteInsight` e perde essa capacidade.
 
-Hoje o campo não chega, e o `{{websiteInsight}}` do step 1 da campanha piloto renderiza **vazio**,
-deixando um parágrafo em branco no meio do e-mail — exatamente onde estaria a personalização que
-justifica a abordagem.
+O Xphere carrega a análise por conta e envia o objeto no momento do enrolamento. Quando não existe
+análise, o campo permanece ausente; o template não deve criar um parágrafo vazio nesse caso.
 
 ## Endpoint 3 (sentido inverso) — `prospects_list` do MCP do Xphere
 
 Não é o Xphere chamando o Xmail, mas é o mesmo acoplamento informal e a mesma classe de
 divergência, então mora aqui.
 
-**O que a ferramenta devolve hoje** (verificado em 2026-08-15 contra os 77 prospects de xcraper,
-todos os campos presentes em 100% das linhas):
+**O que a ferramenta devolve hoje** (verificado em 2026-09-05):
 
 ```
 id · name · kind · source_type · email · emailDndBlocked · website · score · engagement_status
+phone · address · location · city · has_owned_website · web_presence_type
+web_presence_url · web_presence_platform · booking_platform · booking_url
 ```
 
-**O que a skill do Hermes mandava usar e não existe:** `web_presence_summary`,
-`has_owned_website`, `web_presence`, `booking_platform` — e também `location`, `city` e `phone`.
-
-Consequência: a segmentação comercial que decide entre cold email e proposta de Website/Xkedule
-**não pode ser produzida pelo agente**. Foi por isso que a nota do maestro do run de Marlborough
-registrou a cobertura como `PENDING` — o Hermes tentou, não achou, e (corretamente) reportou
-indisponível em vez de estimar.
-
-> **Ausente em `prospects_list` ≠ ausente no Xphere.** O `meta_audience_sync` projeta
-> identificadores no servidor, então o telefone quase certamente existe lá. O que falta é a
-> **visibilidade** do agente, não o dado. Confundir as duas coisas leva a "o Xphere não tem
-> telefone", que é falso e mandaria arrancar um canal que funciona.
-
-**O que o Xphere precisa expor:** `web_presence_type`, `booking_platform` e `location` em
-`prospects_list`, ou uma ferramenta de agregação equivalente. Enquanto não expuser, qualquer
-número de presença web é heurística sobre a URL crua — útil para orientar, nunca para reportar
-como medição.
+A resposta também inclui `web_presence_summary`. O filtro `no_owned_website` cobre todo registro
+com `has_owned_website=false`; filtros exatos separam `booking_platform`, `social_profile`,
+`directory_listing`, `link_hub` e `none`. `booking_platform` restringe pelo provedor detectado.
 
 ## Invariantes, com prova
 

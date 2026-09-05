@@ -18,8 +18,8 @@ import { hypothesisSchema } from './hypothesis'
  * e-mail?" não pôde ser respondida para 85% da base, e é uma pergunta de decisão de custo
  * recorrente: sem ela não dá para saber se pagar por `enriched` compensa.
  *
- * Tudo é opcional de propósito: o Xphere ainda não envia nada disto, e o contrato precisa aceitar
- * o payload atual sem quebrar. O que chegar é gravado; o que faltar continua ausente e VISÍVEL
+ * Tudo é opcional de propósito: produtores antigos podem não enviar estes campos. O que chegar é
+ * gravado; o que faltar continua ausente e VISÍVEL
  * (ver o alerta `enriched_count_never_populated` em outreach-silence.ts), nunca preenchido com
  * zero como se fosse medição.
  */
@@ -76,7 +76,7 @@ const externalRunObjectSchema = z.object({
     hypothesis: hypothesisSchema.optional(),
     /**
      * Quantos resultados passaram por enriquecimento de contato. Popula `enriched_count`.
-     * Opcional de propósito e SEM fallback para 0: o Xphere ainda não envia isto, e
+     * Opcional de propósito e SEM fallback para 0: produtores antigos não enviam isto, e
      * omitir precisa continuar ausente (não virar zero) para que o alerta
      * `enriched_count_never_populated` (outreach-silence.ts) continue disparando enquanto
      * ninguém está de fato medindo enriquecimento. Ver o comentário em prospecting.ts.

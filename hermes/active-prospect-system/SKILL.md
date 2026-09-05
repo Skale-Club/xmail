@@ -101,7 +101,8 @@ When Vanildo explicitly requests a run:
 3. On completion, verify `savedResults` and the Xphere push result. Xcraper
    auto-pushes and retries idempotently.
 4. Xcraper metadata carries `external_run_id`, hypothesis, query, location,
-   result count, template, actor id, and actual `cost_usd` when known.
+   result count, `enriched_count`, template, actor id, actual `cost_usd` when
+   known, and measured web-presence/booking coverage.
 5. Xphere automatically registers the external run in Xmail. It later places
    `source_run_id` on each Xmail lead for outcome attribution.
 6. Read the result with `xmail_list_prospecting_journeys` filtered by provider
@@ -186,49 +187,37 @@ Importing a validated address into Xmail is **not** a per-record qualification g
 and must never be described as one. Human approval applies to **starting outreach to
 an audience**, not to judging each business one by one.
 
-Every completed Xcraper run must also record its web-presence observation in the
-maestro note, using only fields that actually come back — see the triage section
-for what those are today. Never silently count unknown as no website.
+Every completed Xcraper run must also record its `web_presence_summary` in the
+maestro note. Never silently count `unclassified` as no website.
 
 ## Triage and website previews
 
-### What `prospects_list` actually returns (verified 2026-08-15)
+### What `prospects_list` returns (verified 2026-09-05)
 
-Exactly nine fields, present on every row:
+The result includes aggregate `web_presence_summary` plus these row fields:
 
 ```
-id · name · kind · source_type · email · emailDndBlocked · website · score · engagement_status
+id · name · kind · source_type · email · emailDndBlocked · website · score
+engagement_status · phone · address · location · city · has_owned_website
+web_presence_type · web_presence_url · web_presence_platform
+booking_platform · booking_url
 ```
 
-**Verify before trusting an earlier version of this skill.** It used to instruct
-using `web_presence_summary`, `has_owned_website`, `prospects_list.web_presence`
-and `prospects_list.booking_platform`. All four were checked against all 77
-xcraper prospects and are **absent from every row**, along with `location`,
-`city` and `phone`. Writing a procedure around fields nobody confirmed is how the
-skill came to describe a tool that does not exist.
+Use `web_presence:'no_owned_website'` for the commercially important umbrella
+segment. It includes booking platforms, social profiles, directories, link hubs,
+and businesses with no detected URL. Use an exact type such as
+`web_presence:'booking_platform'` or `web_presence:'none'` to narrow it, and
+`booking_platform:'Booksy'` to select a provider. The classifier, not Hermes,
+determines these values; do not guess from a business name.
 
-Absent from `prospects_list` does **not** mean absent from Xphere: `meta_audience_sync`
-projects identifiers server-side, so the phone almost certainly exists there. What
-is missing is the agent's *visibility*, not the data.
-
-### How to triage with what exists
-
-- `email` present or null decides who can enter an Xmail campaign, and nothing else.
-- `website` is the **raw Google Maps URL**. A URL alone does **not** establish an
-  owned website — it is just as often a booking platform, a social profile or a
-  link hub. Do not classify it as an owned domain without Website Analyzer evidence.
-- `score` is the Analyzer's lead score, and only means something for a domain the
-  Analyzer actually audited. Never present it as website evidence for a URL that
-  was never audited.
-
-**When the presence/booking breakdown is asked for, report it as UNAVAILABLE and
-name the reason.** Do not infer a platform from the URL, and never guess a provider
-from a business name or a generic CTA. An honest "not exposed by the tool" is worth
-more than a plausible number nobody can check — a number invented here becomes the
-basis of a commercial decision.
-
-The table below stays as the commercial framing to apply **once** the classification
-becomes available. It is not something to fill in by guessing today.
+- `email` decides who can enter an Xmail campaign, and nothing else.
+- `website` is only an owned website. Third-party URLs live in
+  `web_presence_url`/`booking_url`, so they are never presented as owned domains.
+- `phone` can make a no-email prospect eligible for Meta Custom Audiences. It
+  does not authorize SMS or calling.
+- `score` is Analyzer evidence for owned websites; do not use it as website
+  evidence when `has_owned_website` is false.
+- `unclassified` remains unknown and must never be added to no-owned-website.
 
 | Presence | Booking | Primary opportunity |
 | --- | --- | --- |

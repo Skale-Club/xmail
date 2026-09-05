@@ -30,7 +30,7 @@ Xmail is a multi-tenant email server management platform inspired by Postal. It 
 > [Hermes Agent](https://hermes-agent.nousresearch.com/) container (`/opt/hermes`,
 > isolated from the `xmail` container, capped at 1 GB RAM). It is unrelated to the
 > email server but shares the box. See [`hermes/README.md`](hermes/README.md) for its
-> setup, LLM config (Kimi Coding Plan + gemini fallback), Telegram channel, and gotchas
+> setup, LLM config (Codex OAuth with `gpt-5.6-sol` primary and `kimi-k3` fallback), Telegram channel, and gotchas
 > (notably the expired ghcr.io Coolify credential that breaks Docker pulls — use
 > `DOCKER_CONFIG=/tmp/emptydocker`).
 
