@@ -95,7 +95,7 @@ async function rejectPrivateMailHosts(hosts: (string | null | undefined)[]): Pro
     return null
 }
 import nodemailer from 'nodemailer'
-import { ImapFlow } from 'imapflow'
+import { createImapClient } from '../../lib/imap-client'
 
 const router = Router()
 
@@ -921,16 +921,16 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
         if (account.imapHost && account.imapUsername && account.imapPassword) {
             try {
                 const imapPassword = decryptSecret(account.imapPassword)
-                const imapClient = new ImapFlow({
+                // createImapClient: crash guard + bounded timeouts — see lib/imap-client.ts.
+                const imapClient = createImapClient({
                     host: account.imapHost,
-                    port: account.imapPort || 993,
-                    secure: account.imapSecure !== false,
+                    port: account.imapPort,
+                    secure: account.imapSecure,
                     auth: {
                         user: account.imapUsername,
                         pass: imapPassword,
                     },
-                    logger: false,
-                })
+                }, { emailAccountId: account.id, purpose: 'verify' })
 
                 await imapClient.connect()
                 await imapClient.logout()

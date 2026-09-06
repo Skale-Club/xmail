@@ -44,6 +44,10 @@ const imapFlowState = vi.hoisted(() => {
         return {
             options,
             mailbox: behavior.mailbox ?? { uidValidity: 100 },
+            // ImapFlow is an EventEmitter and createImapClient attaches its 'error' guard
+            // before connect(), so a mock without `on` is not a stand-in for the real class.
+            // What the guard does is covered by imap-client.test.ts; here it only has to exist.
+            on: vi.fn(),
             connect: vi.fn(behavior.connect ?? (async () => undefined)),
             getMailboxLock: vi.fn(async (_path: string) => ({ path: 'INBOX', release: vi.fn() })),
             search: vi.fn(behavior.search ?? (async () => [] as number[])),

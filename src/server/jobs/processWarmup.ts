@@ -23,7 +23,8 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { ImapFlow } from 'imapflow'
+import type { ImapFlow } from 'imapflow'
+import { createImapClient } from '../lib/imap-client'
 import { and, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
 import {
@@ -57,6 +58,7 @@ import {
     type WarmupSender,
 } from '../lib/warmup/plan'
 import { decideWarmupSendOutcome } from '../lib/warmup/retry'
+import { OutboundCircuit } from '../lib/outbound-circuit'
 
 const log = createLogger('outreach.warmup')
 
@@ -233,7 +235,7 @@ async function recordSendOutcome(
  * `generateWarmupContent` is deterministic by seed (content.ts), so this reproduces byte-identical
  * text without needing to have stored the body anywhere.
  */
-async function runRetryPhase(mesh: MeshAccount[], now: Date): Promise<number> {
+async function runRetryPhase(mesh: MeshAccount[], now: Date, circuit: OutboundCircuit): Promise<number> {
     const meshById = new Map(mesh.map((m) => [m.account.id, m]))
 
     const due = await db.query.warmupMessages.findMany({
@@ -250,6 +252,10 @@ async function runRetryPhase(mesh: MeshAccount[], now: Date): Promise<number> {
 
     let retried = 0
     for (const row of due) {
+        if (circuit.open) {
+            logCircuitOpen(circuit, 'retry')
+            break
+        }
         const senderMesh = meshById.get(row.fromAccountId)
         if (!senderMesh) {
             // Sender left the mesh (removed, un-verified) since this message was queued —
@@ -268,17 +274,30 @@ async function runRetryPhase(mesh: MeshAccount[], now: Date): Promise<number> {
             text: content.text,
             messageId: row.messageId,
         })
+        circuit.record(result.accepted ? null : result.failure?.code)
         if (await recordSendOutcome(row.id, senderMesh.account.id, result, row.attempts, now)) retried += 1
     }
     return retried
 }
 
+function logCircuitOpen(circuit: OutboundCircuit, phase: 'retry' | 'send'): void {
+    log.error({
+        action: 'outreach.warmup.outbound_circuit_open',
+        phase,
+        consecutiveTransportFailures: circuit.consecutiveTransportFailures,
+    }, 'outbound transport is failing for every warm-up send; ending this tick early')
+}
+
 async function runSendPhase(mesh: MeshAccount[], now: Date): Promise<number> {
     if (!withinSendWindow(now) || mesh.length < 2) return 0
 
+    // One breaker for the whole send phase (retries + fresh sends): a host that cannot reach any
+    // MX fails every pair the same way, and the tick should stop instead of marking each one.
+    const circuit = new OutboundCircuit()
+
     // Retries first: a due message gets another attempt before this sender is considered for a
     // brand-new one, so a backing-off pair doesn't also accumulate fresh sends on top.
-    let sent = await runRetryPhase(mesh, now)
+    let sent = await runRetryPhase(mesh, now, circuit)
 
     const retryingAccountIds = new Set((await db.query.warmupMessages.findMany({
         where: and(eq(warmupMessages.status, 'pending'), gt(warmupMessages.attempts, 0)),
@@ -288,6 +307,10 @@ async function runSendPhase(mesh: MeshAccount[], now: Date): Promise<number> {
     const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
 
     for (const senderMesh of mesh) {
+        if (circuit.open) {
+            logCircuitOpen(circuit, 'send')
+            break
+        }
         const sender = toSender(senderMesh)
         if (remainingWarmupQuota(sender) <= 0) continue
         // A retry is already scheduled (not yet due, or this tick's retry attempt just failed
@@ -338,6 +361,7 @@ async function runSendPhase(mesh: MeshAccount[], now: Date): Promise<number> {
             text: content.text,
             messageId,
         })
+        circuit.record(result.accepted ? null : result.failure?.code)
 
         if (await recordSendOutcome(row.id, sender.accountId, result, row.attempts, now)) sent += 1
     }
@@ -443,13 +467,13 @@ async function groomImapAccount(context: GroomContext, pending: WarmupMessage[])
     const { account } = context.recipientMesh
     if (!account.imapHost || !account.imapUsername || !account.imapPassword) return 0
 
-    const client = new ImapFlow({
+    // createImapClient: crash guard + bounded timeouts — see lib/imap-client.ts.
+    const client = createImapClient({
         host: account.imapHost,
-        port: account.imapPort || 993,
-        secure: account.imapSecure !== false,
+        port: account.imapPort,
+        secure: account.imapSecure,
         auth: { user: account.imapUsername, pass: decryptSecret(account.imapPassword) },
-        logger: false,
-    })
+    }, { emailAccountId: account.id, purpose: 'warmup-groom' })
     await client.connect()
     let detected = 0
     try {

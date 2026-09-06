@@ -32,6 +32,8 @@ painel continua a ser o único sítio onde se editam as credenciais.
 | 💥 Xmail crashed | interna | `install-alerting.ts` | `uncaughtException` — o processo vai morrer |
 | ⚠️ Unhandled promise rejection | interna | `install-alerting.ts` | promessa rejeitada sem `catch` — o processo **continua vivo** |
 | 📮 Mail servers did NOT start | interna | `index.ts` | SMTP/IMAP/MX não conseguiram fazer bind |
+| 🛑 Cannot reach its database / ✅ again | interna | `lib/db-liveness.ts` | `select 1` falha ou não responde em duas sondas seguidas (30 s cada) |
+| ♻️ Xmail is restarting itself | interna | `lib/db-liveness.ts` | a base ficou inalcançável 5 min seguidos — o processo sai e o Docker reinicia-o |
 | 🐌 Outbound queue is stalled | interna | `jobs/alertWatchdog.ts` | mensagens por enviar há mais de 15 min |
 | 🧠 Memory is high | interna | `jobs/alertWatchdog.ts` | RSS acima de 1024 MB |
 | 💾 Disk is filling up | interna | `jobs/alertWatchdog.ts` | sistema de ficheiros acima de 85% |
@@ -401,18 +403,75 @@ curl -s -X POST "https://api.telegram.org/bot<TOKEN>/sendMessage" -d chat_id=866
 
 ---
 
+## O incidente de 2026-09-01/02, e o que mudou por causa dele
+
+Cronologia (UTC), reconstruída a partir das runs do `Uptime` e dos alertas:
+
+| Hora | O que se viu | O que estava a acontecer |
+| --- | --- | --- |
+| 01/09 20:04 | 🚨 `HTTP /health/ready → 000`; **587 e 993 ok** | O processo estava vivo. Todas as consultas à base tinham deixado de voltar; o `select 1` da sonda ficou na fila de um pool com 20 ligações penduradas e o `curl` desistiu aos 25 s sem resposta |
+| 02/09 06:29 | 🔥 15 erros/5 min: `cron.lock.job_timeout` em vários jobs, `failed to acquire lock` | Todos os jobs a estourar o orçamento de 10 min ao mesmo tempo — incluindo o `reconcileOutreachEvents`, que é UMA instrução SQL. Ligações novas também não conseguiam `BEGIN` |
+| 02/09 06:35 | 💥 `Socket timeout` em `imapflow` | Um servidor IMAP remoto parou de responder a meio de um FETCH; o imapflow emitiu `'error'` sem ninguém a ouvir, o Node tratou-o como exceção não capturada e o processo morreu. **Foi este crash acidental que resolveu a paragem**: o Docker reiniciou o contentor com ligações novas |
+| 02/09 09:22 | ✅ back UP | Primeira run do `Uptime` depois do reinício (o agendador do GitHub saltou três slots) |
+| 02/09 11:00 | 🔥 15× `[Send:Relay] FAILED via direct delivery as mx.skale.club:` | Uma leva inteira de envios falhou da mesma forma; o alerta cortava a mensagem antes do porquê |
+
+Dez horas em baixo com **três camadas de alerta a funcionar** — porque nenhuma
+delas tinha um remédio para "vivo mas pendurado". Quatro correções:
+
+1. **`lib/db-liveness.ts`** — sonda `select 1` pelo MESMO pool da aplicação, de
+   30 em 30 s, limitada a 15 s. Duas falhas seguidas → 🛑 no Telegram. Cinco
+   minutos seguidos → ♻️ e `process.exit(1)`, e o `--restart unless-stopped`
+   do Docker faz o resto. Um pool entupido e uma Supabase em baixo falham a
+   mesma sonda, e o remédio é o mesmo. Um ciclo de reinícios durante uma
+   paragem real da Supabase é o preço aceite: é barulhento, o `/health/ready`
+   responde 503 entre reinícios, e um servidor de mail sem base não está a
+   servir ninguém por continuar de pé.
+2. **`/health/ready` responde sempre** — a sonda à base tem agora 10 s
+   (`lib/health.ts`). Um `503` com `database.error: "… timed out …"` é um
+   diagnóstico; `000` não era. A leitura das credenciais do Telegram no painel
+   também ficou limitada a 5 s (`lib/telegram.ts`), para o alerta "a base está
+   inalcançável" não ficar preso na base que está inalcançável.
+3. **`lib/imap-client.ts`** — o ÚNICO sítio que constrói um `ImapFlow`. Regista
+   o listener de `'error'` antes do `connect()` e fixa timeouts (2 min de
+   silêncio por comando em vez dos 5 min por omissão). O comando em curso
+   continua a rejeitar, e o `try/catch` de quem chamou trata-o como sempre
+   devia ter tratado. Há um teste que falha se aparecer um `new ImapFlow(` fora
+   deste ficheiro.
+4. **Entrega direta** (`lib/outbound-transport.ts`) — o erro que embrulhava
+   "falhou em todos os MX" descartava `code`/`responseCode`/`command` do erro
+   original, e sem esses campos TODA falha de entrega direta era classificada
+   como `ambiguous` — e o dispatcher põe leads ambíguos em `held`, sem nova
+   tentativa. Um soluço de rede virava quinze leads presos à espera de revisão
+   humana. `DirectDeliveryError` preserva os campos: transitório → backoff,
+   terminal → falha, `held` só quando o servidor de facto não disse nada.
+   Além disso o log `[Send:Relay] FAILED (transient ECONNECTION at CONN) …`
+   começa agora pelo porquê, que é o que os 80 caracteres do alerta mostram; e
+   `lib/outbound-circuit.ts` termina o tick depois de 3 falhas de TRANSPORTE
+   seguidas (porta 25 bloqueada, DNS, rede) em vez de gastar uma tentativa de
+   cada lead da leva e um alerta por lead.
+
+O que continua por saber: **porque é que a base deixou de responder às 20:04**.
+Os logs do contentor desse período não sobreviveram ao reinício. Da próxima
+vez o 🛑 chega ao fim de um minuto com a mensagem de erro real, e o ♻️ ao fim
+de cinco — e `docker logs xmail | grep db.liveness` mostra a sequência.
+
+---
+
 ## Afinação
 
 Todos os valores são variáveis de ambiente com omissões razoáveis; ver
 `.env.example`.
 
 ```text
-ERROR_SPIKE_THRESHOLD=25        # erros por janela de 5 min antes de um alerta
+ERROR_SPIKE_THRESHOLD=15        # erros por janela de 5 min antes de um alerta
 ERROR_SPIKE_COOLDOWN_MS=1800000 # silêncio depois de um pico (30 min)
 OPS_ALERT_REPEAT_MS=21600000    # quanto tempo uma condição persistente fica calada (6 h)
 QUEUE_STALL_MINUTES=15          # idade de uma mensagem por enviar que conta como fila travada
 RSS_WARN_MB=1024                # limiar de memória do processo
 DISK_WARN_PERCENT=85            # limiar de ocupação do disco
+DB_LIVENESS_INTERVAL_MS=30000   # intervalo da sonda `select 1` ao pool
+DB_LIVENESS_PROBE_TIMEOUT_MS=15000  # quanto tempo uma sonda pode demorar antes de contar como falha
+DB_LIVENESS_EXIT_AFTER_MS=300000    # falha contínua antes de o processo se reiniciar; 0 = só alertar
 ```
 
 ---
@@ -427,6 +486,8 @@ DISK_WARN_PERCENT=85            # limiar de ocupação do disco
 | `src/server/lib/error-taps.ts` | costura sem dependências entre o logger e o detetor |
 | `src/server/lib/html-escape.ts` | escaping de HTML, isolado para não arrastar o `db` |
 | `src/server/lib/install-alerting.ts` | tap ao `console.error` + handlers de crash |
+| `src/server/lib/db-liveness.ts` | sonda à base pelo pool da app; alerta e reinicia o processo quando ela pendura |
+| `src/server/lib/imap-client.ts` | o único construtor de `ImapFlow`; listener de `'error'` + timeouts |
 | `src/server/jobs/alertWatchdog.ts` | fila, memória e disco, de 5 em 5 minutos |
 | `scripts/telegram-notify.sh` | emissor do CI; sai sempre com 0 |
 | `scripts/resolve-alert-credentials.sh` | painel → cache → secrets |

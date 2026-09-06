@@ -27,6 +27,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '../../db'
 import { systemIntegrations } from '../../db/schema'
 import { decryptSecret } from './crypto'
+import { withTimeout } from './with-timeout'
 
 const INTEGRATIONS_ID = 'default'
 
@@ -52,6 +53,9 @@ export interface TelegramConfig {
     source: 'panel' | 'env'
 }
 
+/** How long the panel row may take to load before the env fallback is used instead. */
+const CONFIG_READ_TIMEOUT_MS = 5_000
+
 let cached: { value: TelegramConfig | null; at: number } | null = null
 
 /** Test seam — the cache is module-global, so tests must be able to clear it. */
@@ -68,9 +72,16 @@ export function __resetTelegramConfigCache(): void {
  */
 async function loadConfig(): Promise<TelegramConfig | null> {
     try {
-        const row = await db.query.systemIntegrations.findFirst({
-            where: eq(systemIntegrations.id, INTEGRATIONS_ID),
-        })
+        // Bounded: the alert most worth delivering is "the database is unreachable", and a
+        // read that hangs on that same database would swallow it. On timeout this falls
+        // through to the env fallback below exactly as it does for any other failure.
+        const row = await withTimeout(
+            db.query.systemIntegrations.findFirst({
+                where: eq(systemIntegrations.id, INTEGRATIONS_ID),
+            }),
+            CONFIG_READ_TIMEOUT_MS,
+            'system_integrations read',
+        )
 
         if (row?.telegramEnabled && row.telegramBotToken && row.telegramChatId) {
             try {

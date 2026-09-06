@@ -20,7 +20,7 @@ import { eq, and, sql } from 'drizzle-orm'
 import { allocateUidForNewMessage } from './move-messages'
 import { getDkimConfigForEmail, toNodemailerDkim } from './dkim'
 import { shouldSkipOwnDkimForRelay } from './relay-dkim-policy'
-import { describeOutbound, isRelayConfigured, sendOutbound } from './outbound-transport'
+import { describeOutbound, describeSendFailure, isRelayConfigured, sendOutbound } from './outbound-transport'
 import { jsonbParam } from './jsonb'
 
 export interface StoreMessageData {
@@ -73,7 +73,9 @@ export async function relayMessage(
     } catch (sendErr) {
         // Entrega direta falha por porta 25 bloqueada, PTR errado ou recusa do destino. Propagar
         // é essencial: quem chama grava o erro e o alerta de silêncio enxerga a queda.
-        console.error(`[Send:Relay] FAILED via ${describeOutbound()}:`, sendErr)
+        // A razão vem PRIMEIRO: o alerta de pico agrupa pelos primeiros 80 caracteres, e antes
+        // ele só dizia "FAILED via direct delivery as mx.skale.club:" — o porquê ficava cortado.
+        console.error(`[Send:Relay] FAILED (${describeSendFailure(sendErr)}) via ${describeOutbound()}:`, sendErr)
         throw sendErr
     }
 }

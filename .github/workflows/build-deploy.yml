@@ -199,6 +199,9 @@ jobs:
                 -e MONITOR_API_TOKEN="${{ secrets.MONITOR_API_TOKEN }}" \
                 -e TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
                 -e TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}" \
+                -e DB_LIVENESS_INTERVAL_MS="${{ vars.DB_LIVENESS_INTERVAL_MS }}" \
+                -e DB_LIVENESS_PROBE_TIMEOUT_MS="${{ vars.DB_LIVENESS_PROBE_TIMEOUT_MS }}" \
+                -e DB_LIVENESS_EXIT_AFTER_MS="${{ vars.DB_LIVENESS_EXIT_AFTER_MS }}" \
                 --label "traefik.enable=${TRAEFIK_ENABLED}" \
                 --label "traefik.docker.network=coolify" \
                 --label "traefik.http.routers.${NAME}.rule=Host(\`mail.skale.club\`)" \

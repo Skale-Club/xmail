@@ -53,6 +53,7 @@ import { getMailTLSOptions } from './lib/mail-tls'
 import { createApiAuthMiddleware } from './lib/api-auth'
 import { describeServiceAuthState } from './lib/service-auth'
 import { installAlerting } from './lib/install-alerting'
+import { startDbLivenessWatchdog, type DbLivenessWatchdog } from './lib/db-liveness'
 import { alertOps } from './lib/ops-alert'
 import { escapeHtml } from './lib/telegram'
 
@@ -270,10 +271,12 @@ type MailServer = { start: () => void; close: () => Promise<void> }
 let runningSmtpServer: MailServer | null = null
 let runningImapServer: MailServer | null = null
 let runningMxServer: MailServer | null = null
+let dbLiveness: DbLivenessWatchdog | null = null
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
         console.log(`[shutdown] Received ${signal}, closing mail servers and DB...`)
+        dbLiveness?.stop()
         const closers: Promise<void>[] = []
         if (runningSmtpServer) closers.push(runningSmtpServer.close().catch(() => undefined))
         if (runningImapServer) closers.push(runningImapServer.close().catch(() => undefined))
@@ -367,6 +370,10 @@ app.listen(PORT, async () => {
     // Install the in-app alert taps first, so a crash during the rest of
     // startup is still reported rather than becoming an unexplained restart.
     await installAlerting()
+
+    // Then the watchdog that restarts a process whose database connections have all hung —
+    // the failure mode no alert tap can see and no external probe can fix. See lib/db-liveness.ts.
+    dbLiveness = startDbLivenessWatchdog()
 
     // Warn if no platform admin exists
     try {

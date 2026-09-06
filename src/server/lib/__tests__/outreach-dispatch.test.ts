@@ -14,6 +14,7 @@ import {
     type DispatchSqlClient,
     type ProviderDispatchResult,
 } from '../outreach-dispatch'
+import { DirectDeliveryError } from '../outbound-transport'
 
 const NOW = new Date('2026-07-16T12:00:00.000Z')
 const INPUT: DispatchOutreachInput = {
@@ -154,6 +155,19 @@ describe('provider failure normalization', () => {
             .toMatchObject({ classification: 'transient', acceptance: 'rejected', retryable: true })
         expect(normalizeProviderFailure(Object.assign(new Error('rate limited'), { responseCode: 421 })))
             .toMatchObject({ classification: 'transient', acceptance: 'rejected', retryable: true })
+    })
+
+    it('classifies a direct-delivery failure by the wrapped MX error instead of holding it (2026-09-02)', () => {
+        const wrap = (cause: Error) => new DirectDeliveryError('example.com', ['mx.example.com'], cause)
+        expect(normalizeProviderFailure(wrap(Object.assign(new Error('refused'), { code: 'ECONNECTION', command: 'CONN' }))))
+            .toMatchObject({ classification: 'transient', code: 'econnection', retryable: true })
+        expect(normalizeProviderFailure(wrap(Object.assign(new Error('greylisted'), { responseCode: 451, command: 'RCPT' }))))
+            .toMatchObject({ classification: 'transient', code: 'smtp_451', retryable: true })
+        expect(normalizeProviderFailure(wrap(Object.assign(new Error('no such user'), { responseCode: 550, command: 'RCPT' }))))
+            .toMatchObject({ classification: 'terminal', code: 'smtp_550', retryable: false })
+        // Only a genuinely unknown outcome (timed out after DATA) still holds the lead.
+        expect(normalizeProviderFailure(wrap(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT', command: 'DATA' }))))
+            .toMatchObject({ classification: 'ambiguous', acceptance: 'unknown' })
     })
 
     it('treats SMTP 5xx as terminal and a post-DATA timeout as ambiguous', () => {

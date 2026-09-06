@@ -10,6 +10,8 @@
 import { describe, expect, it } from 'vitest'
 import {
     describeOutbound,
+    describeSendFailure,
+    DirectDeliveryError,
     domainOfAddress,
     heloName,
     isRelayConfigured,
@@ -61,5 +63,45 @@ describe('domainOfAddress', () => {
     })
     it('tolera a forma com colchete final', () => {
         expect(domainOfAddress('info@skale.club>')).toBe('skale.club')
+    })
+})
+
+describe('DirectDeliveryError', () => {
+    it('carrega code/responseCode/command do erro original — é o que a classificação lê', () => {
+        const cause = Object.assign(new Error('Connection refused'), { code: 'ECONNECTION', command: 'CONN' })
+        const err = new DirectDeliveryError('example.com', ['mx1.example.com', 'mx2.example.com'], cause)
+        expect(err).toBeInstanceOf(Error)
+        expect(err.name).toBe('DirectDeliveryError')
+        expect(err.message).toBe('direct delivery to example.com failed on all 2 MX host(s) (mx1.example.com, mx2.example.com): Connection refused')
+        expect(err).toMatchObject({ code: 'ECONNECTION', command: 'CONN', domain: 'example.com' })
+        expect(err.cause).toBe(cause)
+    })
+
+    it('preserva a resposta SMTP numérica', () => {
+        const cause = Object.assign(new Error('Greylisted'), { responseCode: 451, response: '451 4.7.1 try later', command: 'RCPT' })
+        const err = new DirectDeliveryError('example.com', ['mx.example.com'], cause)
+        expect(err).toMatchObject({ responseCode: 451, response: '451 4.7.1 try later', command: 'RCPT' })
+    })
+
+    it('tolera ausência de causa', () => {
+        const err = new DirectDeliveryError('example.com', ['example.com'], null)
+        expect(err.message).toContain('unknown error')
+        expect(err.code).toBeUndefined()
+    })
+})
+
+describe('describeSendFailure', () => {
+    it('começa pela classe em palavras, que sobrevive à normalização do alerta de pico', () => {
+        expect(describeSendFailure(Object.assign(new Error('x'), { responseCode: 451, command: 'RCPT' }))).toBe('transient smtp-451 at RCPT')
+        expect(describeSendFailure(Object.assign(new Error('x'), { responseCode: 550 }))).toBe('permanent smtp-550')
+        expect(describeSendFailure(Object.assign(new Error('x'), { code: 'ECONNECTION', command: 'CONN' }))).toBe('transient ECONNECTION at CONN')
+        expect(describeSendFailure(Object.assign(new Error('x'), { code: 'EAUTH' }))).toBe('unclassified EAUTH')
+        expect(describeSendFailure(new Error('something   odd\nhappened'))).toBe('unclassified something odd happened')
+        expect(describeSendFailure('plain string')).toBe('unclassified plain string')
+    })
+
+    it('lê através do embrulho da entrega direta', () => {
+        const wrapped = new DirectDeliveryError('example.com', ['mx.example.com'], Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }))
+        expect(describeSendFailure(wrapped)).toBe('transient ECONNREFUSED')
     })
 })
