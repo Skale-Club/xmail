@@ -1,4 +1,5 @@
 import { sql, getTableName, type Table, type InferSelectModel } from 'drizzle-orm'
+import type { PgTable } from 'drizzle-orm/pg-core'
 import { z } from 'zod'
 import type { db as DbType } from '../../db'
 
@@ -35,10 +36,16 @@ export async function paginate<T extends Table>(
     const { where, page, limit, orderBy, with: withRelations, columns } = options
     const offset = (page - 1) * limit
 
-    // Count query
+    // Count query.
+    //
+    // `.from()` is guarded in drizzle >= 0.45 by a conditional type that rejects a
+    // data-modifying subquery with no `returning` clause. It can only be discharged
+    // against a concrete table; an unresolved `T extends Table` never satisfies it,
+    // even though all four call sites pass a real pgTable. The cast asserts exactly
+    // what the `T extends Table` bound already guarantees — no runtime change.
     const countResult = await database
         .select({ count: sql<string>`count(*)` })
-        .from(table)
+        .from(table as PgTable)
         .where(where)
 
     const total = Number(countResult[0]?.count || 0)
