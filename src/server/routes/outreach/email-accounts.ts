@@ -95,6 +95,7 @@ async function rejectPrivateMailHosts(hosts: (string | null | undefined)[]): Pro
     return null
 }
 import nodemailer from 'nodemailer'
+import type { TransportOptions } from 'nodemailer'
 import { createImapClient } from '../../lib/imap-client'
 
 const router = Router()
@@ -908,7 +909,7 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
                 log.warn({ emailAccountId: account.id, mode: resolution.mode }, resolution.warning)
             }
 
-            const smtpTransporter = nodemailer.createTransport(options as nodemailer.TransportOptions)
+            const smtpTransporter = nodemailer.createTransport(options as TransportOptions)
 
             await smtpTransporter.verify()
             smtpTransporter.close()
