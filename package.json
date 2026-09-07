@@ -20,6 +20,12 @@
         "db:audit": "tsx scripts/audit-schema-drift.ts",
         "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
     },
+    "overrides": {
+        "undici": "^7.29.1",
+        "mailauth": {
+            "nodemailer": "^10.0.1"
+        }
+    },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.1111.0",
         "@aws-sdk/s3-request-presigner": "^3.1111.0",
