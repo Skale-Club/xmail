@@ -6,8 +6,10 @@
  * through the error taps. This job covers the other family — states that
  * produce NO error at all and are therefore invisible to every other layer:
  * a queue that quietly stops draining, a process whose memory is climbing
- * toward the OOM killer, a disk filling up. The external HTTP probe stays
- * green through all three, right up until it abruptly does not.
+ * toward the OOM killer, a disk filling up, or the outreach/prospecting
+ * engine producing nothing at all (see `checkSilence` below). The external
+ * HTTP probe stays green through all of it, right up until it abruptly does
+ * not.
  *
  * Every check reports through `reportOpsCondition`, so each one alerts on the
  * way down, stays quiet while it remains broken, and sends exactly one recovery
@@ -19,6 +21,9 @@ import { db } from '../../db'
 import { messages } from '../../db/schema'
 import { reportOpsCondition } from '../lib/ops-alert'
 import { createLogger } from '../lib/logger'
+import { escapeHtml } from '../lib/telegram'
+import { buildSilenceAlerts } from '../lib/outreach-silence'
+import { computeSilenceMetrics } from '../lib/outreach-silence-query'
 
 
 const log = createLogger('ops.watchdog')
@@ -128,17 +133,89 @@ async function checkDisk(): Promise<void> {
 }
 
 /**
+ * `kind`s (from `buildSilenceAlerts`) that were active as of the previous tick.
+ *
+ * `buildSilenceAlerts` only ever reports what IS currently true — it has no notion of "this
+ * used to be a problem" — so the moment a kind stops appearing has to be detected here, by
+ * diffing this tick's findings against the last one, in order to send the explicit
+ * `reportOpsCondition(key, false, …)` call that resolves it. Module-level and in-memory, same
+ * as `ops-alert.ts`'s own `active` map: a restart clears it, which just means a recovery right
+ * after a restart may not get its "cleared" message re-sent — already true of every other
+ * condition in this file.
+ */
+let previouslyActiveSilenceKinds = new Set<string>()
+
+/** Test seam — module-global state must be resettable between cases. */
+export function __resetAlertWatchdogSilenceState(): void {
+    previouslyActiveSilenceKinds = new Set()
+}
+
+/**
+ * The silence half of the "invisible to every other layer" list above.
+ *
+ * `buildSilenceAlerts` (outreach-silence.ts) already carries roughly a dozen rules for exactly
+ * this job's blind spot — states where nothing errors, so no error-shaped alert would ever see
+ * them. Until 2026-09-08 its only caller was the on-demand admin route
+ * (routes/admin/outreach-health.ts), which nothing polls: not the external uptime probe (it
+ * hits `/health/ready`), not this watchdog. Verified against 24h of production logs: zero
+ * occurrences of any silence-detector output. A detector for "nothing happened" that itself
+ * never runs is the exact failure mode it exists to catch.
+ *
+ * Wiring it in here — same five-minute tick, same `reportOpsCondition` path the checks above
+ * use — is the fix, not a parallel alerting mechanism. Each finding's `kind` becomes its own
+ * `silence.<kind>` condition, keyed independently, so one noisy rule's cooldown can never mask
+ * another's first occurrence.
+ */
+async function checkSilence(now: Date): Promise<void> {
+    const metrics = await computeSilenceMetrics(now)
+    const findings = buildSilenceAlerts(metrics, now)
+    const currentKinds = new Set(findings.map((finding) => finding.kind))
+
+    for (const finding of findings) {
+        const icon = finding.severity === 'critical' ? '🚨' : '🔇'
+        await reportOpsCondition(`silence.${finding.kind}`, true, {
+            failTitle: `${icon} <b>Outreach silence: ${escapeHtml(finding.kind)}</b>`,
+            failBody: escapeHtml(finding.message),
+            okTitle: `✅ <b>Outreach silence cleared: ${escapeHtml(finding.kind)}</b>`,
+            okBody: 'This condition is no longer present.',
+        })
+    }
+
+    // Findings that were active last tick and are not in this tick's set have cleared —
+    // buildSilenceAlerts will never tell us that directly, so an explicit resolve call is the
+    // only way the recovery message (and the ops-alert state cleanup) happens at all.
+    for (const kind of previouslyActiveSilenceKinds) {
+        if (currentKinds.has(kind)) continue
+        await reportOpsCondition(`silence.${kind}`, false, {
+            failTitle: '', // unused: isFailing is false, so reportOpsCondition takes the resolve branch
+            okTitle: `✅ <b>Outreach silence cleared: ${escapeHtml(kind)}</b>`,
+            okBody: 'This condition is no longer present.',
+        })
+    }
+
+    previouslyActiveSilenceKinds = currentKinds
+
+    // The line that proves the detector ran, even when it found nothing — its absence is
+    // exactly what someone auditing this after an incident would have looked for.
+    log.info(
+        { action: 'ops.watchdog.silence_checked', findingCount: findings.length, kinds: [...currentKinds] },
+        `silence check found ${findings.length} finding(s)`,
+    )
+}
+
+/**
  * Runs every check, isolating each so one failure cannot hide the others.
  *
  * Never throws: it is called from a cron tick whose only other option would be
  * to log an error, which would then feed the spike detector and make a
  * monitoring failure look like an application failure.
  */
-export async function runAlertWatchdog(): Promise<void> {
+export async function runAlertWatchdog(now: Date = new Date()): Promise<void> {
     const checks: Array<[string, () => Promise<void>]> = [
         ['queue', checkQueue],
         ['memory', checkMemory],
         ['disk', checkDisk],
+        ['silence', () => checkSilence(now)],
     ]
 
     for (const [name, fn] of checks) {

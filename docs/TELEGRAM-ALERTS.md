@@ -37,6 +37,7 @@ painel continua a ser o único sítio onde se editam as credenciais.
 | 🐌 Outbound queue is stalled | interna | `jobs/alertWatchdog.ts` | mensagens por enviar há mais de 15 min |
 | 🧠 Memory is high | interna | `jobs/alertWatchdog.ts` | RSS acima de 1024 MB |
 | 💾 Disk is filling up | interna | `jobs/alertWatchdog.ts` | sistema de ficheiros acima de 85% |
+| 🔇 Outreach silence: `<kind>` / 🚨 idem (crítico) | interna | `jobs/alertWatchdog.ts` (regras em `lib/outreach-silence.ts`) | uma das ~12 regras de silêncio deixa de ler "operação normal" — ver secção própria abaixo |
 | 🔥 Error spike | agregada | `error-spike-alert.ts` | mais de 15 erros em 5 min |
 
 Cada alerta de estado tem a sua mensagem de recuperação (✅). Nenhum deles
@@ -102,6 +103,57 @@ Se algum dia a latência da camada externa passar a ser inaceitável, a saída n
 é baixar o cron — é um sondador fora do GitHub (um cron no próprio Hetzner a
 apontar para fora, ou um serviço de uptime externo) a chamar o mesmo
 `scripts/check-uptime.sh`.
+
+### A quarta camada: silêncio, não falha
+
+As três camadas acima têm todas a mesma forma: alguma coisa **deu erro** — um
+`uncaughtException`, um `select 1` que falha, um pico de linhas `error`. Há uma
+classe de defeito inteira que não produz nenhum erro: o subsistema de
+outreach/prospecção continua de pé, não lança exceção nenhuma, e simplesmente
+**não produz resultado**. Zero é um valor válido — zero envios, zero leads,
+zero verificações — por isso a ausência de resultado se disfarça de operação
+normal e nenhuma das três camadas acima a vê.
+
+`src/server/lib/outreach-silence.ts` (`buildSilenceAlerts`) existe exatamente
+para isto e tem cerca de doze regras — mesh de warm-up silencioso, credencial
+cifrada com a chave errada, jsonb duplo-codificado, lock advisory presa, taxa
+de timeout de job, corpo de job órfão, funil de prospecção parado, custo sem
+preço, verificação de e-mail nunca registada, motor diário ocioso com
+orçamento disponível, run `enriched` que devolveu zero e-mails, fila de
+territórios vazia. Cada regra nasceu de um defeito real já encontrado em
+produção — ver o cabeçalho do próprio ficheiro para a proveniência de cada
+uma.
+
+**Até 2026-09-08 esta camada existia mas nunca alertou nada.** O único chamador
+de `buildSilenceAlerts` em todo o repositório era a rota de admin sob-pedido
+`GET /api/admin/outreach/health` (`routes/admin/outreach-health.ts`) — uma
+página que um humano tem de abrir. Nada a sondava: a sonda externa de uptime
+chama `/health/ready`, não esta rota, e o próprio `jobs/alertWatchdog.ts`
+(agendado de 5 em 5 minutos, o job que já é dono do alerta proativo) nunca a
+invocava. Uma auditoria a 24 h de logs de produção confirmou zero ocorrências
+de qualquer saída do detetor de silêncio — um sistema construído para notificar
+que nada aconteceu era, ele próprio, algo que nunca acontecia.
+
+A partir de 2026-09-08, `runAlertWatchdog` chama `buildSilenceAlerts` no mesmo
+tick de 5 minutos que já avalia fila/memória/disco, e cada achado (`kind`) vira
+a sua própria condição `silence.<kind>` através do MESMO `reportOpsCondition`
+que as outras três verificações usam — sem mecanismo paralelo. Isso dá a cada
+regra o seu próprio cooldown independente (uma regra ruidosa não consegue
+mascarar outra) e a mesma mensagem de recuperação (✅) quando o achado deixa de
+aparecer num tick seguinte. A leitura do silêncio (uma consulta SQL,
+`outreach-silence-query.ts`) corre isolada das outras três: se ela lançar, fica
+registada como aviso e fila/memória/disco continuam a ser avaliadas
+normalmente nesse tick — o mesmo isolamento que já existia entre as três
+verificações originais.
+
+A maioria das regras descreve uma condição de escala diária (um run com mais
+de 24h, um funil parado há 7 dias) avaliada por um tick de 5 em 5 minutos — o
+que poderia ser 288 mensagens por dia por condição. Não é: o cooldown de
+`reportOpsCondition` (`OPS_ALERT_REPEAT_MS`, 6 h por omissão) já garante, por
+condição, uma alerta na primeira ocorrência e no máximo uma repetição a cada
+seis horas enquanto persistir — no máximo 4 mensagens/dia por condição
+sustentada, e apenas uma no caso comum de a condição ser corrigida antes da
+próxima janela. Não foi necessário nenhum segundo mecanismo de limite.
 
 ---
 
@@ -488,7 +540,9 @@ DB_LIVENESS_EXIT_AFTER_MS=300000    # falha contínua antes de o processo se rei
 | `src/server/lib/install-alerting.ts` | tap ao `console.error` + handlers de crash |
 | `src/server/lib/db-liveness.ts` | sonda à base pelo pool da app; alerta e reinicia o processo quando ela pendura |
 | `src/server/lib/imap-client.ts` | o único construtor de `ImapFlow`; listener de `'error'` + timeouts |
-| `src/server/jobs/alertWatchdog.ts` | fila, memória e disco, de 5 em 5 minutos |
+| `src/server/jobs/alertWatchdog.ts` | fila, memória, disco e silêncio (`checkSilence`), de 5 em 5 minutos |
+| `src/server/lib/outreach-silence.ts` | as ~12 regras de silêncio, puras — `buildSilenceAlerts` |
+| `src/server/lib/outreach-silence-query.ts` | metade com I/O da deteção de silêncio — `computeSilenceMetrics` |
 | `scripts/telegram-notify.sh` | emissor do CI; sai sempre com 0 |
 | `scripts/resolve-alert-credentials.sh` | painel → cache → secrets |
 | `scripts/check-uptime.sh` | a sonda: HTTP + portas 587/993 |
