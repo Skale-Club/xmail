@@ -228,6 +228,54 @@ refuted, decisively* — which is high-value information.
 
 It is advisory only. Nothing in the pipeline branches on it.
 
+## The verdict is written by the system, not dictated (Fase 39)
+
+Evidence from 2026-09-08: after each of three runs, a human read the numbers and dictated an
+"observed vs expected" note to Hermes, which typed it into the Journey as an orchestrator note.
+That is not a machine-checkable fact — it is a human's summary, typed by an LLM. Worse, Hermes'
+one-shot mode (`hermes -z`) lost its MCP tools in 2 of 6 sessions that day, so the note sometimes
+could not be written at all.
+
+`measureProspectingOutcomes.ts` now records a deterministic `assess.verdict` Journey event at
+the exact moment `scoreHypothesis` (`hypothesis-scoring.ts`) produces a verdict transition — the
+same trigger that already emits `outcome.hypothesis_confirmed`/`outcome.hypothesis_refuted`, but
+carrying the FULL metric-by-metric table instead of just the failing/met summary:
+
+```jsonc
+{
+  "idempotency_key": "assess:<runId>:{\"overall\":\"refuted\",\"metrics\":[...]}",
+  "overall": "refuted",
+  "metrics": [
+    { "metric": "verified_email_rate", "expected": ">=0.30", "comparator": { "op": ">=", "value": 0.3 },
+      "actual": 0.12, "verdict": "not_met", "evidence": "12/100 verified or likely (0.12) does not satisfy >=0.3" },
+    { "metric": "discovered", "expected": ">=50", "comparator": { "op": ">=", "value": 50 },
+      "actual": 100, "verdict": "met", "evidence": "100 discovered (100) satisfies >=50" }
+  ]
+}
+```
+
+**Idempotent per (run, verdict-fingerprint)**, the same shape `verify.completed` uses a stored
+`detail.idempotency_key` for (see "Known limitation" above and `prospecting.ts`): the fingerprint
+is the overall verdict plus each metric's CATEGORICAL verdict only (`verdictFingerprint` in
+`hypothesis-scoring.ts`), deliberately excluding the raw `actual`/`reason` values — the same rule
+that already kept `outcome.hypothesis_*` from re-firing on every incremental reply. A later
+6-hourly pass whose fingerprint is unchanged never reaches the point where it would emit a
+second time; the stored `idempotency_key` is for audit/query, not a second gate.
+
+Hermes reads this event instead of recomputing it. `hermes/active-prospect-system/SKILL.md` step
+7 now says the orchestrator note must ADD the qualitative lesson and the next action, and must
+NOT restate numbers `assess.verdict` already carries.
+
+### `hermes -z` is not reliable for scheduled MCP work
+
+Measured 2026-09-08: of six `hermes -z` (one-shot) invocations that day, two lost MCP tools
+mid-session — one lost the Xphere tools, one lost the Xmail tools — with no visible connection
+error. `hermes mcp test` and `hermes tools list` both reported the same servers connected and
+enabled at the time; the long-lived gateway path (Telegram) did not reproduce the same failure
+across the same six calls. Recommendation: use `hermes cron` for scheduled agent work (the daily
+scrape, a run-completion summary) rather than scheduling `hermes -z` externally — see
+`hermes/README.md`'s gotcha #9 for the full evidence.
+
 ## Reading a run's story
 
 ```sql

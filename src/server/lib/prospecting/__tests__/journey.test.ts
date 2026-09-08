@@ -53,8 +53,9 @@ describe('RUN_EVENT_CODES phase mapping', () => {
                 checked += 1
             }
         }
-        // 5 + 3 + 5 + 3 + 4 + 6 + 1 (verify, Phase 34) = 27 codes across the seven phases.
-        expect(checked).toBe(27)
+        // 5 + 3 + 5 + 4 (assess, +1 for assess.verdict, Fase 39) + 4 + 6 + 1 (verify, Phase 34)
+        // = 28 codes across the seven phases.
+        expect(checked).toBe(28)
     })
 
     it('codes are frozen and cannot be mutated', () => {
@@ -88,6 +89,7 @@ describe('defaultLevelForCode', () => {
         RUN_EVENT_CODES.enrich.EMAIL_UNVERIFIABLE,
         RUN_EVENT_CODES.assess.RECORDED,
         RUN_EVENT_CODES.assess.REJECTED,
+        RUN_EVENT_CODES.assess.VERDICT,
         RUN_EVENT_CODES.import.LEAD_CREATED,
         RUN_EVENT_CODES.import.LEAD_EXISTING,
         RUN_EVENT_CODES.import.SKIPPED_INELIGIBLE,

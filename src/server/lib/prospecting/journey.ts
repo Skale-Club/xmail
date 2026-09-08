@@ -62,6 +62,15 @@ export const RUN_EVENT_CODES = Object.freeze({
         RECORDED: 'assess.recorded',
         REJECTED: 'assess.rejected',
         ORCHESTRATOR_NOTE: 'assess.orchestrator_note',
+        // Fase 39 (docs/prospecting-engine-plan.md "Fase 39 -- Hermes fora do caminho
+        // crítico"). Evidence: on 2026-09-08, three runs each got their "observed vs
+        // expected" note dictated by a human and typed by Hermes into the Journey -- not a
+        // machine-checkable fact, and unavailable in 2 of 6 `hermes -z` sessions that lost
+        // their MCP tools mid-run. Emitted by measureProspectingOutcomes.ts at the exact
+        // moment `scoreHypothesis` produces a verdict transition (same trigger as
+        // HYPOTHESIS_CONFIRMED/HYPOTHESIS_REFUTED below), carrying the full metric-by-metric
+        // table so Hermes reads it instead of recomputing it.
+        VERDICT: 'assess.verdict',
     }),
     import: Object.freeze({
         LEAD_CREATED: 'import.lead_created',

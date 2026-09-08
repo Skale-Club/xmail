@@ -108,10 +108,19 @@ When Vanildo explicitly requests a run:
 6. Read the result with `xmail_list_prospecting_journeys` filtered by provider
    `xcraper` and `externalRunId=<searchId>`. Confirm the hypothesis, ordered
    events, result/import counts, and lead-source cost entry.
-7. Append an idempotent maestro note with
-   `xmail_append_prospecting_journey_note`. Record the observed deviation from
-   the hypothesis, the decision/lesson, and the next action. Use a stable key
-   derived from the run and note purpose so retries do not duplicate it.
+7. Read `assess.verdict` first (Xmail Fase 39). Xmail's own outcome job writes
+   this event the moment `scoreHypothesis` produces a verdict — a deterministic
+   metric-by-metric table (expectation as written, comparator, measured
+   actual, verdict, evidence) for every metric in the hypothesis, not a
+   human's summary typed by an agent. It exists because on 2026-09-08 three
+   runs each got an "observed vs expected" note dictated by a human and typed
+   by Hermes — not machine-checkable — and 2 of 6 one-shot sessions that day
+   lost their MCP tools mid-run and could not write it at all. Then append an
+   idempotent maestro note with `xmail_append_prospecting_journey_note` that
+   ADDS the qualitative lesson and the next action — it must NOT restate the
+   numbers `assess.verdict` already carries (expected/actual/comparator/
+   verdict per metric). Use a stable key derived from the run and note
+   purpose so retries do not duplicate it.
 8. Read the Journey again to verify the note is present.
 9. Run `/opt/data/scripts/verification-credits.py` once after the completed
    prospecting run. The script prints nothing while both providers have at

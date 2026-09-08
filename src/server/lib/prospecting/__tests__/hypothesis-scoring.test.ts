@@ -3,6 +3,7 @@ import {
     extractExpectedMetrics,
     parseComparator,
     scoreHypothesis,
+    verdictFingerprint,
     type HypothesisMeasuredValues,
 } from '../hypothesis-scoring'
 
@@ -450,5 +451,42 @@ describe('extractExpectedMetrics', () => {
         expect(extractExpectedMetrics(null)).toBeNull()
         expect(extractExpectedMetrics(undefined)).toBeNull()
         expect(extractExpectedMetrics('not an object')).toBeNull()
+    })
+})
+
+describe('verdictFingerprint (Fase 39)', () => {
+    it('is identical for two scores with the same overall verdict and per-metric verdicts, even when actual/reason differ', () => {
+        const a = scoreHypothesis({ reply_rate: '>=0.03' }, measured({ emailedCount: 10, repliedCount: 1 }))
+        const b = scoreHypothesis({ reply_rate: '>=0.03' }, measured({ emailedCount: 20, repliedCount: 2 }))
+
+        expect(a.overall).toBe('confirmed')
+        expect(b.overall).toBe('confirmed')
+        // The raw actual differs (0.1 vs 0.1 happens to match here by design of the fixture,
+        // so assert the reason strings differ instead to prove the fingerprint really does
+        // ignore them, not just tolerate an accidental numeric coincidence).
+        expect(a.metrics[0].reason).not.toBe(b.metrics[0].reason)
+        expect(verdictFingerprint(a)).toBe(verdictFingerprint(b))
+    })
+
+    it('differs when the overall verdict differs', () => {
+        const confirmed = scoreHypothesis({ reply_rate: '>=0.03' }, measured({ emailedCount: 10, repliedCount: 1 }))
+        const refuted = scoreHypothesis({ reply_rate: '>=0.50' }, measured({ emailedCount: 10, repliedCount: 1 }))
+
+        expect(confirmed.overall).toBe('confirmed')
+        expect(refuted.overall).toBe('refuted')
+        expect(verdictFingerprint(confirmed)).not.toBe(verdictFingerprint(refuted))
+    })
+
+    it('differs when a single metric flips verdict even if the overall stays the same category', () => {
+        const bothMet = scoreHypothesis(
+            { discovered: '>=10', reply_rate: '>=0.03' },
+            measured({ discoveredCount: 40, emailedCount: 10, repliedCount: 1 }),
+        )
+        const oneUnknown = scoreHypothesis(
+            { discovered: '>=10', reply_rate: '>=0.03' },
+            measured({ discoveredCount: 40, emailedCount: 0, repliedCount: 0 }),
+        )
+
+        expect(verdictFingerprint(bothMet)).not.toBe(verdictFingerprint(oneUnknown))
     })
 })

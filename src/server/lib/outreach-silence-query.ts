@@ -7,7 +7,13 @@
 import { sql } from 'drizzle-orm'
 import { db } from '../../db'
 import { computeLockKey, getInFlightJobs, getRecentJobTimeouts, KNOWN_LOCK_NAMES } from './cron-lock'
-import { VERIFICATION_MISSING_RUN_AGE_HOURS, type SilenceMetrics } from './outreach-silence'
+import { resolveDailyBudgetUsd } from './prospecting/daily-territory-budget'
+import {
+    ANALYZER_STALLED_EVENT_WINDOW_HOURS,
+    ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS,
+    VERIFICATION_MISSING_RUN_AGE_HOURS,
+    type SilenceMetrics,
+} from './outreach-silence'
 
 const ONE_HOUR_MS = 60 * 60 * 1000
 const ONE_DAY_MS = 24 * ONE_HOUR_MS
@@ -28,6 +34,13 @@ const THIRTY_FIVE_DAYS_MS = 35 * ONE_DAY_MS
  */
 const STALE_LOCK_THRESHOLD_MS = 15 * 60 * 1000
 
+/** Same UTC-midnight boundary runDailyProspecting.ts's `startOfTodayUtc` uses for "today's
+ *  spend" -- the two must agree, or the digest/silence check would disagree with the engine
+ *  that actually enforces the budget about what "today" means. */
+function startOfTodayUtc(now: Date): Date {
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+}
+
 export async function computeSilenceMetrics(now: Date = new Date()): Promise<SilenceMetrics> {
     const cutoff24h = new Date(now.getTime() - ONE_DAY_MS).toISOString()
     const cutoff7d = new Date(now.getTime() - SEVEN_DAYS_MS).toISOString()
@@ -35,6 +48,11 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
     const staleLockCutoff = new Date(now.getTime() - STALE_LOCK_THRESHOLD_MS).toISOString()
     // Fase 34 (verification_missing) -- see VERIFICATION_MISSING_RUN_AGE_HOURS in outreach-silence.ts.
     const verificationMissingCutoff = new Date(now.getTime() - VERIFICATION_MISSING_RUN_AGE_HOURS * ONE_HOUR_MS).toISOString()
+    // Fase 40 -- see the threshold constants' own doc comments in outreach-silence.ts.
+    const startOfTodayIso = startOfTodayUtc(now).toISOString()
+    const enrichedZeroEmailsCutoff = new Date(now.getTime() - ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS * ONE_DAY_MS).toISOString()
+    const analyzerStalledCutoff = new Date(now.getTime() - ANALYZER_STALLED_EVENT_WINDOW_HOURS * ONE_HOUR_MS).toISOString()
+    const dailyBudgetUsd = resolveDailyBudgetUsd()
 
     const raw = await db.execute(sql`
         SELECT
@@ -117,7 +135,32 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
                   AND detail ->> 'rate_missing' = 'true') AS unpriced_cost_entries_35d,
             (SELECT coalesce(jsonb_agg(DISTINCT category), '[]'::jsonb) FROM outreach_cost_entries
                 WHERE occurred_at >= ${cutoff35d}
-                  AND detail ->> 'rate_missing' = 'true') AS unpriced_cost_categories_35d
+                  AND detail ->> 'rate_missing' = 'true') AS unpriced_cost_categories_35d,
+            -- Fase 40 (kind: engine_idle_with_budget) -- see ENGINE_IDLE_CHECK_AFTER_UTC_HOUR in
+            -- outreach-silence.ts. Same boundary/category runDailyProspecting.ts's
+            -- fetchSpentTodayUsd uses, but org-wide rather than per-organization.
+            (SELECT count(*) FROM outreach_cost_entries
+                WHERE category = 'lead_source' AND occurred_at >= ${startOfTodayIso}) AS lead_source_cost_entries_today,
+            (SELECT coalesce(sum(amount_micros), 0)::bigint FROM outreach_cost_entries
+                WHERE category = 'lead_source' AND occurred_at >= ${startOfTodayIso}) AS spent_today_micros,
+            (SELECT count(*) FROM prospecting_territories WHERE status = 'queued') AS queued_territories,
+            -- Fase 40 (kind: enriched_zero_emails) -- see ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS in
+            -- outreach-silence.ts. Unlike enriched_runs_without_enrichment_count above (no
+            -- status/age filter at all), this is scoped to COMPLETED runs only, so an
+            -- in-flight scrape that has not reached the enrichment step yet is never counted.
+            (SELECT count(*) FROM prospecting_runs
+                WHERE status = 'imported'
+                  AND search_filters ->> 'template' = 'enriched'
+                  AND coalesce(enriched_count, 0) = 0
+                  AND created_at >= ${enrichedZeroEmailsCutoff}) AS enriched_zero_email_runs,
+            -- Fase 40 (kind: territory_queue_empty).
+            (SELECT count(*) FROM prospecting_territories) AS total_territories,
+            (SELECT count(*) FROM prospecting_territories WHERE status IN ('queued', 'running')) AS active_territories,
+            -- Fase 40 (kind: analyzer_stalled) -- DORMANT, see analyzerStalledEvents24h's own
+            -- doc comment in outreach-silence.ts. 'analyze.stalled' is not a code anything in
+            -- Xmail ever writes today; this always reads 0 until Xphere starts sending it.
+            (SELECT count(*) FROM prospecting_run_events
+                WHERE code = 'analyze.stalled' AND occurred_at >= ${analyzerStalledCutoff}) AS analyzer_stalled_events_24h
     `)
 
     const rows = (Array.isArray(raw) ? raw : (raw as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>
@@ -164,5 +207,14 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
         unpricedCostEntries35d: n('unpriced_cost_entries_35d'),
         unpricedCostCategories,
         staleAdvisoryLocks,
+        // Fase 40.
+        leadSourceCostEntriesToday: n('lead_source_cost_entries_today'),
+        spentTodayUsd: n('spent_today_micros') / 1_000_000,
+        dailyBudgetUsd,
+        queuedTerritories: n('queued_territories'),
+        enrichedZeroEmailRuns: n('enriched_zero_email_runs'),
+        totalTerritories: n('total_territories'),
+        activeTerritories: n('active_territories'),
+        analyzerStalledEvents24h: n('analyzer_stalled_events_24h'),
     }
 }

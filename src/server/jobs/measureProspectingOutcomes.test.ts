@@ -453,4 +453,116 @@ describe('measureProspectingOutcomes', () => {
         const events = recordRunEventsMock.mock.calls[0][1]
         expect(events.some((e: { code: string }) => e.code.startsWith('outcome.hypothesis'))).toBe(false)
     })
+
+    // ------------------------------------------------------------
+    // Fase 39: deterministic assess.verdict event
+    // ------------------------------------------------------------
+
+    it('emits a deterministic assess.verdict event alongside outcome.hypothesis_confirmed, carrying the full metric table', async () => {
+        const hypothesis = { expected: { discovered: '>=30', reply_rate: '>=0.03' } }
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ discoveredCount: 40, outcomeEmailed: 0, outcomeReplied: 0, hypothesis })])
+            .mockResolvedValueOnce([
+                sourceRow({ leadId: 'lead-a', sentAt: '2026-08-01T00:00:00.000Z', repliedAt: '2026-08-02T00:00:00.000Z' }),
+            ])
+            .mockResolvedValueOnce([runSnapshot({ discoveredCount: 40, outcomeEmailed: 1, outcomeReplied: 1, hypothesis })])
+
+        await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        const events = recordRunEventsMock.mock.calls[0][1]
+        const verdictEvent = events.find((e: { code: string }) => e.code === RUN_EVENT_CODES.assess.VERDICT)
+        expect(verdictEvent).toBeDefined()
+        expect(verdictEvent.organizationId).toBe('org-1')
+        expect(verdictEvent.runId).toBe('run-1')
+        expect(verdictEvent.level).toBe('info')
+        expect(verdictEvent.summary).toContain('confirmed')
+        expect(verdictEvent.detail.idempotency_key).toMatch(/^assess:run-1:/)
+        expect(verdictEvent.detail.overall).toBe('confirmed')
+        expect(verdictEvent.detail.metrics).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    metric: 'discovered',
+                    expected: '>=30',
+                    comparator: { op: '>=', value: 30 },
+                    actual: 40,
+                    verdict: 'met',
+                    evidence: expect.stringContaining('40 discovered'),
+                }),
+                expect.objectContaining({
+                    metric: 'reply_rate',
+                    expected: '>=0.03',
+                    actual: 1,
+                    verdict: 'met',
+                    evidence: expect.stringContaining('1/1 replied'),
+                }),
+            ]),
+        )
+    })
+
+    it('marks assess.verdict level warn for a refuted overall verdict, and names the failing metric in the summary', async () => {
+        const hypothesis = { expected: { reply_rate: '>=0.50' } }
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 0, outcomeReplied: 0, hypothesis })])
+            .mockResolvedValueOnce([
+                sourceRow({ leadId: 'lead-a', sentAt: '2026-08-01T00:00:00.000Z' }),
+                sourceRow({ leadId: 'lead-b', sentAt: '2026-08-01T00:00:00.000Z' }),
+            ])
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 2, outcomeReplied: 0, hypothesis })])
+
+        await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        const events = recordRunEventsMock.mock.calls[0][1]
+        const verdictEvent = events.find((e: { code: string }) => e.code === RUN_EVENT_CODES.assess.VERDICT)
+        expect(verdictEvent.level).toBe('warn')
+        expect(verdictEvent.summary).toContain('refuted')
+        expect(verdictEvent.summary).toContain('reply_rate')
+        expect(verdictEvent.detail.overall).toBe('refuted')
+    })
+
+    it('does not emit assess.verdict when the run has no stated hypothesis', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 0, hypothesis: null })])
+            .mockResolvedValueOnce([sourceRow({ sentAt: '2026-08-01T00:00:00.000Z' })])
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 1, hypothesis: null })])
+
+        await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        const events = recordRunEventsMock.mock.calls[0][1]
+        expect(events.some((e: { code: string }) => e.code === RUN_EVENT_CODES.assess.VERDICT)).toBe(false)
+    })
+
+    it('is idempotent across two runs of the outcome job — an unchanged verdict does not duplicate assess.verdict', async () => {
+        // First pass: reply_rate newly becomes met (0/0 inconclusive -> 1/1 confirmed).
+        const hypothesis = { expected: { reply_rate: '>=0.03' } }
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 0, outcomeReplied: 0, hypothesis })])
+            .mockResolvedValueOnce([
+                sourceRow({ leadId: 'lead-a', sentAt: '2026-08-01T00:00:00.000Z', repliedAt: '2026-08-02T00:00:00.000Z' }),
+            ])
+            .mockResolvedValueOnce([runSnapshot({ outcomeEmailed: 1, outcomeReplied: 1, hypothesis })])
+
+        await measureProspectingOutcomes(new Date('2026-08-13T00:00:00.000Z'))
+
+        expect(recordRunEventsMock).toHaveBeenCalledTimes(1)
+        const firstPassEvents = recordRunEventsMock.mock.calls[0][1]
+        const firstVerdictEvent = firstPassEvents.find((e: { code: string }) => e.code === RUN_EVENT_CODES.assess.VERDICT)
+        expect(firstVerdictEvent).toBeDefined()
+
+        // Second run of the SAME job: before == after (nothing changed since the first pass
+        // was persisted) — same shape the sibling "does not re-emit a hypothesis event when
+        // counters are identical" test above already exercises for outcome.hypothesis_*.
+        const unchanged = runSnapshot({ outcomeEmailed: 1, outcomeReplied: 1, hypothesis })
+        queryClientMock
+            .mockResolvedValueOnce([unchanged])
+            .mockResolvedValueOnce([
+                sourceRow({ leadId: 'lead-a', sentAt: '2026-08-01T00:00:00.000Z', repliedAt: '2026-08-02T00:00:00.000Z' }),
+            ])
+            .mockResolvedValueOnce([unchanged])
+
+        await measureProspectingOutcomes(new Date('2026-08-13T06:00:00.000Z'))
+
+        // recordRunEventsMock was called exactly once overall (the first pass) — the second
+        // pass recomputed the identical verdict fingerprint and appended nothing.
+        expect(recordRunEventsMock).toHaveBeenCalledTimes(1)
+    })
 })
