@@ -700,19 +700,25 @@ describe('JOB_TIMEOUT_BUDGETS_MS — budgets retuned to measured production late
         expect(JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor).toBe(30_000) // floor (5 x 1.6s ~= 8s)
         expect(JOB_TIMEOUT_BUDGETS_MS.outreachInboxCommands).toBe(30_000) // floor (5 x 1.3-2s is single digits)
         expect(JOB_TIMEOUT_BUDGETS_MS.deliverOutreachEventsToXphere).toBe(30_000) // floor (5 x 0.4s ~= 2s)
+        // Fase 36 — NOT sized by the 5x-measured-latency rule (no production measurement yet
+        // for a brand-new job); bounded instead by its own explicit 15s fetch AbortSignal
+        // timeout plus DB bookkeeping headroom. See cron-lock.ts's own comment on this entry.
+        expect(JOB_TIMEOUT_BUDGETS_MS.runDailyProspecting).toBe(90_000)
     })
 
     it('every configured budget stays comfortably above its own job\'s measured normal latency', () => {
         // "Comfortably above" per the stated rule: at least the 30s floor, or the 5x multiple —
-        // whichever the rule actually produced for that job.
-        const normalLatencyMs: Record<keyof typeof JOB_TIMEOUT_BUDGETS_MS, number> = {
+        // whichever the rule actually produced for that job. `runDailyProspecting` is
+        // deliberately excluded here — it has no measured normal latency (see the previous
+        // test) so the 5x invariant does not apply to it.
+        const normalLatencyMs: Record<Exclude<keyof typeof JOB_TIMEOUT_BUDGETS_MS, 'runDailyProspecting'>, number> = {
             warmupMeshProcessor: 75_000,
             outreachRepliesProcessor: 61_000,
             outreachBouncesProcessor: 1_600,
             outreachInboxCommands: 2_000,
             deliverOutreachEventsToXphere: 400,
         }
-        for (const job of Object.keys(JOB_TIMEOUT_BUDGETS_MS) as (keyof typeof JOB_TIMEOUT_BUDGETS_MS)[]) {
+        for (const job of Object.keys(normalLatencyMs) as (keyof typeof normalLatencyMs)[]) {
             expect(JOB_TIMEOUT_BUDGETS_MS[job]).toBeGreaterThanOrEqual(normalLatencyMs[job] * 5)
         }
     })

@@ -53,6 +53,7 @@ export const KNOWN_LOCK_NAMES: readonly string[] = [
     'outreach-replies-processor',
     'warmup-mesh-processor',
     'reconcileOutreachEvents',
+    'runDailyProspecting',
 ]
 
 /**
@@ -110,6 +111,17 @@ export const JOB_TIMEOUT_BUDGETS_MS = {
     outreachBouncesProcessor: 30_000, // 30s floor (5 x 1.6s would be ~8s — too tight)
     outreachInboxCommands: 30_000, // 30s floor (5 x 1.3-2s would be single-digit seconds)
     deliverOutreachEventsToXphere: 30_000, // 30s floor (5 x 0.4s would be ~2s)
+    // Fase 36 (docs/prospecting-engine-plan.md) — new job, no production measurement yet, so
+    // this is NOT sized by the 5x-observed-latency rule above (that needs real numbers this
+    // job doesn't have on day one — see the rule's own "deliberately left untouched" note for
+    // unmeasured jobs). Sized instead from what the job body actually is: a handful of small
+    // SELECT/UPDATE queries per organization plus ONE outbound POST to Xcraper that returns a
+    // searchId immediately (the scrape itself runs for 3-12 minutes on Xcraper's side, entirely
+    // decoupled — see runDailyProspecting.ts's module doc). That POST already carries its own
+    // explicit 15s `AbortSignal.timeout`, so 90s gives comfortable headroom for that timeout
+    // plus DB bookkeeping across more than one organization before this budget would ever fire.
+    // Revisit with the 5x rule once this job has run in production long enough to measure.
+    runDailyProspecting: 90_000,
 } as const
 
 /** Distinguishes "the timer won the race" from any value `fn()` could legitimately resolve with. */

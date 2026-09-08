@@ -2791,6 +2791,55 @@ export type NewProspectCandidate = typeof prospectCandidates.$inferInsert
 export type ProspectAiAssessment = typeof prospectAiAssessments.$inferSelect
 export type NewProspectAiAssessment = typeof prospectAiAssessments.$inferInsert
 
+// ============================================================
+// Daily territory queue with a budget ceiling (Fase 36) — migration 065
+// ============================================================
+
+export type ProspectingTerritoryTemplate = 'standard' | 'enriched'
+export type ProspectingTerritoryStatus = 'queued' | 'running' | 'done' | 'paused'
+
+/**
+ * The daily engine's queue of (query, location) territories to scrape, one budget-bounded
+ * territory per day — see `runDailyProspecting.ts` and its module doc comment for the
+ * ordering rules, and migration 065's header for why `lastRunId`/`lastExternalRunId` are two
+ * separate columns rather than one FK.
+ */
+export const prospectingTerritories = pgTable('prospecting_territories', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    query: text('query').notNull(),
+    location: text('location').notNull(),
+    template: text('template').$type<ProspectingTerritoryTemplate>().notNull(),
+    // Lower number = higher priority (runs first) — see migration 065.
+    priority: integer('priority').default(100).notNull(),
+    status: text('status').$type<ProspectingTerritoryStatus>().default('queued').notNull(),
+    maxResults: integer('max_results').notNull(),
+    lastRunId: uuid('last_run_id').references(() => prospectingRuns.id, { onDelete: 'set null' }),
+    lastExternalRunId: text('last_external_run_id'),
+    lastAttemptedAt: timestamp('last_attempted_at'),
+    notes: text('notes'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+    orgQueryLocationUnique: uniqueIndex('prospecting_territories_org_query_location_unique').on(table.organizationId, table.query, table.location),
+    idxOrgStatusPriority: index('idx_prospecting_territories_org_status_priority').on(table.organizationId, table.status, table.priority),
+    idxRunningExternal: index('idx_prospecting_territories_running_external').on(table.organizationId, table.lastExternalRunId)
+        .where(sql`${table.status} = 'running' AND ${table.lastExternalRunId} IS NOT NULL`),
+    idxLastRun: index('idx_prospecting_territories_last_run').on(table.lastRunId).where(sql`${table.lastRunId} IS NOT NULL`),
+    templateCheck: check('prospecting_territories_template_check', sql`${table.template} IN ('standard', 'enriched')`),
+    statusCheck: check('prospecting_territories_status_check', sql`${table.status} IN ('queued', 'running', 'done', 'paused')`),
+    maxResultsCheck: check('prospecting_territories_max_results_check', sql`${table.maxResults} > 0`),
+    priorityCheck: check('prospecting_territories_priority_check', sql`${table.priority} > 0`),
+}))
+
+export const prospectingTerritoriesRelations = relations(prospectingTerritories, ({ one }) => ({
+    organization: one(organizations, { fields: [prospectingTerritories.organizationId], references: [organizations.id] }),
+    lastRun: one(prospectingRuns, { fields: [prospectingTerritories.lastRunId], references: [prospectingRuns.id] }),
+}))
+
+export type ProspectingTerritory = typeof prospectingTerritories.$inferSelect
+export type NewProspectingTerritory = typeof prospectingTerritories.$inferInsert
+
 // ============================================================================
 // Warm-up engine (migration 051)
 //

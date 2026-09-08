@@ -17,6 +17,7 @@ import { runApprovalExpiryWithLock } from './expireOutreachApprovals'
 import { runWarmupMeshWithLock } from './processWarmup'
 import { runAmortizeSubscriptionCostsWithLock } from './amortizeSubscriptionCosts'
 import { runMeasureProspectingOutcomesWithLock } from './measureProspectingOutcomes'
+import { runDailyProspectingWithLock } from './runDailyProspecting'
 import { runAlertWatchdog } from './alertWatchdog'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
@@ -275,6 +276,23 @@ export function startJobs(): void {
         })
     }, { timezone: 'UTC' })
 
+    // Fase 36 — daily territory-queue engine: reads today's real lead_source spend from the
+    // ledger, picks the highest-priority queued territory and fires at most one Xcraper scrape
+    // per organization per tick. 10:00 UTC (06:00 US Eastern, before the business day starts)
+    // keeps it well clear of the midnight resetDailyLimits/measureProspectingOutcomes ticks and
+    // the 09:00 dailyOutreachDigest, so a same-day scrape's spend is never split across two
+    // digest windows. Fails closed (see resolveXcraperConfig) until XCRAPER_SERVICE_URL/
+    // XCRAPER_SERVICE_KEY are actually configured — see runDailyProspecting.ts.
+    cron.schedule('0 10 * * *', () => {
+        runDailyProspectingWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.runDailyProspecting_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'runDailyProspecting failed')
+        })
+    }, { timezone: 'UTC' })
+
     // Ops alert watchdog — the "alert on silence" half of layer 2. Evaluates
     // states that produce no error of their own (a queue that stops draining,
     // memory climbing toward the OOM killer, a filling disk) and reports each
@@ -292,7 +310,7 @@ export function startJobs(): void {
 
     log.info({
         action: 'outreach.jobs.scheduler_ready',
-        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am, amortizeSubscriptionCosts=monthly-1st-04:00-UTC, measureProspectingOutcomes=every-6h-UTC, alertWatchdog=5min',
+        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am, amortizeSubscriptionCosts=monthly-1st-04:00-UTC, measureProspectingOutcomes=every-6h-UTC, runDailyProspecting=daily-10:00-UTC, alertWatchdog=5min',
     }, 'scheduler ready')
 
     // Phase 23 (AI-03): log the GLOBAL autonomous-automation kill-control posture once at startup
