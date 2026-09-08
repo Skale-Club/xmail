@@ -30,6 +30,7 @@
  */
 
 import nodemailer from 'nodemailer'
+import type { SendMailOptions, Transporter } from 'nodemailer'
 import type { EmailAccount } from '../../db/schema'
 import { decryptSecret } from './crypto'
 import { createLogger } from './logger'
@@ -140,7 +141,7 @@ export interface OutreachProviderAdapter {
 
 /** Seams for tests. Production callers use the defaults. */
 export interface OutreachProviderDependencies {
-    createSmtpTransport?: (account: EmailAccount) => nodemailer.Transporter
+    createSmtpTransport?: (account: EmailAccount) => Transporter
     relayNativeMessage?: typeof relayMessage
     storeNativeMessage?: typeof storeMessage
     findNativeMailbox?: typeof getNativeMailboxByEmail
@@ -285,7 +286,7 @@ export async function composeOutreachMime(input: OutreachMimeInput): Promise<Com
     // recipients in the envelope is the only shape that is correct for all three.
     const envelope = { from: input.from.address, to: [...to, ...cc, ...bcc] }
 
-    const mailOptions: nodemailer.SendMailOptions = {
+    const mailOptions: SendMailOptions = {
         from: input.from.name ? { name: input.from.name, address: input.from.address } : input.from.address,
         to,
         subject: input.subject,
@@ -387,7 +388,7 @@ export function toDispatchResult(result: OutreachProviderResult): ProviderDispat
  * verification transporter in routes/outreach/email-accounts.ts, so an inbox cannot verify
  * under one TLS mode and then send under another.
  */
-export function createSmtpTransporter(account: EmailAccount): nodemailer.Transporter {
+export function createSmtpTransporter(account: EmailAccount): Transporter {
     if (!account.smtpHost || !account.smtpPassword || !account.smtpUsername) {
         throw new Error('SMTP account missing required fields')
     }

@@ -11,7 +11,7 @@
  * top-level `process.env` reads see exactly what this test stubbed, not whatever an earlier test
  * (or the previous import) left behind.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 
 const DATABASE_URL = 'postgresql://user:pw@aws-0-region.pooler.supabase.com:6543/postgres'
 const DIRECT_URL = 'postgresql://user:pw@aws-0-region.pooler.supabase.com:5432/postgres'
@@ -21,7 +21,7 @@ async function loadFreshModule() {
     return import('./index')
 }
 
-let logSpy: ReturnType<typeof vi.spyOn>
+let logSpy: MockInstance<typeof console.log>
 
 beforeEach(() => {
     vi.unstubAllEnvs()

@@ -144,13 +144,39 @@ export default defineConfig(({ mode }) => {
             emptyOutDir: true,
             rollupOptions: {
                 output: {
-                    manualChunks: {
-                        'vendor-react': ['react', 'react-dom'],
-                        'vendor-router': ['wouter'],
-                        'vendor-query': ['@tanstack/react-query'],
-                        'vendor-ui': ['lucide-react', 'clsx', 'tailwind-merge'],
-                        'vendor-quill': ['react-quill-new'],
-                        'vendor-date': ['date-fns'],
+                    // Vite 8 bundles with rolldown, which dropped the object form of
+                    // `manualChunks` — it fails the build with "manualChunks is not a
+                    // function" — and accepts only the id-based function. Same six vendor
+                    // chunks as before, keyed on the package directory so a nested copy
+                    // under another package's node_modules lands in the same chunk as the
+                    // hoisted one. `scheduler` and `quill` are named explicitly because
+                    // they are the transitive halves of react-dom and react-quill-new: the
+                    // old object form pulled them in via the dependency closure, which an
+                    // id-based function does not do on its own.
+                    manualChunks(id: string) {
+                        const match = id.replace(/\\/g, '/').match(/node_modules\/((?:@[^/]+\/)?[^/]+)/)
+                        if (!match) return
+                        switch (match[1]) {
+                            case 'react':
+                            case 'react-dom':
+                            case 'scheduler':
+                                return 'vendor-react'
+                            case 'wouter':
+                                return 'vendor-router'
+                            case '@tanstack/react-query':
+                                return 'vendor-query'
+                            case 'lucide-react':
+                            case 'clsx':
+                            case 'tailwind-merge':
+                                return 'vendor-ui'
+                            case 'react-quill-new':
+                            case 'quill':
+                                return 'vendor-quill'
+                            case 'date-fns':
+                                return 'vendor-date'
+                            default:
+                                return
+                        }
                     },
                 },
             },

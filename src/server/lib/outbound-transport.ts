@@ -23,6 +23,9 @@
 
 import { promises as dns } from 'node:dns'
 import nodemailer from 'nodemailer'
+// nodemailer 10 ships its own declarations and exports these as named types; the
+// `nodemailer.Transporter` namespace form only existed in the @types/nodemailer stub.
+import type { SendMailOptions, Transporter } from 'nodemailer'
 
 export interface OutboundDkim {
     domainName: string
@@ -76,7 +79,7 @@ export async function resolveMxHosts(domain: string): Promise<string[]> {
     return [domain]
 }
 
-function relayTransport(dkim: OutboundDkim | undefined, env: NodeJS.ProcessEnv): nodemailer.Transporter {
+function relayTransport(dkim: OutboundDkim | undefined, env: NodeJS.ProcessEnv): Transporter {
     const port = parseInt(env.SMTP_PORT || '587')
     return nodemailer.createTransport({
         host: env.SMTP_HOST,
@@ -94,7 +97,7 @@ function relayTransport(dkim: OutboundDkim | undefined, env: NodeJS.ProcessEnv):
  * significaria não entregar — o padrão da internet aqui é criptografar quando dá e seguir em
  * texto claro quando não dá, nunca falhar a entrega por causa do certificado.
  */
-function directTransport(mxHost: string, dkim: OutboundDkim | undefined, env: NodeJS.ProcessEnv): nodemailer.Transporter {
+function directTransport(mxHost: string, dkim: OutboundDkim | undefined, env: NodeJS.ProcessEnv): Transporter {
     return nodemailer.createTransport({
         host: mxHost,
         port: 25,
@@ -215,7 +218,7 @@ export interface OutboundResult {
  * um servidor tenha aceitado.
  */
 export async function sendOutbound(
-    mail: nodemailer.SendMailOptions,
+    mail: SendMailOptions,
     recipients: string[],
     dkim?: OutboundDkim,
     env: NodeJS.ProcessEnv = process.env,
