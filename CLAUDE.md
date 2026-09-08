@@ -104,6 +104,14 @@ npm run db:rls           # Run the RLS migration script
 npm run db:audit         # Audit schema drift between schema.ts and the DB
 ```
 
+> **Typechecking needs BOTH configs.** `tsconfig.json` **excludes `src/server/**` and
+> `src/db/**`**, so `npx tsc --noEmit -p tsconfig.json` type-checks only the client and
+> reports "clean" while real errors sit in server code. Server and DB code are covered by
+> `tsconfig.server.json` (what `npm run build:server` uses). CI runs both; anyone checking
+> types by hand must too. This was discovered on 2026-09-08 after a whole session of
+> server-side work was "validated" with the client-only command — two genuine type errors
+> were sitting in `measureProspectingOutcomes.ts` and `advisory.ts` the whole time.
+
 ## Architecture Notes
 
 ### Authentication Flow
