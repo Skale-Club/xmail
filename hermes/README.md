@@ -257,6 +257,22 @@ Edite `/opt/hermes/hermes.env` e `docker compose up -d --force-recreate`.
    quando `kimi-k3` assume após uma falha do Codex. Mitigações: prompt enxuto (usar
    `last_edited_time`/metadata e `API-query-data-source` em vez de `get_block_children`
    de páginas grandes) + `agent.max_turns` folgado.
+9. **`hermes -z` (one-shot) é não-determinístico para tools MCP remotas — use `hermes
+   cron` para trabalho agendado.** Medido em 2026-09-08: de seis chamadas `hermes -z`
+   naquele dia, duas perderam ferramentas MCP no meio da execução — uma perdeu as tools
+   do Xphere, outra as do Xmail — sem nenhum erro de conexão visível. `hermes mcp test
+   xphere`/`hermes mcp test xmail` conectavam normalmente e `hermes tools list` reportava
+   os dois servidores como habilitados; o token respondia 200. O caminho de sessão longa
+   (gateway do Telegram) não reproduziu o problema em nenhuma das mesmas seis chamadas.
+   Numa das falhas o Hermes tentou improvisar sem a tool, recebeu 401 da chave errada e
+   corretamente recusou escrever a nota — mas o motor não pode depender de o modelo notar
+   e recusar; a skill do Active Prospect System (Fase 39,
+   `hermes/active-prospect-system/SKILL.md` passo 7) parou de depender do Hermes para o
+   veredito numérico por exatamente esse motivo — Xmail agora grava `assess.verdict`
+   deterministicamente e Hermes só acrescenta a lição qualitativa. Para trabalho agendado
+   (a varredura diária, o resumo de conclusão de run), prefira `hermes cron` ao invés de
+   agendar `hermes -z` via `cron`/systemd externo — o cron interno do Hermes usa o mesmo
+   caminho de sessão que não reproduziu a perda de tools nesse teste.
 
 ## Build do zero (referência)
 

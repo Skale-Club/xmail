@@ -425,6 +425,30 @@ export function scoreHypothesis(
 }
 
 // ============================================================
+// Verdict fingerprint (Fase 39 -- shared by measureProspectingOutcomes.ts for both the
+// existing before/after change-detection and the new deterministic `assess.verdict` event)
+// ============================================================
+
+/**
+ * A verdict "fingerprint" -- the overall verdict plus each metric's CATEGORICAL verdict,
+ * deliberately excluding the raw `actual`/`reason` values. Two scores with the same
+ * fingerprint count as the same verdict for idempotency purposes even when the underlying
+ * counts ticked up in between: a lead replying for the 40th time must not re-emit a Journey
+ * event that already said "confirmed", any more than the 40th `outcome.hypothesis_confirmed`
+ * emission should (this is the exact same rule `measureProspectingOutcomes.ts`'s own
+ * `hypothesisSignature` already enforced for that event; this function generalizes it so
+ * `assess.verdict` -- Fase 39 -- can build its own `idempotency_key` from the identical
+ * definition, the same shape `verify.completed` (prospecting.ts) uses a stored
+ * `detail.idempotency_key` for).
+ */
+export function verdictFingerprint(score: HypothesisScore): string {
+    return JSON.stringify({
+        overall: score.overall,
+        metrics: score.metrics.map((m) => ({ metric: m.metric, verdict: m.verdict })),
+    })
+}
+
+// ============================================================
 // Extraction helper (shared by measureProspectingOutcomes.ts and advisory.ts)
 // ============================================================
 

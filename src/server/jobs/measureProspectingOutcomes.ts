@@ -2,7 +2,7 @@ import { db, queryClient } from '../../db'
 import { runWithLock } from '../lib/cron-lock'
 import { createLogger } from '../lib/logger'
 import { sqlTimestampValue } from '../lib/sql-timestamp'
-import { extractExpectedMetrics, scoreHypothesis, type HypothesisScore } from '../lib/prospecting/hypothesis-scoring'
+import { extractExpectedMetrics, scoreHypothesis, verdictFingerprint } from '../lib/prospecting/hypothesis-scoring'
 import { recordRunEvents, RUN_EVENT_CODES, type RecordRunEventInput } from '../lib/prospecting/journey'
 
 const log = createLogger('outreach.prospecting.measure_outcomes')
@@ -276,22 +276,8 @@ function buildOutcomeEvents(before: Map<string, RunSnapshotRow>, after: RunSnaps
 }
 
 /**
- * A verdict "signature" used only to decide whether to emit — the overall verdict plus
- * each metric's categorical verdict, deliberately EXCLUDING the raw `actual`/`reason`
- * values. Those drift on every single incremental reply/send even when nothing about the
- * verdict itself has changed, and diffing on them would re-emit on almost every 6-hourly
- * pass — exactly the "drowns the narrative" failure this function exists to avoid.
- */
-function hypothesisSignature(score: HypothesisScore): string {
-    return JSON.stringify({
-        overall: score.overall,
-        metrics: score.metrics.map((m) => ({ metric: m.metric, verdict: m.verdict })),
-    })
-}
-
-/**
- * Builds `outcome.hypothesis_*` events for runs whose stated hypothesis verdict changed
- * since the last measurement pass.
+ * Builds `outcome.hypothesis_*` AND (Fase 39) `assess.verdict` events for runs whose stated
+ * hypothesis verdict changed since the last measurement pass.
  *
  * Reconstructs the "before" score from the previously-persisted outcome counters (the
  * same `before` snapshot `buildOutcomeEvents` uses) and the "after" score from the
@@ -303,6 +289,23 @@ function hypothesisSignature(score: HypothesisScore): string {
  * This still correctly catches every real transition, since a run only starts confirming
  * or refuting its reply-rate/verified-email-rate expectations as emailed/replied counts
  * accumulate across passes.
+ *
+ * Fase 39 (docs/prospecting-engine-plan.md "Fase 39 -- Hermes fora do caminho crítico"):
+ * `assess.verdict` fires at the exact same transition as `outcome.hypothesis_*` — same
+ * `verdictFingerprint` comparison, same 'inconclusive' skip — but carries the FULL
+ * metric-by-metric table (every metric's expectation as written, its parsed comparator, the
+ * measured actual, the verdict and the evidence string `scoreHypothesis` already computes),
+ * not just the failing/met subset the narrower hypothesis-confirmed/refuted summary names.
+ * This is the deterministic replacement for the "observed vs expected" note a human used to
+ * dictate to Hermes on 2026-09-08 — Hermes reads this event instead of recomputing it (see
+ * hermes/active-prospect-system/SKILL.md step 7).
+ *
+ * IDEMPOTENT PER (run, verdict-fingerprint), the same shape `verify.completed`
+ * (prospecting.ts) uses a stored `detail.idempotency_key` for: because `verdictFingerprint`
+ * is exactly what gates emission in the first place, a later pass whose fingerprint is
+ * unchanged never reaches the `events.push` below at all — the fingerprint stored in
+ * `detail.idempotency_key` is there for audit/query (grep the Journey for this exact
+ * verdict), not as a second gate.
  */
 function buildHypothesisEvents(
     before: Map<string, RunSnapshotRow>,
@@ -354,9 +357,13 @@ function buildHypothesisEvents(
 
         // No journey code fits "we no longer know" (see the module doc above), and outcome
         // counters never decrease, so a transition INTO 'inconclusive' should not occur in
-        // practice — skip it defensively rather than guess a code for it.
+        // practice — skip it defensively rather than guess a code for it. Also nothing to
+        // fingerprint yet: scoreHypothesis has not produced a verdict (Fase 39's own trigger
+        // condition), so assess.verdict has nothing to record either.
         if (afterScore.overall === 'inconclusive') continue
-        if (hypothesisSignature(beforeScore) === hypothesisSignature(afterScore)) continue
+
+        const fingerprint = verdictFingerprint(afterScore)
+        if (verdictFingerprint(beforeScore) === fingerprint) continue
 
         const code = afterScore.overall === 'confirmed'
             ? RUN_EVENT_CODES.outcome.HYPOTHESIS_CONFIRMED
@@ -375,6 +382,33 @@ function buildHypothesisEvents(
             code,
             summary,
             detail: { overall: afterScore.overall, metrics: afterScore.metrics },
+        })
+
+        // Fase 39 -- see this function's own doc comment above. `decidingMetric` names the
+        // metric the one-line summary calls out: the first metric that failed (refuted), or
+        // else the first that held (confirmed — every scored metric is 'met' by construction
+        // of the 'confirmed' branch in scoreHypothesis, so any one of them is representative).
+        const decidingMetric = afterScore.metrics.find((m) => m.verdict === 'not_met')
+            ?? afterScore.metrics.find((m) => m.verdict === 'met')
+            ?? afterScore.metrics[0]
+        events.push({
+            organizationId: row.organizationId,
+            runId: row.id,
+            code: RUN_EVENT_CODES.assess.VERDICT,
+            level: afterScore.overall === 'refuted' ? 'warn' : 'info',
+            summary: `${afterScore.overall}: ${decidingMetric.metric} — ${decidingMetric.reason}`,
+            detail: {
+                idempotency_key: `assess:${row.id}:${fingerprint}`,
+                overall: afterScore.overall,
+                metrics: afterScore.metrics.map((m) => ({
+                    metric: m.metric,
+                    expected: m.expected,
+                    comparator: m.comparator,
+                    actual: m.actual,
+                    verdict: m.verdict,
+                    evidence: m.reason,
+                })),
+            },
         })
     }
 
