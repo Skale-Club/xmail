@@ -5,7 +5,7 @@
  * continue silenciosa, senão o alerta vira ruído e é ignorado quando importar.
  */
 import { describe, expect, it } from 'vitest'
-import { buildSilenceAlerts, type SilenceMetrics } from '../outreach-silence'
+import { buildSilenceAlerts, VERIFICATION_MISSING_RUN_AGE_HOURS, type SilenceMetrics } from '../outreach-silence'
 
 const NOW = new Date('2026-08-15T15:00:00Z')
 
@@ -27,6 +27,7 @@ function metrics(overrides: Partial<SilenceMetrics> = {}): SilenceMetrics {
         costEntries35d: 0,
         unpricedCostEntries35d: 0,
         unpricedCostCategories: [],
+        verificationMissingRuns: 0,
         ...overrides,
     }
 }
@@ -138,6 +139,24 @@ describe('runs enriched sem resultado', () => {
             NOW,
         )
         expect(alerts.every((a) => a.severity === 'warning')).toBe(true)
+    })
+})
+
+describe('verificação nunca chegou (verification_missing, Fase 34)', () => {
+    it('fica calado sem run pendente de verificação', () => {
+        expect(kinds(metrics({ verificationMissingRuns: 0 }))).toEqual([])
+    })
+
+    it('avisa quando há run enriched importado sem verificação há mais de 6h', () => {
+        // O defeito real: a categoria email_verification do ledger tinha tarifa seeded desde
+        // 055/056 e ZERO lançamentos — o saldo do MillionVerifier caiu 253 -> 215 créditos em
+        // 98 verificações sem que nada gravasse isso.
+        const alerts = buildSilenceAlerts(metrics({ verificationMissingRuns: 3 }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'warning', kind: 'verification_missing' })
+        expect(alerts[0].message).toContain('3 enriched run(s)')
+        expect(alerts[0].message).toContain(`${VERIFICATION_MISSING_RUN_AGE_HOURS}h`)
+        expect(alerts[0].message).toContain('verified_at IS NULL')
     })
 })
 

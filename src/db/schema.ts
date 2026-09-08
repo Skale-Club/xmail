@@ -2534,6 +2534,11 @@ export const prospectingRuns = pgTable('prospecting_runs', {
     outcomeBounced: integer('outcome_bounced').default(0).notNull(),
     outcomeUnsubscribed: integer('outcome_unsubscribed').default(0).notNull(),
     outcomeLastMeasuredAt: timestamp('outcome_last_measured_at'),
+    // Phase 34 (migration 064): NULL means "never measured" -- do NOT default to 0, for the
+    // same reason enrichedCount's absence is kept visible (see prospecting.ts). Written by
+    // POST /external-runs/:externalRunId/verification.
+    verifiedOkCount: integer('verified_ok_count'),
+    verifiedAt: timestamp('verified_at'),
     lastError: text('last_error'),
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),
@@ -2631,7 +2636,9 @@ export const prospectAiAssessments = pgTable('prospect_ai_assessments', {
 // Prospecting run journey + outreach cost ledger (Phase 31) — migration 051
 // ============================================================
 
-export type ProspectingRunEventPhase = 'search' | 'score' | 'enrich' | 'assess' | 'import' | 'outcome'
+// Phase 34 (migration 064) adds 'verify' -- the run-verification event
+// (RUN_EVENT_CODES.verify.COMPLETED, prospecting.ts's new /verification route).
+export type ProspectingRunEventPhase = 'search' | 'score' | 'enrich' | 'assess' | 'import' | 'outcome' | 'verify'
 export type ProspectingRunEventLevel = 'info' | 'warn' | 'error'
 
 /** Append-only narrative of a prospecting run: one namespaced, ordered event per phase transition. */
@@ -2654,7 +2661,7 @@ export const prospectingRunEvents = pgTable('prospecting_run_events', {
     idxRunSequence: index('idx_prospecting_run_events_run_sequence').on(table.runId, table.sequenceNumber),
     idxOrgCodeOccurred: index('idx_prospecting_run_events_org_code_occurred').on(table.organizationId, table.code, table.occurredAt),
     idxOrgRunPhase: index('idx_prospecting_run_events_org_run_phase').on(table.organizationId, table.runId, table.phase),
-    phaseCheck: check('prospecting_run_events_phase_check', sql`${table.phase} IN ('search', 'score', 'enrich', 'assess', 'import', 'outcome')`),
+    phaseCheck: check('prospecting_run_events_phase_check', sql`${table.phase} IN ('search', 'score', 'enrich', 'assess', 'import', 'outcome', 'verify')`),
     levelCheck: check('prospecting_run_events_level_check', sql`${table.level} IN ('info', 'warn', 'error')`),
     codeCheck: check('prospecting_run_events_code_check', sql`length(btrim(${table.code})) > 0`),
     detailObject: check('prospecting_run_events_detail_object', sql`jsonb_typeof(${table.detail}) = 'object'`),

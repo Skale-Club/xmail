@@ -208,6 +208,11 @@ interface RunSnapshotRow extends RunOutcomeCounters {
     // consistent row shape. `hypothesis` is the raw jsonb blob (see hypothesis.ts) —
     // `extractExpectedMetrics` pulls `expected` out of it defensively.
     discoveredCount: number
+    // Phase 34 (migration 064): like discoveredCount, verified_ok_count is written once by
+    // POST /external-runs/:id/verification and never recomputed by this job — read alongside
+    // the outcome counters purely to feed hypothesis-scoring.ts's measured verification path.
+    // null means "never verified", not "verified zero" — see that column's own comment.
+    verifiedOkCount: number | null
     hypothesis: Record<string, unknown> | null
 }
 
@@ -301,6 +306,9 @@ function buildHypothesisEvents(
             repliedCount: prev.outcomeReplied,
             attributedLeadCount: attribution.attributedLeadCount,
             verifiedOrLikelyLeadCount: attribution.verifiedOrLikelyLeadCount,
+            // Same "no historical before value" reasoning as discoveredCount above — this job
+            // never recomputes verified_ok_count, so before/after use the same current value.
+            verifiedOkCount: row.verifiedOkCount ?? null,
         })
         const afterScore = scoreHypothesis(expected, {
             discoveredCount: row.discoveredCount,
@@ -308,6 +316,7 @@ function buildHypothesisEvents(
             repliedCount: row.outcomeReplied,
             attributedLeadCount: attribution.attributedLeadCount,
             verifiedOrLikelyLeadCount: attribution.verifiedOrLikelyLeadCount,
+            verifiedOkCount: row.verifiedOkCount ?? null,
         })
 
         // No journey code fits "we no longer know" (see the module doc above), and outcome
@@ -359,6 +368,7 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
                 outcome_bounced AS "outcomeBounced",
                 outcome_unsubscribed AS "outcomeUnsubscribed",
                 discovered_count AS "discoveredCount",
+                verified_ok_count AS "verifiedOkCount",
                 hypothesis
             FROM prospecting_runs
             WHERE status = 'imported'
@@ -488,6 +498,7 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
                 prospecting_runs.outcome_bounced AS "outcomeBounced",
                 prospecting_runs.outcome_unsubscribed AS "outcomeUnsubscribed",
                 prospecting_runs.discovered_count AS "discoveredCount",
+                prospecting_runs.verified_ok_count AS "verifiedOkCount",
                 prospecting_runs.hypothesis
         `
     } catch (error) {

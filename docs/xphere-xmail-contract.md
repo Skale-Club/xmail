@@ -5,7 +5,7 @@
 > a fonte de verdade sobre o que o Xphere precisa enviar. Toda mudança aqui exige atualizar
 > `src/server/lib/prospecting/external-run.ts` e os testes de contrato.
 >
-> Última revisão: **2026-09-05**.
+> Última revisão: **2026-09-08** (Fase 34 — adicionado o Endpoint 3, verificação de e-mail).
 
 ## Por que este doc existe
 
@@ -117,7 +117,38 @@ retrabalho. Uma string simples cai no caminho legado `websiteInsight` e perde es
 O Xphere carrega a análise por conta e envia o objeto no momento do enrolamento. Quando não existe
 análise, o campo permanece ausente; o template não deve criar um parágrafo vazio nesse caso.
 
-## Endpoint 3 (sentido inverso) — `prospects_list` do MCP do Xphere
+## Endpoint 3 — `POST /api/outreach/prospecting/external-runs/:externalRunId/verification`
+
+Fase 34. Registra o resultado de um lote de verificação de e-mail (MillionVerifier/NeverBounce)
+já concluído para um run previamente registrado pelo Endpoint 1. Mesma auth (`x-service-key`,
+`?organizationId=` obrigatório). Motivo de existir: a categoria `email_verification` do ledger
+tinha tarifa seeded desde as migrações 055/056 e **zero lançamentos** — o saldo do MillionVerifier
+caiu de 253 para 215 créditos ao longo de 98 verificações sem que nada gravasse isso.
+
+```jsonc
+{
+  "provider": "xcraper",                    // resolve o run junto com :externalRunId
+  "checked": 98,
+  "ok": 69,
+  "catchAll": 9,
+  "unknown": 2,
+  "invalid": 18,                            // checked DEVE ser igual a ok+catchAll+unknown+invalid (400 se não bater)
+  "creditsUsed": 38,                        // créditos reportados pelo provedor; null se desconhecido
+  "verificationProvider": "millionverifier", // 'millionverifier' | 'neverbounce' | 'mixed'
+  "placeholdersRejected": 3,                 // opcional
+  "verifiedAt": "2026-09-08T12:00:00Z"       // ISO-8601
+}
+```
+
+Idempotente por `(runId, 'verify.completed', verifiedAt)`: 201 na primeira chamada, 200 com
+`idempotentReplay: true` numa repetição idêntica. 404 se nenhum `prospecting_runs` da organização
+tiver `provider = body.provider AND idempotency_key = :externalRunId`. Dentro de uma transação:
+grava o evento `verify.completed` na Journey (com `verifiedEmailRate = ok / discovered_count`),
+lança UM lançamento em `outreach_cost_entries` (`category = 'email_verification'`, preço vindo da
+tarifa seeded na 056; `verificationProvider = 'mixed'` é gravado como `millionverifier` no ledger,
+com a colapsagem anotada em `detail`), e atualiza `prospecting_runs.verified_ok_count`/`verified_at`.
+
+## Endpoint 4 (sentido inverso) — `prospects_list` do MCP do Xphere
 
 Não é o Xphere chamando o Xmail, mas é o mesmo acoplamento informal e a mesma classe de
 divergência, então mora aqui.

@@ -13,6 +13,7 @@ function measured(overrides: Partial<HypothesisMeasuredValues> = {}): Hypothesis
         repliedCount: 0,
         attributedLeadCount: 0,
         verifiedOrLikelyLeadCount: 0,
+        verifiedOkCount: null,
         ...overrides,
     }
 }
@@ -99,6 +100,50 @@ describe('scoreHypothesis — per-metric verdicts', () => {
         )
         expect(result.metrics[0].verdict).toBe('unknown')
         expect(result.overall).toBe('inconclusive')
+    })
+
+    describe('"verified_email_rate" — Phase 34 measured verification (verifiedOkCount)', () => {
+        it('uses verifiedOkCount / discoveredCount when a verification has been measured, ignoring the leads-based counts', () => {
+            // The real Fase 34 evidence shape: 98 checked, 69 ok, out of a run that discovered
+            // 100. attributedLeadCount/verifiedOrLikelyLeadCount are deliberately left at their
+            // leads-based (and here misleading) defaults to prove they are NOT consulted.
+            const result = scoreHypothesis(
+                { verified_email_rate: '>=0.6' },
+                measured({
+                    discoveredCount: 100,
+                    verifiedOkCount: 69,
+                    attributedLeadCount: 10,
+                    verifiedOrLikelyLeadCount: 1,
+                }),
+            )
+            expect(result.metrics[0]).toMatchObject({ actual: 0.69, verdict: 'met' })
+            expect(result.metrics[0].reason).toContain('69/100 verified (measured)')
+        })
+
+        it('falls back to the leads-based ratio when verifiedOkCount is null (never measured)', () => {
+            const result = scoreHypothesis(
+                { verified_email_rate: '>=0.25' },
+                measured({ verifiedOkCount: null, attributedLeadCount: 50, verifiedOrLikelyLeadCount: 20 }),
+            )
+            expect(result.metrics[0]).toMatchObject({ actual: 0.4, verdict: 'met' })
+        })
+
+        it('a zero discoveredCount denominator is unknown, never refuted, even with a measured verifiedOkCount', () => {
+            const result = scoreHypothesis(
+                { verified_email_rate: '>=0.25' },
+                measured({ discoveredCount: 0, verifiedOkCount: 0 }),
+            )
+            expect(result.metrics[0].verdict).toBe('unknown')
+            expect(result.overall).toBe('inconclusive')
+        })
+
+        it('a measured verifiedOkCount of exactly 0 is a real zero, not treated as "never measured"', () => {
+            const result = scoreHypothesis(
+                { verified_email_rate: '<0.1' },
+                measured({ discoveredCount: 50, verifiedOkCount: 0 }),
+            )
+            expect(result.metrics[0]).toMatchObject({ actual: 0, verdict: 'met' })
+        })
     })
 
     it('an unrecognized metric key is unknown, never guessed', () => {

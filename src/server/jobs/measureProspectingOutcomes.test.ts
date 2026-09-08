@@ -53,6 +53,7 @@ function runSnapshot(overrides: Partial<{
     outcomeBounced: number
     outcomeUnsubscribed: number
     discoveredCount: number
+    verifiedOkCount: number | null
     hypothesis: Record<string, unknown> | null
 }> = {}) {
     return {
@@ -64,6 +65,7 @@ function runSnapshot(overrides: Partial<{
         outcomeBounced: 0,
         outcomeUnsubscribed: 0,
         discoveredCount: 0,
+        verifiedOkCount: null,
         hypothesis: null,
         ...overrides,
     }
@@ -329,6 +331,34 @@ describe('measureProspectingOutcomes', () => {
             expect.objectContaining({ metric: 'reply_rate', actual: 1, verdict: 'met' }),
         ])
         expect(hypothesisEvent.summary).toContain('reply_rate')
+    })
+
+    it('scores verified_email_rate from verifiedOkCount/discoveredCount when a Phase 34 verification has landed', async () => {
+        // Fase 34 evidence shape: 100 discovered, 69 verified ok, via POST
+        // /external-runs/:id/verification. verified_email_rate alone never changes across a
+        // recompute pass (verifiedOkCount/discoveredCount are static — see the module doc
+        // comment above buildHypothesisEvents), so it is paired with reply_rate — which DOES
+        // change here — to actually trigger the emitted event and let the assertion inspect
+        // both metrics on it.
+        const hypothesis = { expected: { reply_rate: '>=0.03', verified_email_rate: '>=0.6' } }
+        queryClientMock
+            .mockResolvedValueOnce([runSnapshot({ discoveredCount: 100, verifiedOkCount: 69, outcomeEmailed: 0, outcomeReplied: 0, hypothesis })])
+            .mockResolvedValueOnce([
+                sourceRow({ leadId: 'lead-a', sentAt: '2026-08-01T00:00:00.000Z', repliedAt: '2026-08-02T00:00:00.000Z' }),
+            ])
+            .mockResolvedValueOnce([runSnapshot({ discoveredCount: 100, verifiedOkCount: 69, outcomeEmailed: 1, outcomeReplied: 1, hypothesis })])
+
+        await measureProspectingOutcomes(new Date('2026-09-08T00:00:00.000Z'))
+
+        const events = recordRunEventsMock.mock.calls[0][1]
+        const hypothesisEvent = events.find((e: { code: string }) => e.code === RUN_EVENT_CODES.outcome.HYPOTHESIS_CONFIRMED)
+        expect(hypothesisEvent).toBeDefined()
+        expect(hypothesisEvent.detail.metrics).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ metric: 'verified_email_rate', actual: 0.69, verdict: 'met' }),
+                expect.objectContaining({ metric: 'reply_rate', actual: 1, verdict: 'met' }),
+            ]),
+        )
     })
 
     it('emits outcome.hypothesis_refuted when an expectation is not met, naming the failing metric with expected vs actual', async () => {

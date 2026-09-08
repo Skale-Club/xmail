@@ -39,11 +39,12 @@ describe('RUN_EVENT_CODES phase mapping', () => {
         assess: 'assess',
         import: 'import',
         outcome: 'outcome',
+        verify: 'verify',
     }
 
     it('maps every code to the phase of its own group, exhaustively', () => {
         const groups = Object.keys(RUN_EVENT_CODES) as (keyof typeof RUN_EVENT_CODES)[]
-        expect(groups.sort()).toEqual(['assess', 'enrich', 'import', 'outcome', 'score', 'search'])
+        expect(groups.sort()).toEqual(['assess', 'enrich', 'import', 'outcome', 'score', 'search', 'verify'])
 
         let checked = 0
         for (const group of groups) {
@@ -52,8 +53,8 @@ describe('RUN_EVENT_CODES phase mapping', () => {
                 checked += 1
             }
         }
-        // 5 + 3 + 5 + 3 + 4 + 6 = 26 codes across the six phases.
-        expect(checked).toBe(26)
+        // 5 + 3 + 5 + 3 + 4 + 6 + 1 (verify, Phase 34) = 27 codes across the seven phases.
+        expect(checked).toBe(27)
     })
 
     it('codes are frozen and cannot be mutated', () => {
@@ -95,6 +96,7 @@ describe('defaultLevelForCode', () => {
         RUN_EVENT_CODES.outcome.REPLIED,
         RUN_EVENT_CODES.outcome.BOUNCED,
         RUN_EVENT_CODES.outcome.UNSUBSCRIBED,
+        RUN_EVENT_CODES.verify.COMPLETED,
     ])('defaults everything else, e.g. %s, to info', (code) => {
         expect(defaultLevelForCode(code)).toBe('info')
     })

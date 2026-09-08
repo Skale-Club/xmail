@@ -87,6 +87,17 @@ export const RUN_EVENT_CODES = Object.freeze({
         HYPOTHESIS_CONFIRMED: 'outcome.hypothesis_confirmed',
         HYPOTHESIS_REFUTED: 'outcome.hypothesis_refuted',
     }),
+    // Phase 34 (migration 064, docs/prospecting-engine-plan.md "Fase 34"): closes a gap the
+    // plan's evidence names directly -- the email_verification ledger category had a seeded
+    // rate since migrations 055/056 and ZERO entries; 98 MillionVerifier checks drained 38
+    // credits (253 -> 215) with nothing recorded, and Journeys only learned verified counts
+    // from human-dictated Hermes notes. Emitted once per POST
+    // /external-runs/:externalRunId/verification call (prospecting.ts) -- there is no
+    // partial/failure variant because a failed provider call on the Xphere side never
+    // reaches this route at all.
+    verify: Object.freeze({
+        COMPLETED: 'verify.completed',
+    }),
 } satisfies Record<ProspectingRunEventPhase, Record<string, string>>)
 
 type RunEventCodeGroups = typeof RUN_EVENT_CODES

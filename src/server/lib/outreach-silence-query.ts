@@ -7,9 +7,10 @@
 import { sql } from 'drizzle-orm'
 import { db } from '../../db'
 import { computeLockKey, getInFlightJobs, getRecentJobTimeouts, KNOWN_LOCK_NAMES } from './cron-lock'
-import type { SilenceMetrics } from './outreach-silence'
+import { VERIFICATION_MISSING_RUN_AGE_HOURS, type SilenceMetrics } from './outreach-silence'
 
-const ONE_DAY_MS = 24 * 60 * 60 * 1000
+const ONE_HOUR_MS = 60 * 60 * 1000
+const ONE_DAY_MS = 24 * ONE_HOUR_MS
 /** Janela do check "funil parado" — ver FUNNEL_STALLED_RUN_AGE_DAYS em outreach-silence.ts. */
 const SEVEN_DAYS_MS = 7 * ONE_DAY_MS
 /** Janela do check de custo sem preço — o suficiente para cobrir uma amortização mensal inteira. */
@@ -32,6 +33,8 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
     const cutoff7d = new Date(now.getTime() - SEVEN_DAYS_MS).toISOString()
     const cutoff35d = new Date(now.getTime() - THIRTY_FIVE_DAYS_MS).toISOString()
     const staleLockCutoff = new Date(now.getTime() - STALE_LOCK_THRESHOLD_MS).toISOString()
+    // Fase 34 (verification_missing) -- see VERIFICATION_MISSING_RUN_AGE_HOURS in outreach-silence.ts.
+    const verificationMissingCutoff = new Date(now.getTime() - VERIFICATION_MISSING_RUN_AGE_HOURS * ONE_HOUR_MS).toISOString()
 
     const raw = await db.execute(sql`
         SELECT
@@ -67,6 +70,15 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
             (SELECT count(*) FROM prospecting_runs
                 WHERE search_filters ->> 'template' = 'enriched'
                   AND coalesce(enriched_count, 0) = 0) AS enriched_runs_without_enrichment_count,
+            -- Fase 34 (kind: verification_missing) -- see VERIFICATION_MISSING_RUN_AGE_HOURS in
+            -- outreach-silence.ts. One step further than enriched_runs_without_enrichment_count:
+            -- enrichment happened here (enriched_count > 0), but verification never landed.
+            (SELECT count(*) FROM prospecting_runs
+                WHERE status = 'imported'
+                  AND search_filters ->> 'template' = 'enriched'
+                  AND coalesce(enriched_count, 0) > 0
+                  AND verified_at IS NULL
+                  AND created_at < ${verificationMissingCutoff}) AS verification_missing_runs,
             (SELECT count(*) FROM leads
                 WHERE jsonb_typeof(custom_fields) = 'string') AS bad_leads_custom_fields,
             (SELECT count(*) FROM mail_messages
@@ -138,6 +150,7 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
         credentialKeyMismatches24h: n('credential_key_mismatches_24h'),
         enrichedRunsWithoutLeads: n('enriched_runs_without_leads'),
         enrichedRunsWithoutEnrichmentCount: n('enriched_runs_without_enrichment_count'),
+        verificationMissingRuns: n('verification_missing_runs'),
         doubleEncodedJsonbColumns: doubleEncoded,
         // In-memory, not SQL -- see JOB_TIMEOUT_RATE_THRESHOLD_PER_HOUR in outreach-silence.ts.
         recentJobTimeouts: getRecentJobTimeouts(now),

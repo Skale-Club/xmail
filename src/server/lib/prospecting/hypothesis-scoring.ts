@@ -22,8 +22,14 @@
  * SUPPORTED METRICS map to exactly what `measureProspectingOutcomes.ts` computes:
  *   - `discovered`           -> `discoveredCount` (the run's own, already-persisted counter)
  *   - `reply_rate`           -> repliedCount / emailedCount
- *   - `verified_email_rate`  -> the share of the run's attributed leads whose
+ *   - `verified_email_rate`  -> Phase 34 (migration 064): when the run has an actual measured
+ *                                `verified_ok_count` (POST /external-runs/:id/verification),
+ *                                that count over `discoveredCount` is used directly — it is a
+ *                                real MillionVerifier/NeverBounce measurement, not a proxy.
+ *                                Falls back to the share of the run's attributed leads whose
  *                                `leads.email_verification_status` is 'verified' or 'likely'
+ *                                when no verification has been recorded yet (verifiedOkCount
+ *                                is null).
  * A metric key outside this list is `unknown` — this module never guesses a mapping for
  * a name it doesn't recognize.
  *
@@ -123,6 +129,14 @@ export interface HypothesisMeasuredValues {
     attributedLeadCount: number
     /** Of those, how many have `email_verification_status` 'verified' or 'likely'. */
     verifiedOrLikelyLeadCount: number
+    /**
+     * Phase 34 (migration 064): `prospecting_runs.verified_ok_count`, written by POST
+     * /external-runs/:externalRunId/verification. `null` means "never measured" (the
+     * column has no zero default -- see prospecting.ts/schema.ts comments), which is the
+     * signal to fall back to the leads-based `attributedLeadCount`/`verifiedOrLikelyLeadCount`
+     * computation instead. NOT the same thing as a measured zero, which is used as-is.
+     */
+    verifiedOkCount: number | null
 }
 
 function scoreMetric(metric: string, rawExpected: string | number, measured: HypothesisMeasuredValues): MetricScore {
@@ -169,8 +183,25 @@ function scoreMetric(metric: string, rawExpected: string | number, measured: Hyp
         }
         actual = measured.repliedCount / measured.emailedCount
         evidence = `${measured.repliedCount}/${measured.emailedCount} replied`
+    } else if (measured.verifiedOkCount !== null) {
+        // metric === 'verified_email_rate', Phase 34: an actual verification measurement
+        // exists (POST /external-runs/:id/verification) — use it directly instead of the
+        // leads-based proxy below, which only reflects leads that made it through import.
+        if (measured.discoveredCount <= 0) {
+            return {
+                metric,
+                expected: rawExpected,
+                comparator,
+                actual: null,
+                verdict: 'unknown',
+                reason: '0 discovered so far — a zero denominator is evidence of nothing, not a refutation',
+            }
+        }
+        actual = measured.verifiedOkCount / measured.discoveredCount
+        evidence = `${measured.verifiedOkCount}/${measured.discoveredCount} verified (measured)`
     } else {
-        // metric === 'verified_email_rate'
+        // metric === 'verified_email_rate', no verification measured yet — fall back to the
+        // share of attributed leads whose email_verification_status is verified/likely.
         if (measured.attributedLeadCount <= 0) {
             return {
                 metric,

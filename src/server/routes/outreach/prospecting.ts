@@ -1,12 +1,13 @@
 import { Router } from 'express'
-import { and, desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../../../db'
-import { prospectAiAssessments, prospectCandidates, prospectingRuns } from '../../../db/schema'
+import { outreachCostEntries, prospectAiAssessments, prospectCandidates, prospectingRunEvents, prospectingRuns } from '../../../db/schema'
 import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-access'
 import { recordCost } from '../../lib/outreach-costs'
 import { jsonbParam } from '../../lib/jsonb'
 import { externalRunSchema } from '../../lib/prospecting/external-run'
+import { runVerificationSchema } from '../../lib/prospecting/verification'
 import { emptyAdvisory, loadAdvisory } from '../../lib/prospecting/advisory'
 import { recordRunEvent, RUN_EVENT_CODES } from '../../lib/prospecting/journey'
 
@@ -236,6 +237,155 @@ router.post('/external-runs', async (req, res) => {
     } catch (error) {
         if (error instanceof z.ZodError) return res.status(400).json({ error: 'Validation error', details: error.errors })
         console.error('Error registering external prospecting run:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// ============================================================
+// POST /external-runs/:externalRunId/verification (Phase 34, migration 064) — Xphere
+// registers the result of an already-completed MillionVerifier/NeverBounce batch for a
+// run that was previously registered via POST /external-runs above.
+//
+// Evidence this closes (measured 2026-09-08): the `email_verification` ledger category
+// has had a seeded MillionVerifier rate since migrations 055/056 and ZERO entries — the
+// MillionVerifier balance dropped 253 -> 215 credits across 98 verifications and nothing
+// recorded it. Journeys only learned verified counts from human-dictated Hermes notes.
+//
+// Same auth shape as POST /external-runs: x-service-key service principal through
+// requireOutreachWrite, ?organizationId= required (see CLAUDE.md Authentication Flow —
+// authorization is JS-side, there is no DB safety net).
+//
+// Idempotency: identical repeats key on (runId, 'verify.completed', verifiedAt) — mirrors
+// agent-prospecting.ts's POST /runs/:id/notes (same detail->>'idempotency_key' pattern,
+// same pg_advisory_xact_lock-guarded transaction), NOT the onConflictDoNothing-on-the-row
+// idempotency /external-runs uses, because there is no dedicated "verification" row to
+// upsert here — the event + cost entry + run-counter update are the three things a
+// second identical call must not repeat.
+// ============================================================
+
+router.post('/external-runs/:externalRunId/verification', async (req, res) => {
+    try {
+        const organizationId = req.query.organizationId as string | undefined
+        if (!organizationId) return res.status(400).json({ error: 'organizationId is required' })
+        if (!await requireOutreachWrite(req, res, organizationId)) return
+
+        const externalRunId = req.params.externalRunId
+        const input = runVerificationSchema.parse(req.body)
+
+        const run = await db.query.prospectingRuns.findFirst({
+            where: and(
+                eq(prospectingRuns.organizationId, organizationId),
+                eq(prospectingRuns.provider, input.provider),
+                eq(prospectingRuns.idempotencyKey, externalRunId),
+            ),
+        })
+        if (!run) {
+            return res.status(404).json({ error: `No prospecting run found for provider=${input.provider} externalRunId=${externalRunId}` })
+        }
+
+        // 'mixed' has no rate-book row of its own (only 'millionverifier' is seeded, migration
+        // 056) — collapse it to 'millionverifier' for pricing/ledger purposes and note the
+        // collapse in detail so it stays visible rather than silently misattributed.
+        const ledgerProvider = input.verificationProvider === 'mixed' ? 'millionverifier' : input.verificationProvider
+        const idempotencyKey = `verify:${externalRunId}:${input.verifiedAt}`
+        const dedupKey = `email_verification:${ledgerProvider}:${externalRunId}:${input.verifiedAt}`
+
+        const result = await db.transaction(async (tx) => {
+            // Same per-key serialization agent-prospecting.ts's /runs/:id/notes uses: two
+            // identical calls racing each other must not both observe "no existing event yet".
+            await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${organizationId}:${run.id}:${idempotencyKey}`}))`)
+
+            const existingEvent = await tx.query.prospectingRunEvents.findFirst({
+                where: and(
+                    eq(prospectingRunEvents.organizationId, organizationId),
+                    eq(prospectingRunEvents.runId, run.id),
+                    eq(prospectingRunEvents.code, RUN_EVENT_CODES.verify.COMPLETED),
+                    sql`${prospectingRunEvents.detail}->>'idempotency_key' = ${idempotencyKey}`,
+                ),
+            })
+            if (existingEvent) {
+                const existingCostEntry = await tx.query.outreachCostEntries.findFirst({
+                    where: and(
+                        eq(outreachCostEntries.organizationId, organizationId),
+                        eq(outreachCostEntries.dedupKey, dedupKey),
+                    ),
+                })
+                return { idempotentReplay: true, eventId: existingEvent.id, costEntryId: existingCostEntry?.id ?? null }
+            }
+
+            // Same convention as external-run.ts's coverage fields: null (not 0) when the
+            // denominator hasn't been measured, so an absent discoveredCount never masquerades
+            // as "0% verified".
+            const verifiedEmailRate = run.discoveredCount > 0 ? input.ok / run.discoveredCount : null
+            const summary = `${input.checked} checked: ${input.ok} ok, ${input.catchAll} catch-all, `
+                + `${input.unknown} unknown, ${input.invalid} invalid (${input.verificationProvider})`
+
+            // recordRunEvent never throws (see journey.ts doc comment) — a broken events table
+            // must not break run registration. The follow-up SELECT below is what recovers the
+            // id for the response; the WHERE clause is unique for this (run, code, verifiedAt)
+            // triple under the advisory lock above.
+            await recordRunEvent(tx, {
+                organizationId,
+                runId: run.id,
+                code: RUN_EVENT_CODES.verify.COMPLETED,
+                summary,
+                detail: {
+                    ...input,
+                    externalRunId,
+                    idempotency_key: idempotencyKey,
+                    verifiedEmailRate,
+                },
+            })
+            const event = await tx.query.prospectingRunEvents.findFirst({
+                where: and(
+                    eq(prospectingRunEvents.organizationId, organizationId),
+                    eq(prospectingRunEvents.runId, run.id),
+                    eq(prospectingRunEvents.code, RUN_EVENT_CODES.verify.COMPLETED),
+                    sql`${prospectingRunEvents.detail}->>'idempotency_key' = ${idempotencyKey}`,
+                ),
+            })
+
+            // Actual credits reported by the provider outrank an estimate from `checked` — same
+            // "provider-reported beats price-book" preference outreach-costs.ts documents for
+            // amountMicrosOverride, but here we still want the price book applied (frozen
+            // unit_cost_micros from the seeded 056 rate), so quantity is what changes, not the
+            // pricing path. When no rate resolves, recordCost already writes the entry unpriced
+            // (unitCostMicros=0, detail.rate_missing=true) rather than inventing a price.
+            const costResult = await recordCost(tx, {
+                organizationId,
+                category: 'email_verification',
+                basis: input.creditsUsed !== null ? 'actual' : 'estimated',
+                quantity: input.creditsUsed ?? input.checked,
+                unit: 'credit',
+                provider: ledgerProvider,
+                runId: run.id,
+                dedupKey,
+                detail: input.verificationProvider === 'mixed'
+                    ? { verification_provider_mixed_collapsed_to: ledgerProvider }
+                    : {},
+            })
+
+            await tx.update(prospectingRuns).set({
+                verifiedOkCount: input.ok,
+                verifiedAt: new Date(input.verifiedAt),
+                updatedAt: new Date(),
+            }).where(and(
+                eq(prospectingRuns.id, run.id),
+                eq(prospectingRuns.organizationId, organizationId),
+            ))
+
+            return { idempotentReplay: false, eventId: event?.id ?? null, costEntryId: costResult.entry?.id ?? null }
+        })
+
+        res.status(result.idempotentReplay ? 200 : 201).json({
+            runId: run.id,
+            eventId: result.eventId,
+            costEntryId: result.costEntryId,
+            ...(result.idempotentReplay ? { idempotentReplay: true } : {}),
+        })
+    } catch (error) {
+        if (error instanceof z.ZodError) return res.status(400).json({ error: 'Validation error', details: error.errors })
+        console.error('Error registering prospecting run verification:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
 })

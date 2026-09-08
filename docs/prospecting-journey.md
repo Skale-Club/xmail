@@ -256,8 +256,9 @@ GROUP BY 1 ORDER BY 2 DESC;
 | `054_generalize_prospecting_providers.sql` | widens `provider`/category constraints beyond Apollo-only, renames `apollo_credits` → `lead_source` — this is what makes `POST /external-runs` (a non-Apollo, non-interactive registration path) possible at all |
 | `060_backfill_lead_source_run_id.sql` | stamps `custom_fields.source_run_id` onto existing leads, reconciling the key mismatch between what Xmail reads (`source_run_id`) and what Xphere had been sending (`xcraper_run_id`) |
 | `063_seed_native_inbox_rate.sql` | seeds the zero rate for `provider = 'native'` inboxes — see "Zero is not absence" above |
+| `064_prospecting_run_verification.sql` | Phase 34: adds `prospecting_runs.verified_ok_count`/`verified_at` (NULL = never measured, same "zero is not absence" reasoning) and widens the run-events phase check to accept `verify` — closes the gap where `email_verification` had a seeded rate (055/056) and zero ledger entries |
 
-The production migration ledger is current through `063_seed_native_inbox_rate.sql`. This
+The production migration ledger is current through `064_prospecting_run_verification.sql`. This
 doc previously cited a `056_prospecting_external_run_id.sql` for external-run idempotency;
 no such file exists (`056` is
 `056_email_verification_rate_entry_tier.sql`) — the idempotency constraint external runs

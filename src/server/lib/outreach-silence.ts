@@ -116,6 +116,19 @@ const FUNNEL_STALLED_RUN_AGE_DAYS = 7
 const UNPRICED_COST_SHARE_THRESHOLD = 0.5
 const MIN_COST_ENTRIES_FOR_SHARE_CHECK = 5
 
+/**
+ * Idade mínima (kind: verification_missing) para um run `enriched` já importado e sem
+ * verificação registrada virar alerta.
+ *
+ * Evidência (Fase 34, medida em 2026-09-08): a categoria `email_verification` do ledger tem
+ * tarifa seeded desde as migrações 055/056 e, até esta fase, ZERO lançamentos — o saldo do
+ * MillionVerifier caiu de 253 para 215 créditos ao longo de 98 verificações e nada registrou
+ * isso; a Journey só soube dos números verificados por nota humana do Hermes. 6 horas dá tempo
+ * de sobra para o Xphere terminar um lote de verificação (98 endereços não leva minutos, não
+ * horas) sem já confundir "ainda não chamou o endpoint" com "está atrasado".
+ */
+export const VERIFICATION_MISSING_RUN_AGE_HOURS = 6
+
 export interface SilenceMetrics {
     /** Caixas elegíveis ao mesh: `warmup_source='internal'` e verificadas. */
     warmupEligibleInboxes: number
@@ -160,6 +173,13 @@ export interface SilenceMetrics {
     unpricedCostEntries35d: number
     /** Categorias (`category`) que aparecem entre os lançamentos sem preço. */
     unpricedCostCategories: string[]
+    /**
+     * Runs `imported`, template `enriched`, `enriched_count > 0` e `verified_at IS NULL`,
+     * registrados há mais de VERIFICATION_MISSING_RUN_AGE_HOURS — ver o comentário do limiar
+     * acima. Fase 34: o mesmo padrão de `enrichedRunsWithoutEnrichmentCount`, um passo adiante
+     * no funil (aqui o enriquecimento aconteceu; a verificação é que nunca chegou).
+     */
+    verificationMissingRuns: number
 }
 
 /**
@@ -283,6 +303,23 @@ export function buildSilenceAlerts(metrics: SilenceMetrics, now: Date = new Date
             kind: 'enriched_count_never_populated',
             message: `${metrics.enrichedRunsWithoutEnrichmentCount} enriched run(s) still report enriched_count = 0. `
                 + 'This is the counter that answers whether paying for enrichment is worth it, and nothing populates it.',
+            since,
+        })
+    }
+
+    // Aviso: um passo adiante no mesmo funil que enriched_count_never_populated cobre — aqui o
+    // enriquecimento aconteceu (enriched_count > 0), mas a verificação de e-mail nunca chegou.
+    // O defeito real (Fase 34): a categoria email_verification do ledger tinha tarifa seeded
+    // desde 055/056 e ZERO lançamentos; o saldo do MillionVerifier caiu 253 -> 215 créditos em
+    // 98 verificações sem que nada gravasse isso.
+    if (metrics.verificationMissingRuns > 0) {
+        alerts.push({
+            severity: 'warning',
+            kind: 'verification_missing',
+            message: `${metrics.verificationMissingRuns} enriched run(s) imported more than `
+                + `${VERIFICATION_MISSING_RUN_AGE_HOURS}h ago still have no verification recorded `
+                + '(verified_at IS NULL). Either POST /external-runs/:externalRunId/verification was '
+                + 'never called, or the verification batch itself never ran.',
             since,
         })
     }
