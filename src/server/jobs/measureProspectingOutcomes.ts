@@ -213,8 +213,28 @@ interface RunSnapshotRow extends RunOutcomeCounters {
     // the outcome counters purely to feed hypothesis-scoring.ts's measured verification path.
     // null means "never verified", not "verified zero" — see that column's own comment.
     verifiedOkCount: number | null
+    // Phase 35: like discoveredCount/verifiedOkCount, these are written once (at run
+    // registration) and never recomputed by this job -- read alongside the outcome counters
+    // purely to feed hypothesis-scoring.ts's new email_rate metric.
+    enrichedCount: number
+    template: string | null
     hypothesis: Record<string, unknown> | null
 }
+
+/**
+ * Phase 35: the run-level facts hypothesis-scoring.ts's new metrics need that live OUTSIDE
+ * `prospecting_runs` itself -- web-presence coverage (the `import.external_run_registered`
+ * Journey event's `detail.coverage.byWebPresence`) and lead-source spend
+ * (`outreach_cost_entries`). Like `discoveredCount`/`verifiedOkCount`/`enrichedCount`/
+ * `template` above, neither of these changes across a measurement pass, so the same fetched
+ * value is used for both the "before" and "after" score in `buildHypothesisEvents`.
+ */
+interface RunPhase35Extras {
+    webPresenceCoverage: Record<string, number> | null
+    costUsd: number | null
+}
+
+const NO_PHASE_35_EXTRAS: RunPhase35Extras = { webPresenceCoverage: null, costUsd: null }
 
 export interface MeasureProspectingOutcomesSummary {
     examined: number
@@ -288,6 +308,7 @@ function buildHypothesisEvents(
     before: Map<string, RunSnapshotRow>,
     after: RunSnapshotRow[],
     aggregates: Map<string, RunAggregate>,
+    extrasByRun: Map<string, RunPhase35Extras>,
 ): RecordRunEventInput[] {
     const events: RecordRunEventInput[] = []
 
@@ -299,6 +320,10 @@ function buildHypothesisEvents(
         if (!expected) continue
 
         const attribution = aggregates.get(row.id) ?? ZERO_AGGREGATE
+        // Phase 35: fetched once per run below (coverage/cost), same "no historical before
+        // value" reasoning as discoveredCount/verifiedOkCount/enrichedCount/template — none of
+        // these change across a measurement pass, so before/after use the same current value.
+        const extras = extrasByRun.get(row.id) ?? NO_PHASE_35_EXTRAS
 
         const beforeScore = scoreHypothesis(expected, {
             discoveredCount: row.discoveredCount,
@@ -309,6 +334,10 @@ function buildHypothesisEvents(
             // Same "no historical before value" reasoning as discoveredCount above — this job
             // never recomputes verified_ok_count, so before/after use the same current value.
             verifiedOkCount: row.verifiedOkCount ?? null,
+            enrichedCount: row.enrichedCount,
+            template: row.template,
+            webPresenceCoverage: extras.webPresenceCoverage,
+            costUsd: extras.costUsd,
         })
         const afterScore = scoreHypothesis(expected, {
             discoveredCount: row.discoveredCount,
@@ -317,6 +346,10 @@ function buildHypothesisEvents(
             attributedLeadCount: attribution.attributedLeadCount,
             verifiedOrLikelyLeadCount: attribution.verifiedOrLikelyLeadCount,
             verifiedOkCount: row.verifiedOkCount ?? null,
+            enrichedCount: row.enrichedCount,
+            template: row.template,
+            webPresenceCoverage: extras.webPresenceCoverage,
+            costUsd: extras.costUsd,
         })
 
         // No journey code fits "we no longer know" (see the module doc above), and outcome
@@ -349,6 +382,55 @@ function buildHypothesisEvents(
 }
 
 /**
+ * Phase 35: fetches the two facts hypothesis-scoring.ts's new metrics need that live outside
+ * `prospecting_runs` — web-presence coverage and lead-source spend — for the given run ids.
+ * Never throws: unlike the queries in `measureProspectingOutcomes` itself, a failure here must
+ * not discard the outcome_* counters that update already committed, so a query failure just
+ * returns an empty map (every run's Phase 35 metrics score as `unknown`, same as if the data
+ * had never been recorded — see `NO_PHASE_35_EXTRAS`).
+ */
+async function fetchPhase35Extras(runIds: string[]): Promise<Map<string, RunPhase35Extras>> {
+    const extrasByRun = new Map<string, RunPhase35Extras>()
+    if (runIds.length === 0) return extrasByRun
+
+    try {
+        // One import.external_run_registered event per run, written once at registration --
+        // see external-run.ts / prospecting.ts's POST /external-runs handler.
+        const coverageRows = await queryClient<{ runId: string; coverage: Record<string, number> | null }[]>`
+            SELECT run_id::text AS "runId", detail -> 'coverage' -> 'byWebPresence' AS "coverage"
+            FROM prospecting_run_events
+            WHERE run_id = ANY(${runIds}::uuid[])
+              AND code = 'import.external_run_registered'
+        `
+        const costRows = await queryClient<{ runId: string; amountMicros: string | number }[]>`
+            SELECT run_id::text AS "runId", sum(amount_micros)::bigint AS "amountMicros"
+            FROM outreach_cost_entries
+            WHERE run_id = ANY(${runIds}::uuid[]) AND category = 'lead_source'
+            GROUP BY run_id
+        `
+
+        const costByRun = new Map(costRows.map((row) => [row.runId, Number(row.amountMicros) / 1_000_000]))
+        for (const row of coverageRows) {
+            extrasByRun.set(row.runId, { webPresenceCoverage: row.coverage ?? null, costUsd: costByRun.get(row.runId) ?? null })
+        }
+        // A run with cost entries but no coverage event (or vice versa) still needs an entry.
+        for (const runId of costByRun.keys()) {
+            if (!extrasByRun.has(runId)) {
+                extrasByRun.set(runId, { webPresenceCoverage: null, costUsd: costByRun.get(runId) ?? null })
+            }
+        }
+    } catch (error) {
+        const e = error instanceof Error ? error : new Error(String(error))
+        log.error({
+            action: 'outreach.prospecting.measure_outcomes_phase35_extras_failed',
+            error: { message: e.message, stack: e.stack },
+        }, 'failed to fetch Phase 35 coverage/cost extras -- affected metrics will score as unknown')
+    }
+
+    return extrasByRun
+}
+
+/**
  * Recomputes outcome_* counters for every 'imported' prospecting run from source-of-truth
  * tables and writes them back in one batched UPDATE. Never throws — every failure mode is
  * caught, logged, and returns a summary reflecting whatever partial progress was made.
@@ -369,6 +451,8 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
                 outcome_unsubscribed AS "outcomeUnsubscribed",
                 discovered_count AS "discoveredCount",
                 verified_ok_count AS "verifiedOkCount",
+                enriched_count AS "enrichedCount",
+                search_filters ->> 'template' AS "template",
                 hypothesis
             FROM prospecting_runs
             WHERE status = 'imported'
@@ -499,6 +583,8 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
                 prospecting_runs.outcome_unsubscribed AS "outcomeUnsubscribed",
                 prospecting_runs.discovered_count AS "discoveredCount",
                 prospecting_runs.verified_ok_count AS "verifiedOkCount",
+                prospecting_runs.enriched_count AS "enrichedCount",
+                prospecting_runs.search_filters ->> 'template' AS "template",
                 prospecting_runs.hypothesis
         `
     } catch (error) {
@@ -512,9 +598,17 @@ export async function measureProspectingOutcomes(now: Date = new Date()): Promis
 
     summary.updated = after.length
 
+    // Phase 35: coverage (from the run's one-time import.external_run_registered Journey
+    // event) and lead_source spend (the cost ledger) for the same run set updated above.
+    // Best-effort and non-fatal on purpose: a failure here must not lose the outcome_*
+    // counters already written -- it can only degrade the hypothesis-scoring events below to
+    // treating no_owned_website_rate/booking_platform_share/email_rate/cost_usd as `unknown`,
+    // never wrong.
+    const extrasByRun = await fetchPhase35Extras(ids)
+
     const events = [
         ...buildOutcomeEvents(beforeById, after),
-        ...buildHypothesisEvents(beforeById, after, aggregates),
+        ...buildHypothesisEvents(beforeById, after, aggregates, extrasByRun),
     ]
     if (events.length > 0) {
         await recordRunEvents(db, events)

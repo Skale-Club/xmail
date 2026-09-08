@@ -22,6 +22,7 @@ const updateSetSpy = vi.hoisted(() => vi.fn())
 const requireOutreachWriteMock = vi.hoisted(() => vi.fn())
 const recordCostMock = vi.hoisted(() => vi.fn())
 const recordRunEventMock = vi.hoisted(() => vi.fn())
+const measureProspectingOutcomesMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../../../db', () => ({
     db: {
@@ -45,6 +46,13 @@ vi.mock('../../../lib/prospecting/journey', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../../../lib/prospecting/journey')>()
     return { ...actual, recordRunEvent: recordRunEventMock }
 })
+
+// Fase 35 "score sooner" — the route now calls this straight after a verify.completed event is
+// recorded. Mocked here (same as recordCost/recordRunEvent above) so this suite keeps testing
+// only the route's own logic, not measureProspectingOutcomes.ts's DB-backed recompute.
+vi.mock('../../../jobs/measureProspectingOutcomes', () => ({
+    measureProspectingOutcomes: measureProspectingOutcomesMock,
+}))
 
 let server: http.Server
 let baseUrl: string
@@ -107,6 +115,7 @@ beforeEach(async () => {
     findFirstCostEntryMock.mockResolvedValue(undefined)
     recordRunEventMock.mockResolvedValue(undefined)
     recordCostMock.mockResolvedValue({ written: true, rateMissing: false, unitCostMicros: 3700, amountMicros: 140_600, entry: { id: 'cost-1' } })
+    measureProspectingOutcomesMock.mockResolvedValue({ examined: 1, updated: 1 })
     transactionMock.mockImplementation((fn: (tx: unknown) => unknown) => fn(fakeTx()))
 
     const prospectingRouter = (await import('../prospecting')).default
@@ -180,6 +189,10 @@ describe('POST /external-runs/:externalRunId/verification', () => {
         })
 
         expect(updateSetSpy).toHaveBeenCalledWith(expect.objectContaining({ verifiedOkCount: 69 }))
+
+        // Fase 35: a genuinely new verify.completed event triggers an immediate rescore
+        // instead of waiting for the 6-hourly job.
+        expect(measureProspectingOutcomesMock).toHaveBeenCalledTimes(1)
     })
 
     it('uses "estimated" basis and quantity=checked when creditsUsed is null', async () => {
@@ -210,6 +223,8 @@ describe('POST /external-runs/:externalRunId/verification', () => {
         expect(recordRunEventMock).not.toHaveBeenCalled()
         expect(recordCostMock).not.toHaveBeenCalled()
         expect(updateSetSpy).not.toHaveBeenCalled()
+        // Nothing new was recorded on a replay -- no reason to trigger an immediate rescore.
+        expect(measureProspectingOutcomesMock).not.toHaveBeenCalled()
     })
 
     it('requires organizationId', async () => {

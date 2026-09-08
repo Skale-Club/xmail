@@ -6,6 +6,20 @@ import {
     type HypothesisMeasuredValues,
 } from '../hypothesis-scoring'
 
+/** The real byWebPresence shape (external-run.ts's runCoverageSchema.byWebPresence), summed
+ *  to `total` by the scorer — the five non-owned buckets are split arbitrarily as long as
+ *  they add up to the "no owned website" count the fixture needs. */
+function coverage(ownedWebsite: number, noOwnedWebsite: number): Record<string, number> {
+    return {
+        owned_website: ownedWebsite,
+        none: noOwnedWebsite,
+        booking_platform: 0,
+        social_profile: 0,
+        link_hub: 0,
+        directory_listing: 0,
+    }
+}
+
 function measured(overrides: Partial<HypothesisMeasuredValues> = {}): HypothesisMeasuredValues {
     return {
         discoveredCount: 0,
@@ -14,6 +28,10 @@ function measured(overrides: Partial<HypothesisMeasuredValues> = {}): Hypothesis
         attributedLeadCount: 0,
         verifiedOrLikelyLeadCount: 0,
         verifiedOkCount: null,
+        webPresenceCoverage: null,
+        template: null,
+        enrichedCount: 0,
+        costUsd: null,
         ...overrides,
     }
 }
@@ -233,6 +251,178 @@ describe('scoreHypothesis — overall verdict', () => {
     it('inconclusive when expected is null/undefined', () => {
         expect(scoreHypothesis(null, measured()).overall).toBe('inconclusive')
         expect(scoreHypothesis(undefined, measured()).overall).toBe('inconclusive')
+    })
+})
+
+// ============================================================
+// Phase 35 — new metrics
+// ============================================================
+
+describe('scoreHypothesis — "no_owned_website_rate"', () => {
+    it('is 1 - owned_website / total across every coverage bucket, not just owned vs none', () => {
+        const result = scoreHypothesis(
+            { no_owned_website_rate: '>=0.4' },
+            measured({ webPresenceCoverage: coverage(12, 13) }),
+        )
+        expect(result.metrics[0]).toMatchObject({ actual: 0.52, verdict: 'met' })
+        expect(result.metrics[0].reason).toContain('13/25 without an owned website')
+    })
+
+    it('is unknown, never a 0% ownership rate, when no coverage was ever recorded', () => {
+        const result = scoreHypothesis({ no_owned_website_rate: '>=0.4' }, measured({ webPresenceCoverage: null }))
+        expect(result.metrics[0].verdict).toBe('unknown')
+        expect(result.metrics[0].actual).toBeNull()
+    })
+})
+
+describe('scoreHypothesis — "booking_platform_share"', () => {
+    it('is booking_platform / total', () => {
+        const result = scoreHypothesis(
+            { booking_platform_share: '>=0.1' },
+            measured({ webPresenceCoverage: { owned_website: 10, none: 10, booking_platform: 5, social_profile: 0, link_hub: 0, directory_listing: 0 } }),
+        )
+        expect(result.metrics[0]).toMatchObject({ actual: 0.2, verdict: 'met' })
+        expect(result.metrics[0].reason).toContain('5/25 on a booking platform')
+    })
+
+    it('is unknown when no coverage was recorded', () => {
+        const result = scoreHypothesis({ booking_platform_share: '>=0.1' }, measured({ webPresenceCoverage: null }))
+        expect(result.metrics[0].verdict).toBe('unknown')
+    })
+})
+
+describe('scoreHypothesis — "email_rate"', () => {
+    it('is enriched_count / discoveredCount for the "enriched" template', () => {
+        const result = scoreHypothesis(
+            { email_rate: '>=0.2' },
+            measured({ template: 'enriched', discoveredCount: 25, enrichedCount: 7 }),
+        )
+        expect(result.metrics[0]).toMatchObject({ actual: 0.28, verdict: 'met' })
+    })
+
+    it('is unknown, NOT 0, for the "standard" template — that actor never extracts email at all', () => {
+        const result = scoreHypothesis(
+            { email_rate: '>=0.1' },
+            // A misleading enrichedCount of 0 on a standard-template run: if this scored as
+            // 0/discoveredCount it would refute a run for skipping a step it was never asked
+            // to perform.
+            measured({ template: 'standard', discoveredCount: 25, enrichedCount: 0 }),
+        )
+        expect(result.metrics[0].verdict).toBe('unknown')
+        expect(result.metrics[0].actual).toBeNull()
+        expect(result.metrics[0].reason).toContain('standard')
+        expect(result.overall).toBe('inconclusive')
+    })
+
+    it('is unknown for a run with no recorded template at all (predates the field)', () => {
+        const result = scoreHypothesis({ email_rate: '>=0.1' }, measured({ template: null, discoveredCount: 25, enrichedCount: 7 }))
+        expect(result.metrics[0].verdict).toBe('unknown')
+    })
+
+    it('a zero discoveredCount denominator is unknown even on the enriched template', () => {
+        const result = scoreHypothesis({ email_rate: '>=0.1' }, measured({ template: 'enriched', discoveredCount: 0 }))
+        expect(result.metrics[0].verdict).toBe('unknown')
+    })
+})
+
+describe('scoreHypothesis — "cost_usd" (the one "lower is better" metric)', () => {
+    it('a "<=" expectation is met when spend is under budget', () => {
+        const result = scoreHypothesis({ cost_usd: '<=2.20' }, measured({ costUsd: 0.1651 }))
+        expect(result.metrics[0]).toMatchObject({ actual: 0.1651, verdict: 'met' })
+    })
+
+    it('a "<=" expectation is refuted when spend exceeds budget — "lower is better" is not silently flipped to "higher is better"', () => {
+        const result = scoreHypothesis({ cost_usd: '<=2.20' }, measured({ costUsd: 3.5 }))
+        expect(result.metrics[0]).toMatchObject({ actual: 3.5, verdict: 'not_met' })
+        expect(result.overall).toBe('refuted')
+    })
+
+    it('is unknown, not a free $0 pass, when there are no lead_source cost entries yet', () => {
+        const result = scoreHypothesis({ cost_usd: '<=2.20' }, measured({ costUsd: null }))
+        expect(result.metrics[0].verdict).toBe('unknown')
+        expect(result.metrics[0].actual).toBeNull()
+    })
+})
+
+/**
+ * The three real production runs from 2026-09-08 that motivated Phase 35 (see the module
+ * header comment). Framingham and Worcester wrote `verified_email_rate` hypotheses anchored on
+ * the previous run's number and both missed; Boston, the largest sample, held. Before this
+ * phase, `no_owned_website_rate`/`email_rate`/`cost_usd` would all have scored `unknown` here
+ * even though every number below was already sitting in the database.
+ */
+describe('scoreHypothesis — Phase 35 real production evidence (2026-09-08)', () => {
+    const EXPECTED = {
+        discovered: '>=20',
+        no_owned_website_rate: '>=0.4',
+        email_rate: '>=0.1',
+        verified_email_rate: '>=0.15',
+        cost_usd: '<=2.20',
+    }
+
+    it('Framingham (ff0ddd60): refuted on verified_email_rate (12% < 15%), every other metric met', () => {
+        const result = scoreHypothesis(EXPECTED, measured({
+            discoveredCount: 25,
+            webPresenceCoverage: coverage(12, 13),
+            template: 'enriched',
+            enrichedCount: 7,
+            verifiedOkCount: 3,
+            costUsd: 0.1651,
+        }))
+
+        expect(result.overall).toBe('refuted')
+        expect(result.metrics).toEqual(expect.arrayContaining([
+            expect.objectContaining({ metric: 'discovered', actual: 25, verdict: 'met' }),
+            expect.objectContaining({ metric: 'no_owned_website_rate', actual: 0.52, verdict: 'met' }),
+            expect.objectContaining({ metric: 'email_rate', actual: 0.28, verdict: 'met' }),
+            expect.objectContaining({ metric: 'verified_email_rate', actual: 0.12, verdict: 'not_met' }),
+            expect.objectContaining({ metric: 'cost_usd', actual: 0.1651, verdict: 'met' }),
+        ]))
+    })
+
+    it('Worcester (c9c35798): refuted on verified_email_rate (7% < 10%), every other metric met', () => {
+        const result = scoreHypothesis({ ...EXPECTED, verified_email_rate: '>=0.10' }, measured({
+            discoveredCount: 100,
+            webPresenceCoverage: coverage(21, 79),
+            template: 'enriched',
+            enrichedCount: 11,
+            verifiedOkCount: 7,
+            // No cost_usd figure was given for this run in the 2026-09-08 evidence (only
+            // Framingham's $0.1651 and Boston's $2.0601 were) — this uses the per-result unit
+            // cost documented in docs/prospecting-engine-plan.md's Fase 36 (US$0.0061-0.0066)
+            // rather than inventing a figure with no basis at all.
+            costUsd: 100 * 0.0064,
+        }))
+
+        expect(result.overall).toBe('refuted')
+        expect(result.metrics).toEqual(expect.arrayContaining([
+            expect.objectContaining({ metric: 'discovered', actual: 100, verdict: 'met' }),
+            expect.objectContaining({ metric: 'no_owned_website_rate', actual: 0.79, verdict: 'met' }),
+            expect.objectContaining({ metric: 'email_rate', actual: 0.11, verdict: 'met' }),
+            expect.objectContaining({ metric: 'verified_email_rate', actual: 0.07, verdict: 'not_met' }),
+            expect.objectContaining({ metric: 'cost_usd', verdict: 'met' }),
+        ]))
+    })
+
+    it('Boston (37766ea5): all five metrics met — the larger sample is what held, not the city', () => {
+        const result = scoreHypothesis({ ...EXPECTED, verified_email_rate: '>=0.10' }, measured({
+            discoveredCount: 330,
+            webPresenceCoverage: coverage(99, 231),
+            template: 'enriched',
+            enrichedCount: 60,
+            verifiedOkCount: 45,
+            costUsd: 2.0601,
+        }))
+
+        expect(result.overall).toBe('confirmed')
+        expect(result.metrics.every((m) => m.verdict === 'met')).toBe(true)
+        expect(result.metrics).toEqual(expect.arrayContaining([
+            expect.objectContaining({ metric: 'discovered', actual: 330 }),
+            expect.objectContaining({ metric: 'no_owned_website_rate', actual: 0.7 }),
+            expect.objectContaining({ metric: 'email_rate', actual: 60 / 330 }),
+            expect.objectContaining({ metric: 'verified_email_rate', actual: 45 / 330 }),
+            expect.objectContaining({ metric: 'cost_usd', actual: 2.0601 }),
+        ]))
     })
 })
 

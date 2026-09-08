@@ -10,6 +10,7 @@ import { externalRunSchema } from '../../lib/prospecting/external-run'
 import { runVerificationSchema } from '../../lib/prospecting/verification'
 import { emptyAdvisory, loadAdvisory } from '../../lib/prospecting/advisory'
 import { recordRunEvent, RUN_EVENT_CODES } from '../../lib/prospecting/journey'
+import { measureProspectingOutcomes } from '../../jobs/measureProspectingOutcomes'
 
 const router = Router()
 
@@ -376,6 +377,19 @@ router.post('/external-runs/:externalRunId/verification', async (req, res) => {
 
             return { idempotentReplay: false, eventId: event?.id ?? null, costEntryId: costResult.entry?.id ?? null }
         })
+
+        // Fase 35 "score sooner": a run's hypothesis verdict used to go stale for up to 6 hours
+        // (measureProspectingOutcomes.ts's own cron cadence) after the very event
+        // (verify.completed) that usually makes verified_email_rate computable for the first
+        // time. Only worth doing on a genuine write -- an idempotent replay recorded nothing
+        // new, so there is nothing for a fresh measurement pass to pick up. Reuses the exact
+        // same recompute-everything function the 6-hourly job calls, rather than duplicating
+        // its attribution/scoring logic here; measureProspectingOutcomes() already catches and
+        // logs every failure mode internally and never throws (see its own doc comment), so
+        // this can never turn a successful verification write into a failed HTTP response.
+        if (!result.idempotentReplay) {
+            await measureProspectingOutcomes()
+        }
 
         res.status(result.idempotentReplay ? 200 : 201).json({
             runId: run.id,

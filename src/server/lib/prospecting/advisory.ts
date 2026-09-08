@@ -303,6 +303,18 @@ function summarizeHypothesisHistory(pool: AdvisoryPriorRun[]): AdvisoryHypothesi
             repliedCount: run.replied,
             attributedLeadCount: run.candidatesObserved,
             verifiedOrLikelyLeadCount: run.candidatesVerifiedOrLikely,
+            // Phase 34/35 fields this Apollo-only advisory pool never carries: this module
+            // summarizes `prospectCandidates`, which has no verification measurement, coverage
+            // event, template, or cost-ledger join at all (those are xcraper/Journey concepts —
+            // see prospecting-journey.md). `null`/`0` here score exactly as they should:
+            // verified_email_rate falls back to the leads-based ratio above, and
+            // no_owned_website_rate/booking_platform_share/email_rate/cost_usd score `unknown`,
+            // never a fabricated 0.
+            verifiedOkCount: null,
+            webPresenceCoverage: null,
+            template: null,
+            enrichedCount: 0,
+            costUsd: null,
         })
 
         if (score.overall === 'confirmed') confirmed++
