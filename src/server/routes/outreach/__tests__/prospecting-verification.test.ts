@@ -108,6 +108,15 @@ function fakeTx() {
 }
 
 beforeEach(async () => {
+    // vitest 3's `restoreMocks: true` (vitest.config.ts) also cleared vi.fn() call
+    // history between tests as a side effect; vitest 4 narrows `restoreMocks` to
+    // restoring vi.spyOn implementations only, so it no longer clears these hoisted
+    // vi.fn()s. Clear explicitly so `.mock.calls`/`.mock.lastCall` below reflect only
+    // this test's calls under both versions. Must run before the mockResolvedValue
+    // calls that follow -- clearAllMocks() clears call history, not implementations,
+    // so it doesn't wipe anything set after it.
+    vi.clearAllMocks()
+
     requireOutreachWriteMock.mockResolvedValue({ role: 'admin' })
     findFirstRunMock.mockResolvedValue(runRow())
     txExecuteMock.mockResolvedValue(undefined)
@@ -164,20 +173,20 @@ describe('POST /external-runs/:externalRunId/verification', () => {
         expect(result.body.idempotentReplay).toBeUndefined()
 
         expect(recordRunEventMock).toHaveBeenCalledTimes(1)
-        expect(recordRunEventMock.mock.calls[0][1]).toMatchObject({
+        expect(recordRunEventMock.mock.lastCall?.[1]).toMatchObject({
             organizationId: 'org-1',
             runId: 'run-1',
             code: 'verify.completed',
             summary: expect.stringContaining('98 checked'),
         })
-        expect(recordRunEventMock.mock.calls[0][1].detail).toMatchObject({
+        expect(recordRunEventMock.mock.lastCall?.[1].detail).toMatchObject({
             checked: 98,
             ok: 69,
             verifiedEmailRate: 0.69,
         })
 
         expect(recordCostMock).toHaveBeenCalledTimes(1)
-        expect(recordCostMock.mock.calls[0][1]).toMatchObject({
+        expect(recordCostMock.mock.lastCall?.[1]).toMatchObject({
             organizationId: 'org-1',
             category: 'email_verification',
             unit: 'credit',
@@ -200,7 +209,8 @@ describe('POST /external-runs/:externalRunId/verification', () => {
 
         await post('/external-runs/ext-run-1/verification?organizationId=org-1', { ...VALID_BODY, creditsUsed: null })
 
-        expect(recordCostMock.mock.calls[0][1]).toMatchObject({ basis: 'estimated', quantity: 98 })
+        expect(recordCostMock).toHaveBeenCalledTimes(1)
+        expect(recordCostMock.mock.lastCall?.[1]).toMatchObject({ basis: 'estimated', quantity: 98 })
     })
 
     it('collapses verificationProvider "mixed" to millionverifier for the ledger provider, noting it in detail', async () => {
@@ -208,8 +218,9 @@ describe('POST /external-runs/:externalRunId/verification', () => {
 
         await post('/external-runs/ext-run-1/verification?organizationId=org-1', { ...VALID_BODY, verificationProvider: 'mixed' })
 
-        expect(recordCostMock.mock.calls[0][1]).toMatchObject({ provider: 'millionverifier' })
-        expect(recordCostMock.mock.calls[0][1].detail).toMatchObject({ verification_provider_mixed_collapsed_to: 'millionverifier' })
+        expect(recordCostMock).toHaveBeenCalledTimes(1)
+        expect(recordCostMock.mock.lastCall?.[1]).toMatchObject({ provider: 'millionverifier' })
+        expect(recordCostMock.mock.lastCall?.[1].detail).toMatchObject({ verification_provider_mixed_collapsed_to: 'millionverifier' })
     })
 
     it('200s with idempotentReplay on an identical repeat, writing nothing again', async () => {
