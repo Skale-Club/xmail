@@ -8,7 +8,8 @@
 > O container do Hermes em si está em [`hermes/README.md`](../hermes/README.md).
 >
 > Última auditoria completa: **2026-08-15** (commit `159450d`); reconferência de produção em
-> **2026-09-05** (achados 1b, 13, 14 e 15 fechados; §8 atualizado). A seção "Achados abertos" tem
+> **2026-09-05** (achados 1b, 13, 14 e 15 fechados; §8 atualizado). Em **2026-09-08** (Fase 37) o
+> achado 2 foi fechado. A seção "Achados abertos" tem
 > data — se estiver velha, refaça a rotina de reanálise no fim do doc antes de confiar nela.
 
 ## 1. O que é, em uma frase
@@ -184,7 +185,7 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 |---|---|---|---|
 | 1 | Alta | `APOLLO_API_KEY` **não existe nos secrets do repo**. O workflow referencia `${{ secrets.APOLLO_API_KEY }}`, que resolve para string vazia, e `apollo.ts` lança `APOLLO_API_KEY is required` → search responde 503. Só afeta o caminho Apollo; o xcraper não usa | GitHub Secrets |
 | 1b | ~~Alta~~ | ~~`XPHERE_EVENTS_API_KEY` ausente; entrega de eventos ao Xphere desligada~~ — **resolvido em 2026-09-05**: secret criado (`gh secret list` mostra os dois), o container em produção recebe o par, e o Xphere autentica pelo escopo dedicado `xmail:events`. **Ainda não exercitado de ponta a ponta**: `outreach_event_outbox` tem zero linhas na história inteira (nenhum e-mail de campanha em 30 dias, nenhuma ação do agente em 7). A primeira rodada real é a prova — olhe `xphere_delivered_at`/`xphere_attempts` no outbox depois dela | — |
-| 2 | Alta | Card do "Human gate" aprova ativação sem mostrar campanha, assunto, corpo, nº de leads ou inbox — e o approve ativa direto | `AgentOpsPage.tsx` (seção Human gate) + `outreach/approvals.ts` |
+| 2 | ~~Alta~~ | ~~Card do "Human gate" aprova ativação sem mostrar campanha, assunto, corpo, nº de leads ou inbox — e o approve ativa direto~~ — **resolvido em 2026-09-08** (Fase 37): `GET /api/outreach/approvals` agora anexa `campaignPreview` a toda solicitação `campaign_activation` pendente — nome/id/status da campanha, caixa de envio com limite diário e quanto já foi usado hoje, a sequência inteira renderizada com um lead real matriculado (variantes A/B identificadas), contagem de leads verified/catch-all/unknown, e um bloco de compliance (endereço postal físico, `{{unsubscribeUrl}}` em todo step). O approve continua fazendo exatamente o que fazia antes — isto é só visibilidade, não um novo veto. O bloqueador de endereço postal da campanha piloto — antes só uma frase na descrição ("COMPLIANCE BLOCKER") que ninguém via na hora de aprovar — agora aparece como blocker explícito no card, e o teste de contrato prova que ele falha para a campanha piloto hoje (sem endereço na sequência) e passaria se o endereço fosse adicionado. `src/server/lib/outreach-approval-preview.ts` e `outreach-campaign-compliance.ts` | `AgentOpsPage.tsx` (seção Human gate) + `outreach/approvals.ts` |
 | 3 | Alta | O agente auto-certifica verificação: `customFields.email_status:'ok'` → `verified`, e o enroll só exige `verified/likely` | `email-verification-mapping.ts` + `agent-outreach.ts` `/prospects/import` |
 | 4 | Média | Sem filtro para o placeholder `email_not_unlocked@…` do Apollo no import | `prospecting/apollo.ts` `normalizeEmailStatus` |
 | 5 | Média | `events:read` entrega o outbox inteiro da org (inclui `email` do lead e `customFields`) ao LLM | `agent-outreach.ts` GET `/events` |

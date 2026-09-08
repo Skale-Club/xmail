@@ -14,6 +14,7 @@ import {
     X,
 } from 'lucide-react'
 import { OutreachLayout } from '../../components/outreach/OutreachLayout'
+import { CampaignActivationPreviewCard, type CampaignActivationPreview } from '../../components/outreach/CampaignActivationPreview'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/button'
 import { useOrganization } from '../../hooks/useOrganization'
@@ -66,6 +67,11 @@ interface Approval {
     requestPayload: Record<string, unknown>
     requestedAt: string
     expiresAt: string
+    // Only present (and only meaningful) for a pending campaign_activation request — see
+    // buildCampaignActivationPreview in src/server/lib/outreach-approval-preview.ts.
+    // `null` means the server tried and failed to build one; that failure must stay visible
+    // rather than silently rendering an empty card.
+    campaignPreview?: CampaignActivationPreview | null
 }
 
 const tone: Record<string, string> = {
@@ -152,8 +158,12 @@ export default function AgentOpsPage() {
         const action = approval.actionKind === 'prospect_enrichment'
             ? `spend up to ${approval.maximumCreditCost} enrichment credits`
             : 'activate this campaign'
+        const blockers = approval.campaignPreview?.compliance.blockers ?? []
+        const blockerWarning = decision === 'approve' && blockers.length > 0
+            ? `\n\nWARNING — compliance blocker(s) shown above:\n${blockers.map((b) => `• ${b.message}`).join('\n')}`
+            : ''
         const prompt = decision === 'approve'
-            ? `Confirm that you want to ${action}?`
+            ? `Confirm that you want to ${action}?${blockerWarning}`
             : `Reject the request to ${action}?`
         if (window.confirm(prompt)) reviewMutation.mutate({ approval, decision })
     }
@@ -257,6 +267,9 @@ export default function AgentOpsPage() {
                                         <article key={approval.id} className="p-5">
                                             <div className="flex items-start justify-between gap-3"><div><StatusBadge status={approval.status} /><h3 className="mt-2 text-sm font-semibold text-foreground">{approval.actionKind === 'prospect_enrichment' ? 'Spend enrichment credits' : 'Activate campaign'}</h3></div><Clock3 className="h-4 w-4 text-muted-foreground" /></div>
                                             <p className="mt-2 text-xs leading-5 text-muted-foreground">Resource <span className="font-mono text-foreground">{approval.resourceId.slice(0, 8)}</span>{approval.maximumCreditCost > 0 ? ` · worst case ${approval.maximumCreditCost} credits` : ''}</p>
+                                            {approval.actionKind === 'campaign_activation' && (
+                                                <CampaignActivationPreviewCard preview={approval.campaignPreview} />
+                                            )}
                                             <div className="mt-4 grid grid-cols-2 gap-2">
                                                 <Button size="sm" onClick={() => reviewApproval(approval, 'approve')} disabled={reviewMutation.isPending}><Check className="mr-1.5 h-4 w-4" />Approve</Button>
                                                 <Button size="sm" variant="outline" onClick={() => reviewApproval(approval, 'reject')} disabled={reviewMutation.isPending}><X className="mr-1.5 h-4 w-4" />Reject</Button>

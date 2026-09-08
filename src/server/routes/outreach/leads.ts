@@ -287,6 +287,78 @@ router.get('/', async (req: Request, res: Response) => {
     }
 })
 
+// Resolve existing lead ids from a batch of email addresses (Fase 37). Xphere's
+// `prospects_enroll_in_campaign` used to call the bulk-import endpoint at enrol time purely to
+// find out which leads already exist — this is the read-only endpoint that lets enrolment stop
+// importing. Registered ahead of `/:id` so the literal path always wins over the id param.
+const MAX_LOOKUP_EMAILS = 100
+
+const leadLookupQuerySchema = z.object({
+    organizationId: z.string().uuid(),
+    emails: z.string().trim().min(1, 'emails is required'),
+})
+
+router.get('/lookup', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+
+        const query = leadLookupQuerySchema.parse(req.query)
+
+        const membership = await requireOutreachRead(req, res, query.organizationId)
+        if (!membership) return
+
+        // Case-insensitive match: leads.email is already stored lowercased (CHECK constraint
+        // from migration 052), so lowercasing the request the same way is enough to match it.
+        const requestedEmails: string[] = []
+        const seen = new Set<string>()
+        for (const raw of query.emails.split(',')) {
+            const email = raw.trim().toLowerCase()
+            if (!email || seen.has(email)) continue
+            seen.add(email)
+            requestedEmails.push(email)
+        }
+
+        if (requestedEmails.length === 0) {
+            return res.status(400).json({ error: 'emails must contain at least one address' })
+        }
+        if (requestedEmails.length > MAX_LOOKUP_EMAILS) {
+            return res.status(400).json({
+                error: `Too many emails: ${requestedEmails.length} requested, ${MAX_LOOKUP_EMAILS} max per call`,
+            })
+        }
+
+        const matches = await db.query.leads.findMany({
+            where: and(eq(leads.organizationId, query.organizationId), inArray(leads.email, requestedEmails)),
+            columns: { id: true, email: true, status: true, emailVerificationStatus: true },
+        })
+
+        const matchedByEmail = new Map(matches.map((lead) => [lead.email, lead]))
+        const found = requestedEmails
+            .filter((email) => matchedByEmail.has(email))
+            .map((email) => {
+                const lead = matchedByEmail.get(email)!
+                return {
+                    email,
+                    leadId: lead.id,
+                    status: lead.status,
+                    emailVerificationStatus: lead.emailVerificationStatus,
+                }
+            })
+        const missing = requestedEmails.filter((email) => !matchedByEmail.has(email))
+
+        res.json({ found, missing })
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: 'Validation error', details: error.errors })
+        }
+        console.error('Error looking up leads by email:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
 // Get lead by ID
 router.get('/:id', async (req: Request, res: Response) => {
     try {

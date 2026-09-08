@@ -6,6 +6,7 @@ import { campaigns, outreachActionApprovals } from '../../../db/schema'
 import { publishOutreachEvent } from '../../lib/xphere-events'
 import { requireOutreachWrite, SERVICE_PRINCIPAL_HEADER } from '../../lib/outreach-access'
 import { validateCampaignReadyForActivation } from './campaigns'
+import { buildCampaignActivationPreview, type CampaignActivationPreview } from '../../lib/outreach-approval-preview'
 
 const router = Router()
 
@@ -41,7 +42,24 @@ router.get('/', async (req, res) => {
             orderBy: [desc(outreachActionApprovals.requestedAt)],
             limit: query.limit,
         })
-        res.json({ approvals })
+        // Fase 37 / audit finding 2: a reviewer must see the campaign, subject, body, lead
+        // counts, sending inbox and compliance state BEFORE approving, not just a resource id.
+        // Computed only for the pending campaign_activation requests a reviewer would actually
+        // act on — historical approved/executed rows keep their original (lighter) shape.
+        const enriched: Array<typeof approvals[number] & { campaignPreview?: CampaignActivationPreview | null }> =
+            await Promise.all(approvals.map(async (approval) => {
+                if (approval.actionKind !== 'campaign_activation' || approval.status !== 'requested') {
+                    return approval
+                }
+                try {
+                    const campaignPreview = await buildCampaignActivationPreview(approval.resourceId, query.organizationId)
+                    return { ...approval, campaignPreview }
+                } catch (error) {
+                    console.error('Error building campaign activation preview:', error)
+                    return { ...approval, campaignPreview: null }
+                }
+            }))
+        res.json({ approvals: enriched })
     } catch (error) {
         if (error instanceof z.ZodError) return res.status(400).json({ error: 'Validation error', details: error.errors })
         console.error('Error listing outreach approvals:', error)

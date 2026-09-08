@@ -165,6 +165,39 @@ A resposta também inclui `web_presence_summary`. O filtro `no_owned_website` co
 com `has_owned_website=false`; filtros exatos separam `booking_platform`, `social_profile`,
 `directory_listing`, `link_hub` e `none`. `booking_platform` restringe pelo provedor detectado.
 
+## Endpoint 5 — `GET /api/outreach/leads/lookup`
+
+Fase 37. Resolve id de lead existente a partir de e-mail, para que `prospects_enroll_in_campaign`
+do Xphere pare de depender do Endpoint 2 (bulk-import) só para descobrir se o lead já existe.
+Antes desta rota, todo enrolamento tinha que **importar** para poder matricular — em 2026-09-08
+isso deixou 80 endereços verificados pelo Xcraper esperando no Xphere sem chegar ao Xmail, porque
+o único caminho de import também matricula e pode ativar.
+
+Mesma auth dos irmãos (`requireOutreachRead`, aceita principal de service-key). Máximo 100
+e-mails por chamada — acima disso, 400.
+
+```
+GET /api/outreach/leads/lookup?organizationId=<uuid>&emails=a@b.com,c@d.com
+```
+
+```jsonc
+{
+  "found": [
+    { "email": "a@b.com", "leadId": "…", "status": "new", "emailVerificationStatus": "verified" }
+  ],
+  "missing": ["c@d.com"]
+}
+```
+
+Comparação é sempre por e-mail em minúsculas: `leads.email` já é gravado em minúsculas (CHECK
+constraint da migration 052), então normalizar a query da mesma forma basta para casar. Um e-mail
+repetido na query é deduplicado silenciosamente; a ordem de `found`/`missing` segue a primeira
+ocorrência de cada endereço na query.
+
+Isso não substitui o Endpoint 2 — quem ainda não existe como lead continua precisando de
+bulk-import. O que muda é que o enrolamento não precisa mais chamar bulk-import só para
+descobrir isso: chama lookup primeiro, importa só quem vier em `missing`.
+
 ## Invariantes, com prova
 
 ```bash
