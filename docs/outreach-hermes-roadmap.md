@@ -14,6 +14,11 @@
 
 “Complete” means implemented and locally validated. Production verification is tracked separately.
 
+**Next: phases 33–40, the daily prospecting engine.** Planned in
+[`prospecting-engine-plan.md`](prospecting-engine-plan.md) on 2026-09-08 from three real runs
+(Framingham, Worcester, Boston: 455 businesses, US$ 2.83, 80 sendable emails, nothing sent).
+Each phase there is anchored to something that broke or needed a human in those runs.
+
 **Production migrations: done.** As of 2026-09-05 the production ledger is reconciled through
 `063_seed_native_inbox_rate.sql`. The Journey schema, cost ledger, outcome measurement,
 external Xcraper run registration, and attribution fields are present in production.
