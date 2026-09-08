@@ -26,6 +26,7 @@ import {
     buildAlerts,
     computeAgentOpsMetrics,
 } from '../lib/outreach-metrics'
+import { computeEngineDigestSection } from '../lib/prospecting/engine-digest'
 
 const log = createLogger('outreach.digest')
 
@@ -40,11 +41,15 @@ export async function dailyOutreachDigest(): Promise<DailyDigestResult> {
     const t0 = performance.now()
 
     try {
-        const [overall, byOrg, topBouncingCampaigns, agentOps] = await Promise.all([
+        const [overall, byOrg, topBouncingCampaigns, agentOps, engine] = await Promise.all([
             computeOverallMetrics(startedAt),
             computeByOrgMetrics(startedAt),
             computeTopBouncingCampaigns(startedAt),
             computeAgentOpsMetrics(startedAt),
+            // Fase 40, Deliverable 4 -- daily engine section (runs+verdicts, funnel, spend vs
+            // budget, verification-provider credit reachability, approvals awaiting a human).
+            // See engine-digest.ts's own doc comment for why every number here is a query.
+            computeEngineDigestSection(startedAt),
         ])
 
         const alerts = buildAlerts(overall, byOrg, topBouncingCampaigns, startedAt)
@@ -80,6 +85,7 @@ export async function dailyOutreachDigest(): Promise<DailyDigestResult> {
             })),
             topBouncingCampaigns,
             agentOps,
+            engine,
             alerts,
             summary: {
                 healthyOrgs: byOrg.filter((o) => o.status === 'healthy').length,

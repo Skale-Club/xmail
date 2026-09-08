@@ -5,8 +5,19 @@
  * continue silenciosa, senão o alerta vira ruído e é ignorado quando importar.
  */
 import { describe, expect, it } from 'vitest'
-import { buildSilenceAlerts, VERIFICATION_MISSING_RUN_AGE_HOURS, type SilenceMetrics } from '../outreach-silence'
+import {
+    ANALYZER_STALLED_EVENT_WINDOW_HOURS,
+    buildSilenceAlerts,
+    ENGINE_IDLE_CHECK_AFTER_UTC_HOUR,
+    ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS,
+    MIN_TERRITORIES_FOR_QUEUE_CHECK,
+    VERIFICATION_MISSING_RUN_AGE_HOURS,
+    type SilenceMetrics,
+} from '../outreach-silence'
 
+// 15:00 UTC -- past ENGINE_IDLE_CHECK_AFTER_UTC_HOUR, so the default `metrics()` fixture (zero
+// territories, zero spend, zero budget) doesn't accidentally trip engine_idle_with_budget on
+// every other test in this file just by sharing this constant.
 const NOW = new Date('2026-08-15T15:00:00Z')
 
 function metrics(overrides: Partial<SilenceMetrics> = {}): SilenceMetrics {
@@ -28,6 +39,16 @@ function metrics(overrides: Partial<SilenceMetrics> = {}): SilenceMetrics {
         unpricedCostEntries35d: 0,
         unpricedCostCategories: [],
         verificationMissingRuns: 0,
+        // Fase 40 -- "healthy" baseline: an entry today, budget not exhausted, territories both
+        // queued and draining normally, no zero-enriched runs, analyzer signal dormant.
+        leadSourceCostEntriesToday: 1,
+        spentTodayUsd: 0.5,
+        dailyBudgetUsd: 2,
+        queuedTerritories: 2,
+        enrichedZeroEmailRuns: 0,
+        totalTerritories: 5,
+        activeTerritories: 2,
+        analyzerStalledEvents24h: 0,
         ...overrides,
     }
 }
@@ -342,6 +363,97 @@ describe('custo sem preço (unpriced_cost_share)', () => {
         expect(alerts[0]).toMatchObject({ severity: 'warning', kind: 'unpriced_cost_share' })
         expect(alerts[0].message).toContain('29 of 34 cost entries')
         expect(alerts[0].message).toContain('inbox_subscription')
+    })
+})
+
+describe('motor ocioso com orçamento disponível (engine_idle_with_budget, Fase 40)', () => {
+    it('fica calado quando há um lançamento de custo hoje', () => {
+        expect(kinds(metrics({ leadSourceCostEntriesToday: 1, spentTodayUsd: 0, queuedTerritories: 3 }))).toEqual([])
+    })
+
+    it('fica calado quando o orçamento já foi todo gasto', () => {
+        expect(kinds(metrics({
+            leadSourceCostEntriesToday: 0, spentTodayUsd: 2, dailyBudgetUsd: 2, queuedTerritories: 3,
+        }))).toEqual([])
+    })
+
+    it('fica calado sem território na fila', () => {
+        expect(kinds(metrics({ leadSourceCostEntriesToday: 0, spentTodayUsd: 0, queuedTerritories: 0 }))).toEqual([])
+    })
+
+    it('fica calado antes do horário de corte, mesmo com todas as outras condições batendo', () => {
+        // O tick das 10:00 UTC ainda não teve a chance de rodar -- "nenhum lançamento hoje" às
+        // 09:00 UTC é normal, não um defeito.
+        const before = new Date(`2026-08-15T${String(ENGINE_IDLE_CHECK_AFTER_UTC_HOUR - 3).padStart(2, '0')}:00:00Z`)
+        const alerts = buildSilenceAlerts(
+            metrics({ leadSourceCostEntriesToday: 0, spentTodayUsd: 0, queuedTerritories: 3 }),
+            before,
+        )
+        expect(alerts).toEqual([])
+    })
+
+    it('alerta como aviso depois do corte, com dinheiro e fila disponíveis e nenhum lançamento', () => {
+        const after = new Date(`2026-08-15T${String(ENGINE_IDLE_CHECK_AFTER_UTC_HOUR + 1).padStart(2, '0')}:00:00Z`)
+        const alerts = buildSilenceAlerts(
+            metrics({ leadSourceCostEntriesToday: 0, spentTodayUsd: 0, dailyBudgetUsd: 2, queuedTerritories: 3 }),
+            after,
+        )
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'warning', kind: 'engine_idle_with_budget' })
+        expect(alerts[0].message).toContain('3 territory(ies) queued')
+        expect(alerts[0].message).toContain('USD 2.00 daily budget')
+    })
+})
+
+describe('run enriched completo com zero e-mails (enriched_zero_emails, Fase 40)', () => {
+    it('fica calado sem run enriched-zero', () => {
+        expect(kinds(metrics({ enrichedZeroEmailRuns: 0 }))).toEqual([])
+    })
+
+    it('avisa quando há run(s) enriched completos com enriched_count = 0', () => {
+        const alerts = buildSilenceAlerts(metrics({ enrichedZeroEmailRuns: 2 }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'warning', kind: 'enriched_zero_emails' })
+        expect(alerts[0].message).toContain('2 completed enriched-template run(s)')
+        expect(alerts[0].message).toContain(`${ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS} days`)
+    })
+})
+
+describe('fila de territórios vazia (territory_queue_empty, Fase 40)', () => {
+    it('fica calado numa instalação nova/vazia -- zero territórios nunca semeados', () => {
+        expect(kinds(metrics({ totalTerritories: 0, activeTerritories: 0 }))).toEqual([])
+    })
+
+    it('fica calado enquanto houver território queued ou running', () => {
+        expect(kinds(metrics({ totalTerritories: 5, activeTerritories: 1 }))).toEqual([])
+    })
+
+    it('avisa quando todos os territórios estão done ou paused', () => {
+        const alerts = buildSilenceAlerts(metrics({ totalTerritories: 5, activeTerritories: 0 }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'warning', kind: 'territory_queue_empty' })
+        expect(alerts[0].message).toContain('All 5 territory(ies)')
+        expect(alerts[0].message).toContain('add territories')
+    })
+
+    it('respeita o piso de instalação mínima', () => {
+        expect(kinds(metrics({
+            totalTerritories: MIN_TERRITORIES_FOR_QUEUE_CHECK - 1, activeTerritories: 0,
+        }))).toEqual([])
+    })
+})
+
+describe('analisador de sites travado (analyzer_stalled, Fase 40 -- dormant)', () => {
+    it('fica calado hoje -- nada em Xmail escreve analyze.stalled ainda', () => {
+        expect(kinds(metrics({ analyzerStalledEvents24h: 0 }))).toEqual([])
+    })
+
+    it('dispara no dia em que o Xphere começar a emitir o evento', () => {
+        const alerts = buildSilenceAlerts(metrics({ analyzerStalledEvents24h: 3 }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'warning', kind: 'analyzer_stalled' })
+        expect(alerts[0].message).toContain('3 stalled Website Analyzer run(s)')
+        expect(alerts[0].message).toContain(`${ANALYZER_STALLED_EVENT_WINDOW_HOURS}h`)
     })
 })
 

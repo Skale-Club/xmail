@@ -129,6 +129,54 @@ const MIN_COST_ENTRIES_FOR_SHARE_CHECK = 5
  */
 export const VERIFICATION_MISSING_RUN_AGE_HOURS = 6
 
+/**
+ * Fase 40 (docs/prospecting-engine-plan.md "Fase 40 -- Silêncio do motor e resumo diário").
+ * Evidence: the daily territory-queue engine (Fase 36) can be perfectly "healthy" -- no error
+ * anywhere -- and still spend its whole day doing nothing: money available, work queued, zero
+ * cost entries. Nothing before this fase looked.
+ *
+ * `runDailyProspecting` is scheduled at 10:00 UTC (jobs/index.ts) and its own job-timeout
+ * budget is 90s (cron-lock.ts JOB_TIMEOUT_BUDGETS_MS.runDailyProspecting), so by 10:02 UTC the
+ * tick has either fired or failed closed. This gate exists so the check itself is never the
+ * false alarm: evaluated at 09:00 UTC (the daily digest's own schedule) the engine has not had
+ * its turn yet today, and "no lead_source entry today" would be true of every single day at
+ * that hour. 12:00 UTC gives a two-hour buffer past the scheduled run before "idle" is treated
+ * as a real finding rather than "hasn't run yet".
+ */
+export const ENGINE_IDLE_CHECK_AFTER_UTC_HOUR = 12
+
+/**
+ * Lookback window (kind: enriched_zero_emails) for a completed, template=`enriched` run whose
+ * `enriched_count` is 0.
+ *
+ * Unlike `verification_missing`, this needs no minimum AGE past completion: `enriched_count` is
+ * written once, at import time, by the same call that sets `status = 'imported'` (see
+ * measureProspectingOutcomes.ts's doc comment -- it is never recomputed later, so there is
+ * nothing to wait for). What this constant bounds instead is how far back the check looks --
+ * the prospecting pipeline (migration 051) and the `enriched` template are both new as of
+ * Fase 31-33, so 14 days comfortably covers "since this became possible" today without the
+ * count growing unbounded as history accumulates and diluting a fresh, real regression among
+ * old rows a since-fixed defect already produced.
+ */
+export const ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS = 14
+
+/**
+ * Guards `territory_queue_empty` against a fresh install (kind: territory_queue_empty) that has
+ * never had `scripts/seed-prospecting-territories.mjs` run at all -- zero territory rows is a
+ * DIFFERENT condition from "every territory drained to done/paused", and the two need different
+ * human action (seed territories for the first time vs. add more). Same shape as
+ * `MIN_MESH_PARTICIPANTS`/`MIN_COST_ENTRIES_FOR_SHARE_CHECK` above.
+ */
+export const MIN_TERRITORIES_FOR_QUEUE_CHECK = 1
+
+/**
+ * Window (kind: analyzer_stalled) over which a Journey event named `analyze.stalled` would be
+ * counted, matching the file's usual 24h "recent" cadence. DORMANT: see the doc comment on
+ * `analyzerStalledEvents24h` below and the alert block itself -- Xphere does not emit this event
+ * yet, so this metric reads 0 forever until it does, and this check can never fire today.
+ */
+export const ANALYZER_STALLED_EVENT_WINDOW_HOURS = 24
+
 export interface SilenceMetrics {
     /** Caixas elegíveis ao mesh: `warmup_source='internal'` e verificadas. */
     warmupEligibleInboxes: number
@@ -180,6 +228,41 @@ export interface SilenceMetrics {
      * no funil (aqui o enriquecimento aconteceu; a verificação é que nunca chegou).
      */
     verificationMissingRuns: number
+
+    // ------------------------------------------------------------------
+    // Fase 40 -- the engine's own silences (docs/prospecting-engine-plan.md "Fase 40").
+    // ------------------------------------------------------------------
+
+    /** `outreach_cost_entries` rows with `category = 'lead_source'` and `occurred_at` since
+     *  UTC midnight today. See `fetchSpentTodayUsd` in runDailyProspecting.ts -- same boundary. */
+    leadSourceCostEntriesToday: number
+    /** Sum of the same rows, in USD. Kept separate from the count above: the rule reads as
+     *  "no entry AND spend under budget" so a zero-amount entry (a genuinely free run) does
+     *  not read the same as no entry at all. */
+    spentTodayUsd: number
+    /** `resolveDailyBudgetUsd()` (daily-territory-budget.ts) -- env-resolved, not queried. */
+    dailyBudgetUsd: number
+    /** `prospecting_territories` rows with `status = 'queued'`, org-wide. */
+    queuedTerritories: number
+    /** Completed (`status = 'imported'`), template `enriched` runs within
+     *  `ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS` whose `enriched_count` is 0 -- the actor was asked
+     *  to extract emails and came back with a real answer of zero. */
+    enrichedZeroEmailRuns: number
+    /** Total `prospecting_territories` rows, org-wide -- see `MIN_TERRITORIES_FOR_QUEUE_CHECK`. */
+    totalTerritories: number
+    /** Of those, how many are still actionable (`status` IN ('queued', 'running')). Zero of
+     *  these with `totalTerritories > 0` means the queue is drained: every territory reached
+     *  `done` or `paused`. */
+    activeTerritories: number
+    /**
+     * DORMANT (kind: analyzer_stalled). Xphere's Website Analyzer is a service Xmail has no
+     * visibility into except through a Journey event Xphere would send -- there is no such
+     * event today, so this is always 0 and the check below can never fire. Wired against
+     * `prospecting_run_events` code `analyze.stalled` (a code that does not exist in
+     * RUN_EVENT_CODES and that nothing in Xmail ever writes) so the query is already correct
+     * the day Xphere/Xmail add an endpoint for it -- see the alert's own comment for the name.
+     */
+    analyzerStalledEvents24h: number
 }
 
 /**
@@ -381,6 +464,75 @@ export function buildSilenceAlerts(metrics: SilenceMetrics, now: Date = new Date
                 since,
             })
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Fase 40 -- the engine's own silences.
+    // ------------------------------------------------------------------
+
+    // Aviso: dinheiro disponível, trabalho na fila, e o motor não fez nada. Ver
+    // ENGINE_IDLE_CHECK_AFTER_UTC_HOUR acima para por que isto só é avaliado depois das 12:00
+    // UTC -- antes disso, "nenhum lançamento hoje" é simplesmente "o tick das 10:00 UTC ainda
+    // não aconteceu", não um defeito.
+    if (
+        now.getUTCHours() >= ENGINE_IDLE_CHECK_AFTER_UTC_HOUR
+        && metrics.leadSourceCostEntriesToday === 0
+        && metrics.spentTodayUsd < metrics.dailyBudgetUsd
+        && metrics.queuedTerritories > 0
+    ) {
+        alerts.push({
+            severity: 'warning',
+            kind: 'engine_idle_with_budget',
+            message: `No lead_source cost entry today, USD ${metrics.spentTodayUsd.toFixed(2)} spent of a `
+                + `USD ${metrics.dailyBudgetUsd.toFixed(2)} daily budget, and ${metrics.queuedTerritories} `
+                + 'territory(ies) queued. The engine had both money and work available and did nothing -- '
+                + 'check runDailyProspecting (jobs/index.ts, 10:00 UTC) and XCRAPER_SERVICE_URL/KEY.',
+            since,
+        })
+    }
+
+    // Aviso: o ator (Apify template `enriched`) foi pago para extrair e-mail e voltou com zero.
+    // Zero é uma resposta real, mas suspeita -- e antes desta fase nada olhava para
+    // `enriched_count` de um run já completo, só para o agregado sem status/idade (ver
+    // enriched_count_never_populated acima, que também conta runs ainda em andamento).
+    if (metrics.enrichedZeroEmailRuns > 0) {
+        alerts.push({
+            severity: 'warning',
+            kind: 'enriched_zero_emails',
+            message: `${metrics.enrichedZeroEmailRuns} completed enriched-template run(s) in the last `
+                + `${ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS} days imported with enriched_count = 0. The actor is `
+                + 'supposed to extract emails for this template -- zero is a real answer, but a suspicious one.',
+            since,
+        })
+    }
+
+    // Aviso: distinto de engine_idle_with_budget -- ali sobra orçamento e falta execução; aqui
+    // falta MATÉRIA-PRIMA. Confundir os dois manda um humano ao lugar errado (recarregar
+    // orçamento não ajuda uma fila vazia).
+    if (metrics.totalTerritories >= MIN_TERRITORIES_FOR_QUEUE_CHECK && metrics.activeTerritories === 0) {
+        alerts.push({
+            severity: 'warning',
+            kind: 'territory_queue_empty',
+            message: `All ${metrics.totalTerritories} territory(ies) are 'done' or 'paused' -- none `
+                + '\'queued\' or \'running\'. A human needs to add territories; topping up the budget will '
+                + 'not help an empty queue.',
+            since,
+        })
+    }
+
+    // DORMANTE (kind: analyzer_stalled) -- ver o comentário de analyzerStalledEvents24h acima.
+    // O Website Analyzer vive no Xphere; Xmail só o enxerga através de um evento de Journey que
+    // o Xphere ainda não emite. Nomeando o evento para quando ele existir: `analyze.stalled`.
+    // Esta checagem nunca dispara hoje -- não é um sinal fingido, é a leitura correta de um
+    // dado que ainda não chega.
+    if (metrics.analyzerStalledEvents24h > 0) {
+        alerts.push({
+            severity: 'warning',
+            kind: 'analyzer_stalled',
+            message: `Xphere reported ${metrics.analyzerStalledEvents24h} stalled Website Analyzer run(s) `
+                + `in the last ${ANALYZER_STALLED_EVENT_WINDOW_HOURS}h via the analyze.stalled Journey event.`,
+            since,
+        })
     }
 
     return alerts
