@@ -37,8 +37,12 @@ vi.mock('../agent-auth', () => ({
 }))
 
 /** Drives the middleware and reports whether it passed the request through. */
-async function run(method: string, url: string): Promise<{ passed: boolean; status: number | null }> {
-    const req = { method, originalUrl: url, headers: {} as Record<string, unknown> } as unknown as Request
+async function run(
+    method: string,
+    url: string,
+    headers: Record<string, unknown> = {},
+): Promise<{ passed: boolean; status: number | null; headers: Record<string, unknown> }> {
+    const req = { method, originalUrl: url, headers: { ...headers } } as unknown as Request
 
     let status: number | null = null
     const res = {
@@ -56,7 +60,7 @@ async function run(method: string, url: string): Promise<{ passed: boolean; stat
         passed = true
     })
 
-    return { passed, status }
+    return { passed, status, headers: req.headers as Record<string, unknown> }
 }
 
 describe('/api auth middleware public routes', () => {
@@ -92,5 +96,32 @@ describe('/api auth middleware public routes', () => {
         const { passed, status } = await run('GET', '/api/admin/outreach/health')
         expect(passed).toBe(false)
         expect(status).toBe(401)
+    })
+})
+
+describe('/api auth middleware identity header stripping', () => {
+    it('strips a client-supplied x-user-id on a public route before the public-route check', async () => {
+        const { passed, headers } = await run('GET', '/api/system/branding', {
+            'x-user-id': 'attacker-supplied-id',
+        })
+        expect(passed).toBe(true)
+        expect(headers['x-user-id']).toBeUndefined()
+    })
+
+    it('strips all client-supplied x-user-* identity headers on a non-public route too', async () => {
+        const { passed, status, headers } = await run('GET', '/api/admin/outreach/health', {
+            'x-user-id': 'attacker-supplied-id',
+            'x-user-email': 'attacker@example.com',
+            'x-user-first-name': 'Attacker',
+            'x-user-last-name': 'Person',
+            'x-user-email-verified': 'true',
+        })
+        expect(passed).toBe(false)
+        expect(status).toBe(401)
+        expect(headers['x-user-id']).toBeUndefined()
+        expect(headers['x-user-email']).toBeUndefined()
+        expect(headers['x-user-first-name']).toBeUndefined()
+        expect(headers['x-user-last-name']).toBeUndefined()
+        expect(headers['x-user-email-verified']).toBeUndefined()
     })
 })

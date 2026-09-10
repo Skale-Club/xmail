@@ -36,12 +36,39 @@ function shouldSetJsonContentType(body: BodyInit | null | undefined) {
     return typeof body === 'string'
 }
 
+interface ZodIssueLike {
+    path?: Array<string | number>
+    message?: string
+}
+
+function isZodIssueArray(value: unknown): value is ZodIssueLike[] {
+    return Array.isArray(value) && value.every(
+        (item) => typeof item === 'object' && item !== null && 'message' in item
+    )
+}
+
+// Zod's error.errors (or error.issues) is an array of { path, message } — the server forwards
+// it verbatim as `{ error: [...] }` on a 400. Left unhandled, callers only ever saw the
+// Response's statusText ("Bad Request"), which tells the user nothing about which field failed.
+function formatZodIssues(issues: ZodIssueLike[]): string {
+    return issues
+        .map((issue) => {
+            const path = Array.isArray(issue.path) ? issue.path.join('.') : ''
+            const message = issue.message || 'Invalid value'
+            return path ? `${path}: ${message}` : message
+        })
+        .join('; ')
+}
+
 function getErrorMessage(payload: unknown, fallback: string) {
     if (typeof payload === 'object' && payload) {
         if ('error' in payload) {
             const error = payload.error
             if (typeof error === 'string') {
                 return error
+            }
+            if (isZodIssueArray(error)) {
+                return formatZodIssues(error)
             }
             if (typeof error === 'object' && error && 'message' in error && typeof error.message === 'string') {
                 return error.message

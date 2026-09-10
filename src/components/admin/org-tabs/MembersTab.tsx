@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react'
-import { Trash2, UserPlus, Users, X, KeyRound } from 'lucide-react'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card'
+import { useEffect, useMemo, useState } from 'react'
+import { AlertCircle, Trash2, UserPlus, Users, KeyRound } from 'lucide-react'
+import { Card, CardContent } from '../../ui/card'
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../ui/Table'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../ui/Dialog'
 import { toast } from '../../ui/toaster'
-import { fetchWithAuth } from './shared'
+import { apiFetch } from './shared'
 
 interface Member {
     id: string
@@ -24,7 +25,10 @@ interface Member {
 interface Domain {
     id: string
     name: string
+    verificationStatus: 'pending' | 'verified' | 'failed'
 }
+
+type MemberRole = 'admin' | 'member' | 'viewer'
 
 interface MembersTabProps {
     orgId: string
@@ -32,6 +36,7 @@ interface MembersTabProps {
     isAdmin: boolean
     ownerId: string
     onRefresh: () => Promise<void>
+    onNavigateToDomains?: () => void
 }
 
 function getRoleBadgeColor(role: string): string {
@@ -46,66 +51,68 @@ function getRoleBadgeColor(role: string): string {
     }
 }
 
-export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh }: MembersTabProps) {
+export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh, onNavigateToDomains }: MembersTabProps) {
     const [showAddMember, setShowAddMember] = useState(false)
     const [localPart, setLocalPart] = useState('')
     const [password, setPassword] = useState('')
+    const [role, setRole] = useState<MemberRole>('member')
     const [selectedDomain, setSelectedDomain] = useState('')
     const [domains, setDomains] = useState<Domain[]>([])
+    const [isLoadingDomains, setIsLoadingDomains] = useState(true)
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [editingMember, setEditingMember] = useState<Member | null>(null)
     const [newPassword, setNewPassword] = useState('')
     const [isSavingPassword, setIsSavingPassword] = useState(false)
     const [memberToRemove, setMemberToRemove] = useState<Member | null>(null)
     const [isRemoving, setIsRemoving] = useState(false)
+    const [roleChangeId, setRoleChangeId] = useState<string | null>(null)
+
+    const verifiedDomains = useMemo(() => domains.filter((d) => d.verificationStatus === 'verified'), [domains])
 
     useEffect(() => {
-        async function fetchDomains() {
-            try {
-                const response = await fetchWithAuth(`/api/domains?organizationId=${orgId}`)
-                if (response.ok) {
-                    const data = await response.json()
-                    const list: Domain[] = (data.domains || []).map((d: { id: string; name: string }) => ({ id: d.id, name: d.name }))
-                    setDomains(list)
-                    if (list.length > 0) setSelectedDomain(list[0].name)
-                }
-            } catch (error) {
-                console.error('Error fetching domains:', error)
-            }
-        }
         void fetchDomains()
     }, [orgId])
+
+    async function fetchDomains() {
+        setIsLoadingDomains(true)
+        try {
+            const data = await apiFetch<{ domains: Domain[] }>(`/api/domains?organizationId=${orgId}`)
+            const list = data.domains || []
+            setDomains(list)
+            const verified = list.filter((d) => d.verificationStatus === 'verified')
+            if (verified.length > 0) setSelectedDomain(verified[0].name)
+        } catch (error) {
+            console.error('Error fetching domains:', error)
+        } finally {
+            setIsLoadingDomains(false)
+        }
+    }
 
     function openModal() {
         setLocalPart('')
         setPassword('')
-        if (domains.length > 0) setSelectedDomain(domains[0].name)
+        setRole('member')
+        if (verifiedDomains.length > 0) setSelectedDomain(verifiedDomains[0].name)
         setShowAddMember(true)
     }
 
     async function handleAddMember() {
-        const email = domains.length > 0
-            ? `${localPart.trim()}@${selectedDomain}`
-            : localPart.trim()
+        const email = `${localPart.trim()}@${selectedDomain}`
         setIsSubmitting(true)
         try {
-            const response = await fetchWithAuth(`/api/organizations/${orgId}/members`, {
+            await apiFetch(`/api/organizations/${orgId}/members`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, password: password || undefined, role: 'member' }),
+                body: JSON.stringify({ email, password: password.trim() || undefined, role }),
             })
 
-            if (response.ok) {
-                setLocalPart('')
-                setPassword('')
-                setShowAddMember(false)
-                await onRefresh()
-            } else {
-                const error = await response.json()
-                alert(error.error || 'Failed to add member')
-            }
+            setLocalPart('')
+            setPassword('')
+            setShowAddMember(false)
+            toast({ title: 'Member added', variant: 'success' })
+            await onRefresh()
         } catch (error) {
             console.error('Error adding member:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to add member', variant: 'destructive' })
         } finally {
             setIsSubmitting(false)
         }
@@ -115,22 +122,34 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
         if (!memberToRemove) return
         setIsRemoving(true)
         try {
-            const response = await fetchWithAuth(`/api/organizations/${orgId}/members/${memberToRemove.userId}`, {
+            await apiFetch(`/api/organizations/${orgId}/members/${memberToRemove.userId}`, {
                 method: 'DELETE',
             })
-
-            if (response.ok) {
-                setMemberToRemove(null)
-                await onRefresh()
-            } else {
-                const error = await response.json()
-                toast({ title: error.error || 'Failed to remove member', variant: 'destructive' })
-            }
+            setMemberToRemove(null)
+            toast({ title: 'Member removed', variant: 'success' })
+            await onRefresh()
         } catch (error) {
             console.error('Error removing member:', error)
-            toast({ title: 'Failed to remove member', variant: 'destructive' })
+            toast({ title: error instanceof Error ? error.message : 'Failed to remove member', variant: 'destructive' })
         } finally {
             setIsRemoving(false)
+        }
+    }
+
+    async function handleRoleChange(member: Member, nextRole: MemberRole) {
+        setRoleChangeId(member.id)
+        try {
+            await apiFetch(`/api/organizations/${orgId}/members/${member.userId}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ role: nextRole }),
+            })
+            toast({ title: 'Role updated', variant: 'success' })
+            await onRefresh()
+        } catch (error) {
+            console.error('Error updating member role:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to update role', variant: 'destructive' })
+        } finally {
+            setRoleChangeId(null)
         }
     }
 
@@ -138,24 +157,22 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
         if (!editingMember || !newPassword.trim()) return
         setIsSavingPassword(true)
         try {
-            const response = await fetchWithAuth(`/api/users/${editingMember.userId}/password`, {
+            await apiFetch(`/api/users/${editingMember.userId}/password`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ password: newPassword }),
             })
-            if (response.ok) {
-                setEditingMember(null)
-                setNewPassword('')
-            } else {
-                const error = await response.json()
-                alert(error.error || 'Failed to update password')
-            }
+            setEditingMember(null)
+            setNewPassword('')
+            toast({ title: 'Password updated', variant: 'success' })
         } catch (error) {
             console.error('Error updating password:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to update password', variant: 'destructive' })
         } finally {
             setIsSavingPassword(false)
         }
     }
+
+    const canAddMember = verifiedDomains.length > 0
 
     return (
         <div className="space-y-6">
@@ -165,7 +182,7 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                     <p className="text-sm text-muted-foreground">Manage organization access and roles.</p>
                 </div>
                 {isAdmin && (
-                    <Button onClick={openModal}>
+                    <Button onClick={openModal} disabled={isLoadingDomains}>
                         <UserPlus className="mr-2 h-4 w-4" />
                         Add Member
                     </Button>
@@ -211,9 +228,23 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                                         </div>
                                     </TableCell>
                                     <TableCell>
-                                        <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium capitalize ${getRoleBadgeColor(member.role)}`}>
-                                            {member.role}
-                                        </span>
+                                        {isAdmin && member.userId !== ownerId ? (
+                                            <select
+                                                aria-label={`Role for ${member.user.email}`}
+                                                className="h-8 rounded-md border border-input bg-background px-2 text-xs capitalize disabled:opacity-50"
+                                                value={member.role}
+                                                disabled={roleChangeId === member.id}
+                                                onChange={(event) => void handleRoleChange(member, event.target.value as MemberRole)}
+                                            >
+                                                <option value="admin">admin</option>
+                                                <option value="member">member</option>
+                                                <option value="viewer">viewer</option>
+                                            </select>
+                                        ) : (
+                                            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium capitalize ${getRoleBadgeColor(member.role)}`}>
+                                                {member.role}
+                                            </span>
+                                        )}
                                     </TableCell>
                                     {isAdmin && (
                                         <TableCell className="text-right">
@@ -221,7 +252,7 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                                                 <Button
                                                     variant="ghost"
                                                     size="icon"
-                                                    title="Change password"
+                                                    aria-label={`Change password for ${member.user.email}`}
                                                     onClick={() => { setEditingMember(member); setNewPassword('') }}
                                                 >
                                                     <KeyRound className="h-4 w-4 text-muted-foreground" />
@@ -230,9 +261,10 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                                                     <Button
                                                         variant="ghost"
                                                         size="icon"
+                                                        aria-label={`Remove ${member.user.email}`}
                                                         onClick={() => setMemberToRemove(member)}
                                                     >
-                                                        <Trash2 className="h-4 w-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                                        <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive transition-colors" />
                                                     </Button>
                                                 )}
                                             </div>
@@ -260,69 +292,57 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                 onConfirm={() => void handleRemoveMember()}
             />
 
-            {/* Edit Password Modal */}
-            {editingMember && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <Card className="w-full max-w-md">
-                        <CardHeader>
-                            <div className="flex items-start justify-between">
-                                <div>
-                                    <CardTitle>Change Password</CardTitle>
-                                    <CardDescription>{editingMember.user.email}</CardDescription>
-                                </div>
-                                <Button variant="ghost" size="icon" className="focus-visible:ring-0 focus-visible:ring-offset-0" onClick={() => setEditingMember(null)}>
-                                    <X className="h-4 w-4" />
-                                </Button>
-                            </div>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                            <div className="space-y-2">
-                                <Label>New Password</Label>
-                                <Input
-                                    type="password"
-                                    placeholder="Enter new password"
-                                    value={newPassword}
-                                    onChange={(e) => setNewPassword(e.target.value)}
-                                />
-                            </div>
-                            <div className="flex justify-end gap-2 pt-2">
-                                <Button variant="outline" onClick={() => setEditingMember(null)}>Cancel</Button>
-                                <Button onClick={() => void handleUpdatePassword()} disabled={!newPassword.trim() || isSavingPassword}>
-                                    {isSavingPassword ? 'Saving...' : 'Save Password'}
-                                </Button>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
+            <Dialog open={editingMember !== null} onOpenChange={(open) => { if (!open) setEditingMember(null) }}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Change Password</DialogTitle>
+                        <DialogDescription>{editingMember?.user.email}</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-2 py-2">
+                        <Label>New Password</Label>
+                        <Input
+                            type="password"
+                            placeholder="Enter new password"
+                            value={newPassword}
+                            onChange={(e) => setNewPassword(e.target.value)}
+                        />
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setEditingMember(null)}>Cancel</Button>
+                        <Button onClick={() => void handleUpdatePassword()} disabled={!newPassword.trim() || isSavingPassword}>
+                            {isSavingPassword ? 'Saving...' : 'Save Password'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
-            {showAddMember && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <Card className="w-full max-w-md">
-                        <CardHeader>
-                            <div className="flex items-start justify-between">
-                                <div>
-                                    <CardTitle>Add Member</CardTitle>
-                                    <CardDescription>Add a user to this organization.</CardDescription>
-                                </div>
-                                <Button variant="ghost" size="icon" className="focus-visible:ring-0 focus-visible:ring-offset-0" onClick={() => setShowAddMember(false)}>
-                                    <X className="h-4 w-4" />
-                                </Button>
-                            </div>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
+            <Dialog open={showAddMember} onOpenChange={setShowAddMember}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Add Member</DialogTitle>
+                        <DialogDescription>Add a user to this organization.</DialogDescription>
+                    </DialogHeader>
+
+                    {!canAddMember ? (
+                        <div className="flex flex-col items-center gap-3 rounded-lg border border-amber-300/50 bg-amber-500/10 p-6 text-center">
+                            <AlertCircle className="h-6 w-6 text-amber-600 dark:text-amber-400" />
+                            <p className="text-sm text-foreground">
+                                This organization has no verified domain yet. Members can only be added with an email on a
+                                verified domain of this organization.
+                            </p>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => { setShowAddMember(false); onNavigateToDomains?.() }}
+                            >
+                                Go to Domains
+                            </Button>
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
                             <div className="space-y-2">
                                 <Label>Email</Label>
-                                {domains.length === 0 ? (
-                                    /* No domains registered — free input */
-                                    <Input
-                                        type="email"
-                                        placeholder="user@example.com"
-                                        value={localPart}
-                                        onChange={(e) => setLocalPart(e.target.value)}
-                                    />
-                                ) : domains.length === 1 ? (
-                                    /* Single domain — show suffix as static text */
+                                {verifiedDomains.length === 1 ? (
                                     <div className="flex items-center rounded-md border border-input bg-background ring-offset-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
                                         <input
                                             className="flex-1 bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground"
@@ -331,11 +351,10 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                                             onChange={(e) => setLocalPart(e.target.value)}
                                         />
                                         <span className="select-none border-l border-input px-3 py-2 text-sm text-muted-foreground">
-                                            @{domains[0].name}
+                                            @{verifiedDomains[0].name}
                                         </span>
                                     </div>
                                 ) : (
-                                    /* Multiple domains — show dropdown for domain part */
                                     <div className="flex items-center rounded-md border border-input bg-background ring-offset-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
                                         <input
                                             className="flex-1 bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground"
@@ -345,16 +364,31 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                                         />
                                         <span className="select-none px-1 text-sm text-muted-foreground">@</span>
                                         <select
+                                            aria-label="Domain"
                                             className="border-l border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-0"
                                             value={selectedDomain}
                                             onChange={(e) => setSelectedDomain(e.target.value)}
                                         >
-                                            {domains.map((d) => (
+                                            {verifiedDomains.map((d) => (
                                                 <option key={d.id} value={d.name}>{d.name}</option>
                                             ))}
                                         </select>
                                     </div>
                                 )}
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label>Role</Label>
+                                <select
+                                    aria-label="Role"
+                                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                    value={role}
+                                    onChange={(e) => setRole(e.target.value as MemberRole)}
+                                >
+                                    <option value="admin">Admin</option>
+                                    <option value="member">Member</option>
+                                    <option value="viewer">Viewer</option>
+                                </select>
                             </div>
 
                             <div className="space-y-2">
@@ -365,23 +399,26 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
                                 />
+                                <p className="text-xs text-muted-foreground">
+                                    Leave empty if this person already has an account on the platform.
+                                </p>
                             </div>
 
-                            <div className="flex justify-end gap-2 pt-4">
+                            <DialogFooter>
                                 <Button variant="outline" onClick={() => setShowAddMember(false)}>
                                     Cancel
                                 </Button>
                                 <Button
                                     onClick={() => void handleAddMember()}
-                                    disabled={!localPart.trim() || !password.trim() || (domains.length > 0 && !selectedDomain) || isSubmitting}
+                                    disabled={!localPart.trim() || !selectedDomain || isSubmitting}
                                 >
                                     {isSubmitting ? 'Adding...' : 'Add Member'}
                                 </Button>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
+                            </DialogFooter>
+                        </div>
+                    )}
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }

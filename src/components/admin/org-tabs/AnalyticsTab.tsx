@@ -77,7 +77,7 @@ function getStatusColor(status: string) {
         case 'held':
             return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
         default:
-            return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
+            return 'bg-muted text-muted-foreground'
     }
 }
 
@@ -89,6 +89,7 @@ export default function AnalyticsTab({ organizationId }: AnalyticsTabProps) {
     const [days, setDays] = useState(30)
     const [analytics, setAnalytics] = useState<Analytics | null>(null)
     const [isLoading, setIsLoading] = useState(false)
+    const [error, setError] = useState<string | null>(null)
 
     useEffect(() => {
         void fetchAnalytics()
@@ -98,11 +99,13 @@ export default function AnalyticsTab({ organizationId }: AnalyticsTabProps) {
         if (!organizationId) return
 
         setIsLoading(true)
+        setError(null)
         try {
             const data = await apiFetch<Analytics>(`/api/organizations/${organizationId}/statistics?days=${days}`)
             setAnalytics(data)
-        } catch (error) {
-            console.error('Error fetching analytics:', error)
+        } catch (err) {
+            console.error('Error fetching analytics:', err)
+            setError(err instanceof Error ? err.message : 'Failed to load analytics')
         } finally {
             setIsLoading(false)
         }
@@ -305,7 +308,17 @@ export default function AnalyticsTab({ organizationId }: AnalyticsTabProps) {
                 </>
             )}
 
-            {!isLoading && !analytics && (
+            {!isLoading && error && (
+                <div className="flex flex-col items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-8 text-center">
+                    <AlertCircle className="h-8 w-8 text-destructive" />
+                    <p className="text-sm text-destructive">{error}</p>
+                    <Button variant="outline" size="sm" onClick={() => void fetchAnalytics()}>
+                        Try again
+                    </Button>
+                </div>
+            )}
+
+            {!isLoading && !error && !analytics && (
                 <Card>
                     <CardContent className="py-12 text-center text-muted-foreground">
                         No data found yet.
@@ -344,15 +357,8 @@ function MetricCard({
                     <Progress
                         value={progress}
                         className="mt-2 h-1.5"
+                        indicatorClassName={progressColor}
                     />
-                )}
-                {progress !== undefined && progressColor && (
-                    <div className={`mt-2 h-1.5 rounded-full bg-secondary overflow-hidden`}>
-                        <div
-                            className={`h-full rounded-full transition-all ${progressColor}`}
-                            style={{ width: `${progress}%` }}
-                        />
-                    </div>
                 )}
             </CardContent>
         </Card>

@@ -4,10 +4,21 @@ import { db } from '../../db'
 import { webhooks, webhookRequests, organizations, organizationUsers } from '../../db/schema'
 import { eq, and, desc } from 'drizzle-orm'
 import { isPlatformAdmin } from '../lib/admin'
-import { createHmac } from 'crypto'
+import { createHmac, randomBytes } from 'crypto'
 import { isPrivateHostWithDns } from '../lib/network-guard'
 
 const router = Router()
+
+const webhookEventEnum = z.enum([
+    'message_sent',
+    'message_delivered',
+    'message_bounced',
+    'message_held',
+    'message_opened',
+    'link_clicked',
+    'domain_verified',
+    'spam_alert'
+])
 
 // Validation schemas
 const createWebhookSchema = z.object({
@@ -16,25 +27,24 @@ const createWebhookSchema = z.object({
     url: z.string().url(),
     secret: z.string().optional(),
     active: z.boolean().default(true),
-    events: z.array(z.enum([
-        'message_sent',
-        'message_delivered',
-        'message_bounced',
-        'message_held',
-        'message_opened',
-        'link_clicked',
-        'domain_verified',
-        'spam_alert'
-    ])).min(1),
+    events: z.array(webhookEventEnum).min(1),
 })
 
+// SEC — `secret` is intentionally absent here (see task 1). It is write-only: set at
+// creation, rotated only via POST /:id/regenerate-secret, never via PATCH.
 const updateWebhookSchema = z.object({
     name: z.string().min(1).max(100).optional(),
     url: z.string().url().optional(),
-    secret: z.string().optional(),
     active: z.boolean().optional(),
-    events: z.array(z.string()).min(1).optional(),
+    events: z.array(webhookEventEnum).min(1).optional(),
 })
+
+// SEC — shape every webhook the same way before it leaves this router: never let the
+// stored secret escape in a list/detail/update response, only whether one is set.
+function toSafeWebhook<T extends { secret: string | null }>(webhook: T): Omit<T, 'secret'> & { hasSecret: boolean } {
+    const { secret, ...rest } = webhook
+    return { ...rest, hasSecret: Boolean(secret) }
+}
 
 // Helper to check access
 export async function checkWebhookAccess(userId: string, organizationId: string) {
@@ -83,7 +93,7 @@ router.get('/', async (req: Request, res: Response) => {
             orderBy: [desc(webhooks.createdAt)],
         })
 
-        res.json({ webhooks: webhooksList })
+        res.json({ webhooks: webhooksList.map(toSafeWebhook) })
     } catch (error) {
         console.error('Error fetching webhooks:', error)
         res.status(500).json({ error: 'Internal server error' })
@@ -117,7 +127,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Access denied' })
         }
 
-        res.json({ webhook })
+        res.json({ webhook: toSafeWebhook(webhook) })
     } catch (error) {
         console.error('Error fetching webhook:', error)
         res.status(500).json({ error: 'Internal server error' })
@@ -163,7 +173,9 @@ router.post('/', async (req: Request, res: Response) => {
             events: data.events,
         }).returning()
 
-        res.status(201).json({ webhook })
+        // SEC — this is the only time the secret is ever readable again. Callers must
+        // capture it now; every later list/detail/update response only reports hasSecret.
+        res.status(201).json({ webhook: toSafeWebhook(webhook), secret: webhook.secret ?? null })
     } catch (error) {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: error.errors })
@@ -223,12 +235,54 @@ router.patch('/:id', async (req: Request, res: Response) => {
             .where(eq(webhooks.id, webhookId))
             .returning()
 
-        res.json({ webhook: updatedWebhook })
+        res.json({ webhook: toSafeWebhook(updatedWebhook) })
     } catch (error) {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: error.errors })
         }
         console.error('Error updating webhook:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// Regenerate webhook secret — admin only. Returns the new secret exactly once;
+// every subsequent read only reports hasSecret.
+router.post('/:id/regenerate-secret', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        const webhookId = req.params.id
+
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+
+        const webhook = await db.query.webhooks.findFirst({
+            where: eq(webhooks.id, webhookId),
+        })
+
+        if (!webhook) {
+            return res.status(404).json({ error: 'Webhook not found' })
+        }
+
+        const { organization, membership } = await checkWebhookAccess(userId, webhook.organizationId)
+
+        if (!organization || !membership || membership.role !== 'admin') {
+            return res.status(403).json({ error: 'Only admins can regenerate the webhook secret' })
+        }
+
+        const newSecret = randomBytes(32).toString('hex')
+
+        await db
+            .update(webhooks)
+            .set({
+                secret: newSecret,
+                updatedAt: new Date(),
+            })
+            .where(eq(webhooks.id, webhookId))
+
+        res.json({ secret: newSecret })
+    } catch (error) {
+        console.error('Error regenerating webhook secret:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
 })

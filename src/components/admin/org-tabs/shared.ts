@@ -1,5 +1,4 @@
 import { apiFetch, apiRequest, getAccessToken } from '../../../lib/api-client'
-export { fetchWithAuth } from '../../../lib/api'
 export { apiFetch, apiRequest, getAccessToken }
 export function generateSlug(value: string) {
     return value

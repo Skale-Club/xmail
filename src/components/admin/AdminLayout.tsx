@@ -19,6 +19,7 @@ import {
     Target,
     Inbox,
     Zap,
+    Users,
 } from 'lucide-react'
 
 interface NavItem {
@@ -30,6 +31,7 @@ interface NavItem {
 const navItems: NavItem[] = [
     { label: 'Dashboard', href: '/admin', icon: <Home className="w-5 h-5" /> },
     { label: 'Organizations', href: '/admin/organizations', icon: <Building2 className="w-5 h-5" /> },
+    { label: 'Users', href: '/admin/users', icon: <Users className="w-5 h-5" /> },
     { label: 'Admins', href: '/admin/admins', icon: <Shield className="w-5 h-5" /> },
     { label: 'Branding', href: '/admin/branding', icon: <Palette className="w-5 h-5" /> },
     { label: 'Integrations', href: '/admin/integrations', icon: <Zap className="w-5 h-5" /> },
@@ -86,6 +88,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                             variant="ghost"
                             size="icon"
                             className="lg:hidden"
+                            aria-label="Close sidebar"
                             onClick={() => setSidebarOpen(false)}
                         >
                             <X className="w-5 h-5" />
@@ -147,6 +150,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                         variant="ghost"
                         size="icon"
                         className="lg:hidden"
+                        aria-label="Open sidebar"
                         onClick={() => setSidebarOpen(true)}
                     >
                         <Menu className="w-5 h-5" />

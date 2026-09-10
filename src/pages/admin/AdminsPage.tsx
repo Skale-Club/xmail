@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Mail, Plus, Search, Shield, Trash2, UserCog } from 'lucide-react'
+import { AlertCircle, Mail, Plus, Search, Shield, Trash2, UserCog } from 'lucide-react'
 import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
+import { toast } from '../../components/ui/toaster'
 import { apiFetch, matchesSearch } from './helpers'
 
 type AdminRecord = {
@@ -35,10 +38,15 @@ export default function AdminsPage() {
     const [admins, setAdmins] = useState<AdminRecord[]>([])
     const [searchQuery, setSearchQuery] = useState('')
     const [isLoading, setIsLoading] = useState(true)
+    const [error, setError] = useState<string | null>(null)
     const [showCreateModal, setShowCreateModal] = useState(false)
+    const [isCreating, setIsCreating] = useState(false)
     const [editingAdmin, setEditingAdmin] = useState<AdminRecord | null>(null)
+    const [isSavingEdit, setIsSavingEdit] = useState(false)
     const [createForm, setCreateForm] = useState(emptyCreate)
     const [editForm, setEditForm] = useState(emptyEdit)
+    const [adminToDelete, setAdminToDelete] = useState<AdminRecord | null>(null)
+    const [isDeleting, setIsDeleting] = useState(false)
 
     useEffect(() => {
         void fetchAdmins()
@@ -46,18 +54,20 @@ export default function AdminsPage() {
 
     async function fetchAdmins() {
         setIsLoading(true)
+        setError(null)
         try {
             const data = await apiFetch<{ users: AdminRecord[] }>('/api/users')
             setAdmins((data.users || []).filter((u) => u.isAdmin))
-        } catch (error) {
-            console.error('Error fetching admins:', error)
-            setAdmins([])
+        } catch (err) {
+            console.error('Error fetching admins:', err)
+            setError(err instanceof Error ? err.message : 'Failed to load admins')
         } finally {
             setIsLoading(false)
         }
     }
 
     async function handleCreateAdmin() {
+        setIsCreating(true)
         try {
             const data = await apiFetch<{ user: AdminRecord }>('/api/users', {
                 method: 'POST',
@@ -74,8 +84,11 @@ export default function AdminsPage() {
             setAdmins((current) => [data.user, ...current])
             setCreateForm(emptyCreate)
             setShowCreateModal(false)
+            toast({ title: 'Admin created', variant: 'success' })
         } catch (error) {
-            window.alert(error instanceof Error ? error.message : 'Failed to create admin')
+            toast({ title: error instanceof Error ? error.message : 'Failed to create admin', variant: 'destructive' })
+        } finally {
+            setIsCreating(false)
         }
     }
 
@@ -90,7 +103,7 @@ export default function AdminsPage() {
 
     async function handleUpdateAdmin() {
         if (!editingAdmin) return
-
+        setIsSavingEdit(true)
         try {
             const data = await apiFetch<{ user: AdminRecord }>(`/api/users/${editingAdmin.id}`, {
                 method: 'PATCH',
@@ -99,8 +112,11 @@ export default function AdminsPage() {
             })
             setAdmins((current) => current.map((a) => a.id === editingAdmin.id ? data.user : a))
             setEditingAdmin(null)
+            toast({ title: 'Admin updated', variant: 'success' })
         } catch (error) {
-            window.alert(error instanceof Error ? error.message : 'Failed to update admin')
+            toast({ title: error instanceof Error ? error.message : 'Failed to update admin', variant: 'destructive' })
+        } finally {
+            setIsSavingEdit(false)
         }
     }
 
@@ -110,23 +126,27 @@ export default function AdminsPage() {
                 `/api/users/${adminId}/resend-invite`,
                 { method: 'POST' }
             )
-            window.alert(data.inviteSent ? data.message : (data.message || 'Failed to resend invitation'))
+            toast({ title: data.message || (data.inviteSent ? 'Invite sent' : 'Failed to resend invitation'), variant: data.inviteSent ? 'success' : 'destructive' })
         } catch (error) {
-            window.alert(error instanceof Error ? error.message : 'Failed to resend invitation')
+            toast({ title: error instanceof Error ? error.message : 'Failed to resend invitation', variant: 'destructive' })
         }
     }
 
-    async function handleDeleteAdmin(adminId: string) {
-        if (!window.confirm('Delete this admin?')) return
-
+    async function handleDeleteAdmin() {
+        if (!adminToDelete) return
+        setIsDeleting(true)
         try {
-            await apiFetch(`/api/users/${adminId}`, { method: 'DELETE' })
-            setAdmins((current) => current.filter((a) => a.id !== adminId))
-            if (editingAdmin?.id === adminId) {
+            await apiFetch(`/api/users/${adminToDelete.id}`, { method: 'DELETE' })
+            setAdmins((current) => current.filter((a) => a.id !== adminToDelete.id))
+            if (editingAdmin?.id === adminToDelete.id) {
                 setEditingAdmin(null)
             }
+            toast({ title: 'Admin deleted', variant: 'success' })
+            setAdminToDelete(null)
         } catch (error) {
-            window.alert(error instanceof Error ? error.message : 'Failed to delete admin')
+            toast({ title: error instanceof Error ? error.message : 'Failed to delete admin', variant: 'destructive' })
+        } finally {
+            setIsDeleting(false)
         }
     }
 
@@ -140,7 +160,7 @@ export default function AdminsPage() {
         [admins, searchQuery]
     )
 
-    const canCreate = createForm.email && (createForm.sendInvite || createForm.password)
+    const canCreate = createForm.email && (createForm.sendInvite || createForm.password) && !isCreating
 
     return (
         <div className="space-y-6">
@@ -168,6 +188,14 @@ export default function AdminsPage() {
                 <CardContent className="space-y-3">
                     {isLoading ? (
                         <p className="py-8 text-center text-muted-foreground">Loading admins...</p>
+                    ) : error ? (
+                        <div className="flex flex-col items-center gap-3 py-8 text-center">
+                            <AlertCircle className="h-8 w-8 text-destructive" />
+                            <p className="text-sm text-destructive">{error}</p>
+                            <Button variant="outline" size="sm" onClick={() => void fetchAdmins()}>
+                                Try again
+                            </Button>
+                        </div>
                     ) : filteredAdmins.length === 0 ? (
                         <p className="py-8 text-center text-muted-foreground">No admins found.</p>
                     ) : (
@@ -195,12 +223,12 @@ export default function AdminsPage() {
                                             <UserCog className="mr-2 h-4 w-4" />
                                             Edit
                                         </Button>
-                                        <Button variant="outline" size="sm" onClick={() => handleResendInvite(admin.id)}>
+                                        <Button variant="outline" size="sm" onClick={() => void handleResendInvite(admin.id)}>
                                             <Mail className="mr-2 h-4 w-4" />
                                             Resend invite
                                         </Button>
-                                        <Button variant="outline" size="sm" onClick={() => handleDeleteAdmin(admin.id)}>
-                                            <Trash2 className="h-4 w-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                        <Button variant="outline" size="sm" aria-label={`Delete ${admin.email}`} onClick={() => setAdminToDelete(admin)}>
+                                            <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive transition-colors" />
                                         </Button>
                                     </div>
                                 </div>
@@ -210,105 +238,113 @@ export default function AdminsPage() {
                 </CardContent>
             </Card>
 
-            {showCreateModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowCreateModal(false)}>
-                    <Card className="w-full max-w-lg max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
-                        <CardHeader>
-                            <CardTitle>Create administrator</CardTitle>
-                            <CardDescription>Admins have full access to the platform.</CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                            <Field label="Email">
+            <ConfirmDialog
+                open={adminToDelete !== null}
+                onOpenChange={(open) => { if (!open) setAdminToDelete(null) }}
+                title="Delete admin"
+                description={adminToDelete ? `${adminToDelete.email} will lose platform admin access and their account will be deleted.` : ''}
+                confirmLabel="Delete"
+                variant="danger"
+                loading={isDeleting}
+                onConfirm={() => void handleDeleteAdmin()}
+            />
+
+            <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
+                <DialogContent className="max-h-[90vh] overflow-auto">
+                    <DialogHeader>
+                        <DialogTitle>Create administrator</DialogTitle>
+                        <DialogDescription>Admins have full access to the platform.</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <Field label="Email">
+                            <Input
+                                type="email"
+                                placeholder="admin@example.com"
+                                value={createForm.email}
+                                onChange={(event) => setCreateForm((current) => ({ ...current, email: event.target.value }))}
+                            />
+                        </Field>
+
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <Field label="First name">
                                 <Input
-                                    type="email"
-                                    placeholder="admin@example.com"
-                                    value={createForm.email}
-                                    onChange={(event) => setCreateForm((current) => ({ ...current, email: event.target.value }))}
+                                    value={createForm.firstName}
+                                    onChange={(event) => setCreateForm((current) => ({ ...current, firstName: event.target.value }))}
                                 />
                             </Field>
+                            <Field label="Last name">
+                                <Input
+                                    value={createForm.lastName}
+                                    onChange={(event) => setCreateForm((current) => ({ ...current, lastName: event.target.value }))}
+                                />
+                            </Field>
+                        </div>
 
-                            <div className="grid gap-4 md:grid-cols-2">
-                                <Field label="First name">
-                                    <Input
-                                        value={createForm.firstName}
-                                        onChange={(event) => setCreateForm((current) => ({ ...current, firstName: event.target.value }))}
-                                    />
-                                </Field>
-                                <Field label="Last name">
-                                    <Input
-                                        value={createForm.lastName}
-                                        onChange={(event) => setCreateForm((current) => ({ ...current, lastName: event.target.value }))}
-                                    />
-                                </Field>
-                            </div>
+                        <Toggle
+                            label="Send invite email instead of setting password"
+                            checked={createForm.sendInvite}
+                            onChange={(checked) => setCreateForm((current) => ({ ...current, sendInvite: checked }))}
+                        />
 
-                            <Toggle
-                                label="Send invite email instead of setting password"
-                                checked={createForm.sendInvite}
-                                onChange={(checked) => setCreateForm((current) => ({ ...current, sendInvite: checked }))}
-                            />
+                        {!createForm.sendInvite && (
+                            <Field label="Password">
+                                <Input
+                                    type="password"
+                                    placeholder="Minimum 8 characters"
+                                    value={createForm.password}
+                                    onChange={(event) => setCreateForm((current) => ({ ...current, password: event.target.value }))}
+                                />
+                            </Field>
+                        )}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowCreateModal(false)}>
+                            Cancel
+                        </Button>
+                        <Button onClick={() => void handleCreateAdmin()} disabled={!canCreate}>
+                            {isCreating ? 'Creating...' : 'Create admin'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
-                            {!createForm.sendInvite && (
-                                <Field label="Password">
-                                    <Input
-                                        type="password"
-                                        placeholder="Minimum 8 characters"
-                                        value={createForm.password}
-                                        onChange={(event) => setCreateForm((current) => ({ ...current, password: event.target.value }))}
-                                    />
-                                </Field>
-                            )}
-
-                            <div className="flex justify-end gap-2">
-                                <Button variant="outline" onClick={() => setShowCreateModal(false)}>
-                                    Cancel
-                                </Button>
-                                <Button onClick={handleCreateAdmin} disabled={!canCreate}>
-                                    Create admin
-                                </Button>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
-
-            {editingAdmin && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setEditingAdmin(null)}>
-                    <Card className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
-                        <CardHeader>
-                            <CardTitle>Edit admin</CardTitle>
-                            <CardDescription>{editingAdmin.email}</CardDescription>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
-                            <div className="grid gap-4 md:grid-cols-2">
-                                <Field label="First name">
-                                    <Input
-                                        value={editForm.firstName}
-                                        onChange={(event) => setEditForm((current) => ({ ...current, firstName: event.target.value }))}
-                                    />
-                                </Field>
-                                <Field label="Last name">
-                                    <Input
-                                        value={editForm.lastName}
-                                        onChange={(event) => setEditForm((current) => ({ ...current, lastName: event.target.value }))}
-                                    />
-                                </Field>
-                            </div>
-                            <Toggle
-                                label="Email verified"
-                                checked={editForm.emailVerified}
-                                onChange={(checked) => setEditForm((current) => ({ ...current, emailVerified: checked }))}
-                            />
-                            <div className="flex justify-end gap-2">
-                                <Button variant="outline" onClick={() => setEditingAdmin(null)}>
-                                    Cancel
-                                </Button>
-                                <Button onClick={handleUpdateAdmin}>Save changes</Button>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
+            <Dialog open={editingAdmin !== null} onOpenChange={(open) => { if (!open) setEditingAdmin(null) }}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Edit admin</DialogTitle>
+                        <DialogDescription>{editingAdmin?.email}</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <Field label="First name">
+                                <Input
+                                    value={editForm.firstName}
+                                    onChange={(event) => setEditForm((current) => ({ ...current, firstName: event.target.value }))}
+                                />
+                            </Field>
+                            <Field label="Last name">
+                                <Input
+                                    value={editForm.lastName}
+                                    onChange={(event) => setEditForm((current) => ({ ...current, lastName: event.target.value }))}
+                                />
+                            </Field>
+                        </div>
+                        <Toggle
+                            label="Email verified"
+                            checked={editForm.emailVerified}
+                            onChange={(checked) => setEditForm((current) => ({ ...current, emailVerified: checked }))}
+                        />
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setEditingAdmin(null)}>
+                            Cancel
+                        </Button>
+                        <Button onClick={() => void handleUpdateAdmin()} disabled={isSavingEdit}>
+                            {isSavingEdit ? 'Saving...' : 'Save changes'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }

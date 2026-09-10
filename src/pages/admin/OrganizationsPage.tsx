@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Building2, Plus, Search, Trash2 } from 'lucide-react'
+import { useLocation } from 'wouter'
+import { AlertCircle, Building2, Plus, Search, Trash2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
+import { toast } from '../../components/ui/toaster'
+import { generateSlug, timezoneOptions } from '../../components/admin/org-tabs/shared'
 import { apiFetch } from './helpers'
 
 interface Organization {
@@ -13,27 +18,33 @@ interface Organization {
     timezone: string
     ownerId: string
     createdAt: string
-    member_count?: number
-    server_count?: number
 }
 
 export default function OrganizationsPage() {
+    const [, navigate] = useLocation()
     const [organizations, setOrganizations] = useState<Organization[]>([])
     const [isLoading, setIsLoading] = useState(true)
+    const [error, setError] = useState<string | null>(null)
     const [searchQuery, setSearchQuery] = useState('')
     const [showCreateModal, setShowCreateModal] = useState(false)
+    const [isCreating, setIsCreating] = useState(false)
     const [newOrg, setNewOrg] = useState({ name: '', slug: '', timezone: 'UTC' })
+    const [orgToDelete, setOrgToDelete] = useState<Organization | null>(null)
+    const [isDeleting, setIsDeleting] = useState(false)
 
     useEffect(() => {
         void fetchOrganizations()
     }, [])
 
     async function fetchOrganizations() {
+        setIsLoading(true)
+        setError(null)
         try {
             const data = await apiFetch<{ organizations: Organization[] }>('/api/organizations')
             setOrganizations(data.organizations || [])
-        } catch (error) {
-            console.error('Error fetching organizations:', error)
+        } catch (err) {
+            console.error('Error fetching organizations:', err)
+            setError(err instanceof Error ? err.message : 'Failed to load organizations')
         } finally {
             setIsLoading(false)
         }
@@ -44,41 +55,39 @@ export default function OrganizationsPage() {
         org.slug.toLowerCase().includes(searchQuery.toLowerCase())
     )
 
-    const handleCreateOrg = async () => {
+    async function handleCreateOrg() {
+        setIsCreating(true)
         try {
             const data = await apiFetch<{ organization: Organization }>('/api/organizations', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(newOrg),
             })
-            setOrganizations([...organizations, data.organization])
+            setOrganizations((current) => [...current, data.organization])
             setShowCreateModal(false)
             setNewOrg({ name: '', slug: '', timezone: 'UTC' })
+            toast({ title: 'Organization created', variant: 'success' })
         } catch (error) {
             console.error('Error creating organization:', error)
-            alert(error instanceof Error ? error.message : 'Failed to create organization')
+            toast({ title: error instanceof Error ? error.message : 'Failed to create organization', variant: 'destructive' })
+        } finally {
+            setIsCreating(false)
         }
     }
 
-    const handleDeleteOrg = async (id: string) => {
-        if (!confirm('Are you sure you want to delete this organization? This action cannot be undone.')) {
-            return
-        }
-
+    async function handleDeleteOrg() {
+        if (!orgToDelete) return
+        setIsDeleting(true)
         try {
-            await apiFetch(`/api/organizations/${id}`, { method: 'DELETE' })
-            setOrganizations(organizations.filter((org) => org.id !== id))
+            await apiFetch(`/api/organizations/${orgToDelete.id}`, { method: 'DELETE' })
+            setOrganizations((current) => current.filter((org) => org.id !== orgToDelete.id))
+            toast({ title: 'Organization deleted', variant: 'success' })
+            setOrgToDelete(null)
         } catch (error) {
             console.error('Error deleting organization:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to delete organization', variant: 'destructive' })
+        } finally {
+            setIsDeleting(false)
         }
-    }
-
-    const generateSlug = (name: string) => {
-        return name
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-|-$/g, '')
-            .substring(0, 50)
     }
 
     return (
@@ -103,6 +112,14 @@ export default function OrganizationsPage() {
                 <div className="flex items-center justify-center p-8">
                     <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary" />
                 </div>
+            ) : error ? (
+                <div className="flex flex-col items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-8 text-center">
+                    <AlertCircle className="h-8 w-8 text-destructive" />
+                    <p className="text-sm text-destructive">{error}</p>
+                    <Button variant="outline" size="sm" onClick={() => void fetchOrganizations()}>
+                        Try again
+                    </Button>
+                </div>
             ) : filteredOrganizations.length === 0 ? (
                 <Card>
                     <CardContent className="flex flex-col items-center justify-center py-12 pt-12">
@@ -119,9 +136,7 @@ export default function OrganizationsPage() {
                         <Card
                             key={org.id}
                             className="cursor-pointer transition-shadow hover:shadow-md"
-                            onClick={() => {
-                                window.location.href = `/admin/organizations/${org.id}`
-                            }}
+                            onClick={() => navigate(`/admin/organizations/${org.id}`)}
                         >
                             <CardHeader>
                                 <div className="flex items-start justify-between">
@@ -137,12 +152,13 @@ export default function OrganizationsPage() {
                                     <Button
                                         variant="ghost"
                                         size="icon"
+                                        aria-label={`Delete ${org.name}`}
                                         onClick={(e) => {
                                             e.stopPropagation()
-                                            void handleDeleteOrg(org.id)
+                                            setOrgToDelete(org)
                                         }}
                                     >
-                                        <Trash2 className="h-4 w-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                        <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive transition-colors" />
                                     </Button>
                                 </div>
                             </CardHeader>
@@ -157,74 +173,76 @@ export default function OrganizationsPage() {
                 </div>
             )}
 
-            {showCreateModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-                    <Card className="mx-4 w-full max-w-md">
-                        <CardHeader>
-                            <CardTitle>Create Organization</CardTitle>
-                            <CardDescription>
-                                Create a new organization to manage your email
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="space-y-4">
-                                <div className="space-y-2">
-                                    <Label htmlFor="name">Name</Label>
-                                    <Input
-                                        id="name"
-                                        placeholder="My Organization"
-                                        value={newOrg.name}
-                                        onChange={(e) => {
-                                            const name = e.target.value
-                                            setNewOrg({
-                                                ...newOrg,
-                                                name,
-                                                slug: generateSlug(name),
-                                            })
-                                        }}
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="slug">Slug</Label>
-                                    <Input
-                                        id="slug"
-                                        placeholder="my-organization"
-                                        value={newOrg.slug}
-                                        onChange={(e) => setNewOrg({ ...newOrg, slug: e.target.value })}
-                                    />
-                                    <p className="text-xs text-muted-foreground">
-                                        Used in API endpoints and identifiers
-                                    </p>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="timezone">Timezone</Label>
-                                    <select
-                                        id="timezone"
-                                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                                        value={newOrg.timezone}
-                                        onChange={(e) => setNewOrg({ ...newOrg, timezone: e.target.value })}
-                                    >
-                                        <option value="UTC">UTC</option>
-                                        <option value="America/New_York">America/New_York</option>
-                                        <option value="America/Los_Angeles">America/Los_Angeles</option>
-                                        <option value="Europe/London">Europe/London</option>
-                                        <option value="Europe/Paris">Europe/Paris</option>
-                                        <option value="Asia/Tokyo">Asia/Tokyo</option>
-                                    </select>
-                                </div>
-                                <div className="flex justify-end gap-2 pt-4">
-                                    <Button variant="outline" onClick={() => setShowCreateModal(false)}>
-                                        Cancel
-                                    </Button>
-                                    <Button onClick={handleCreateOrg} disabled={!newOrg.name || !newOrg.slug}>
-                                        Create Organization
-                                    </Button>
-                                </div>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
+            <ConfirmDialog
+                open={orgToDelete !== null}
+                onOpenChange={(open) => { if (!open) setOrgToDelete(null) }}
+                title="Delete organization"
+                description={orgToDelete ? `This will permanently delete "${orgToDelete.name}" and all of its data. This action cannot be undone.` : ''}
+                confirmLabel="Delete"
+                variant="danger"
+                loading={isDeleting}
+                onConfirm={() => void handleDeleteOrg()}
+            />
+
+            <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Create Organization</DialogTitle>
+                        <DialogDescription>Create a new organization to manage your email</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <Label htmlFor="name">Name</Label>
+                            <Input
+                                id="name"
+                                placeholder="My Organization"
+                                value={newOrg.name}
+                                onChange={(e) => {
+                                    const name = e.target.value
+                                    setNewOrg((current) => ({
+                                        ...current,
+                                        name,
+                                        slug: generateSlug(name),
+                                    }))
+                                }}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="slug">Slug</Label>
+                            <Input
+                                id="slug"
+                                placeholder="my-organization"
+                                value={newOrg.slug}
+                                onChange={(e) => setNewOrg((current) => ({ ...current, slug: e.target.value }))}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Used in API endpoints and identifiers
+                            </p>
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="timezone">Timezone</Label>
+                            <select
+                                id="timezone"
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                value={newOrg.timezone}
+                                onChange={(e) => setNewOrg((current) => ({ ...current, timezone: e.target.value }))}
+                            >
+                                {timezoneOptions.map((timezone) => (
+                                    <option key={timezone} value={timezone}>{timezone}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowCreateModal(false)}>
+                            Cancel
+                        </Button>
+                        <Button onClick={() => void handleCreateOrg()} disabled={!newOrg.name || !newOrg.slug || isCreating}>
+                            {isCreating ? 'Creating...' : 'Create Organization'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }

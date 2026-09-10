@@ -146,7 +146,7 @@ router.post('/', async (req: Request, res: Response) => {
 
         const { organization, membership } = await checkOrganizationAccess(userId, data.organizationId)
 
-        if (!organization || !membership) {
+        if (!organization || !membership || membership.role === 'viewer') {
             return res.status(403).json({ error: 'Access denied' })
         }
 

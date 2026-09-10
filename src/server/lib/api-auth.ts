@@ -50,6 +50,16 @@ export function createApiAuthMiddleware(): RequestHandler {
     return async (req, res, next) => {
         const path = req.originalUrl.split('?')[0]
 
+        // The trusted identity headers are set only below, after a Supabase/service/agent
+        // token is verified. Strip any client-supplied copies FIRST — before the public-route
+        // check — so a public handler (or a route we later add to PUBLIC_ROUTES) can never
+        // see a caller-forged identity in x-user-id / x-user-*.
+        delete req.headers['x-user-id']
+        delete req.headers['x-user-email']
+        delete req.headers['x-user-first-name']
+        delete req.headers['x-user-last-name']
+        delete req.headers['x-user-email-verified']
+
         // Internal service markers are set only by this middleware after the service key is
         // verified. Strip any client-supplied copies so they can never be forged.
         delete req.headers[SERVICE_PRINCIPAL_HEADER]

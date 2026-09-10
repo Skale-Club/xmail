@@ -117,3 +117,20 @@ function maybeLogStats(): void {
 export function getAuthCacheStats(): { hits: number; misses: number; size: number; ttlMs: number } {
     return { hits, misses, size: cache.size, ttlMs: TTL_MS }
 }
+
+// SEC — the cache above has no invalidation path: a token or user stays resolvable for up
+// to TTL_MS after a password change, an admin flag flip, or a user deletion. These two
+// helpers let call sites evict on write so a stale cache entry cannot outlive the change
+// that should have revoked it.
+
+/** Evict a single cached token (e.g. on logout). Safe to call even if it was never cached. */
+export function invalidateToken(token: string): void {
+    cache.delete(hashToken(token))
+}
+
+/** Evict every cached entry belonging to a user (e.g. on password change, isAdmin flip, or deletion). */
+export function invalidateUser(userId: string): void {
+    for (const [key, entry] of cache) {
+        if (entry.user.id === userId) cache.delete(key)
+    }
+}

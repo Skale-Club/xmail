@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Save, Type } from 'lucide-react'
+import { AlertCircle, RefreshCw, Save, Type } from 'lucide-react'
 import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
+import { toast } from '../../components/ui/toaster'
 import { apiFetch, getAccessToken } from './helpers'
 import { defaultBranding, type BrandingSettings } from '../../lib/branding'
 
-type BrandingFormState = Pick<BrandingSettings, 'companyName' | 'applicationName' | 'logoUrl' | 'faviconUrl'>
+type BrandingFormState = Pick<BrandingSettings, 'companyName' | 'applicationName' | 'logoUrl' | 'faviconUrl' | 'mailHost'>
 
 export default function BrandingPage() {
     const queryClient = useQueryClient()
@@ -17,9 +18,12 @@ export default function BrandingPage() {
         applicationName: defaultBranding.applicationName,
         logoUrl: defaultBranding.logoUrl,
         faviconUrl: defaultBranding.faviconUrl,
+        mailHost: defaultBranding.mailHost,
     })
     const [isLoading, setIsLoading] = useState(true)
+    const [error, setError] = useState<string | null>(null)
     const [isSaving, setIsSaving] = useState(false)
+    const [isResetting, setIsResetting] = useState(false)
     const [isUploadingLogo, setIsUploadingLogo] = useState(false)
     const [isUploadingFavicon, setIsUploadingFavicon] = useState(false)
     const [dragActiveLogo, setDragActiveLogo] = useState(false)
@@ -31,6 +35,7 @@ export default function BrandingPage() {
 
     async function loadBranding() {
         setIsLoading(true)
+        setError(null)
 
         try {
             const data = await apiFetch<BrandingSettings>('/api/system/branding')
@@ -39,10 +44,11 @@ export default function BrandingPage() {
                 applicationName: data.applicationName || defaultBranding.applicationName,
                 logoUrl: data.logoUrl || defaultBranding.logoUrl,
                 faviconUrl: data.faviconUrl || defaultBranding.faviconUrl,
+                mailHost: data.mailHost || defaultBranding.mailHost,
             })
-        } catch (error) {
-            console.error('Error fetching branding settings:', error)
-            window.alert(error instanceof Error ? error.message : 'Failed to load branding settings')
+        } catch (err) {
+            console.error('Error fetching branding settings:', err)
+            setError(err instanceof Error ? err.message : 'Failed to load branding settings')
         } finally {
             setIsLoading(false)
         }
@@ -74,9 +80,9 @@ export default function BrandingPage() {
             }))
 
             await queryClient.invalidateQueries({ queryKey: ['system-branding'] })
-            window.alert(`${field === 'logo' ? 'Logo' : 'Favicon'} uploaded successfully!`)
+            toast({ title: `${field === 'logo' ? 'Logo' : 'Favicon'} uploaded successfully`, variant: 'success' })
         } catch (error) {
-            window.alert(error instanceof Error ? error.message : `Failed to upload ${field}`)
+            toast({ title: error instanceof Error ? error.message : `Failed to upload ${field}`, variant: 'destructive' })
         } finally {
             if (field === 'logo') {
                 setIsUploadingLogo(false)
@@ -117,6 +123,7 @@ export default function BrandingPage() {
                 body: JSON.stringify({
                     companyName: form.companyName,
                     applicationName: form.applicationName,
+                    mailHost: form.mailHost,
                 }),
             })
 
@@ -125,30 +132,69 @@ export default function BrandingPage() {
                 applicationName: data.applicationName || defaultBranding.applicationName,
                 logoUrl: data.logoUrl || defaultBranding.logoUrl,
                 faviconUrl: data.faviconUrl || defaultBranding.faviconUrl,
+                mailHost: data.mailHost || defaultBranding.mailHost,
             })
             await queryClient.invalidateQueries({ queryKey: ['system-branding'] })
-            window.alert('Branding updated successfully.')
+            toast({ title: 'Branding updated successfully', variant: 'success' })
         } catch (error) {
-            window.alert(error instanceof Error ? error.message : 'Failed to update branding settings')
+            toast({ title: error instanceof Error ? error.message : 'Failed to update branding settings', variant: 'destructive' })
         } finally {
             setIsSaving(false)
         }
     }
 
-    function updateField(key: 'companyName' | 'applicationName', value: string) {
+    function updateField(key: 'companyName' | 'applicationName' | 'mailHost', value: string) {
         setForm((current) => ({
             ...current,
             [key]: value,
         }))
     }
 
-    function resetToDefaults() {
-        setForm({
-            companyName: defaultBranding.companyName,
-            applicationName: defaultBranding.applicationName,
-            logoUrl: defaultBranding.logoUrl,
-            faviconUrl: defaultBranding.faviconUrl,
-        })
+    // The backend (PATCH /api/system/branding) only persists companyName/applicationName/mailHost —
+    // logoUrl/faviconUrl are derived from uploaded storage objects and have no "reset" endpoint, so
+    // this can only reset and persist the name fields. Re-upload to change the logo/favicon.
+    async function handleResetDefaults() {
+        setIsResetting(true)
+        try {
+            const data = await apiFetch<BrandingSettings>('/api/system/branding', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    companyName: defaultBranding.companyName,
+                    applicationName: defaultBranding.applicationName,
+                    mailHost: defaultBranding.mailHost,
+                }),
+            })
+
+            setForm((current) => ({
+                ...current,
+                companyName: data.companyName || defaultBranding.companyName,
+                applicationName: data.applicationName || defaultBranding.applicationName,
+                mailHost: data.mailHost || defaultBranding.mailHost,
+            }))
+            await queryClient.invalidateQueries({ queryKey: ['system-branding'] })
+            toast({
+                title: 'Company name, application name and mail host reset',
+                description: 'The logo and favicon are not affected — upload a new one to change them.',
+                variant: 'success',
+            })
+        } catch (error) {
+            toast({ title: error instanceof Error ? error.message : 'Failed to reset branding settings', variant: 'destructive' })
+        } finally {
+            setIsResetting(false)
+        }
+    }
+
+    if (error) {
+        return (
+            <div className="flex flex-col items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-8 text-center">
+                <AlertCircle className="h-8 w-8 text-destructive" />
+                <p className="text-sm text-destructive">{error}</p>
+                <Button variant="outline" size="sm" onClick={() => void loadBranding()}>
+                    Try again
+                </Button>
+            </div>
+        )
     }
 
     return (
@@ -161,11 +207,11 @@ export default function BrandingPage() {
                     </p>
                 </div>
                 <div className="flex gap-2">
-                    <Button type="button" variant="outline" onClick={resetToDefaults} disabled={isLoading || isSaving || isUploadingLogo || isUploadingFavicon}>
+                    <Button type="button" variant="outline" onClick={() => void handleResetDefaults()} disabled={isLoading || isSaving || isResetting || isUploadingLogo || isUploadingFavicon}>
                         <RefreshCw className="mr-2 h-4 w-4" />
-                        Reset defaults
+                        {isResetting ? 'Resetting...' : 'Reset defaults'}
                     </Button>
-                    <Button type="button" onClick={handleSave} disabled={isLoading || isSaving || isUploadingLogo || isUploadingFavicon}>
+                    <Button type="button" onClick={() => void handleSave()} disabled={isLoading || isSaving || isUploadingLogo || isUploadingFavicon}>
                         <Save className="mr-2 h-4 w-4" />
                         {isSaving ? 'Saving...' : 'Save changes'}
                     </Button>
@@ -201,6 +247,20 @@ export default function BrandingPage() {
                                 onChange={(event) => updateField('applicationName', event.target.value)}
                                 disabled={isLoading || isSaving}
                             />
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label htmlFor="mailHost">Mail host</Label>
+                            <Input
+                                id="mailHost"
+                                placeholder="mx.example.com"
+                                value={form.mailHost}
+                                onChange={(event) => updateField('mailHost', event.target.value)}
+                                disabled={isLoading || isSaving}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Hostname shown to users for MX/mail server configuration.
+                            </p>
                         </div>
                     </CardContent>
                 </Card>

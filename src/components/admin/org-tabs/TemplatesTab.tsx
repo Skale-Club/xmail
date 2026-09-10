@@ -4,8 +4,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../ui/Dialog'
+import { ConfirmDialog } from '../../ui/ConfirmDialog'
+import { toast } from '../../ui/toaster'
 import { EmailHtmlViewer } from '../../mail/EmailHtmlViewer'
-import { apiFetch, apiRequest, generateSlug } from './shared'
+import { apiFetch, generateSlug } from './shared'
 
 interface Template {
     id: string
@@ -48,6 +51,7 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
     const [searchQuery, setSearchQuery] = useState('')
     const [showCreateModal, setShowCreateModal] = useState(false)
     const [editingTemplate, setEditingTemplate] = useState<Template | null>(null)
+    const [isLoadingTemplate, setIsLoadingTemplate] = useState(false)
     const [previewTemplate, setPreviewTemplate] = useState<Template | null>(null)
     const [previewVariables, setPreviewVariables] = useState<Record<string, string>>({})
     const [previewResult, setPreviewResult] = useState<{
@@ -57,6 +61,8 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
     } | null>(null)
     const [variableInput, setVariableInput] = useState('')
     const [draft, setDraft] = useState<TemplateDraft>(emptyTemplate)
+    const [templateToDelete, setTemplateToDelete] = useState<Template | null>(null)
+    const [isDeleting, setIsDeleting] = useState(false)
 
     useEffect(() => {
         void fetchTemplates()
@@ -70,6 +76,7 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
             setTemplates(data.templates || [])
         } catch (error) {
             console.error('Error fetching templates:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to load templates', variant: 'destructive' })
         } finally {
             setIsLoading(false)
         }
@@ -97,32 +104,56 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
         setShowCreateModal(true)
     }
 
-    function openEdit(template: Template) {
-        setEditingTemplate(template)
+    // The templates list omits htmlBody/plainBody (GET /api/templates), so editing or
+    // duplicating a template must fetch the full record from GET /api/templates/:id first
+    // — populating the editor straight from the list row would silently blank both bodies.
+    async function openEdit(template: Template) {
         setShowCreateModal(false)
         setVariableInput('')
-        setDraft({
-            name: template.name,
-            slug: template.slug,
-            subject: template.subject,
-            plainBody: template.plainBody || '',
-            htmlBody: template.htmlBody || '',
-            variables: [...(template.variables || [])],
-        })
+        setIsLoadingTemplate(true)
+        setEditingTemplate(template)
+        try {
+            const data = await apiFetch<{ template: Template }>(`/api/templates/${template.id}`)
+            setEditingTemplate(data.template)
+            setDraft({
+                name: data.template.name,
+                slug: data.template.slug,
+                subject: data.template.subject,
+                plainBody: data.template.plainBody || '',
+                htmlBody: data.template.htmlBody || '',
+                variables: [...(data.template.variables || [])],
+            })
+        } catch (error) {
+            console.error('Error fetching template:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to load template', variant: 'destructive' })
+            setEditingTemplate(null)
+        } finally {
+            setIsLoadingTemplate(false)
+        }
     }
 
-    function handleDuplicate(template: Template) {
+    async function handleDuplicate(template: Template) {
         setEditingTemplate(null)
         setVariableInput('')
-        setDraft({
-            name: `${template.name} Copy`,
-            slug: generateSlug(`${template.slug}-copy`),
-            subject: template.subject,
-            plainBody: template.plainBody || '',
-            htmlBody: template.htmlBody || '',
-            variables: [...(template.variables || [])],
-        })
+        setIsLoadingTemplate(true)
         setShowCreateModal(true)
+        try {
+            const data = await apiFetch<{ template: Template }>(`/api/templates/${template.id}`)
+            setDraft({
+                name: `${data.template.name} Copy`,
+                slug: generateSlug(`${data.template.slug}-copy`),
+                subject: data.template.subject,
+                plainBody: data.template.plainBody || '',
+                htmlBody: data.template.htmlBody || '',
+                variables: [...(data.template.variables || [])],
+            })
+        } catch (error) {
+            console.error('Error fetching template:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to load template', variant: 'destructive' })
+            setShowCreateModal(false)
+        } finally {
+            setIsLoadingTemplate(false)
+        }
     }
 
     function addVariable() {
@@ -150,16 +181,15 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
                 body: JSON.stringify({
                     ...draft,
                     organizationId,
-                    plainBody: draft.plainBody || undefined,
-                    htmlBody: draft.htmlBody || undefined,
                 }),
             })
 
             setTemplates((current) => [data.template, ...current])
             resetForm()
+            toast({ title: 'Template created', variant: 'success' })
         } catch (error) {
             console.error('Error creating template:', error)
-            alert(error instanceof Error ? error.message : 'Failed to create template')
+            toast({ title: error instanceof Error ? error.message : 'Failed to create template', variant: 'destructive' })
         }
     }
 
@@ -167,36 +197,40 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
         if (!editingTemplate) return
 
         try {
+            // Send plainBody/htmlBody as-is (including '') so clearing a body in the
+            // editor actually clears it server-side instead of being dropped as undefined.
             const data = await apiFetch<{ template: Template }>(`/api/templates/${editingTemplate.id}`, {
                 method: 'PUT',
-                body: JSON.stringify({
-                    ...draft,
-                    plainBody: draft.plainBody || undefined,
-                    htmlBody: draft.htmlBody || undefined,
-                }),
+                body: JSON.stringify(draft),
             })
 
             setTemplates((current) => current.map((template) => (
                 template.id === editingTemplate.id ? data.template : template
             )))
             resetForm()
+            toast({ title: 'Template updated', variant: 'success' })
         } catch (error) {
             console.error('Error updating template:', error)
-            alert(error instanceof Error ? error.message : 'Failed to update template')
+            toast({ title: error instanceof Error ? error.message : 'Failed to update template', variant: 'destructive' })
         }
     }
 
-    async function handleDeleteTemplate(templateId: string) {
-        if (!confirm('Are you sure you want to delete this template?')) return
-
+    async function handleDeleteTemplate() {
+        if (!templateToDelete) return
+        setIsDeleting(true)
         try {
-            await apiRequest(`/api/templates/${templateId}`, {
+            await apiFetch(`/api/templates/${templateToDelete.id}`, {
                 method: 'DELETE',
             })
 
-            setTemplates((current) => current.filter((template) => template.id !== templateId))
+            setTemplates((current) => current.filter((template) => template.id !== templateToDelete.id))
+            toast({ title: 'Template deleted', variant: 'success' })
+            setTemplateToDelete(null)
         } catch (error) {
             console.error('Error deleting template:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to delete template', variant: 'destructive' })
+        } finally {
+            setIsDeleting(false)
         }
     }
 
@@ -216,7 +250,7 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
             setPreviewResult(data)
         } catch (error) {
             console.error('Error previewing template:', error)
-            alert(error instanceof Error ? error.message : 'Failed to preview template')
+            toast({ title: error instanceof Error ? error.message : 'Failed to preview template', variant: 'destructive' })
         }
     }
 
@@ -268,6 +302,7 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
                                         <Button
                                             variant="ghost"
                                             size="icon"
+                                            aria-label={`Preview ${template.name}`}
                                             onClick={() => {
                                                 setPreviewTemplate(template)
                                                 setPreviewVariables({})
@@ -276,14 +311,14 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
                                         >
                                             <Eye className="h-4 w-4" />
                                         </Button>
-                                        <Button variant="ghost" size="icon" onClick={() => openEdit(template)}>
+                                        <Button variant="ghost" size="icon" aria-label={`Edit ${template.name}`} onClick={() => void openEdit(template)}>
                                             <Edit className="h-4 w-4" />
                                         </Button>
-                                        <Button variant="ghost" size="icon" onClick={() => handleDuplicate(template)}>
+                                        <Button variant="ghost" size="icon" aria-label={`Duplicate ${template.name}`} onClick={() => void handleDuplicate(template)}>
                                             <Copy className="h-4 w-4" />
                                         </Button>
-                                        <Button variant="ghost" size="icon" onClick={() => void handleDeleteTemplate(template.id)}>
-                                            <Trash2 className="h-4 w-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                        <Button variant="ghost" size="icon" aria-label={`Delete ${template.name}`} onClick={() => setTemplateToDelete(template)}>
+                                            <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive transition-colors" />
                                         </Button>
                                     </div>
                                 </div>
@@ -316,21 +351,30 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
                 </div>
             )}
 
-            {(showCreateModal || editingTemplate) && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <Card className="max-h-[90vh] w-full max-w-3xl overflow-y-auto">
-                        <CardHeader>
-                            <div className="flex items-start justify-between gap-4">
-                                <div>
-                                    <CardTitle>{editingTemplate ? 'Edit Template' : 'Create Template'}</CardTitle>
-                                    <CardDescription>Use {'{{variableName}}'} placeholders for dynamic content.</CardDescription>
-                                </div>
-                                <Button variant="ghost" size="icon" onClick={resetForm}>
-                                    <X className="h-4 w-4" />
-                                </Button>
-                            </div>
-                        </CardHeader>
-                        <CardContent className="space-y-4">
+            <ConfirmDialog
+                open={templateToDelete !== null}
+                onOpenChange={(open) => { if (!open) setTemplateToDelete(null) }}
+                title="Delete template"
+                description={templateToDelete ? `"${templateToDelete.name}" will be permanently deleted.` : ''}
+                confirmLabel="Delete"
+                variant="danger"
+                loading={isDeleting}
+                onConfirm={() => void handleDeleteTemplate()}
+            />
+
+            <Dialog open={showCreateModal || editingTemplate !== null} onOpenChange={(open) => { if (!open) resetForm() }}>
+                <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle>{editingTemplate ? 'Edit Template' : 'Create Template'}</DialogTitle>
+                        <DialogDescription>Use {'{{variableName}}'} placeholders for dynamic content.</DialogDescription>
+                    </DialogHeader>
+
+                    {isLoadingTemplate ? (
+                        <div className="flex justify-center py-12">
+                            <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary" />
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
                                     <Label htmlFor="templateName">Name</Label>
@@ -394,7 +438,7 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
                                                 className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-1 text-xs font-mono"
                                             >
                                                 {`{{${variable}}}`}
-                                                <button type="button" onClick={() => removeVariable(variable)}>
+                                                <button type="button" aria-label={`Remove variable ${variable}`} onClick={() => removeVariable(variable)}>
                                                     <X className="h-3 w-3" />
                                                 </button>
                                             </span>
@@ -422,97 +466,88 @@ export default function TemplatesTab({ organizationId }: TemplatesTabProps) {
                                     onChange={(event) => setDraft((current) => ({ ...current, plainBody: event.target.value }))}
                                 />
                             </div>
+                        </div>
+                    )}
 
-                            <div className="flex justify-end gap-2 pt-4">
-                                <Button variant="outline" onClick={resetForm}>
-                                    Cancel
-                                </Button>
-                                <Button
-                                    onClick={editingTemplate ? handleUpdateTemplate : handleCreateTemplate}
-                                    disabled={!draft.name || !draft.slug || !draft.subject}
-                                >
-                                    {editingTemplate ? 'Save Changes' : 'Create Template'}
-                                </Button>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={resetForm}>
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={() => void (editingTemplate ? handleUpdateTemplate() : handleCreateTemplate())}
+                            disabled={isLoadingTemplate || !draft.name || !draft.slug || !draft.subject}
+                        >
+                            {editingTemplate ? 'Save Changes' : 'Create Template'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={previewTemplate !== null} onOpenChange={(open) => { if (!open) setPreviewTemplate(null) }}>
+                <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle>Preview: {previewTemplate?.name}</DialogTitle>
+                        <DialogDescription>Fill variables to preview the rendered template.</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-6">
+                        {(previewTemplate?.variables || []).length > 0 && (
+                            <div className="space-y-3">
+                                <Label>Preview Variables</Label>
+                                {previewTemplate?.variables.map((variable) => (
+                                    <div key={variable} className="flex items-center gap-3">
+                                        <span className="w-32 shrink-0 text-sm font-mono text-muted-foreground">
+                                            {`{{${variable}}}`}
+                                        </span>
+                                        <Input
+                                            value={previewVariables[variable] || ''}
+                                            onChange={(event) => setPreviewVariables((current) => ({
+                                                ...current,
+                                                [variable]: event.target.value,
+                                            }))}
+                                        />
+                                    </div>
+                                ))}
                             </div>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
+                        )}
 
-            {previewTemplate && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <Card className="max-h-[90vh] w-full max-w-3xl overflow-y-auto">
-                        <CardHeader>
-                            <div className="flex items-start justify-between gap-4">
-                                <div>
-                                    <CardTitle>Preview: {previewTemplate.name}</CardTitle>
-                                    <CardDescription>Fill variables to preview the rendered template.</CardDescription>
+                        <Button onClick={() => void handlePreview()}>Render Preview</Button>
+
+                        {previewResult && (
+                            <div className="space-y-4">
+                                <div className="space-y-2">
+                                    <Label>Rendered Subject</Label>
+                                    <div className="rounded-md bg-muted px-3 py-2 text-sm">
+                                        {previewResult.subject || '(empty)'}
+                                    </div>
                                 </div>
-                                <Button variant="ghost" size="icon" onClick={() => setPreviewTemplate(null)}>
-                                    <X className="h-4 w-4" />
-                                </Button>
+
+                                <div className="space-y-2">
+                                    <Label>Rendered HTML</Label>
+                                    <div className="rounded-md border bg-background p-4">
+                                        {previewResult.htmlBody ? (
+                                            // SEC — render the server-rendered template HTML inside the
+                                            // sandboxed iframe viewer (no allow-scripts) rather than via
+                                            // dangerouslySetInnerHTML. A template is authored by an org
+                                            // member and previewed by an admin; inlining its HTML into the
+                                            // admin's DOM is stored XSS. The iframe neutralizes scripts.
+                                            <EmailHtmlViewer html={previewResult.htmlBody} expandable={false} />
+                                        ) : (
+                                            <p className="text-sm text-muted-foreground">(empty)</p>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label>Rendered Plain Text</Label>
+                                    <pre className="whitespace-pre-wrap rounded-md bg-muted px-3 py-2 text-sm">
+                                        {previewResult.plainBody || '(empty)'}
+                                    </pre>
+                                </div>
                             </div>
-                        </CardHeader>
-                        <CardContent className="space-y-6">
-                            {(previewTemplate.variables || []).length > 0 && (
-                                <div className="space-y-3">
-                                    <Label>Preview Variables</Label>
-                                    {previewTemplate.variables.map((variable) => (
-                                        <div key={variable} className="flex items-center gap-3">
-                                            <span className="w-32 shrink-0 text-sm font-mono text-muted-foreground">
-                                                {`{{${variable}}}`}
-                                            </span>
-                                            <Input
-                                                value={previewVariables[variable] || ''}
-                                                onChange={(event) => setPreviewVariables((current) => ({
-                                                    ...current,
-                                                    [variable]: event.target.value,
-                                                }))}
-                                            />
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-
-                            <Button onClick={handlePreview}>Render Preview</Button>
-
-                            {previewResult && (
-                                <div className="space-y-4">
-                                    <div className="space-y-2">
-                                        <Label>Rendered Subject</Label>
-                                        <div className="rounded-md bg-muted px-3 py-2 text-sm">
-                                            {previewResult.subject || '(empty)'}
-                                        </div>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <Label>Rendered HTML</Label>
-                                        <div className="rounded-md border bg-background p-4">
-                                            {previewResult.htmlBody ? (
-                                                // SEC — render the server-rendered template HTML inside the
-                                                // sandboxed iframe viewer (no allow-scripts) rather than via
-                                                // dangerouslySetInnerHTML. A template is authored by an org
-                                                // member and previewed by an admin; inlining its HTML into the
-                                                // admin's DOM is stored XSS. The iframe neutralizes scripts.
-                                                <EmailHtmlViewer html={previewResult.htmlBody} expandable={false} />
-                                            ) : (
-                                                <p className="text-sm text-muted-foreground">(empty)</p>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <Label>Rendered Plain Text</Label>
-                                        <pre className="whitespace-pre-wrap rounded-md bg-muted px-3 py-2 text-sm">
-                                            {previewResult.plainBody || '(empty)'}
-                                        </pre>
-                                    </div>
-                                </div>
-                            )}
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }

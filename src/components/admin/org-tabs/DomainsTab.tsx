@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Globe, Plus, Search, CheckCircle, XCircle, Trash2, Copy, RefreshCw, X } from 'lucide-react'
+import { Globe, Plus, Search, CheckCircle, XCircle, Trash2, Copy, RefreshCw } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card'
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../ui/Dialog'
+import { ConfirmDialog } from '../../ui/ConfirmDialog'
+import { toast } from '../../ui/toaster'
 import { useBranding } from '../../../lib/branding'
 import { apiFetch, apiRequest } from './shared'
 
@@ -115,7 +118,7 @@ function DnsRecordCard({ record }: { record: DnsRecord }) {
                     <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Name</span>
                     <div className="flex items-center gap-1.5">
                         <code className="flex-1 truncate rounded bg-muted px-2.5 py-1.5 text-xs font-mono">{record.name}</code>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => copyToClipboard(record.name)} title="Copy name">
+                        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => copyToClipboard(record.name)} title="Copy name" aria-label="Copy name">
                             <Copy className="h-3.5 w-3.5" />
                         </Button>
                     </div>
@@ -124,7 +127,7 @@ function DnsRecordCard({ record }: { record: DnsRecord }) {
                     <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Value</span>
                     <div className="flex items-center gap-1.5">
                         <code className="flex-1 truncate rounded bg-muted px-2.5 py-1.5 text-xs font-mono">{record.value}</code>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => copyToClipboard(record.value)} title="Copy value">
+                        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => copyToClipboard(record.value)} title="Copy value" aria-label="Copy value">
                             <Copy className="h-3.5 w-3.5" />
                         </Button>
                     </div>
@@ -159,6 +162,8 @@ export default function DomainsTab({ organizationId }: DomainsTabProps) {
         name: '',
         verificationMethod: 'dns',
     })
+    const [domainToDelete, setDomainToDelete] = useState<Domain | null>(null)
+    const [isDeleting, setIsDeleting] = useState(false)
 
     useEffect(() => {
         void fetchDomains()
@@ -199,9 +204,10 @@ export default function DomainsTab({ organizationId }: DomainsTabProps) {
             setNewDomain({ name: '', verificationMethod: 'dns' })
             setShowCreateModal(false)
             setSelectedDomain(data.domain)
+            toast({ title: 'Domain added', variant: 'success' })
         } catch (error) {
             console.error('Error creating domain:', error)
-            alert(error instanceof Error ? error.message : 'Failed to create domain')
+            toast({ title: error instanceof Error ? error.message : 'Failed to create domain', variant: 'destructive' })
         }
     }
 
@@ -221,26 +227,31 @@ export default function DomainsTab({ organizationId }: DomainsTabProps) {
             setDnsResults(data.dnsResults || null)
         } catch (error) {
             console.error('Error verifying domain:', error)
-            alert(error instanceof Error ? error.message : 'Verification failed')
+            toast({ title: error instanceof Error ? error.message : 'Verification failed', variant: 'destructive' })
         } finally {
             setIsVerifying(false)
         }
     }
 
-    async function handleDeleteDomain(domainId: string) {
-        if (!confirm('Are you sure you want to delete this domain?')) return
-
+    async function handleDeleteDomain() {
+        if (!domainToDelete) return
+        setIsDeleting(true)
         try {
-            await apiRequest(`/api/domains/${domainId}`, {
+            await apiRequest(`/api/domains/${domainToDelete.id}`, {
                 method: 'DELETE',
             })
 
-            setDomains((current) => current.filter((domain) => domain.id !== domainId))
-            if (selectedDomain?.id === domainId) {
+            setDomains((current) => current.filter((domain) => domain.id !== domainToDelete.id))
+            if (selectedDomain?.id === domainToDelete.id) {
                 setSelectedDomain(null)
             }
+            toast({ title: 'Domain deleted', variant: 'success' })
+            setDomainToDelete(null)
         } catch (error) {
             console.error('Error deleting domain:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to delete domain', variant: 'destructive' })
+        } finally {
+            setIsDeleting(false)
         }
     }
 
@@ -390,12 +401,13 @@ export default function DomainsTab({ organizationId }: DomainsTabProps) {
                                             variant="ghost"
                                             size="icon"
                                             className="h-8 w-8"
+                                            aria-label={`Delete ${domain.name}`}
                                             onClick={(e) => {
                                                 e.stopPropagation()
-                                                handleDeleteDomain(domain.id)
+                                                setDomainToDelete(domain)
                                             }}
                                         >
-                                            <Trash2 className="h-4 w-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                            <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive transition-colors" />
                                         </Button>
                                     </div>
                                 </CardContent>
@@ -447,46 +459,45 @@ export default function DomainsTab({ organizationId }: DomainsTabProps) {
                 </Card>
             )}
 
-            {/* Create Domain Modal */}
-            {showCreateModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <Card className="w-full max-w-md">
-                        <CardHeader>
-                            <div className="flex items-start justify-between">
-                                <div>
-                                    <CardTitle>Add Domain</CardTitle>
-                                    <CardDescription>Add a new sending domain to this organization.</CardDescription>
-                                </div>
-                                <Button variant="ghost" size="icon" onClick={() => setShowCreateModal(false)}>
-                                    <X className="h-4 w-4" />
-                                </Button>
-                            </div>
-                        </CardHeader>
-                        <CardContent className="space-y-6">
-                            <div className="space-y-2">
-                                <Label htmlFor="domainName">Domain Name</Label>
-                                <Input
-                                    id="domainName"
-                                    placeholder="example.com"
-                                    value={newDomain.name}
-                                    onChange={(event) => setNewDomain((current) => ({ ...current, name: event.target.value }))}
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                    Enter the domain you want to send emails from (e.g., yourdomain.com)
-                                </p>
-                            </div>
-                            <div className="flex justify-end gap-3">
-                                <Button variant="outline" onClick={() => setShowCreateModal(false)}>
-                                    Cancel
-                                </Button>
-                                <Button onClick={handleCreateDomain} disabled={!newDomain.name.trim()}>
-                                    Add Domain
-                                </Button>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
+            <ConfirmDialog
+                open={domainToDelete !== null}
+                onOpenChange={(open) => { if (!open) setDomainToDelete(null) }}
+                title="Delete domain"
+                description={domainToDelete ? `"${domainToDelete.name}" will no longer be able to send or receive mail through this organization.` : ''}
+                confirmLabel="Delete"
+                variant="danger"
+                loading={isDeleting}
+                onConfirm={() => void handleDeleteDomain()}
+            />
+
+            <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Add Domain</DialogTitle>
+                        <DialogDescription>Add a new sending domain to this organization.</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-2">
+                        <Label htmlFor="domainName">Domain Name</Label>
+                        <Input
+                            id="domainName"
+                            placeholder="example.com"
+                            value={newDomain.name}
+                            onChange={(event) => setNewDomain((current) => ({ ...current, name: event.target.value }))}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                            Enter the domain you want to send emails from (e.g., yourdomain.com)
+                        </p>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowCreateModal(false)}>
+                            Cancel
+                        </Button>
+                        <Button onClick={() => void handleCreateDomain()} disabled={!newDomain.name.trim()}>
+                            Add Domain
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }

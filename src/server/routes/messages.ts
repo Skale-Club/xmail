@@ -203,7 +203,7 @@ router.post('/', async (req: Request, res: Response) => {
         const data = sendMessageSchema.parse(req.body)
         const { organization, membership } = await checkMessageAccess(userId, data.organizationId)
 
-        if (!organization || !membership) {
+        if (!organization || !membership || membership.role === 'viewer') {
             return res.status(403).json({ error: 'Access denied' })
         }
 

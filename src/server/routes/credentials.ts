@@ -13,9 +13,19 @@ const createCredentialSchema = z.object({
     organizationId: z.string().uuid(),
     name: z.string().min(1).max(100),
     type: z.enum(['smtp', 'api']),
-    key: z.string().min(1),
+    // `key` is optional — when omitted the server generates one (see POST /). It used to be
+    // required while the handler silently generated and discarded its own uuid, so a caller
+    // could never actually receive that generated key.
+    key: z.string().min(1).optional(),
     secret: z.string().optional(),
 });
+
+// SEC — never let secretHash (or any raw secret) leave this router outside the
+// create/regenerate responses, which hand back the one-time plaintext key/secret instead.
+function toSafeCredential<T extends { secretHash: string | null }>(credential: T): Omit<T, 'secretHash'> & { hasSecret: boolean } {
+    const { secretHash, ...rest } = credential
+    return { ...rest, hasSecret: Boolean(secretHash) }
+}
 
 // NOTE: updateCredentialSchema previously defined here was removed (Phase 12 COR-07 lint cleanup);
 // re-add when an update endpoint is implemented.
@@ -67,7 +77,7 @@ router.get('/', async (req: Request, res: Response) => {
             orderBy: [desc(credentials.createdAt)],
         })
 
-        res.json({ credentials: credentialsList })
+        res.json({ credentials: credentialsList.map(toSafeCredential) })
     } catch (error) {
         console.error('Error fetching credentials:', error)
         res.status(500).json({ error: 'Internal server error' })
@@ -91,8 +101,6 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Only admins can create credentials' })
         }
 
-        const key = uuidv4()
-
         // Hash the secret before inserting
         let hashedSecret: string | null = null
         if (data.secret) {
@@ -103,11 +111,11 @@ router.post('/', async (req: Request, res: Response) => {
             organizationId: data.organizationId,
             name: data.name,
             type: data.type,
-            key: data.key || key,
+            key: data.key || uuidv4(),
             secretHash: hashedSecret,
         }).returning()
 
-        res.status(201).json({ credential })
+        res.status(201).json({ credential: toSafeCredential(credential) })
     } catch (error) {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: error.errors })
@@ -156,7 +164,7 @@ router.post('/:id/regenerate', async (req: Request, res: Response) => {
             .returning()
 
         res.json({
-            credential: updatedCredential,
+            credential: toSafeCredential(updatedCredential),
             newKey,
             newSecret,
         })

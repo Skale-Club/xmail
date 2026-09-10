@@ -86,12 +86,9 @@ const AdminDashboard = React.lazy(() => import('./pages/admin/AdminDashboard'))
 const OrganizationsPage = React.lazy(() => import('./pages/admin/OrganizationsPage'))
 const OrganizationDetailPage = React.lazy(() => import('./pages/admin/OrganizationDetailPage'))
 const AdminsPage = React.lazy(() => import('./pages/admin/AdminsPage'))
+const UsersPage = React.lazy(() => import('./pages/admin/UsersPage'))
 const BrandingPage = React.lazy(() => import('./pages/admin/BrandingPage'))
 const IntegrationsPage = React.lazy(() => import('./pages/admin/IntegrationsPage'))
-const CredentialsPage = React.lazy(() => import('./pages/admin/CredentialsPage'))
-const RoutesPage = React.lazy(() => import('./pages/admin/RoutesPage'))
-const WebhooksPage = React.lazy(() => import('./pages/admin/WebhooksPage'))
-const MessagesPage = React.lazy(() => import('./pages/admin/MessagesPage'))
 
 const OutreachDashboard = React.lazy(() => import('./pages/outreach/OutreachDashboard'))
 const UnifiedInboxPage = React.lazy(() => import('./pages/outreach/UnifiedInboxPage'))
@@ -151,19 +148,19 @@ function AdminCheck({ children }: { children: React.ReactNode }) {
     const { user, isAdmin, isLoading } = useAuth()
     const [, navigate] = useLocation()
 
-    if (isLoading) return <Spinner />
+    React.useEffect(() => {
+        if (isLoading) return
+        if (!user) {
+            navigate('/login')
+            return
+        }
+        if (isAdmin === false) {
+            navigate('/mail/inbox')
+        }
+    }, [user, isAdmin, isLoading, navigate])
 
-    if (!user) {
-        navigate('/login')
-        return null
-    }
-
-    if (isAdmin === null) return <Spinner />
-
-    if (!isAdmin) {
-        navigate('/mail/inbox')
-        return null
-    }
+    if (isLoading || !user) return <Spinner />
+    if (isAdmin === null || isAdmin === false) return <Spinner />
 
     return <>{children}</>
 }
@@ -172,13 +169,11 @@ function MailCheck({ children }: { children: React.ReactNode }) {
     const { user, isAdmin, isLoading } = useAuth()
     const [, navigate] = useLocation()
 
-    if (isLoading) return <Spinner />
+    React.useEffect(() => {
+        if (!isLoading && !user) navigate('/login')
+    }, [user, isLoading, navigate])
 
-    if (!user) {
-        navigate('/login')
-        return null
-    }
-
+    if (isLoading || !user) return <Spinner />
     if (isAdmin === null) return <Spinner />
 
     return <>{children}</>
@@ -238,17 +233,17 @@ function RootRedirect() {
     const { user, isAdmin, isLoading } = useAuth()
     const [, navigate] = useLocation()
 
-    if (isLoading) return <Spinner />
+    React.useEffect(() => {
+        if (isLoading) return
+        if (!user) {
+            navigate('/login')
+            return
+        }
+        if (isAdmin === null) return
+        navigate(isAdmin ? '/admin' : '/mail/inbox')
+    }, [user, isAdmin, isLoading, navigate])
 
-    if (!user) {
-        navigate('/login')
-        return null
-    }
-
-    if (isAdmin === null) return <Spinner />
-
-    navigate(isAdmin ? '/admin' : '/mail/inbox')
-    return null
+    return <Spinner />
 }
 
 // audit-2026-07 (frontend C4): catch-all for unmatched routes. Several in-app links
@@ -489,6 +484,13 @@ function App() {
                                         </AdminLayout>
                                     </AdminCheck>
                                 </Route>
+                                <Route path="/admin/users">
+                                    <AdminCheck>
+                                        <AdminLayout>
+                                            <PageSuspense><UsersPage /></PageSuspense>
+                                        </AdminLayout>
+                                    </AdminCheck>
+                                </Route>
                                 <Route path="/admin/branding">
                                     <AdminCheck>
                                         <AdminLayout>
@@ -500,34 +502,6 @@ function App() {
                                     <AdminCheck>
                                         <AdminLayout>
                                             <PageSuspense><IntegrationsPage /></PageSuspense>
-                                        </AdminLayout>
-                                    </AdminCheck>
-                                </Route>
-                                <Route path="/admin/credentials">
-                                    <AdminCheck>
-                                        <AdminLayout>
-                                            <PageSuspense><CredentialsPage /></PageSuspense>
-                                        </AdminLayout>
-                                    </AdminCheck>
-                                </Route>
-                                <Route path="/admin/routes">
-                                    <AdminCheck>
-                                        <AdminLayout>
-                                            <PageSuspense><RoutesPage /></PageSuspense>
-                                        </AdminLayout>
-                                    </AdminCheck>
-                                </Route>
-                                <Route path="/admin/webhooks">
-                                    <AdminCheck>
-                                        <AdminLayout>
-                                            <PageSuspense><WebhooksPage /></PageSuspense>
-                                        </AdminLayout>
-                                    </AdminCheck>
-                                </Route>
-                                <Route path="/admin/messages">
-                                    <AdminCheck>
-                                        <AdminLayout>
-                                            <PageSuspense><MessagesPage /></PageSuspense>
                                         </AdminLayout>
                                     </AdminCheck>
                                 </Route>

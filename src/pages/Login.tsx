@@ -8,6 +8,8 @@ import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Label } from '../components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/Dialog'
+import { toast } from '../components/ui/toaster'
 
 export default function Login() {
     const { branding } = useBranding()
@@ -20,6 +22,9 @@ export default function Login() {
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [showPassword, setShowPassword] = useState(false)
+    const [showForgotPassword, setShowForgotPassword] = useState(false)
+    const [resetEmail, setResetEmail] = useState('')
+    const [isSendingReset, setIsSendingReset] = useState(false)
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault()
@@ -43,6 +48,30 @@ export default function Login() {
             setError(err instanceof Error ? err.message : 'An unexpected error occurred')
         } finally {
             setIsLoading(false)
+        }
+    }
+
+    function openForgotPassword() {
+        setResetEmail(email)
+        setShowForgotPassword(true)
+    }
+
+    async function handleSendReset() {
+        if (!resetEmail.trim()) return
+        setIsSendingReset(true)
+        try {
+            await apiFetch('/api/auth/reset-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: resetEmail.trim() }),
+                auth: false,
+            })
+            toast({ title: 'Password reset email sent', description: 'Check your inbox for a link to reset your password.', variant: 'success' })
+            setShowForgotPassword(false)
+        } catch (err) {
+            toast({ title: err instanceof Error ? err.message : 'Failed to send reset email', variant: 'destructive' })
+        } finally {
+            setIsSendingReset(false)
         }
     }
 
@@ -79,7 +108,11 @@ export default function Login() {
                             <div className="space-y-2">
                                 <div className="flex items-center justify-between">
                                     <Label htmlFor="password" className="text-sm font-medium">Password</Label>
-                                    <button type="button" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+                                    <button
+                                        type="button"
+                                        onClick={openForgotPassword}
+                                        className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                                    >
                                         Forgot password?
                                     </button>
                                 </div>
@@ -91,12 +124,6 @@ export default function Login() {
                                         placeholder="Enter your password"
                                         value={password}
                                         onChange={(e) => setPassword(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter') {
-                                                e.preventDefault()
-                                                handleLogin(e as any)
-                                            }
-                                        }}
                                         required
                                         className="h-11 pl-10 pr-10 bg-background"
                                     />
@@ -141,6 +168,35 @@ export default function Login() {
                     <span className="font-medium text-foreground">Contact your administrator</span>
                 </div>
             </div>
+
+            <Dialog open={showForgotPassword} onOpenChange={setShowForgotPassword}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Reset your password</DialogTitle>
+                        <DialogDescription>
+                            Enter your account email and we&apos;ll send you a link to reset your password.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-2">
+                        <Label htmlFor="resetEmail">Email address</Label>
+                        <Input
+                            id="resetEmail"
+                            type="email"
+                            placeholder="you@example.com"
+                            value={resetEmail}
+                            onChange={(e) => setResetEmail(e.target.value)}
+                        />
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowForgotPassword(false)}>
+                            Cancel
+                        </Button>
+                        <Button onClick={() => void handleSendReset()} disabled={!resetEmail.trim() || isSendingReset}>
+                            {isSendingReset ? 'Sending...' : 'Send reset link'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }

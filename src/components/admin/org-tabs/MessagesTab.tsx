@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Eye, RefreshCw, Search, Trash2, Mail, ArrowUpRight, ArrowDownLeft } from 'lucide-react'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card'
+import { AlertCircle, Eye, RefreshCw, Search, Trash2, Mail, ArrowUpRight, ArrowDownLeft } from 'lucide-react'
+import { Card, CardContent } from '../../ui/card'
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../ui/Table'
-import { apiFetch, apiRequest } from './shared'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../../ui/Dialog'
+import { ConfirmDialog } from '../../ui/ConfirmDialog'
+import { toast } from '../../ui/toaster'
+import { apiFetch } from './shared'
 
 interface Message {
     id: string
-    serverId: string
+    organizationId: string
     messageId: string | null
     token: string
     direction: 'incoming' | 'outgoing'
@@ -17,6 +20,8 @@ interface Message {
     fromName: string | null
     toAddresses: string[]
     subject: string | null
+    plainBody?: string | null
+    htmlBody?: string | null
     status: 'pending' | 'queued' | 'sent' | 'delivered' | 'bounced' | 'held' | 'failed'
     held: boolean
     heldReason: string | null
@@ -34,10 +39,14 @@ interface MessagesTabProps {
 export default function MessagesTab({ organizationId }: MessagesTabProps) {
     const [messages, setMessages] = useState<Message[]>([])
     const [isLoading, setIsLoading] = useState(true)
+    const [error, setError] = useState<string | null>(null)
     const [searchQuery, setSearchQuery] = useState('')
     const [statusFilter, setStatusFilter] = useState('all')
     const [directionFilter, setDirectionFilter] = useState('all')
     const [selectedMessage, setSelectedMessage] = useState<Message | null>(null)
+    const [isLoadingMessage, setIsLoadingMessage] = useState(false)
+    const [messageToDelete, setMessageToDelete] = useState<Message | null>(null)
+    const [isDeleting, setIsDeleting] = useState(false)
 
     useEffect(() => {
         void fetchMessages()
@@ -45,6 +54,7 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
 
     async function fetchMessages() {
         setIsLoading(true)
+        setError(null)
         try {
             const params = new URLSearchParams({ organizationId })
             if (statusFilter !== 'all') params.set('status', statusFilter)
@@ -52,8 +62,9 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
 
             const data = await apiFetch<{ messages: Message[] }>(`/api/messages?${params.toString()}`)
             setMessages(data.messages || [])
-        } catch (error) {
-            console.error('Error fetching messages:', error)
+        } catch (err) {
+            console.error('Error fetching messages:', err)
+            setError(err instanceof Error ? err.message : 'Failed to load messages')
         } finally {
             setIsLoading(false)
         }
@@ -67,20 +78,41 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
         ))
     ), [messages, searchQuery])
 
-    async function handleDeleteMessage(messageId: string) {
-        if (!confirm('Are you sure you want to delete this message? This action cannot be undone.')) return
-
+    // The list response omits plainBody/htmlBody, so opening a message must fetch the
+    // full record from GET /api/messages/:id to show its body.
+    async function openMessage(message: Message) {
+        setSelectedMessage(message)
+        setIsLoadingMessage(true)
         try {
-            await apiRequest(`/api/messages/${messageId}`, {
+            const data = await apiFetch<{ message: Message }>(`/api/messages/${message.id}`)
+            setSelectedMessage(data.message)
+        } catch (error) {
+            console.error('Error fetching message:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to load message', variant: 'destructive' })
+        } finally {
+            setIsLoadingMessage(false)
+        }
+    }
+
+    async function handleDeleteMessage() {
+        if (!messageToDelete) return
+        setIsDeleting(true)
+        try {
+            await apiFetch(`/api/messages/${messageToDelete.id}`, {
                 method: 'DELETE',
             })
 
-            setMessages((current) => current.filter((message) => message.id !== messageId))
-            if (selectedMessage?.id === messageId) {
+            setMessages((current) => current.filter((message) => message.id !== messageToDelete.id))
+            if (selectedMessage?.id === messageToDelete.id) {
                 setSelectedMessage(null)
             }
+            toast({ title: 'Message deleted', variant: 'success' })
+            setMessageToDelete(null)
         } catch (error) {
             console.error('Error deleting message:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to delete message', variant: 'destructive' })
+        } finally {
+            setIsDeleting(false)
         }
     }
 
@@ -94,8 +126,10 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
             if (selectedMessage?.id === messageId) {
                 setSelectedMessage(data.message)
             }
+            toast({ title: 'Message released', variant: 'success' })
         } catch (error) {
             console.error('Error releasing message:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to release message', variant: 'destructive' })
         }
     }
 
@@ -113,7 +147,7 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
             case 'queued':
                 return 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400'
             default:
-                return 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
+                return 'bg-muted text-muted-foreground'
         }
     }
 
@@ -137,6 +171,7 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
             <div className="flex flex-col gap-4 md:flex-row md:items-center">
                 <div className="flex gap-3">
                     <select
+                        aria-label="Status filter"
                         className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                         value={statusFilter}
                         onChange={(event) => setStatusFilter(event.target.value)}
@@ -151,6 +186,7 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
                         <option value="failed">Failed</option>
                     </select>
                     <select
+                        aria-label="Direction filter"
                         className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                         value={directionFilter}
                         onChange={(event) => setDirectionFilter(event.target.value)}
@@ -174,6 +210,14 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
             {isLoading ? (
                 <div className="flex justify-center p-8">
                     <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary" />
+                </div>
+            ) : error ? (
+                <div className="flex flex-col items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-8 text-center">
+                    <AlertCircle className="h-8 w-8 text-destructive" />
+                    <p className="text-sm text-destructive">{error}</p>
+                    <Button variant="outline" size="sm" onClick={() => void fetchMessages()}>
+                        Try again
+                    </Button>
                 </div>
             ) : filteredMessages.length === 0 ? (
                 <Card>
@@ -202,7 +246,7 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
                                 <TableRow
                                     key={message.id}
                                     className="cursor-pointer"
-                                    onClick={() => setSelectedMessage(message)}
+                                    onClick={() => void openMessage(message)}
                                 >
                                     <TableCell>
                                         <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${getStatusColor(message.status)}`}>
@@ -272,9 +316,10 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
                                             <Button
                                                 variant="ghost"
                                                 size="icon"
+                                                aria-label="View message"
                                                 onClick={(event) => {
                                                     event.stopPropagation()
-                                                    setSelectedMessage(message)
+                                                    void openMessage(message)
                                                 }}
                                             >
                                                 <Eye className="h-4 w-4" />
@@ -282,12 +327,13 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
                                             <Button
                                                 variant="ghost"
                                                 size="icon"
+                                                aria-label="Delete message"
                                                 onClick={(event) => {
                                                     event.stopPropagation()
-                                                    void handleDeleteMessage(message.id)
+                                                    setMessageToDelete(message)
                                                 }}
                                             >
-                                                <Trash2 className="h-4 w-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                                <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive transition-colors" />
                                             </Button>
                                         </div>
                                     </TableCell>
@@ -298,22 +344,25 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
                 </div>
             )}
 
-            {selectedMessage && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <Card className="max-h-[90vh] w-full max-w-4xl overflow-y-auto">
-                        <CardHeader>
-                            <div className="flex items-start justify-between">
-                                <div>
-                                    <CardTitle>Message Details</CardTitle>
-                                    <CardDescription>View message metadata and status history.</CardDescription>
-                                </div>
-                                <Button variant="ghost" size="icon" onClick={() => setSelectedMessage(null)}>
-                                    <span className="sr-only">Close</span>
-                                    ×
-                                </Button>
-                            </div>
-                        </CardHeader>
-                        <CardContent className="space-y-6">
+            <ConfirmDialog
+                open={messageToDelete !== null}
+                onOpenChange={(open) => { if (!open) setMessageToDelete(null) }}
+                title="Delete message"
+                description="This message will be permanently deleted. This action cannot be undone."
+                confirmLabel="Delete"
+                variant="danger"
+                loading={isDeleting}
+                onConfirm={() => void handleDeleteMessage()}
+            />
+
+            <Dialog open={selectedMessage !== null} onOpenChange={(open) => { if (!open) setSelectedMessage(null) }}>
+                <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle>Message Details</DialogTitle>
+                        <DialogDescription>View message metadata, body and status history.</DialogDescription>
+                    </DialogHeader>
+                    {selectedMessage && (
+                        <div className="space-y-6">
                             <div className="grid gap-6 md:grid-cols-2">
                                 <div className="space-y-1">
                                     <Label className="text-muted-foreground">Message ID</Label>
@@ -354,6 +403,19 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
                                     <div className="mt-1">{selectedMessage.heldReason || 'No reason provided'}</div>
                                 </div>
                             )}
+
+                            <div className="space-y-1">
+                                <Label className="text-muted-foreground">Body</Label>
+                                {isLoadingMessage ? (
+                                    <div className="flex justify-center p-6">
+                                        <div className="h-6 w-6 animate-spin rounded-full border-b-2 border-primary" />
+                                    </div>
+                                ) : (
+                                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted px-3 py-2 text-sm">
+                                        {selectedMessage.plainBody || selectedMessage.htmlBody || 'No body stored.'}
+                                    </pre>
+                                )}
+                            </div>
 
                             <div className="grid gap-6 md:grid-cols-2">
                                 <div className="space-y-1">
@@ -399,20 +461,17 @@ export default function MessagesTab({ organizationId }: MessagesTabProps) {
                                 </div>
                             </div>
 
-                            <div className="flex justify-end gap-2 pt-4">
-                                <Button variant="outline" onClick={() => setSelectedMessage(null)}>
-                                    Close
-                                </Button>
-                                {selectedMessage.held && (
+                            {selectedMessage.held && (
+                                <div className="flex justify-end pt-2">
                                     <Button onClick={() => void handleReleaseHeld(selectedMessage.id)}>
                                         Release Message
                                     </Button>
-                                )}
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }

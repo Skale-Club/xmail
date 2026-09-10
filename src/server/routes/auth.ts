@@ -5,6 +5,7 @@ import { users } from '../../db/schema'
 import { eq } from 'drizzle-orm'
 import { hashPassword, createUserMailbox } from '../lib/native-mail'
 import { createSupabaseUserClient, supabaseAnonClient } from '../lib/supabase'
+import { invalidateToken, invalidateUser } from '../lib/auth-cache'
 
 const router = Router()
 
@@ -107,6 +108,15 @@ router.post('/logout', async (req: Request, res: Response) => {
             }
         }
 
+        // SEC — evict this access token from the auth-cache so it stops resolving to a user
+        // for the remainder of its TTL after logout. This route requires the normal Bearer
+        // auth (it is not in api-auth.ts's PUBLIC_ROUTES), so the raw token is still on the
+        // request here.
+        const authHeader = req.headers.authorization
+        if (authHeader?.startsWith('Bearer ')) {
+            invalidateToken(authHeader.replace('Bearer ', ''))
+        }
+
         clearRefreshTokenCookie(res)
         res.json({ message: 'Logged out successfully' })
     } catch (error) {
@@ -189,6 +199,7 @@ router.post('/update-password', async (req: Request, res: Response) => {
                 // Create mailbox on first password set (invite flow)
                 await createUserMailbox(userId, dbUser.email)
             }
+            invalidateUser(userId)
         }
 
         res.json({ message: 'Password updated successfully' })

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle, ExternalLink, FlaskConical, Save, Send, XCircle, Zap } from 'lucide-react'
+import { AlertCircle, CheckCircle, ExternalLink, FlaskConical, Save, Send, XCircle, Zap } from 'lucide-react'
 import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Switch } from '../../components/ui/switch'
 import { Badge } from '../../components/ui/Badge'
+import { toast } from '../../components/ui/toaster'
 import { apiFetch } from './helpers'
 
 interface IntegrationsData {
@@ -29,6 +30,7 @@ export default function IntegrationsPage() {
     })
     const [maskedToken, setMaskedToken] = useState<string | null>(null)
     const [isLoading, setIsLoading] = useState(true)
+    const [error, setError] = useState<string | null>(null)
     const [isSaving, setIsSaving] = useState(false)
     const [isTesting, setIsTesting] = useState(false)
     const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null)
@@ -40,6 +42,7 @@ export default function IntegrationsPage() {
 
     async function loadIntegrations() {
         setIsLoading(true)
+        setError(null)
         try {
             const data = await apiFetch<IntegrationsData>('/api/admin/integrations')
             setMaskedToken(data.telegramBotToken)
@@ -49,8 +52,8 @@ export default function IntegrationsPage() {
                 telegramChatId: data.telegramChatId ?? '',
                 telegramEnabled: data.telegramEnabled,
             })
-        } catch (error) {
-            window.alert(error instanceof Error ? error.message : 'Failed to load integrations')
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to load integrations')
         } finally {
             setIsLoading(false)
         }
@@ -78,9 +81,9 @@ export default function IntegrationsPage() {
             setMaskedToken(data.telegramBotToken)
             setIsConfigured(!!data.telegramBotToken && !!data.telegramChatId)
             setForm((f) => ({ ...f, telegramBotToken: '' }))
-            window.alert('Integrations saved successfully.')
+            toast({ title: 'Integrations saved successfully', variant: 'success' })
         } catch (error) {
-            window.alert(error instanceof Error ? error.message : 'Failed to save integrations')
+            toast({ title: error instanceof Error ? error.message : 'Failed to save integrations', variant: 'destructive' })
         } finally {
             setIsSaving(false)
         }
@@ -121,6 +124,17 @@ export default function IntegrationsPage() {
                 </Button>
             </div>
 
+            {error && (
+                <div className="flex flex-col items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-8 text-center">
+                    <AlertCircle className="h-8 w-8 text-destructive" />
+                    <p className="text-sm text-destructive">{error}</p>
+                    <Button variant="outline" size="sm" onClick={() => void loadIntegrations()}>
+                        Try again
+                    </Button>
+                </div>
+            )}
+
+            {!error && (
             <Card>
                 <CardHeader>
                     <div className="flex items-center justify-between gap-4">
@@ -290,6 +304,7 @@ export default function IntegrationsPage() {
                     </div>
                 </CardContent>
             </Card>
+            )}
         </div>
     )
 }

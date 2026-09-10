@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Building2, Globe, Users, Mail, HardDrive } from 'lucide-react'
+import { useLocation } from 'wouter'
+import { AlertCircle, Building2, Globe, Users, Mail, HardDrive } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Progress } from '../../components/ui/progress'
+import { toast } from '../../components/ui/toaster'
 import { apiFetch, loadDomains } from './helpers'
 
 interface DashboardStats {
@@ -42,7 +44,17 @@ function formatBytes(bytes: number): string {
     return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
 }
 
+interface OrgStatisticsSummary {
+    summary: {
+        sent: number
+        delivered: number
+        bounced: number
+        pending: number
+    }
+}
+
 export default function AdminDashboard() {
+    const [, navigate] = useLocation()
     const [stats, setStats] = useState<DashboardStats>({
         organizations: 0,
         domains: 0,
@@ -51,6 +63,7 @@ export default function AdminDashboard() {
     })
     const [systemUsage, setSystemUsage] = useState<SystemUsage | null>(null)
     const [isLoading, setIsLoading] = useState(true)
+    const [error, setError] = useState<string | null>(null)
     const [usageLoading, setUsageLoading] = useState(true)
 
     useEffect(() => {
@@ -59,27 +72,52 @@ export default function AdminDashboard() {
     }, [])
 
     async function fetchStats() {
+        setIsLoading(true)
+        setError(null)
         try {
             const [orgPayload, userPayload] = await Promise.all([
-                apiFetch<{ organizations: { id: string }[] }>('/api/organizations').catch(() => ({ organizations: [] })),
-                apiFetch<{ users: unknown[] }>('/api/users').catch(() => ({ users: [] })),
+                apiFetch<{ organizations: { id: string }[] }>('/api/organizations'),
+                apiFetch<{ users: unknown[] }>('/api/users'),
             ])
             const organizations = orgPayload.organizations || []
-            const domainLists = await Promise.all(
-                organizations.map((organization) => loadDomains(organization.id).catch(() => []))
-            )
+
+            // No system-wide domains/messages endpoint exists — these are per-organization
+            // (?organizationId= required), so fan out in parallel rather than loop sequentially.
+            const [domainLists, statsLists] = await Promise.all([
+                Promise.all(organizations.map((organization) => loadDomains(organization.id).catch(() => []))),
+                Promise.all(
+                    organizations.map((organization) =>
+                        apiFetch<OrgStatisticsSummary>(`/api/organizations/${organization.id}/statistics?days=30`).catch(() => null)
+                    )
+                ),
+            ])
+
             const verifiedDomains = domainLists
                 .flat()
                 .filter((domain) => domain.verificationStatus === 'verified').length
+
+            const messages = statsLists.reduce(
+                (totals, orgStats) => {
+                    if (!orgStats) return totals
+                    return {
+                        sent: totals.sent + orgStats.summary.sent,
+                        delivered: totals.delivered + orgStats.summary.delivered,
+                        bounced: totals.bounced + orgStats.summary.bounced,
+                        pending: totals.pending + orgStats.summary.pending,
+                    }
+                },
+                { sent: 0, delivered: 0, bounced: 0, pending: 0 }
+            )
 
             setStats({
                 organizations: organizations.length,
                 domains: verifiedDomains,
                 users: (userPayload.users || []).length,
-                messages: { sent: 0, delivered: 0, bounced: 0, pending: 0 },
+                messages,
             })
-        } catch (error) {
-            console.error('Error fetching stats:', error)
+        } catch (err) {
+            console.error('Error fetching stats:', err)
+            setError(err instanceof Error ? err.message : 'Failed to load dashboard stats')
         } finally {
             setIsLoading(false)
         }
@@ -91,6 +129,7 @@ export default function AdminDashboard() {
             setSystemUsage(data)
         } catch (error) {
             console.error('Error fetching usage:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to load system usage', variant: 'destructive' })
         } finally {
             setUsageLoading(false)
         }
@@ -122,6 +161,14 @@ export default function AdminDashboard() {
                             </CardContent>
                         </Card>
                     ))}
+                </div>
+            ) : error ? (
+                <div className="flex flex-col items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-8 text-center">
+                    <AlertCircle className="h-8 w-8 text-destructive" />
+                    <p className="text-sm text-destructive">{error}</p>
+                    <Button variant="outline" size="sm" onClick={() => void fetchStats()}>
+                        Try again
+                    </Button>
                 </div>
             ) : (
                 <>
@@ -173,7 +220,7 @@ export default function AdminDashboard() {
                                     <Mail className="h-5 w-5 text-muted-foreground" />
                                     Email Deliverability
                                 </CardTitle>
-                                <CardDescription>System-wide message processing metrics</CardDescription>
+                                <CardDescription>Message processing metrics across all organizations, last 30 days</CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -262,7 +309,7 @@ export default function AdminDashboard() {
                                 </CardTitle>
                                 <CardDescription className="mt-1">Messages sent and storage consumed</CardDescription>
                             </div>
-                            <Button variant="ghost" size="sm" onClick={() => window.location.href = '/admin/users'}>
+                            <Button variant="ghost" size="sm" onClick={() => navigate('/admin/users')}>
                                 View All
                             </Button>
                         </CardHeader>

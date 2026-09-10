@@ -2,11 +2,12 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../db'
 import { users, organizationUsers, organizations } from '../../db/schema'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, inArray } from 'drizzle-orm'
 import { isPlatformAdmin } from '../lib/admin'
 import { hashPassword, createUserMailbox, validateEmailDomainForOrg, deleteUserMailbox } from '../lib/native-mail'
 import { supabaseAdminClient, supabaseAnonClient } from '../lib/supabase'
 import { ensureLocalUser, getAuthenticatedUserFromRequest } from '../lib/user-sync'
+import { invalidateUser } from '../lib/auth-cache'
 
 const router = Router()
 
@@ -422,6 +423,11 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
         const updates = updateUserSchema.parse(req.body)
 
+        const existingTarget = await db.query.users.findFirst({
+            where: eq(users.id, targetUserId),
+            columns: { isAdmin: true },
+        })
+
         const [updatedUser] = await db
             .update(users)
             .set({
@@ -433,6 +439,13 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
         if (!updatedUser) {
             return res.status(404).json({ error: 'User not found' })
+        }
+
+        // SEC — isAdmin gates platform-admin authorization checks elsewhere (isPlatformAdmin,
+        // the password-reset guard above). A cached token must not keep resolving to the old
+        // isAdmin value for up to TTL_MS after this flips.
+        if (updates.isAdmin !== undefined && updates.isAdmin !== existingTarget?.isAdmin) {
+            invalidateUser(targetUserId)
         }
 
         const fullUser = await getAdminUserRecord(updatedUser.id)
@@ -504,32 +517,52 @@ router.put('/:id/password', async (req: Request, res: Response) => {
             return res.status(401).json({ error: 'Unauthorized' })
         }
 
+        const targetUser = await db.query.users.findFirst({ where: eq(users.id, targetUserId) })
+        if (!targetUser) {
+            return res.status(404).json({ error: 'User not found' })
+        }
+
         // Allow platform admins OR org admins who share an org with the target user
         const isPlatAdmin = await isPlatformAdmin(requestingUserId)
+
+        // SEC — a platform admin's password may only be reset by another platform admin,
+        // never by an org admin. Without this, any org admin who happened to also pass the
+        // (buggy) shared-org check below could reset a platform admin's credentials.
+        if (targetUser.isAdmin && !isPlatAdmin) {
+            return res.status(403).json({ error: 'Forbidden' })
+        }
+
         if (!isPlatAdmin) {
-            const sharedOrg = await db.query.organizationUsers.findFirst({
+            // SEC — must require a membership row for the TARGET in an org where the
+            // REQUESTER has role admin. The previous version picked an arbitrary org where
+            // the requester happened to be admin and only checked the target against that
+            // one org, which could both false-deny (wrong org picked among several) and,
+            // more importantly, never actually verified an org shared with the target.
+            const adminOrgs = await db.query.organizationUsers.findMany({
                 where: and(
                     eq(organizationUsers.userId, requestingUserId),
                     eq(organizationUsers.role, 'admin')
                 ),
+                columns: { organizationId: true },
             })
-            if (!sharedOrg) {
-                return res.status(403).json({ error: 'Forbidden' })
-            }
-            // Verify target user is in same org
-            const targetInOrg = await db.query.organizationUsers.findFirst({
-                where: and(
-                    eq(organizationUsers.userId, targetUserId),
-                    eq(organizationUsers.organizationId, sharedOrg.organizationId)
-                ),
-            })
-            if (!targetInOrg) {
+
+            const adminOrgIds = adminOrgs.map((o) => o.organizationId)
+            const targetInSharedOrg = adminOrgIds.length > 0
+                ? await db.query.organizationUsers.findFirst({
+                    where: and(
+                        eq(organizationUsers.userId, targetUserId),
+                        inArray(organizationUsers.organizationId, adminOrgIds)
+                    ),
+                })
+                : null
+
+            if (!targetInSharedOrg) {
                 return res.status(403).json({ error: 'Forbidden' })
             }
         }
 
         const { password } = z.object({
-            password: z.string().min(6, 'Password must be at least 6 characters'),
+            password: z.string().min(8, 'Password must be at least 8 characters'),
         }).parse(req.body)
 
         const { error } = await supabaseAdminClient.auth.admin.updateUserById(targetUserId, { password })
@@ -539,8 +572,7 @@ router.put('/:id/password', async (req: Request, res: Response) => {
         }
 
         // Sync passwordHash for SMTP/IMAP auth
-        const targetUser = await db.query.users.findFirst({ where: eq(users.id, targetUserId) })
-        if (targetUser && !targetUser.isAdmin) {
+        if (!targetUser.isAdmin) {
             const newHash = await hashPassword(password)
             await db.update(users)
                 .set({ passwordHash: newHash, updatedAt: new Date() })
@@ -549,6 +581,8 @@ router.put('/:id/password', async (req: Request, res: Response) => {
             // Create mailbox if it doesn't exist yet (e.g. first password set after invite)
             await createUserMailbox(targetUserId, targetUser.email)
         }
+
+        invalidateUser(targetUserId)
 
         res.json({ message: 'Password updated successfully' })
     } catch (error) {
@@ -590,11 +624,19 @@ router.delete('/:id', async (req: Request, res: Response) => {
             console.error('Error deleting user from auth:', authError)
         }
 
-        // Delete native mailbox and messages
+        // Delete native mailbox and messages (no-op if the user never had one)
         await deleteUserMailbox(targetUserId)
 
-        // Delete from database
-        await db.delete(users).where(eq(users.id, targetUserId))
+        // COR — organization_users.user_id has no ON DELETE CASCADE to users.id (see
+        // CLAUDE.md task notes / audit). Deleting the user row first would leave orphaned
+        // membership rows behind. Delete memberships and the user together so a crash
+        // between the two can never leave that half-deleted state.
+        await db.transaction(async (tx) => {
+            await tx.delete(organizationUsers).where(eq(organizationUsers.userId, targetUserId))
+            await tx.delete(users).where(eq(users.id, targetUserId))
+        })
+
+        invalidateUser(targetUserId)
 
         res.json({ message: 'User deleted successfully' })
     } catch (error) {
@@ -632,6 +674,8 @@ router.post('/me/change-password', async (req: Request, res: Response) => {
         await db.update(users)
             .set({ passwordHash: newHash, updatedAt: new Date() })
             .where(eq(users.id, authUser.id))
+
+        invalidateUser(authUser.id)
 
         res.json({ message: 'Password changed successfully' })
     } catch (error) {

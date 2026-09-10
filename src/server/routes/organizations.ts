@@ -305,14 +305,11 @@ router.post('/:id/members', async (req: Request, res: Response) => {
             }).returning()
 
             userToAdd = newUser
-        } else if (password) {
-            // User exists but password was provided — update their passwordHash
-            const passwordHash = await hashPassword(password)
-            await db.update(users)
-                .set({ passwordHash, updatedAt: new Date() })
-                .where(eq(users.id, userToAdd.id))
-            await supabaseAdminClient.auth.admin.updateUserById(userToAdd.id, { password })
         }
+        // SEC — `password` is only ever consumed to provision a brand-new user above. If the
+        // user already exists and a caller (or a stale client) also sends `password`, it is
+        // silently ignored here: an org admin adding an EXISTING user must never be able to
+        // overwrite that user's own login credential just by supplying a `password` field.
 
         const existingMembership = await db.query.organizationUsers.findFirst({
             where: and(
@@ -445,6 +442,32 @@ router.patch('/:id/members/:userId', async (req: Request, res: Response) => {
 
         if (organization?.ownerId === targetUserId) {
             return res.status(400).json({ error: "Cannot change the owner's role" })
+        }
+
+        if (role !== 'admin') {
+            const targetMembership = await db.query.organizationUsers.findFirst({
+                where: and(
+                    eq(organizationUsers.organizationId, organizationId),
+                    eq(organizationUsers.userId, targetUserId)
+                ),
+            })
+
+            if (targetMembership?.role === 'admin') {
+                const remainingAdmins = await db.query.organizationUsers.findMany({
+                    where: and(
+                        eq(organizationUsers.organizationId, organizationId),
+                        eq(organizationUsers.role, 'admin')
+                    ),
+                    columns: { userId: true },
+                })
+
+                // SEC/COR — demoting the last admin would leave the organization with no one
+                // able to manage members, credentials, webhooks, etc. via the JS-side
+                // authorization checks. Block it the same way owner-role changes are blocked.
+                if (remainingAdmins.length <= 1) {
+                    return res.status(400).json({ error: 'Cannot demote the last admin of this organization' })
+                }
+            }
         }
 
         const [updatedMembership] = await db

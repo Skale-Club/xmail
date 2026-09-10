@@ -3,7 +3,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
-import { fetchWithAuth, timezoneOptions } from './shared'
+import { toast } from '../../ui/toaster'
+import { apiFetch, timezoneOptions } from './shared'
 
 interface Organization {
     id: string
@@ -35,20 +36,15 @@ export default function SettingsTab({ org, isAdmin, onRefresh }: SettingsTabProp
     async function handleUpdateOrg() {
         setIsSaving(true)
         try {
-            const response = await fetchWithAuth(`/api/organizations/${org.id}`, {
+            await apiFetch(`/api/organizations/${org.id}`, {
                 method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(form),
             })
-
-            if (response.ok) {
-                await onRefresh()
-            } else {
-                const error = await response.json()
-                alert(error.error || 'Failed to update organization')
-            }
+            toast({ title: 'Organization settings saved', variant: 'success' })
+            await onRefresh()
         } catch (error) {
             console.error('Error updating organization:', error)
+            toast({ title: error instanceof Error ? error.message : 'Failed to update organization', variant: 'destructive' })
         } finally {
             setIsSaving(false)
         }
