@@ -26,6 +26,18 @@ import { describeOutbound, describeSendFailure, isRelayConfigured, sendOutbound 
 import { jsonbParam } from './lib/jsonb'
 import { sanitizeAttachmentFilename } from './lib/inbox-attachments'
 import { createObjectStorage } from './lib/object-storage'
+import { createLogger } from './lib/logger'
+
+const log = createLogger('smtp.submission')
+
+/** Mirrors mx-server.ts's helper of the same shape: smtp-server reads `err.responseCode`
+ * off the callback's error (falling back to a per-command default — 450 for a DATA-stage
+ * error) to pick the SMTP status line it sends the client. */
+function smtpError(message: string, responseCode: number): Error {
+    const err = new Error(message) as Error & { responseCode?: number }
+    err.responseCode = responseCode
+    return err
+}
 
 /**
  * Uploads attachment bytes under a key scoped to the destination mailbox
@@ -278,14 +290,19 @@ export function createSMTPServer() {
                         }
                     }
 
-                    // Relay external recipients
-                    if (externalRecipients.length > 0) {
-                        try {
-                            // Check for route-based delivery for each external recipient
-                            const routedRecipients: string[] = []
-                            const directRelayRecipients: string[] = []
+                    // Relay external recipients. Recipients whose route delivery or direct
+                    // relay actually throws are tracked separately from ones a route
+                    // deliberately rejected (`routing.action === 'reject'` — a policy decision,
+                    // not a failure).
+                    const failedExternalRecipients: string[] = []
 
-                            for (const addr of externalRecipients) {
+                    if (externalRecipients.length > 0) {
+                        // Check for route-based delivery for each external recipient
+                        const routedRecipients: string[] = []
+                        const directRelayRecipients: string[] = []
+
+                        for (const addr of externalRecipients) {
+                            try {
                                 const routing = await processInboundEmail(addr)
                                 if (routing.action === 'reject') {
                                     console.log(`[SMTP] Rejected by route: ${addr}`)
@@ -297,20 +314,41 @@ export function createSMTPServer() {
                                 } else {
                                     directRelayRecipients.push(addr)
                                 }
+                            } catch (routeErr) {
+                                console.error(`[SMTP] Route delivery failed for ${addr}:`, routeErr)
+                                failedExternalRecipients.push(addr)
                             }
+                        }
 
-                            if (directRelayRecipients.length > 0) {
+                        if (directRelayRecipients.length > 0) {
+                            try {
                                 await relayMessage(senderEmail, directRelayRecipients, raw)
                                 console.log(`[SMTP] Relayed: ${senderEmail} → ${directRelayRecipients.join(', ')}`)
+                            } catch (relayErr) {
+                                console.error('[SMTP] Direct relay failed:', relayErr)
+                                failedExternalRecipients.push(...directRelayRecipients)
                             }
-
-                            if (routedRecipients.length > 0) {
-                                console.log(`[SMTP] Route-delivered: ${senderEmail} → ${routedRecipients.join(', ')}`)
-                            }
-                        } catch (relayErr) {
-                            console.error('[SMTP] Relay error:', relayErr)
-                            // Don't fail the whole transaction if relay fails
                         }
+
+                        if (routedRecipients.length > 0) {
+                            console.log(`[SMTP] Route-delivered: ${senderEmail} → ${routedRecipients.join(', ')}`)
+                        }
+                    }
+
+                    if (failedExternalRecipients.length > 0) {
+                        const storedLocally = localRecipients.length > 0
+                        if (!storedLocally) {
+                            // Nothing about this message was ever persisted — a 250 here would
+                            // tell the submitting client its mail was accepted when every
+                            // recipient's delivery actually failed. Respond 4xx so a compliant
+                            // client queues a retry instead of treating the message as sent.
+                            log.error({ action: 'smtp.submission.relay_failed', sender: senderEmail, failedRecipients: failedExternalRecipients, storedLocally }, 'Relay failed for every recipient; rejecting with 451 so the client retries')
+                            return callback(smtpError('451 4.4.1 delivery failed, try again later', 451))
+                        }
+                        // Stored locally for at least one recipient — the submission overall
+                        // succeeded from the client's point of view, so keep the 250, but this
+                        // must not disappear into a console.error a human never greps for.
+                        log.error({ action: 'smtp.submission.relay_failed', sender: senderEmail, failedRecipients: failedExternalRecipients, storedLocally }, 'Relay failed for some recipients after local delivery succeeded')
                     }
 
                     callback()
@@ -331,6 +369,22 @@ export function createSMTPServer() {
         console.error('[SMTP] Server error:', err.message)
     })
 
+    // Same rotation strategy as mx-server.ts: getMailTLSOptions() reloads from disk on
+    // mtime change (throttled to 60s in mail-tls.ts), and updateSecureContext() is
+    // smtp-server's supported way to push a new cert into a running server without
+    // dropping existing connections. Only relevant when TLS was available at boot —
+    // hideSTARTTLS/secure are both fixed at construction time.
+    let tlsRotationInterval: NodeJS.Timeout | null = null
+    if (tlsOpts) {
+        tlsRotationInterval = setInterval(() => {
+            const latest = getMailTLSOptions()
+            if (latest) {
+                server.updateSecureContext({ key: latest.key, cert: latest.cert })
+            }
+        }, 60_000)
+        tlsRotationInterval.unref()
+    }
+
     return {
         start() {
             server.listen(port, '0.0.0.0', () => {
@@ -343,6 +397,7 @@ export function createSMTPServer() {
             })
         },
         close(): Promise<void> {
+            if (tlsRotationInterval) clearInterval(tlsRotationInterval)
             return new Promise((resolve) => {
                 server.close(() => resolve())
             })

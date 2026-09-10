@@ -12,7 +12,7 @@
  * for env vars that must exist before the module graph loads.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MatchedRoute } from '../route-matcher'
 
 process.env.ENCRYPTION_KEY ||= 'test-only-placeholder-encryption-key'
@@ -24,10 +24,16 @@ vi.mock('../network-guard', () => ({ isPrivateHostWithDns: isPrivateHostWithDnsM
 
 let deliverViaRoutes: typeof import('../route-matcher').deliverViaRoutes
 
-beforeEach(async () => {
+// The module graph behind route-matcher (drizzle schema, nodemailer, outbound transport) is
+// heavy to transform; import it once with a generous timeout so a loaded CI box does not
+// trip the default 10s hook timeout on the first test.
+beforeAll(async () => {
+    ({ deliverViaRoutes } = await import('../route-matcher'))
+}, 60_000)
+
+beforeEach(() => {
     isPrivateHostWithDnsMock.mockReset()
     vi.stubGlobal('fetch', vi.fn())
-    ;({ deliverViaRoutes } = await import('../route-matcher'))
 })
 
 afterEach(() => {

@@ -17,7 +17,7 @@ import { mailboxes, mailFolders, mailMessages } from '../db/schema'
 import { eq, and, asc, inArray, sql } from 'drizzle-orm'
 import { getCachedBranding } from './lib/serverBranding'
 import { authenticateNativeUser } from './lib/native-mail'
-import { getMailTLSOptions } from './lib/mail-tls'
+import { getMailTLSOptions, getMailTLSSecureContext } from './lib/mail-tls'
 import { isIpLocked, recordAuthFailure, clearAuthFailures } from './lib/auth-throttle'
 import { mailEvents, emitFolderChange, type MailEventPayload } from './lib/mail-events'
 import { parseRawEmail } from './lib/mail'
@@ -535,11 +535,14 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
 
     // ── STARTTLS ──
     if (cmd === 'STARTTLS') {
-        const opts = getMailTLSOptions()
-        if (!opts) { sendLine(socket, `${tag} NO TLS not available`); return }
+        // Built fresh (mtime-checked, throttled to 60s — see mail-tls.ts) on every upgrade,
+        // so a cert renewed on disk is picked up by the very next STARTTLS without
+        // restarting the process.
+        const secureContext = getMailTLSSecureContext()
+        if (!secureContext) { sendLine(socket, `${tag} NO TLS not available`); return }
         if (session.isTLS) { sendLine(socket, `${tag} NO Already using TLS`); return }
         sendLine(socket, `${tag} OK Begin TLS negotiation now`)
-        upgradeToTLS(session, opts)
+        upgradeToTLS(session, secureContext)
         return
     }
 
@@ -1715,12 +1718,11 @@ function detachSocketHandlers(socket: IMAPSocket) {
     socket.removeAllListeners('close')
 }
 
-function upgradeToTLS(session: IMAPSession, opts: { key: Buffer; cert: Buffer }) {
+function upgradeToTLS(session: IMAPSession, secureContext: tls.SecureContext) {
     detachSocketHandlers(session.socket)
     const secure = new tls.TLSSocket(session.socket as net.Socket, {
         isServer: true,
-        key: opts.key,
-        cert: opts.cert,
+        secureContext,
     })
     session.socket = secure
     session.isTLS = true
@@ -1780,6 +1782,24 @@ export function createIMAPServer() {
         console.error('[IMAP] Server error:', err.message)
     })
 
+    // Certificates can be renewed on disk without a restart. STARTTLS already picks up a
+    // renewal on its very next upgrade (upgradeToTLS calls getMailTLSSecureContext() fresh
+    // each time), but the implicit-TLS listener above was built once with the boot-time
+    // cert baked in — node's tls.Server.setSecureContext() is the supported way to swap it
+    // for future connections without dropping sockets already established. Only relevant
+    // when this server was created with TLS in the first place.
+    let tlsRotationInterval: NodeJS.Timeout | null = null
+    if (tlsOpts && server instanceof tls.Server) {
+        const tlsServer = server
+        tlsRotationInterval = setInterval(() => {
+            const latest = getMailTLSOptions()
+            if (latest) {
+                tlsServer.setSecureContext({ key: latest.key, cert: latest.cert })
+            }
+        }, 60_000)
+        tlsRotationInterval.unref()
+    }
+
     return {
         start() {
             server.listen(port, '0.0.0.0', () => {
@@ -1788,6 +1808,7 @@ export function createIMAPServer() {
             })
         },
         close(): Promise<void> {
+            if (tlsRotationInterval) clearInterval(tlsRotationInterval)
             return new Promise((resolve) => {
                 server.close(() => resolve())
             })

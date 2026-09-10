@@ -38,13 +38,11 @@ export async function cleanupOldMessages(): Promise<void> {
 
             const messageIds = oldMessages.map((m) => m.id)
 
-            for (const msgId of messageIds) {
-                await db.delete(deliveries).where(eq(deliveries.messageId, msgId))
-            }
-
-            for (const msgId of messageIds) {
-                await db.delete(messages).where(eq(messages.id, msgId))
-            }
+            // Batched (one statement per BATCH_SIZE-sized page), matching the mail_messages
+            // block below — a per-row delete loop here issues 2x BATCH_SIZE round-trips for
+            // no benefit over one inArray() delete per table.
+            await db.delete(deliveries).where(inArray(deliveries.messageId, messageIds))
+            await db.delete(messages).where(inArray(messages.id, messageIds))
 
             totalDeleted += oldMessages.length
         }
@@ -60,9 +58,7 @@ export async function cleanupOldMessages(): Promise<void> {
 
             if (oldOutreach.length === 0) break
 
-            for (const email of oldOutreach) {
-                await db.delete(outreachEmails).where(eq(outreachEmails.id, email.id))
-            }
+            await db.delete(outreachEmails).where(inArray(outreachEmails.id, oldOutreach.map((email) => email.id)))
 
             outreachDeleted += oldOutreach.length
         }
@@ -120,9 +116,7 @@ export async function cleanupOldMessages(): Promise<void> {
 
             if (oldLogs.length === 0) break
 
-            for (const log of oldLogs) {
-                await db.delete(webhookRequests).where(eq(webhookRequests.id, log.id))
-            }
+            await db.delete(webhookRequests).where(inArray(webhookRequests.id, oldLogs.map((log) => log.id)))
 
             webhookLogsDeleted += oldLogs.length
         }

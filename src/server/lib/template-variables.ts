@@ -1,9 +1,11 @@
 /**
  * Template Variable Interpolation for Outreach Emails
- * 
+ *
  * Supports personalization tokens like {{firstName}}, {{companyName}}, etc.
  * Also supports custom fields from the lead's customFields JSONB column.
  */
+
+import { escapeHtml } from './html-escape'
 
 // Type for lead data available in templates
 type LeadForTemplate = {
@@ -37,16 +39,6 @@ export interface InterpolateOptions {
     // for subject/plain-text renders where escaping would corrupt the output. See audit
     // finding "unescaped lead-controlled fields injected into email body".
     escapeHtml?: boolean
-}
-
-/** Escape the five HTML-significant characters. */
-function escapeHtml(value: string): string {
-    return value
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;')
 }
 
 // Default values for when fields are null

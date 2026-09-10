@@ -7,17 +7,9 @@ import { messages, organizations, organizationUsers, deliveries, templates, supp
 import { isPlatformAdmin } from '../lib/admin'
 import { injectTracking, incrementStat, fireWebhooks } from '../lib/tracking'
 import { resolveOutlookMailboxForServer, sendMessageWithOutlook } from '../lib/outlook'
+import { escapeHtml } from '../lib/html-escape'
 
 const router = Router()
-
-function escapeHtml(str: string): string {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;')
-}
 
 const sendMessageSchema = z.object({
     organizationId: z.string().uuid(),

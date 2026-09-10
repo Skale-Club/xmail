@@ -4,17 +4,9 @@ import { db } from '../../db'
 import { templates, organizations, organizationUsers } from '../../db/schema'
 import { eq, and, desc, like } from 'drizzle-orm'
 import { isPlatformAdmin } from '../lib/admin'
+import { escapeHtml } from '../lib/html-escape'
 
 const router = Router()
-
-function escapeHtml(str: string): string {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;')
-}
 
 // Validation schemas
 const createTemplateSchema = z.object({

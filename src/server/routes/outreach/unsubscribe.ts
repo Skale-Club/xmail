@@ -17,6 +17,7 @@ import { eq, and, sql } from 'drizzle-orm'
 import { generateOutreachToken, verifyOutreachToken } from '../../lib/outreach-tokens'
 import { sendXphereOutreachEvent } from '../../lib/xphere-events'
 import { shouldNotifyOutreachEvent } from '../../lib/outreach-settings'
+import { escapeHtml } from '../../lib/html-escape'
 
 const router = Router()
 
@@ -222,10 +223,6 @@ function generateConfirmHtml(leadEmail: string, campaignName: string, token: str
     </div>
 </body>
 </html>`
-}
-
-function escapeHtml(s: string): string {
-    return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
 }
 
 async function resolveUnsubscribeTarget(campaignLeadId: string, campaignId: string): Promise<{

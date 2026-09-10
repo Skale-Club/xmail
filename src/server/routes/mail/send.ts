@@ -16,6 +16,10 @@ import { jsonbParam } from '../../lib/jsonb'
 import { allocateUidForNewMessage } from '../../lib/move-messages'
 import { sanitizeAttachmentFilename, InboxAttachmentError } from '../../lib/inbox-attachments'
 import { createObjectStorage } from '../../lib/object-storage'
+// nodemailer's own RFC 2047 header-word encoder — used so the manually-built native raw
+// email matches what nodemailer does automatically for the external-relay path below.
+import { encodeWords } from 'nodemailer/lib/mime-funcs'
+import { createHash } from 'node:crypto'
 
 const router = Router()
 
@@ -24,10 +28,36 @@ const router = Router()
 // that ceiling can still decode to less than this, so it is a second, content-level check.
 const MAX_ATTACHMENT_TOTAL_BYTES = 10 * 1024 * 1024
 
+// Every header value below is already validated by the Zod schemas (`.regex(NO_CRLF)`)
+// before it reaches here. These two helpers are a second, defense-in-depth layer applied
+// at the point the raw RFC822 headers are actually assembled, so a future schema change
+// (or a caller that bypasses Zod) can never reintroduce header injection via embedded
+// CR/LF in a subject, display name, In-Reply-To or References value.
+const NO_CRLF = /^[^\r\n]*$/
+
+/** Strip any CR/LF that slipped through validation. Never wrap in RFC 2047 — used for
+ * tokens (Message-ID references) that must stay literal, not for display names/subjects. */
+function stripCrlf(value: string): string {
+    return value.replace(/[\r\n]+/g, ' ')
+}
+
+/**
+ * RFC 2047-encode a header value if it contains non-ASCII or otherwise unsafe characters,
+ * matching what nodemailer does automatically for header values it builds (the external
+ * SMTP relay path below, via `transporter.sendMail`). The native path builds its raw
+ * RFC822 text by hand, so without this a non-ASCII subject or display name would go out
+ * unencoded — this keeps both paths byte-for-byte consistent for the same input.
+ */
+function encodeHeaderValue(value: string): string {
+    return encodeWords(stripCrlf(value))
+}
+
 interface DecodedAttachment {
     filename: string
     contentType: string
     buffer: Buffer
+    /** sha256 of `buffer`, computed once at decode time — see `hashBuffer`. */
+    contentHash: string
 }
 
 interface StoredAttachment {
@@ -35,6 +65,15 @@ interface StoredAttachment {
     contentType: string
     size: number
     storageKey: string
+    /** sha256 of the decoded bytes at upload time. Lets a later save/send recognize an
+     * attachment came back byte-identical and reuse the existing `storageKey` instead of
+     * re-uploading — see `uploadMailAttachments`'s `reuseFrom` param. Optional because rows
+     * written before this field existed won't have it (they just never match). */
+    contentHash?: string
+}
+
+function hashBuffer(buffer: Buffer): string {
+    return createHash('sha256').update(buffer).digest('hex')
 }
 
 /**
@@ -43,17 +82,30 @@ interface StoredAttachment {
  * out to the Sent copy plus one INBOX copy per local recipient, each a distinct
  * mailbox, so this is called once per destination — the download route's
  * `checkUserMailboxAccess` scoping then needs no cross-mailbox sharing to reason about.
+ *
+ * `reuseFrom` (default none) is a set of previously-stored attachments scoped to this SAME
+ * mailbox — e.g. the draft this send/save originated from. When a decoded attachment's
+ * content hash matches one of them, its `storageKey` is reused verbatim and the byte upload
+ * is skipped; this is what keeps repeat draft autosaves (and a draft's eventual send) from
+ * re-uploading files that haven't changed. Never pass another mailbox's attachments here —
+ * reuse must stay within the mailbox that already owns the object.
  */
 async function uploadMailAttachments(
     mailboxId: string,
     messageUuid: string,
     attachments: DecodedAttachment[],
+    reuseFrom: StoredAttachment[] = [],
 ): Promise<StoredAttachment[]> {
     if (attachments.length === 0) return []
     const storage = createObjectStorage()
     const stored: StoredAttachment[] = []
     for (let index = 0; index < attachments.length; index++) {
         const attachment = attachments[index]
+        const reusable = reuseFrom.find(existing => existing.contentHash === attachment.contentHash)
+        if (reusable) {
+            stored.push(reusable)
+            continue
+        }
         const storageKey = `mail-attachments/${mailboxId}/${messageUuid}/${index}-${attachment.filename}`
         await storage.upload(INBOX_ATTACHMENTS_BUCKET, storageKey, attachment.buffer, attachment.contentType, { upsert: true })
         stored.push({
@@ -61,6 +113,7 @@ async function uploadMailAttachments(
             contentType: attachment.contentType,
             size: attachment.buffer.length,
             storageKey,
+            contentHash: attachment.contentHash,
         })
     }
     return stored
@@ -118,30 +171,41 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
 
         const isNative = mailbox.isNative === true
 
+        // Every field here can end up interpolated into a raw RFC822 header line (Subject,
+        // From/To/Cc display name, In-Reply-To, References). Without the no-CRLF regex a
+        // caller could smuggle extra headers (e.g. an extra "Bcc:" line) into the outgoing
+        // message by embedding \r\n in any of these strings — Zod's max-length check alone
+        // does not catch that.
+        const noHeaderInjection = z.string().regex(NO_CRLF, 'must not contain line breaks')
         const schema = z.object({
             to: z.array(z.object({
                 address: z.string().email(),
-                name: z.string().optional(),
+                name: noHeaderInjection.optional(),
             })).min(1),
             cc: z.array(z.object({
                 address: z.string().email(),
-                name: z.string().optional(),
+                name: noHeaderInjection.optional(),
             })).optional(),
             bcc: z.array(z.object({
                 address: z.string().email(),
-                name: z.string().optional(),
+                name: noHeaderInjection.optional(),
             })).optional(),
-            subject: z.string().min(1).max(998),
+            subject: z.string().min(1).max(998).regex(NO_CRLF, 'must not contain line breaks'),
             plainBody: z.string().optional(),
             htmlBody: z.string().optional(),
-            inReplyTo: z.string().optional(),
-            references: z.string().optional(),
+            inReplyTo: noHeaderInjection.optional(),
+            references: noHeaderInjection.optional(),
             attachments: z.array(z.object({
                 filename: z.string(),
                 content: z.string(),
                 contentType: z.string().optional(),
             })).optional(),
             saveToSent: z.boolean().default(true),
+            // Optional: the draft this send originated from. When set (and it resolves to a
+            // real draft owned by this same mailbox), byte-identical attachments reuse that
+            // draft's already-uploaded storage objects instead of being re-uploaded — see
+            // `uploadMailAttachments`'s `reuseFrom` param below.
+            draftId: z.string().uuid().optional(),
         })
 
         const data = schema.parse(req.body)
@@ -154,11 +218,15 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
         // build, nodemailer, object storage) sees the same bytes and the same name.
         let decodedAttachments: DecodedAttachment[]
         try {
-            decodedAttachments = (data.attachments ?? []).map(att => ({
-                filename: sanitizeAttachmentFilename(att.filename),
-                contentType: att.contentType || 'application/octet-stream',
-                buffer: Buffer.from(att.content, 'base64'),
-            }))
+            decodedAttachments = (data.attachments ?? []).map(att => {
+                const buffer = Buffer.from(att.content, 'base64')
+                return {
+                    filename: sanitizeAttachmentFilename(att.filename),
+                    contentType: att.contentType || 'application/octet-stream',
+                    buffer,
+                    contentHash: hashBuffer(buffer),
+                }
+            })
         } catch (attachmentError) {
             if (attachmentError instanceof InboxAttachmentError) {
                 return res.status(attachmentError.status).json({ error: attachmentError.message })
@@ -170,6 +238,21 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
         if (totalAttachmentBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
             return res.status(413).json({ error: `Attachments exceed the ${MAX_ATTACHMENT_TOTAL_BYTES}-byte total limit` })
         }
+
+        // Scoped to this same mailbox on purpose — `uploadMailAttachments`'s reuse-by-hash
+        // must never cross mailboxes. Only feeds the Sent-folder upload below, never the
+        // per-recipient INBOX uploads (those target other mailboxes entirely).
+        const sourceDraft = data.draftId
+            ? await db.query.mailMessages.findFirst({
+                where: and(
+                    eq(mailMessages.id, data.draftId),
+                    eq(mailMessages.mailboxId, mailboxId),
+                    eq(mailMessages.isDraft, true)
+                ),
+                columns: { attachments: true },
+            })
+            : null
+        const draftAttachments = ((sourceDraft?.attachments as StoredAttachment[] | null) || [])
 
         const allRecipients = [
             ...data.to.map(t => t.address),
@@ -186,6 +269,12 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
         const messageId = `<${messageUuid}@${mailbox.email.split('@')[1] || 'mail.local'}>`
         const fromAddress = mailbox.displayName
             ? `${mailbox.displayName} <${mailbox.email}>`
+            : mailbox.email
+        // Used only where we hand-build raw RFC822 header text ourselves (below). nodemailer
+        // does its own RFC 2047 encoding when we pass it `fromAddress` directly, so that one
+        // stays unencoded — pre-encoding it there would make nodemailer double-encode it.
+        const fromHeaderValue = mailbox.displayName
+            ? `${encodeHeaderValue(mailbox.displayName)} <${mailbox.email}>`
             : mailbox.email
 
         const mimeAttachments: MultipartAttachment[] = decodedAttachments.map(att => ({
@@ -217,18 +306,18 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
             // just metadata — this is the buffer that goes out over the wire).
             const { headers: contentHeaders, body: contentBody } = createMultipartEmail(data.plainBody, data.htmlBody, mimeAttachments)
 
-            const toHeader = data.to.map(t => t.name ? `${t.name} <${t.address}>` : t.address).join(', ')
-            const ccHeader = data.cc?.map(c => c.name ? `${c.name} <${c.address}>` : c.address).join(', ')
+            const toHeader = data.to.map(t => t.name ? `${encodeHeaderValue(t.name)} <${t.address}>` : t.address).join(', ')
+            const ccHeader = data.cc?.map(c => c.name ? `${encodeHeaderValue(c.name)} <${c.address}>` : c.address).join(', ')
 
             const rawEmailParts = [
-                `From: ${fromAddress}`,
+                `From: ${fromHeaderValue}`,
                 `To: ${toHeader}`,
                 ccHeader ? `Cc: ${ccHeader}` : '',
-                `Subject: ${data.subject}`,
+                `Subject: ${encodeHeaderValue(data.subject)}`,
                 `Date: ${new Date().toUTCString()}`,
                 `Message-ID: ${messageId}`,
-                data.inReplyTo ? `In-Reply-To: ${data.inReplyTo}` : '',
-                data.references ? `References: ${data.references}` : '',
+                data.inReplyTo ? `In-Reply-To: ${stripCrlf(data.inReplyTo)}` : '',
+                data.references ? `References: ${stripCrlf(data.references)}` : '',
                 ...contentHeaders,
                 contentBody,
             ].filter(Boolean).join('\r\n')
@@ -238,7 +327,7 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
             // mailbox's own storage key so the download route's per-mailbox access
             // check is sufficient authorization).
             if (data.saveToSent) {
-                const sentAttachments = await uploadMailAttachments(mailboxId, messageUuid, decodedAttachments)
+                const sentAttachments = await uploadMailAttachments(mailboxId, messageUuid, decodedAttachments, draftAttachments)
                 await storeMessage(mailboxId, 'sent', {
                     ...baseMessageData,
                     hasAttachments: sentAttachments.length > 0,
@@ -350,7 +439,7 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
 
             // Store in Sent folder + append to remote IMAP Sent
             if (data.saveToSent) {
-                const sentAttachments = await uploadMailAttachments(mailboxId, messageUuid, decodedAttachments)
+                const sentAttachments = await uploadMailAttachments(mailboxId, messageUuid, decodedAttachments, draftAttachments)
                 await storeMessage(mailboxId, 'sent', {
                     ...baseMessageData,
                     hasAttachments: sentAttachments.length > 0,
@@ -359,18 +448,18 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
 
                 const { headers: contentHeaders, body: contentBody } = createMultipartEmail(data.plainBody, data.htmlBody, mimeAttachments)
 
-                const toHeader = data.to.map(t => t.name ? `${t.name} <${t.address}>` : t.address).join(', ')
-                const ccHeader = data.cc?.map(c => c.name ? `${c.name} <${c.address}>` : c.address).join(', ')
+                const toHeader = data.to.map(t => t.name ? `${encodeHeaderValue(t.name)} <${t.address}>` : t.address).join(', ')
+                const ccHeader = data.cc?.map(c => c.name ? `${encodeHeaderValue(c.name)} <${c.address}>` : c.address).join(', ')
 
                 const rawEmail = [
-                    `From: ${fromAddress}`,
+                    `From: ${fromHeaderValue}`,
                     `To: ${toHeader}`,
                     ccHeader ? `Cc: ${ccHeader}` : '',
-                    `Subject: ${data.subject}`,
+                    `Subject: ${encodeHeaderValue(data.subject)}`,
                     `Date: ${new Date().toUTCString()}`,
                     `Message-ID: ${messageId}`,
-                    data.inReplyTo ? `In-Reply-To: ${data.inReplyTo}` : '',
-                    data.references ? `References: ${data.references}` : '',
+                    data.inReplyTo ? `In-Reply-To: ${stripCrlf(data.inReplyTo)}` : '',
+                    data.references ? `References: ${stripCrlf(data.references)}` : '',
                     ...contentHeaders,
                     contentBody,
                 ].filter(Boolean).join('\r\n')
@@ -453,16 +542,20 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Mailbox not found' })
         }
 
+        // A draft is stored as structured data today, but it becomes raw RFC822 header text
+        // the moment it is sent (via the send route above) or appended to a remote Sent
+        // folder, so it needs the same no-CRLF guard as the send schema — see the comment
+        // there for why max-length alone is not enough.
         const draftRecipientSchema = z.object({
-            address: z.string().trim().min(1),
-            name: z.string().trim().optional(),
+            address: z.string().trim().min(1).regex(NO_CRLF, 'must not contain line breaks'),
+            name: z.string().trim().regex(NO_CRLF, 'must not contain line breaks').optional(),
         })
 
         const schema = z.object({
             to: z.array(draftRecipientSchema).optional(),
             cc: z.array(draftRecipientSchema).optional(),
             bcc: z.array(draftRecipientSchema).optional(),
-            subject: z.string().optional(),
+            subject: z.string().regex(NO_CRLF, 'must not contain line breaks').optional(),
             plainBody: z.string().optional(),
             htmlBody: z.string().optional(),
             draftId: z.string().uuid().optional(),
@@ -474,6 +567,31 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
         })
 
         const data = schema.parse(req.body)
+
+        // Sanitize filenames and decode base64 up front, same as the send route — every
+        // downstream use (hashing, object storage) must see the same bytes and name.
+        let decodedAttachments: DecodedAttachment[]
+        try {
+            decodedAttachments = (data.attachments ?? []).map(att => {
+                const buffer = Buffer.from(att.content, 'base64')
+                return {
+                    filename: sanitizeAttachmentFilename(att.filename),
+                    contentType: att.contentType || 'application/octet-stream',
+                    buffer,
+                    contentHash: hashBuffer(buffer),
+                }
+            })
+        } catch (attachmentError) {
+            if (attachmentError instanceof InboxAttachmentError) {
+                return res.status(attachmentError.status).json({ error: attachmentError.message })
+            }
+            throw attachmentError
+        }
+
+        const totalAttachmentBytes = decodedAttachments.reduce((sum, att) => sum + att.buffer.length, 0)
+        if (totalAttachmentBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
+            return res.status(413).json({ error: `Attachments exceed the ${MAX_ATTACHMENT_TOTAL_BYTES}-byte total limit` })
+        }
 
         let draftsFolder = await db.query.mailFolders.findFirst({
             where: and(
@@ -498,11 +616,6 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
         const normalizedTo = data.to?.map(t => ({ name: t.name || null, address: t.address.trim() })) || []
         const normalizedCc = data.cc?.map(c => ({ name: c.name || null, address: c.address.trim() })) || []
         const normalizedBcc = data.bcc?.map(b => ({ name: b.name || null, address: b.address.trim() })) || []
-        const normalizedAttachments = data.attachments?.map(att => ({
-            filename: att.filename,
-            contentType: att.contentType || 'application/octet-stream',
-            size: Math.ceil(att.content.length * 0.75),
-        })) || []
 
         const existingDraft = data.draftId
             ? await db.query.mailMessages.findFirst({
@@ -513,6 +626,18 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
                 ),
             })
             : null
+
+        // Fixed up front (rather than left to the DB's default) because it doubles as the
+        // object-storage key prefix below, so uploads for a brand-new draft land under the
+        // same id the row is about to be inserted with.
+        const draftId = existingDraft?.id || uuidv4()
+        const existingAttachments = ((existingDraft?.attachments as StoredAttachment[] | null) || [])
+        // Bytes actually persisted this time — this is the fix for the bug where drafts only
+        // ever stored {filename, contentType, size} and the real attachment content was
+        // silently dropped. Byte-identical attachments (matched by content hash) reuse the
+        // existing draft's storageKey instead of re-uploading, which is what keeps repeated
+        // autosaves of an unchanged attachment cheap.
+        const normalizedAttachments = await uploadMailAttachments(mailboxId, `draft-${draftId}`, decodedAttachments, existingAttachments)
 
         const messageId = existingDraft?.messageId || `<${uuidv4()}@${mailbox.email.split('@')[1] || 'mail.local'}>`
         let savedMessage
@@ -543,7 +668,18 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
             // folder-scoped UID — a NULL one is unaddressable by UID EXPUNGE.
             const draftUid = await allocateUidForNewMessage(mailboxId, draftsFolder.id)
 
+            // TODO(mail-attachments cleanup): when a draft with uploaded attachments is
+            // permanently deleted, nothing removes its objects from object storage. The
+            // delete path is DELETE /:mailboxId/messages/:messageId in
+            // src/server/routes/mail/messages.ts, which calls deleteMessagesPermanently()
+            // in src/server/lib/move-messages.ts once a message leaves Trash — neither file
+            // is in scope for this change (see the MAIL-SERVER task's file allowlist), and
+            // the same gap already exists for every other message type's attachments, not
+            // just drafts'. A fix belongs in deleteMessagesPermanently(): read each doomed
+            // row's `attachments[].storageKey` before the DB delete and call
+            // createObjectStorage().delete(INBOX_ATTACHMENTS_BUCKET, storageKey) for each.
             ;[savedMessage] = await db.insert(mailMessages).values({
+                id: draftId,
                 mailboxId,
                 folderId: draftsFolder.id,
                 messageId,

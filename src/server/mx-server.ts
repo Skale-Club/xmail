@@ -269,15 +269,18 @@ export function createMXServer() {
                     const sender = session.envelope.mailFrom ? session.envelope.mailFrom.address : ''
                     const rcpts = session.envelope.rcptTo.map(r => r.address)
 
+                    // verifyInbound never returns null — a verification error resolves to a
+                    // synthetic quarantine outcome instead (see mail-auth.ts), so this always
+                    // has a verdict and a header to seal the message with.
                     const auth = await verifyInbound(raw, { ip, helo, sender, recipients: rcpts })
 
-                    if (auth?.verdict === 'reject') {
+                    if (auth.verdict === 'reject') {
                         console.log(`[MX] AUTH REJECT ${sender} -> ${rcpts.join(',')}: ${auth.reason}`)
                         return callback(smtpError('5.7.1 DMARC policy violation', 550))
                     }
 
-                    const sealed = auth ? sealWithAuthHeader(raw, auth.headers) : raw
-                    const isSpam = auth?.verdict === 'quarantine'
+                    const sealed = sealWithAuthHeader(raw, auth.headers)
+                    const isSpam = auth.verdict === 'quarantine'
 
                     const parsed = await parseRawEmail(sealed)
 
@@ -300,7 +303,7 @@ export function createMXServer() {
                             if (companion) {
                                 await storeInbound(companion.id, parsed, { isSpam })
                                 const tag = isSpam ? 'SPAM' : 'INBOX'
-                                console.log(`[MX] Delivered to ${tag}: ${rcpt} (${totalSize}B) spf=${auth?.spfPass} dkim=${auth?.dkimPass} dmarc=${auth?.dmarcPass}`)
+                                console.log(`[MX] Delivered to ${tag}: ${rcpt} (${totalSize}B) spf=${auth.spfPass} dkim=${auth.dkimPass} dmarc=${auth.dmarcPass}`)
                             }
                             continue
                         }
@@ -329,6 +332,25 @@ export function createMXServer() {
         console.error('[MX] Server error:', err.message)
     })
 
+    // Certificates can be renewed on disk (e.g. Let's Encrypt) without a restart.
+    // getMailTLSOptions() already reloads the bytes when the file's mtime changes,
+    // throttled to once per 60s (see mail-tls.ts) — polling it on that same cadence and
+    // pushing any change into the running smtp-server via updateSecureContext() (its
+    // supported way to rotate TLS material — see @types/smtp-server) means existing
+    // connections are unaffected and only NEW TLS handshakes see the renewed cert. Only
+    // set up when TLS was available at boot: hideSTARTTLS is fixed at construction, so a
+    // server that started with no cert never offers STARTTLS regardless of this interval.
+    let tlsRotationInterval: NodeJS.Timeout | null = null
+    if (tlsOpts) {
+        tlsRotationInterval = setInterval(() => {
+            const latest = getMailTLSOptions()
+            if (latest) {
+                server.updateSecureContext({ key: latest.key, cert: latest.cert })
+            }
+        }, 60_000)
+        tlsRotationInterval.unref()
+    }
+
     return {
         start() {
             server.listen(port, '0.0.0.0', () => {
@@ -337,6 +359,7 @@ export function createMXServer() {
             })
         },
         close(): Promise<void> {
+            if (tlsRotationInterval) clearInterval(tlsRotationInterval)
             return new Promise((resolve) => server.close(() => resolve()))
         },
     }

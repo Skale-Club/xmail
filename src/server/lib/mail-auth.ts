@@ -31,7 +31,14 @@ export interface AuthOutcome {
     reason?: string
 }
 
-export async function verifyInbound(raw: Buffer, ctx: AuthContext): Promise<AuthOutcome | null> {
+/**
+ * Always resolves to an AuthOutcome — never null. A thrown verification error (mailauth
+ * itself failing, a malformed message it cannot parse, etc.) resolves to a synthetic
+ * `verdict: 'quarantine'` outcome rather than rejecting or returning null, so the caller
+ * (mx-server.ts) can treat "verification errored" as just another quarantine reason instead
+ * of a distinct null case it has to remember to check for.
+ */
+export async function verifyInbound(raw: Buffer, ctx: AuthContext): Promise<AuthOutcome> {
     try {
         const result = await mailAuth(raw, {
             ip: ctx.ip,
@@ -76,8 +83,22 @@ export async function verifyInbound(raw: Buffer, ctx: AuthContext): Promise<Auth
 
         return { headers, verdict, spfPass, dkimPass, dmarcPass, reason }
     } catch (err) {
-        console.error('[mail-auth] verification error:', (err as Error).message)
-        return null
+        // Fail CLOSED, not open: mx-server.ts's caller treats a null return the same as an
+        // absent auth result (`auth?.verdict === 'reject'` is false, `isSpam` is false), so a
+        // message that makes mailauth throw used to sail straight into INBOX with no
+        // Authentication-Results header at all. Returning a synthetic quarantine outcome
+        // instead means a verification error routes to spam exactly like a real quarantine
+        // verdict, and the message still gets sealed with a header explaining why.
+        const message = (err as Error).message
+        console.error('[mail-auth] verification error:', message)
+        return {
+            headers: `none (verification error)`,
+            verdict: 'quarantine',
+            spfPass: false,
+            dkimPass: false,
+            dmarcPass: false,
+            reason: `verification_error: ${message}`,
+        }
     }
 }
 
