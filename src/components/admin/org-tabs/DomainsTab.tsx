@@ -4,7 +4,24 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
+import { useBranding } from '../../../lib/branding'
 import { apiFetch, apiRequest } from './shared'
+
+interface DnsRecordSpec {
+    type: string
+    name: string
+    value: string | null
+    priority?: number
+}
+
+interface DomainDnsRecords {
+    verification: DnsRecordSpec
+    spf: DnsRecordSpec
+    dkim: DnsRecordSpec
+    dmarc: DnsRecordSpec
+    mx: DnsRecordSpec
+    returnPath: DnsRecordSpec
+}
 
 interface Domain {
     id: string
@@ -15,12 +32,17 @@ interface Domain {
     verificationMethod: string | null
     spfStatus: string | null
     spfError: string | null
+    dkimStatus: string | null
+    dkimError: string | null
+    dmarcStatus: string | null
+    dmarcError: string | null
     mxStatus: string | null
     mxError: string | null
     returnPathStatus: string | null
     returnPathError: string | null
     dkimSelector: string | null
     dkimPublicKey: string | null
+    dnsRecords?: DomainDnsRecords
     verifiedAt: string | null
     createdAt: string
 }
@@ -111,12 +133,12 @@ function DnsRecordCard({ record }: { record: DnsRecord }) {
 
             {record.status === 'error' && (
                 <div className="rounded-md bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
-                    The {record.label} values in Skale Club and in your domain provider account mismatch. Add this value to your domain provider account to authenticate this domain.
+                    The {record.label} values here and in your domain provider account mismatch. Add this value to your domain provider account to authenticate this domain.
                 </div>
             )}
             {record.status === 'success' && (
                 <div className="rounded-md bg-emerald-50 p-3 text-xs text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
-                    The {record.label} values in Skale Club and your domain provider account match.
+                    The {record.label} values here and in your domain provider account match.
                 </div>
             )}
         </div>
@@ -124,6 +146,8 @@ function DnsRecordCard({ record }: { record: DnsRecord }) {
 }
 
 export default function DomainsTab({ organizationId }: DomainsTabProps) {
+    const { branding } = useBranding()
+    const verificationLabel = branding.companyName ? `${branding.companyName} Verification` : 'Domain Verification'
     const [domains, setDomains] = useState<Domain[]>([])
     const [isLoading, setIsLoading] = useState(true)
     const [searchQuery, setSearchQuery] = useState('')
@@ -235,47 +259,50 @@ export default function DomainsTab({ organizationId }: DomainsTabProps) {
             return 'pending'
         }
 
+        const records = domain.dnsRecords
+        if (!records) return []
+
         return [
             {
-                label: 'Skale Club Verification',
-                type: 'TXT',
-                name: '@',
-                value: `skaleclub-verification:${domain.verificationToken}`,
+                label: verificationLabel,
+                type: records.verification.type,
+                name: records.verification.name,
+                value: records.verification.value || 'Token unavailable',
                 status: statusFor(domain.verificationStatus, 'verification'),
             },
             {
                 label: 'SPF Record',
-                type: 'TXT',
-                name: '@',
-                value: 'v=spf1 include:spf.skaleclub.com ~all',
+                type: records.spf.type,
+                name: records.spf.name,
+                value: records.spf.value || '',
                 status: statusFor(domain.spfStatus, 'spf'),
             },
             {
                 label: 'DKIM Record',
-                type: 'TXT',
-                name: `${domain.dkimSelector || 'skaleclub'}._domainkey`,
-                value: domain.dkimPublicKey || '(generated after domain verification)',
-                status: statusFor(null, 'dkim'),
+                type: records.dkim.type,
+                name: records.dkim.name,
+                value: records.dkim.value || '(key not generated yet)',
+                status: statusFor(domain.dkimStatus, 'dkim'),
             },
             {
                 label: 'DMARC Record',
-                type: 'TXT',
-                name: '_dmarc',
-                value: `v=DMARC1; p=quarantine; rua=mailto:dmarc@${domain.name}`,
-                status: statusFor(null, 'dmarc'),
+                type: records.dmarc.type,
+                name: records.dmarc.name,
+                value: records.dmarc.value || '',
+                status: statusFor(domain.dmarcStatus, 'dmarc'),
             },
             {
                 label: 'MX Record',
-                type: 'MX',
-                name: '@',
-                value: '10 mx.skaleclub.com',
+                type: records.mx.type,
+                name: records.mx.name,
+                value: records.mx.priority != null ? `${records.mx.priority} ${records.mx.value}` : (records.mx.value || ''),
                 status: statusFor(domain.mxStatus, 'mx'),
             },
             {
                 label: 'Return-Path',
-                type: 'CNAME',
-                name: 'rp',
-                value: 'rp.skaleclub.com',
+                type: records.returnPath.type,
+                name: records.returnPath.name,
+                value: records.returnPath.value || '',
                 status: statusFor(domain.returnPathStatus, 'returnPath'),
             },
         ]

@@ -80,6 +80,7 @@ if ('serviceWorker' in navigator) {
 }
 
 const Login = React.lazy(() => import('./pages/Login'))
+const ResetPassword = React.lazy(() => import('./pages/ResetPassword'))
 
 const AdminDashboard = React.lazy(() => import('./pages/admin/AdminDashboard'))
 const OrganizationsPage = React.lazy(() => import('./pages/admin/OrganizationsPage'))
@@ -455,6 +456,9 @@ function App() {
                                 <Switch>
                                 <Route path="/login">
                                     <PageSuspense><Login /></PageSuspense>
+                                </Route>
+                                <Route path="/reset-password">
+                                    <PageSuspense><ResetPassword /></PageSuspense>
                                 </Route>
 
                                 <Route path="/admin">

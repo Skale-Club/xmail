@@ -4,12 +4,29 @@ import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
+import { useBranding } from '../../lib/branding'
 import {
     apiFetch,
     loadOrganizations,
     matchesSearch,
     type OrganizationOption,
 } from './helpers'
+
+interface DnsRecordSpec {
+    type: string
+    name: string
+    value: string | null
+    priority?: number
+}
+
+interface DomainDnsRecords {
+    verification: DnsRecordSpec
+    spf: DnsRecordSpec
+    dkim: DnsRecordSpec
+    dmarc: DnsRecordSpec
+    mx: DnsRecordSpec
+    returnPath: DnsRecordSpec
+}
 
 type DomainRecord = {
     id: string
@@ -24,6 +41,7 @@ type DomainRecord = {
     dmarcStatus?: string | null
     mxStatus?: string | null
     returnPathStatus?: string | null
+    dnsRecords?: DomainDnsRecords
     createdAt: string
 }
 
@@ -130,6 +148,8 @@ function DnsRecordCard({ label, type, name, value, priority, status, onCheck, is
 }
 
 function DnsModal({ domain, onClose, onDomainUpdate }: { domain: DomainRecord; onClose: () => void; onDomainUpdate: (d: DomainRecord) => void }) {
+    const { branding } = useBranding()
+    const verificationLabel = branding.companyName ? `${branding.companyName} Verification` : 'Domain Verification'
     const [dnsResults, setDnsResults] = useState<DnsResults | null>(null)
     const [checkingRecord, setCheckingRecord] = useState<string | null>(null)
     const [verifyingAll, setVerifyingAll] = useState(false)
@@ -213,32 +233,38 @@ function DnsModal({ domain, onClose, onDomainUpdate }: { domain: DomainRecord; o
                     </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                    <DnsRecordCard label="Skale Club Verification" type="TXT" name="@"
-                        value={`skaleclub-verification:${domain.verificationToken || 'Token unavailable'}`}
-                        status={statusFor(domain.verificationStatus, 'verification')}
-                        onCheck={() => handleVerify('verification')} isChecking={checkingRecord === 'verification'} disabled={isBusy} />
-                    <DnsRecordCard label="SPF Record" type="TXT" name="@"
-                        value="v=spf1 include:spf.skaleclub.com ~all"
-                        status={statusFor(domain.spfStatus, 'spf')}
-                        onCheck={() => handleVerify('spf')} isChecking={checkingRecord === 'spf'} disabled={isBusy} />
-                    <DnsRecordCard label="DKIM Record" type="TXT"
-                        name="skaleclub._domainkey"
-                        value={domain.dkimPublicKey || '(generated after domain verification)'}
-                        status={statusFor(domain.dkimStatus, 'dkim')}
-                        onCheck={() => handleVerify('dkim')} isChecking={checkingRecord === 'dkim'} disabled={isBusy} />
-                    <DnsRecordCard label="DMARC Record" type="TXT" name="_dmarc"
-                        value={`v=DMARC1; p=quarantine; rua=mailto:dmarc@${domain.name}`}
-                        status={statusFor(domain.dmarcStatus, 'dmarc')}
-                        onCheck={() => handleVerify('dmarc')} isChecking={checkingRecord === 'dmarc'} disabled={isBusy} />
-                    <DnsRecordCard label="MX Record" type="MX" name="@"
-                        value="mx.skaleclub.com"
-                        priority="10"
-                        status={statusFor(domain.mxStatus, 'mx')}
-                        onCheck={() => handleVerify('mx')} isChecking={checkingRecord === 'mx'} disabled={isBusy} />
-                    <DnsRecordCard label="Return-Path" type="CNAME" name="rp"
-                        value="rp.skaleclub.com"
-                        status={statusFor(domain.returnPathStatus, 'returnPath')}
-                        onCheck={() => handleVerify('returnPath')} isChecking={checkingRecord === 'returnPath'} disabled={isBusy} />
+                    {!domain.dnsRecords ? (
+                        <p className="py-4 text-center text-sm text-muted-foreground">Loading DNS records…</p>
+                    ) : (
+                        <>
+                            <DnsRecordCard label={verificationLabel} type={domain.dnsRecords.verification.type} name={domain.dnsRecords.verification.name}
+                                value={domain.dnsRecords.verification.value || 'Token unavailable'}
+                                status={statusFor(domain.verificationStatus, 'verification')}
+                                onCheck={() => handleVerify('verification')} isChecking={checkingRecord === 'verification'} disabled={isBusy} />
+                            <DnsRecordCard label="SPF Record" type={domain.dnsRecords.spf.type} name={domain.dnsRecords.spf.name}
+                                value={domain.dnsRecords.spf.value || ''}
+                                status={statusFor(domain.spfStatus, 'spf')}
+                                onCheck={() => handleVerify('spf')} isChecking={checkingRecord === 'spf'} disabled={isBusy} />
+                            <DnsRecordCard label="DKIM Record" type={domain.dnsRecords.dkim.type}
+                                name={domain.dnsRecords.dkim.name}
+                                value={domain.dnsRecords.dkim.value || '(key not generated yet)'}
+                                status={statusFor(domain.dkimStatus, 'dkim')}
+                                onCheck={() => handleVerify('dkim')} isChecking={checkingRecord === 'dkim'} disabled={isBusy} />
+                            <DnsRecordCard label="DMARC Record" type={domain.dnsRecords.dmarc.type} name={domain.dnsRecords.dmarc.name}
+                                value={domain.dnsRecords.dmarc.value || ''}
+                                status={statusFor(domain.dmarcStatus, 'dmarc')}
+                                onCheck={() => handleVerify('dmarc')} isChecking={checkingRecord === 'dmarc'} disabled={isBusy} />
+                            <DnsRecordCard label="MX Record" type={domain.dnsRecords.mx.type} name={domain.dnsRecords.mx.name}
+                                value={domain.dnsRecords.mx.value || ''}
+                                priority={domain.dnsRecords.mx.priority != null ? String(domain.dnsRecords.mx.priority) : undefined}
+                                status={statusFor(domain.mxStatus, 'mx')}
+                                onCheck={() => handleVerify('mx')} isChecking={checkingRecord === 'mx'} disabled={isBusy} />
+                            <DnsRecordCard label="Return-Path" type={domain.dnsRecords.returnPath.type} name={domain.dnsRecords.returnPath.name}
+                                value={domain.dnsRecords.returnPath.value || ''}
+                                status={statusFor(domain.returnPathStatus, 'returnPath')}
+                                onCheck={() => handleVerify('returnPath')} isChecking={checkingRecord === 'returnPath'} disabled={isBusy} />
+                        </>
+                    )}
 
                     <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-950/50">
                         <p className="text-sm text-blue-800 dark:text-blue-200">

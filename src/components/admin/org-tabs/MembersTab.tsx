@@ -5,6 +5,8 @@ import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../ui/Table'
+import { ConfirmDialog } from '../../ui/ConfirmDialog'
+import { toast } from '../../ui/toaster'
 import { fetchWithAuth } from './shared'
 
 interface Member {
@@ -54,6 +56,8 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
     const [editingMember, setEditingMember] = useState<Member | null>(null)
     const [newPassword, setNewPassword] = useState('')
     const [isSavingPassword, setIsSavingPassword] = useState(false)
+    const [memberToRemove, setMemberToRemove] = useState<Member | null>(null)
+    const [isRemoving, setIsRemoving] = useState(false)
 
     useEffect(() => {
         async function fetchDomains() {
@@ -107,19 +111,26 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
         }
     }
 
-    async function handleRemoveMember(userId: string) {
-        if (!confirm('Remove this member from the organization?')) return
-
+    async function handleRemoveMember() {
+        if (!memberToRemove) return
+        setIsRemoving(true)
         try {
-            const response = await fetchWithAuth(`/api/organizations/${orgId}/members/${userId}`, {
+            const response = await fetchWithAuth(`/api/organizations/${orgId}/members/${memberToRemove.userId}`, {
                 method: 'DELETE',
             })
 
             if (response.ok) {
+                setMemberToRemove(null)
                 await onRefresh()
+            } else {
+                const error = await response.json()
+                toast({ title: error.error || 'Failed to remove member', variant: 'destructive' })
             }
         } catch (error) {
             console.error('Error removing member:', error)
+            toast({ title: 'Failed to remove member', variant: 'destructive' })
+        } finally {
+            setIsRemoving(false)
         }
     }
 
@@ -219,7 +230,7 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                                                     <Button
                                                         variant="ghost"
                                                         size="icon"
-                                                        onClick={() => void handleRemoveMember(member.userId)}
+                                                        onClick={() => setMemberToRemove(member)}
                                                     >
                                                         <Trash2 className="h-4 w-4 text-gray-500 hover:text-red-500 transition-colors" />
                                                     </Button>
@@ -233,6 +244,21 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                     </Table>
                 </div>
             )}
+
+            <ConfirmDialog
+                open={memberToRemove !== null}
+                onOpenChange={(open) => { if (!open) setMemberToRemove(null) }}
+                title="Remove member"
+                description={
+                    memberToRemove
+                        ? `${memberToRemove.user.email} will lose access to this organization. If this is their last organization, their mailbox and password will also be deleted.`
+                        : ''
+                }
+                confirmLabel="Remove"
+                variant="danger"
+                loading={isRemoving}
+                onConfirm={() => void handleRemoveMember()}
+            />
 
             {/* Edit Password Modal */}
             {editingMember && (

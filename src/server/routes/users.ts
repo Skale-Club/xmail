@@ -5,7 +5,7 @@ import { users, organizationUsers, organizations } from '../../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { isPlatformAdmin } from '../lib/admin'
 import { hashPassword, createUserMailbox, validateEmailDomainForOrg, deleteUserMailbox } from '../lib/native-mail'
-import { supabaseAdminClient } from '../lib/supabase'
+import { supabaseAdminClient, supabaseAnonClient } from '../lib/supabase'
 import { ensureLocalUser, getAuthenticatedUserFromRequest } from '../lib/user-sync'
 
 const router = Router()
@@ -130,7 +130,13 @@ router.patch('/profile', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'User not found' })
         }
 
-        res.json({ user: updatedUser })
+        res.json({
+            user: {
+                ...updatedUser,
+                passwordHash: undefined,
+                twoFactorSecret: undefined,
+            },
+        })
     } catch (error) {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: error.errors })
@@ -256,16 +262,30 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'User with this email already exists' })
         }
 
-        // Create user in Supabase Auth
-        const { data: authData, error: authError } = await supabaseAdminClient.auth.admin.createUser({
-            email: userData.email,
-            password: userData.sendInvite ? undefined : userData.password,
-            email_confirm: true,
-            user_metadata: {
-                firstName: userData.firstName,
-                lastName: userData.lastName,
-            },
-        })
+        // Create the Supabase Auth user. For the invite flow, inviteUserByEmail both
+        // creates the auth user AND sends the invitation email in one call — using
+        // createUser() followed by a separate send would either leave the invite
+        // unsent (the old bug) or fail with "user already registered" if we tried to
+        // invite an email that createUser() had already provisioned.
+        const authResult = userData.sendInvite
+            ? await supabaseAdminClient.auth.admin.inviteUserByEmail(userData.email, {
+                redirectTo: `${process.env.FRONTEND_URL}/reset-password`,
+                data: {
+                    firstName: userData.firstName,
+                    lastName: userData.lastName,
+                },
+            })
+            : await supabaseAdminClient.auth.admin.createUser({
+                email: userData.email,
+                password: userData.password,
+                email_confirm: true,
+                user_metadata: {
+                    firstName: userData.firstName,
+                    lastName: userData.lastName,
+                },
+            })
+
+        const { data: authData, error: authError } = authResult
 
         if (authError) {
             console.error('Supabase auth error:', authError)
@@ -306,23 +326,13 @@ router.post('/', async (req: Request, res: Response) => {
             await createUserMailbox(newUser.id, userData.email)
         }
 
-        // If sendInvite is true, send password reset email
-        if (userData.sendInvite) {
-            await supabaseAdminClient.auth.admin.generateLink({
-                type: 'recovery',
-                email: userData.email,
-                options: {
-                    redirectTo: `${process.env.FRONTEND_URL}/reset-password`,
-                },
-            })
-        }
-
         const createdUser = await getAdminUserRecord(newUser.id)
 
         res.status(201).json({
             message: userData.sendInvite
                 ? 'User created successfully. Invitation email sent.'
                 : 'User created successfully',
+            inviteSent: userData.sendInvite,
             user: createdUser,
         })
     } catch (error) {
@@ -465,13 +475,11 @@ router.post('/:id/resend-invite', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'User not found' })
         }
 
-        // Send password reset email as invitation
-        const { error } = await supabaseAdminClient.auth.admin.generateLink({
-            type: 'recovery',
-            email: targetUser.email,
-            options: {
-                redirectTo: `${process.env.FRONTEND_URL}/reset-password`,
-            },
+        // Send password reset email as invitation (the target user already has a
+        // Supabase Auth account, so this resends/re-triggers access rather than
+        // creating a new one — same mechanism as the self-service reset in auth.ts).
+        const { error } = await supabaseAnonClient.auth.resetPasswordForEmail(targetUser.email, {
+            redirectTo: `${process.env.FRONTEND_URL}/reset-password`,
         })
 
         if (error) {
@@ -479,7 +487,7 @@ router.post('/:id/resend-invite', async (req: Request, res: Response) => {
             return res.status(400).json({ error: error.message })
         }
 
-        res.json({ message: 'Invitation email sent successfully' })
+        res.json({ message: 'Invitation email sent successfully', inviteSent: true })
     } catch (error) {
         console.error('Error resending invite:', error)
         res.status(500).json({ error: 'Internal server error' })

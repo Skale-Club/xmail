@@ -86,7 +86,12 @@ router.get('/:id', async (req: Request, res: Response) => {
         const organization = await db.query.organizations.findFirst({
             where: eq(organizations.id, organizationId),
             with: {
-                owner: true,
+                owner: {
+                    columns: {
+                        passwordHash: false,
+                        twoFactorSecret: false,
+                    },
+                },
                 members: {
                     with: {
                         user: {
@@ -379,11 +384,26 @@ router.delete('/:id/members/:userId', async (req: Request, res: Response) => {
             )
         )
 
-        // Remove native mailbox and revoke SMTP/IMAP access
-        await deleteUserMailbox(targetUserId)
-        await db.update(users)
-            .set({ passwordHash: null, updatedAt: new Date() })
-            .where(eq(users.id, targetUserId))
+        // Only destroy the mailbox and credentials when this was the user's LAST
+        // organization, and never for a platform admin. Removing one membership
+        // must not nuke access the user still has elsewhere (or admin access,
+        // which isn't org-scoped in the first place).
+        const targetUser = await db.query.users.findFirst({
+            where: eq(users.id, targetUserId),
+            columns: { isAdmin: true },
+        })
+
+        const remainingMemberships = await db.query.organizationUsers.findFirst({
+            where: eq(organizationUsers.userId, targetUserId),
+        })
+
+        if (!targetUser?.isAdmin && !remainingMemberships) {
+            // Remove native mailbox and revoke SMTP/IMAP access
+            await deleteUserMailbox(targetUserId)
+            await db.update(users)
+                .set({ passwordHash: null, updatedAt: new Date() })
+                .where(eq(users.id, targetUserId))
+        }
 
         res.json({ message: 'Member removed successfully' })
     } catch (error) {

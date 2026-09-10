@@ -106,8 +106,11 @@ export default function AdminsPage() {
 
     async function handleResendInvite(adminId: string) {
         try {
-            await apiFetch(`/api/users/${adminId}/resend-invite`, { method: 'POST' })
-            window.alert('Invitation sent.')
+            const data = await apiFetch<{ message: string; inviteSent?: boolean }>(
+                `/api/users/${adminId}/resend-invite`,
+                { method: 'POST' }
+            )
+            window.alert(data.inviteSent ? data.message : (data.message || 'Failed to resend invitation'))
         } catch (error) {
             window.alert(error instanceof Error ? error.message : 'Failed to resend invitation')
         }
