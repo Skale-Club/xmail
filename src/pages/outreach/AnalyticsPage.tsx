@@ -1,3 +1,4 @@
+import * as React from 'react'
 import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { TrendingUp, Mail, Users, Target, Eye, MousePointer } from 'lucide-react'
@@ -32,24 +33,48 @@ type DailyStat = {
 
 type StatColor = 'blue' | 'green' | 'purple' | 'orange' | 'red'
 
-async function fetchAnalytics(organizationId: string): Promise<AnalyticsData> {
-    return apiFetch<AnalyticsData>(`/api/outreach/campaigns/analytics?organizationId=${organizationId}`)
+type AnalyticsWindowDays = 7 | 30 | 90
+
+interface CampaignOption {
+    id: string
+    name: string
 }
 
-async function fetchDailyStats(organizationId: string): Promise<DailyStat[]> {
-    return apiFetch<DailyStat[]>(`/api/outreach/campaigns/analytics/daily?organizationId=${organizationId}`)
+function analyticsQuery(organizationId: string, days: AnalyticsWindowDays, campaignId: string) {
+    const params = new URLSearchParams({ organizationId, days: String(days) })
+    if (campaignId !== 'all') params.set('campaignId', campaignId)
+    return params.toString()
+}
+
+async function fetchAnalytics(organizationId: string, days: AnalyticsWindowDays, campaignId: string): Promise<AnalyticsData> {
+    return apiFetch<AnalyticsData>(`/api/outreach/campaigns/analytics?${analyticsQuery(organizationId, days, campaignId)}`)
+}
+
+async function fetchDailyStats(organizationId: string, days: AnalyticsWindowDays, campaignId: string): Promise<DailyStat[]> {
+    return apiFetch<DailyStat[]>(`/api/outreach/campaigns/analytics/daily?${analyticsQuery(organizationId, days, campaignId)}`)
+}
+
+async function fetchCampaignOptions(organizationId: string): Promise<CampaignOption[]> {
+    const data = await apiFetch<{ campaigns?: CampaignOption[] }>(`/api/outreach/campaigns?organizationId=${organizationId}&limit=100`)
+    return data.campaigns || []
+}
+
+// Short weekday + day-of-month (e.g. "Mon 10"), tabular-nums so the day digits line up across
+// rows instead of jittering per label width.
+function formatDayLabel(isoDate: string): string {
+    const parsed = new Date(isoDate)
+    if (Number.isNaN(parsed.getTime())) return isoDate
+    return parsed.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' })
 }
 
 function StatCard({
     title,
     value,
-    change,
     icon,
     color = 'blue',
 }: {
     title: string
     value: string | number
-    change?: number
     icon: ReactNode
     color?: StatColor
 }) {
@@ -69,11 +94,6 @@ function StatCard({
                 <div>
                     <p className="text-sm text-muted-foreground">{title}</p>
                     <p className="text-2xl font-bold text-foreground">{displayValue}</p>
-                    {change !== undefined && (
-                        <p className={`text-sm ${change >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {change >= 0 ? '+' : ''}{change.toFixed(1)}%
-                        </p>
-                    )}
                 </div>
                 <div className={`rounded-lg bg-muted p-2 ${colorClasses[color]}`}>
                     {icon}
@@ -86,13 +106,18 @@ function StatCard({
 function MiniChart({
     data,
     title,
+    unit = '',
     color = 'blue',
 }: {
     data: { name: string; value: number }[]
     title: string
+    unit?: string
     color?: 'blue' | 'green' | 'purple' | 'orange'
 }) {
-    const max = Math.max(...data.map((d) => d.value))
+    // Guard against an empty window and an all-zero window (e.g. no sends yet in the selected
+    // period) — both are real states now that this reads live data instead of fixture numbers,
+    // and Math.max(...[]) / a zero max would otherwise divide by zero or throw.
+    const max = Math.max(1, ...data.map((d) => d.value))
     const colorClasses = {
         blue: 'bg-primary',
         green: 'bg-green-500',
@@ -103,37 +128,58 @@ function MiniChart({
     return (
         <div className="rounded-lg border border-border bg-card p-4">
             <h4 className="mb-3 text-sm font-medium text-muted-foreground">{title}</h4>
-            <div className="mt-2 space-y-2">
-                {data.map((item, index) => (
-                    <div key={index} className="flex items-center gap-2">
-                        <span className="w-20 text-sm text-muted-foreground">{item.name}</span>
-                        <div className="h-2 flex-1 rounded-full bg-muted">
-                            <div
-                                className={`h-2 rounded-full ${colorClasses[color]}`}
-                                style={{ width: `${(item.value / max) * 100}%` }}
-                            />
+            {data.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">No data for this period</p>
+            ) : (
+                <div className="mt-2 space-y-2">
+                    {data.map((item, index) => (
+                        <div key={index} className="flex items-center gap-2">
+                            <span className="w-16 shrink-0 text-sm tabular-nums text-muted-foreground">{item.name}</span>
+                            <div className="h-2 flex-1 rounded-full bg-muted">
+                                <div
+                                    className={`h-2 rounded-full ${colorClasses[color]}`}
+                                    style={{ width: `${(item.value / max) * 100}%` }}
+                                />
+                            </div>
+                            <span className="w-12 shrink-0 text-right text-sm font-medium tabular-nums text-foreground">
+                                {item.value}{unit}
+                            </span>
                         </div>
-                        <span className="text-sm font-medium text-foreground">{item.value}</span>
-                    </div>
-                ))}
-            </div>
+                    ))}
+                </div>
+            )}
         </div>
     )
 }
 
 export function AnalyticsPage() {
     const { currentOrganization } = useOrganization()
+    const [days, setDays] = React.useState<AnalyticsWindowDays>(30)
+    const [campaignId, setCampaignId] = React.useState('all')
+
+    const { data: campaignOptions = [] } = useQuery({
+        queryKey: ['campaigns', 'analytics-options', currentOrganization?.id],
+        queryFn: () => fetchCampaignOptions(currentOrganization!.id),
+        enabled: !!currentOrganization?.id,
+    })
+
     const { data: overview, isLoading: overviewLoading } = useQuery({
-        queryKey: ['outreach-analytics', currentOrganization?.id],
-        queryFn: () => fetchAnalytics(currentOrganization!.id),
+        queryKey: ['outreach-analytics', currentOrganization?.id, days, campaignId],
+        queryFn: () => fetchAnalytics(currentOrganization!.id, days, campaignId),
         enabled: !!currentOrganization,
     })
 
     const { data: dailyStats, isLoading: dailyLoading } = useQuery({
-        queryKey: ['outreach-daily-stats', currentOrganization?.id],
-        queryFn: () => fetchDailyStats(currentOrganization!.id),
+        queryKey: ['outreach-daily-stats', currentOrganization?.id, days, campaignId],
+        queryFn: () => fetchDailyStats(currentOrganization!.id, days, campaignId),
         enabled: !!currentOrganization,
     })
+
+    const sentSeries = (dailyStats ?? []).map((stat) => ({ name: formatDayLabel(stat.date), value: stat.emailsSent }))
+    const openRateSeries = (dailyStats ?? []).map((stat) => ({
+        name: formatDayLabel(stat.date),
+        value: stat.emailsSent > 0 ? Number(((stat.opens / stat.emailsSent) * 100).toFixed(1)) : 0,
+    }))
 
     return (
         <OutreachLayout>
@@ -151,13 +197,26 @@ export function AnalyticsPage() {
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
-                        <select className="rounded-lg border border-input bg-background px-3 py-2 text-sm">
-                            <option value="7">Last 7 days</option>
-                            <option value="30">Last 30 days</option>
-                            <option value="90">Last 90 days</option>
+                        <select
+                            value={days}
+                            onChange={(e) => setDays(Number(e.target.value) as AnalyticsWindowDays)}
+                            className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
+                        >
+                            <option value={7}>Last 7 days</option>
+                            <option value={30}>Last 30 days</option>
+                            <option value={90}>Last 90 days</option>
                         </select>
-                        <select className="rounded-lg border border-input bg-background px-3 py-2 text-sm">
+                        <select
+                            value={campaignId}
+                            onChange={(e) => setCampaignId(e.target.value)}
+                            className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
+                        >
                             <option value="all">All Campaigns</option>
+                            {campaignOptions.map((campaign) => (
+                                <option key={campaign.id} value={campaign.id}>
+                                    {campaign.name}
+                                </option>
+                            ))}
                         </select>
                     </div>
                 </div>
@@ -196,7 +255,6 @@ export function AnalyticsPage() {
                             value={`${overview.overview.avgOpenRate.toFixed(1)}%`}
                             icon={<Eye className="h-6 w-6" />}
                             color="orange"
-                            change={2.5}
                         />
                     </div>
                 )}
@@ -220,38 +278,37 @@ export function AnalyticsPage() {
                             value={`${overview.overview.avgBounceRate.toFixed(1)}%`}
                             icon={<Target className="h-5 w-5" />}
                             color="red"
-                            change={-0.5}
                         />
                     </div>
                 )}
 
                 <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                    <MiniChart
-                        title="Emails Sent Over Time"
-                        data={[
-                            { name: 'Mon', value: 120 },
-                            { name: 'Tue', value: 150 },
-                            { name: 'Wed', value: 180 },
-                            { name: 'Thu', value: 220 },
-                            { name: 'Fri', value: 200 },
-                            { name: 'Sat', value: 80 },
-                            { name: 'Sun', value: 60 },
-                        ]}
-                        color="blue"
-                    />
-                    <MiniChart
-                        title="Open Rate by Day"
-                        data={[
-                            { name: 'Mon', value: 45 },
-                            { name: 'Tue', value: 52 },
-                            { name: 'Wed', value: 48 },
-                            { name: 'Thu', value: 55 },
-                            { name: 'Fri', value: 50 },
-                            { name: 'Sat', value: 42 },
-                            { name: 'Sun', value: 38 },
-                        ]}
-                        color="green"
-                    />
+                    {dailyLoading ? (
+                        [0, 1].map((i) => (
+                            <div key={i} className="rounded-lg border border-border bg-card p-4 animate-pulse">
+                                <div className="mb-3 h-4 w-1/3 rounded bg-muted" />
+                                <div className="space-y-2">
+                                    {[...Array(5)].map((_, row) => (
+                                        <div key={row} className="h-4 rounded bg-muted" />
+                                    ))}
+                                </div>
+                            </div>
+                        ))
+                    ) : (
+                        <>
+                            <MiniChart
+                                title="Emails Sent Over Time"
+                                data={sentSeries}
+                                color="blue"
+                            />
+                            <MiniChart
+                                title="Open Rate by Day"
+                                data={openRateSeries}
+                                unit="%"
+                                color="green"
+                            />
+                        </>
+                    )}
                 </div>
 
                 <div className="rounded-lg border border-border bg-card">

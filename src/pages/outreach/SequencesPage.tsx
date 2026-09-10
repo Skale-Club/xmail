@@ -39,6 +39,11 @@ interface SequenceStep {
     subject: string | null
     htmlBody: string | null
     plainBody: string | null
+    subjectB: string | null
+    htmlBodyB: string | null
+    plainBodyB: string | null
+    abTestEnabled: boolean
+    abTestPercentage: number | null
 }
 
 interface CampaignOption {
@@ -65,6 +70,16 @@ async function fetchSequences(organizationId: string, page = 1, limit = 25): Pro
 async function fetchCampaignOptions(organizationId: string): Promise<CampaignOption[]> {
     const data = await apiFetch<{ campaigns?: CampaignOption[] }>(`/api/outreach/campaigns?organizationId=${organizationId}`)
     return data.campaigns || []
+}
+
+interface CampaignSequenceResponse {
+    sequence: Sequence | null
+}
+
+// Same endpoint and query key NewSequencePage.tsx uses for its editor, so the two editors of a
+// campaign's canonical sequence share one cache entry instead of disagreeing about freshness.
+async function fetchCampaignSequence(campaignId: string): Promise<CampaignSequenceResponse> {
+    return apiFetch<CampaignSequenceResponse>(`/api/outreach/campaigns/${campaignId}/sequence`)
 }
 
 interface DraftStep {
@@ -206,6 +221,49 @@ function NewSequenceDialog({
         setCampaignId(prev => prev || campaigns[0]?.id || '')
     }, [open, campaigns])
 
+    // Load the selected campaign's canonical sequence so the dialog starts from its existing
+    // steps instead of always seeding a bare draft — PUT /:campaignId/sequence is a full
+    // transactional replace, so saving from an empty draft silently wipes an existing sequence.
+    const { data: existingSequenceData, isFetching: isLoadingSequence } = useQuery({
+        queryKey: ['campaign-sequence-editor', campaignId],
+        queryFn: () => fetchCampaignSequence(campaignId),
+        enabled: open && !!campaignId,
+    })
+
+    React.useEffect(() => {
+        if (!open || !campaignId || !existingSequenceData) return
+        const existing = existingSequenceData.sequence
+        if (existing) {
+            setName(existing.name || 'Main Sequence')
+            setDescription(existing.description || '')
+            const loaded = (existing.steps ?? [])
+                .filter((step) => step.type === 'email' || step.type === 'delay')
+                .sort((a, b) => a.stepOrder - b.stepOrder)
+                .map<DraftStep>((step, index) => ({
+                    id: crypto.randomUUID(),
+                    type: step.type === 'delay' ? 'delay' : 'email',
+                    stepOrder: index + 1,
+                    delayHours: step.delayHours,
+                    subject: step.subject ?? '',
+                    htmlBody: step.htmlBody ?? '',
+                    plainBody: step.plainBody ?? '',
+                    subjectB: step.subjectB ?? '',
+                    htmlBodyB: step.htmlBodyB ?? '',
+                    plainBodyB: step.plainBodyB ?? '',
+                    abTestEnabled: step.abTestEnabled,
+                    abTestPercentage: step.abTestPercentage ?? 50,
+                }))
+            setSteps(loaded.length > 0 ? loaded : [createDraftStep(1)])
+        } else {
+            setName('')
+            setDescription('')
+            setSteps([createDraftStep(1)])
+        }
+    }, [existingSequenceData, open, campaignId])
+
+    const existingStepCount = existingSequenceData?.sequence?.steps?.length ?? 0
+    const willReplaceExisting = !isLoadingSequence && existingStepCount > 0
+
     const resetForm = React.useCallback(() => {
         setCampaignId(campaigns[0]?.id || '')
         setName('')
@@ -307,6 +365,15 @@ function NewSequenceDialog({
                             />
                         </div>
                     </div>
+
+                    {isLoadingSequence && (
+                        <p className="text-sm text-muted-foreground">Loading this campaign&apos;s current sequence…</p>
+                    )}
+                    {willReplaceExisting && (
+                        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-300">
+                            This campaign already has {existingStepCount} step{existingStepCount === 1 ? '' : 's'} — saving will replace them.
+                        </div>
+                    )}
 
                     <div>
                         <label className="mb-1 block text-sm font-medium text-foreground">Description</label>
@@ -459,7 +526,7 @@ function NewSequenceDialog({
                     <Button type="button" variant="ghost" onClick={() => handleOpenChange(false)}>
                         Cancel
                     </Button>
-                    <Button type="button" onClick={handleSubmit} disabled={isSaving || noCampaigns}>
+                    <Button type="button" onClick={handleSubmit} disabled={isSaving || noCampaigns || isLoadingSequence}>
                         {isSaving ? 'Saving...' : 'Save Sequence'}
                     </Button>
                 </DialogFooter>

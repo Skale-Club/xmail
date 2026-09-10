@@ -17,6 +17,7 @@ import {
     deleteSequenceStep,
     sequencePayloadSchema,
 } from '../../lib/outreach-sequences'
+import { buildCampaignActivationPreview } from '../../lib/outreach-approval-preview'
 
 const router = Router()
 
@@ -63,6 +64,29 @@ const updateCampaignSchema = z.object({
     trackOpens: z.boolean().optional(),
     trackClicks: z.boolean().optional(),
     status: z.enum(['draft', 'active', 'paused', 'completed', 'archived']).optional(),
+})
+
+// Analytics window: the frontend only ever offers 7/30/90-day options, so an out-of-range value
+// (bad query string, stale bookmark) is clamped to the nearest of those three rather than
+// rejected — "clamp", not "validate-and-error".
+const ANALYTICS_WINDOW_DAYS = [7, 30, 90] as const
+type AnalyticsWindowDays = typeof ANALYTICS_WINDOW_DAYS[number]
+
+function clampAnalyticsWindowDays(value: unknown): AnalyticsWindowDays {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return 30
+    return ANALYTICS_WINDOW_DAYS.reduce<AnalyticsWindowDays>(
+        (closest, allowed) => (Math.abs(allowed - n) < Math.abs(closest - n) ? allowed : closest),
+        30,
+    )
+}
+
+const analyticsFilterSchema = z.object({
+    days: z.preprocess(
+        (v) => (v === undefined ? 30 : clampAnalyticsWindowDays(v)),
+        z.union([z.literal(7), z.literal(30), z.literal(90)]),
+    ),
+    campaignId: z.string().uuid().optional(),
 })
 
 const createSequenceSchema = z.object({
@@ -223,6 +247,99 @@ export async function validateCampaignReadyForActivation(campaignId: string, org
     }
 
     return issues
+}
+
+// Windowed email-grain metrics for /analytics and /analytics/daily. Deliberately separate from
+// computeCampaignMetrics (outreach-campaign-metrics.ts), which is the all-time canonical rollup
+// shared by the campaign list/dashboard/stats surfaces — adding a date window to that shared
+// function would change what every other consumer reports. This is scoped to the analytics
+// period selector only.
+interface WindowedEmailMetrics {
+    sentEmails: number
+    totalOpens: number
+    totalClicks: number
+    totalReplies: number
+    bouncedLeads: number
+    openRate: number
+    clickRate: number
+    replyRate: number
+    bounceRate: number
+}
+
+const EMPTY_WINDOWED_METRICS: WindowedEmailMetrics = {
+    sentEmails: 0,
+    totalOpens: 0,
+    totalClicks: 0,
+    totalReplies: 0,
+    bouncedLeads: 0,
+    openRate: 0,
+    clickRate: 0,
+    replyRate: 0,
+    bounceRate: 0,
+}
+
+async function computeWindowedEmailMetrics(campaignIds: string[], days: AnalyticsWindowDays): Promise<WindowedEmailMetrics> {
+    if (campaignIds.length === 0) return { ...EMPTY_WINDOWED_METRICS }
+
+    const idList = sql.join(campaignIds.map((id) => sql`${id}::uuid`), sql`, `)
+
+    const result = resultRows<{
+        sentEmails: number | string
+        totalOpens: number | string
+        totalClicks: number | string
+        totalReplies: number | string
+        contactedLeads: number | string
+        uniqueOpeners: number | string
+        uniqueClickers: number | string
+        repliedLeads: number | string
+        bouncedLeads: number | string
+    }>(await db.execute(sql`
+        WITH windowed_emails AS (
+            SELECT *
+            FROM outreach_emails
+            WHERE campaign_id IN (${idList})
+              AND sent_at IS NOT NULL
+              AND sent_at >= now() - (interval '1 day' * ${days})
+        ),
+        lead_flags AS (
+            SELECT
+                campaign_lead_id,
+                bool_or(opened_at IS NOT NULL) AS opened,
+                bool_or(clicked_at IS NOT NULL) AS clicked,
+                bool_or(replied_at IS NOT NULL) AS replied,
+                bool_or(bounced_at IS NOT NULL) AS bounced
+            FROM windowed_emails
+            GROUP BY campaign_lead_id
+        )
+        SELECT
+            (SELECT count(*)::int FROM windowed_emails) AS "sentEmails",
+            (SELECT count(*)::int FROM windowed_emails WHERE opened_at IS NOT NULL) AS "totalOpens",
+            (SELECT count(*)::int FROM windowed_emails WHERE clicked_at IS NOT NULL) AS "totalClicks",
+            (SELECT count(*)::int FROM windowed_emails WHERE replied_at IS NOT NULL) AS "totalReplies",
+            (SELECT count(*)::int FROM lead_flags) AS "contactedLeads",
+            (SELECT count(*)::int FROM lead_flags WHERE opened) AS "uniqueOpeners",
+            (SELECT count(*)::int FROM lead_flags WHERE clicked) AS "uniqueClickers",
+            (SELECT count(*)::int FROM lead_flags WHERE replied) AS "repliedLeads",
+            (SELECT count(*)::int FROM lead_flags WHERE bounced) AS "bouncedLeads"
+    `))
+
+    const row = result[0]
+    if (!row) return { ...EMPTY_WINDOWED_METRICS }
+
+    const contacted = Number(row.contactedLeads) || 0
+    const pct = (numerator: number) => (contacted > 0 ? (numerator / contacted) * 100 : 0)
+
+    return {
+        sentEmails: Number(row.sentEmails) || 0,
+        totalOpens: Number(row.totalOpens) || 0,
+        totalClicks: Number(row.totalClicks) || 0,
+        totalReplies: Number(row.totalReplies) || 0,
+        bouncedLeads: Number(row.bouncedLeads) || 0,
+        openRate: pct(Number(row.uniqueOpeners) || 0),
+        clickRate: pct(Number(row.uniqueClickers) || 0),
+        replyRate: pct(Number(row.repliedLeads) || 0),
+        bounceRate: pct(Number(row.bouncedLeads) || 0),
+    }
 }
 
 // ============ CAMPAIGNS ============
@@ -442,36 +559,54 @@ router.get('/analytics', async (req: Request, res: Response) => {
         const membership = await requireOutreachRead(req, res, organizationId)
         if (!membership) return
 
+        const { days, campaignId } = analyticsFilterSchema.parse(req.query)
+
         const campaignsList = await db.query.campaigns.findMany({
             where: eq(campaigns.organizationId, organizationId),
             columns: { id: true, status: true },
         })
 
-        // Previously summed the denormalized campaigns.* counters while /stats aggregated
-        // campaign_leads, so the dashboard and the analytics page disagreed about the same org.
-        // Both now read the same function over the same rows.
-        const metrics = await computeCampaignMetrics(campaignsList.map(c => c.id))
-        const activeCampaigns = campaignsList.filter(c => c.status === 'active').length
+        let scopedCampaigns = campaignsList
+        if (campaignId) {
+            const match = campaignsList.find((c) => c.id === campaignId)
+            if (!match) {
+                return res.status(400).json({ error: 'Campaign not found or access denied' })
+            }
+            scopedCampaigns = [match]
+        }
+        const scopedCampaignIds = scopedCampaigns.map((c) => c.id)
+
+        // Cohort membership (totalLeads/eligibleLeads/contactedLeads) reads the same all-time
+        // rollup every other campaign surface uses, scoped to the selected campaign (or the whole
+        // org) — /stats and /:id/stats stay in agreement about "how many leads". The activity
+        // numbers below (sent/opens/clicks/replies/bounces + rates) are the ones the period
+        // selector actually windows.
+        const metrics = await computeCampaignMetrics(scopedCampaignIds)
+        const windowed = await computeWindowedEmailMetrics(scopedCampaignIds, days)
+        const activeCampaigns = scopedCampaigns.filter(c => c.status === 'active').length
 
         res.json({
             overview: {
-                totalCampaigns: campaignsList.length,
+                totalCampaigns: scopedCampaigns.length,
                 activeCampaigns,
                 totalLeads: metrics.totalLeads,
                 eligibleLeads: metrics.eligibleLeads,
                 contactedLeads: metrics.contactedLeads,
-                totalEmailsSent: metrics.sentEmails,
-                totalOpens: metrics.totalOpens,
-                totalClicks: metrics.totalClicks,
-                totalReplies: metrics.totalReplies,
-                totalBounces: metrics.bouncedLeads,
-                avgOpenRate: metrics.openRate,
-                avgClickRate: metrics.clickRate,
-                avgReplyRate: metrics.replyRate,
-                avgBounceRate: metrics.bounceRate,
+                totalEmailsSent: windowed.sentEmails,
+                totalOpens: windowed.totalOpens,
+                totalClicks: windowed.totalClicks,
+                totalReplies: windowed.totalReplies,
+                totalBounces: windowed.bouncedLeads,
+                avgOpenRate: windowed.openRate,
+                avgClickRate: windowed.clickRate,
+                avgReplyRate: windowed.replyRate,
+                avgBounceRate: windowed.bounceRate,
             },
         })
     } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: 'Validation error', details: error.errors })
+        }
         console.error('Error fetching analytics:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
@@ -494,6 +629,8 @@ router.get('/analytics/daily', async (req: Request, res: Response) => {
         const membership = await requireOutreachRead(req, res, organizationId)
         if (!membership) return
 
+        const { days, campaignId } = analyticsFilterSchema.parse(req.query)
+
         const orgCampaigns = await db.query.campaigns.findMany({
             where: eq(campaigns.organizationId, organizationId),
             columns: { id: true },
@@ -503,9 +640,15 @@ router.get('/analytics/daily', async (req: Request, res: Response) => {
             return res.json([])
         }
 
-        const campaignIds = orgCampaigns.map(c => c.id)
+        let campaignIds = orgCampaigns.map(c => c.id)
+        if (campaignId) {
+            if (!campaignIds.includes(campaignId)) {
+                return res.status(400).json({ error: 'Campaign not found or access denied' })
+            }
+            campaignIds = [campaignId]
+        }
 
-        // Get daily stats from outreach_emails for the last 30 days
+        // Get daily stats from outreach_emails for the selected window (default 30 days)
         const dailyStats = await db
             .select({
                 date: sql<string>`date_trunc('day', ${outreachEmails.sentAt})::date::text`,
@@ -517,13 +660,16 @@ router.get('/analytics/daily', async (req: Request, res: Response) => {
             .from(outreachEmails)
             .where(and(
                 inArray(outreachEmails.campaignId, campaignIds),
-                sql`${outreachEmails.sentAt} >= now() - interval '30 days'`
+                sql`${outreachEmails.sentAt} >= now() - (interval '1 day' * ${days})`
             ))
             .groupBy(sql`date_trunc('day', ${outreachEmails.sentAt})::date`)
             .orderBy(sql`date_trunc('day', ${outreachEmails.sentAt})::date`)
 
         res.json(dailyStats)
     } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: 'Validation error', details: error.errors })
+        }
         console.error('Error fetching daily analytics:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
@@ -562,6 +708,38 @@ router.get('/:id', async (req: Request, res: Response) => {
         res.json({ campaign })
     } catch (error) {
         console.error('Error fetching campaign:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// Activation preview: the same campaign/sending-inbox/sequence/lead/compliance preview shown on
+// an agent-proposed `campaign_activation` approval card (outreach-approval-preview.ts), reused
+// here so a human clicking Activate directly gets to see what will actually be sent before
+// confirming — not just an unconfirmed status flip.
+router.get('/:campaignId/activation-preview', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        const campaignId = req.params.campaignId
+
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+
+        const campaign = await db.query.campaigns.findFirst({
+            where: eq(campaigns.id, campaignId),
+            columns: { id: true, organizationId: true },
+        })
+        if (!campaign) {
+            return res.status(404).json({ error: 'Campaign not found' })
+        }
+
+        const membership = await requireOutreachRead(req, res, campaign.organizationId)
+        if (!membership) return
+
+        const preview = await buildCampaignActivationPreview(campaignId, campaign.organizationId)
+        res.json({ preview })
+    } catch (error) {
+        console.error('Error building campaign activation preview:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
 })

@@ -6,6 +6,17 @@ import { OutreachLayout } from '../../../components/outreach/OutreachLayout'
 import { apiFetch, apiRequest } from '../../../lib/api-client'
 import { useOrganization } from '../../../hooks/useOrganization'
 import { toast } from '../../../components/ui/toaster'
+import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '../../../components/ui/Dialog'
+import { Button } from '../../../components/ui/button'
+import { CampaignActivationPreviewCard, type CampaignActivationPreview } from '../../../components/outreach/CampaignActivationPreview'
 import OverviewTab from './tabs/OverviewTab'
 import LeadsTab from './tabs/LeadsTab'
 import SequenceTab from './tabs/SequenceTab'
@@ -50,6 +61,8 @@ function CampaignDetailPage() {
     const { currentOrganization } = useOrganization()
     const queryClient = useQueryClient()
     const [activeTab, setActiveTab] = React.useState<TabKey>('overview')
+    const [isActivateOpen, setIsActivateOpen] = React.useState(false)
+    const [isDeleteOpen, setIsDeleteOpen] = React.useState(false)
 
     const { data, isLoading, error } = useQuery({
         queryKey: ['campaign', currentOrganization?.id, id],
@@ -58,6 +71,20 @@ function CampaignDetailPage() {
         ),
         enabled: !!currentOrganization?.id && !!id,
     })
+
+    // Fetched only while the activation confirm dialog is open — the same preview object an
+    // agent-proposed activation approval shows (buildCampaignActivationPreview), reused here so a
+    // human clicking Activate sees the sending inbox, rendered sequence, lead counts and any
+    // compliance blockers before the status flip actually happens.
+    const { data: activationPreviewData, isFetching: isLoadingActivationPreview } = useQuery({
+        queryKey: ['campaign-activation-preview', currentOrganization?.id, id],
+        queryFn: () => apiFetch<{ preview: CampaignActivationPreview | null }>(
+            `/api/outreach/campaigns/${id}/activation-preview?organizationId=${currentOrganization!.id}`
+        ),
+        enabled: isActivateOpen && !!currentOrganization?.id && !!id,
+    })
+    const activationPreview = activationPreviewData?.preview
+    const hasActivationBlockers = (activationPreview?.compliance.blockers.length ?? 0) > 0
 
     const statusMutation = useMutation({
         mutationFn: (newStatus: 'active' | 'paused') => apiRequest(
@@ -88,6 +115,7 @@ function CampaignDetailPage() {
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['campaign', currentOrganization?.id, id] })
             queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+            setIsActivateOpen(false)
             toast({ title: 'Status updated', variant: 'success' })
         },
     })
@@ -103,14 +131,13 @@ function CampaignDetailPage() {
             setLocation('/outreach/campaigns')
         },
         onError: (err) => {
+            setIsDeleteOpen(false)
             toast({ title: 'Failed to delete', description: (err as Error).message, variant: 'destructive' })
         },
     })
 
-    const handleDelete = () => {
-        if (window.confirm('Delete this campaign? This action cannot be undone and will cascade-delete all leads, sequences, and emails.')) {
-            deleteMutation.mutate()
-        }
+    const handleActivateConfirm = () => {
+        statusMutation.mutate('active')
     }
 
     return (
@@ -168,7 +195,7 @@ function CampaignDetailPage() {
                         <div className="flex items-center gap-2 flex-wrap">
                             {(data.campaign.status === 'draft' || data.campaign.status === 'paused') && (
                                 <button
-                                    onClick={() => statusMutation.mutate('active')}
+                                    onClick={() => setIsActivateOpen(true)}
                                     disabled={statusMutation.isPending || deleteMutation.isPending}
                                     className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                                 >
@@ -185,7 +212,7 @@ function CampaignDetailPage() {
                                 </button>
                             )}
                             <button
-                                onClick={handleDelete}
+                                onClick={() => setIsDeleteOpen(true)}
                                 disabled={statusMutation.isPending || deleteMutation.isPending}
                                 className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                             >
@@ -255,6 +282,42 @@ function CampaignDetailPage() {
                     </div>
                 </div>
             )}
+
+            <Dialog open={isActivateOpen} onOpenChange={setIsActivateOpen}>
+                <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle>Activate campaign?</DialogTitle>
+                        <DialogDescription>
+                            Review the sending inbox, rendered sequence and lead counts below. Activating starts
+                            sending real emails to every enrolled lead.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <CampaignActivationPreviewCard preview={isLoadingActivationPreview ? undefined : activationPreview} />
+                    <DialogFooter className="mt-4">
+                        <Button type="button" variant="ghost" onClick={() => setIsActivateOpen(false)}>
+                            Cancel
+                        </Button>
+                        <Button
+                            type="button"
+                            onClick={handleActivateConfirm}
+                            disabled={isLoadingActivationPreview || hasActivationBlockers || statusMutation.isPending}
+                        >
+                            {statusMutation.isPending ? 'Activating...' : 'Activate'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <ConfirmDialog
+                open={isDeleteOpen}
+                onOpenChange={setIsDeleteOpen}
+                title="Delete this campaign?"
+                description="This action cannot be undone and will cascade-delete all leads, sequences, and emails."
+                confirmLabel="Delete"
+                variant="danger"
+                loading={deleteMutation.isPending}
+                onConfirm={() => deleteMutation.mutate()}
+            />
         </OutreachLayout>
     )
 }
