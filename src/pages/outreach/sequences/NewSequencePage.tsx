@@ -2,7 +2,6 @@ import React from 'react'
 import { useLocation, useParams } from 'wouter'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Save, Clock, Mail, Trash2, Split, Sparkles } from 'lucide-react'
-import { OutreachLayout } from '../../../components/outreach/OutreachLayout'
 import { toast } from '../../../components/ui/toaster'
 import { apiFetch } from '../../../lib/api-client'
 
@@ -13,8 +12,10 @@ interface Step {
     delayHours: number
     subject: string
     htmlBody: string
+    plainBody: string
     subjectB: string
     htmlBodyB: string
+    plainBodyB: string
     abTestEnabled: boolean
     abTestPercentage: number
 }
@@ -50,8 +51,10 @@ function makeEmptyStep(order: number): Step {
         delayHours: 0,
         subject: '',
         htmlBody: '',
+        plainBody: '',
         subjectB: '',
         htmlBodyB: '',
+        plainBodyB: '',
         abTestEnabled: false,
         abTestPercentage: 50,
     }
@@ -87,8 +90,10 @@ export function NewSequencePage() {
                 delayHours: step.delayHours,
                 subject: step.subject ?? '',
                 htmlBody: step.htmlBody ?? step.plainBody ?? '',
+                plainBody: step.plainBody ?? '',
                 subjectB: step.subjectB ?? '',
                 htmlBodyB: step.htmlBodyB ?? step.plainBodyB ?? '',
+                plainBodyB: step.plainBodyB ?? '',
                 abTestEnabled: step.abTestEnabled,
                 abTestPercentage: step.abTestPercentage ?? 50,
             }))
@@ -105,8 +110,10 @@ export function NewSequencePage() {
                 delayHours: type === 'delay' ? 72 : 0,
                 subject: '',
                 htmlBody: '',
+                plainBody: '',
                 subjectB: '',
                 htmlBodyB: '',
+                plainBodyB: '',
                 abTestEnabled: false,
                 abTestPercentage: 50,
             }
@@ -136,8 +143,10 @@ export function NewSequencePage() {
                             delayHours: step.delayHours,
                             subject: step.subject,
                             htmlBody: step.htmlBody,
+                            plainBody: step.plainBody || undefined,
                             subjectB: step.abTestEnabled ? step.subjectB : undefined,
                             htmlBodyB: step.abTestEnabled ? step.htmlBodyB : undefined,
+                            plainBodyB: step.abTestEnabled && step.plainBodyB ? step.plainBodyB : undefined,
                             abTestEnabled: step.abTestEnabled,
                             abTestPercentage: step.abTestPercentage,
                         }
@@ -192,7 +201,6 @@ export function NewSequencePage() {
     const firstEmailIndex = steps.findIndex(step => step.type === 'email')
 
     return (
-        <OutreachLayout>
             <div className="mx-auto max-w-4xl space-y-6">
                 <div className="flex items-center justify-between border-b border-border pb-6">
                     <div className="flex items-center gap-4">
@@ -265,6 +273,16 @@ export function NewSequencePage() {
                                     </div>
                                 ) : (
                                     <div className="space-y-4">
+                                        <div className="max-w-xs">
+                                            <label className="mb-1 block text-sm font-medium text-foreground">Wait before sending (hours)</label>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                value={step.delayHours}
+                                                onChange={(e) => updateStep(step.id, { delayHours: Math.max(0, parseInt(e.target.value) || 0) })}
+                                                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                                            />
+                                        </div>
                                         {index === firstEmailIndex && (
                                             <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
                                                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -317,6 +335,16 @@ export function NewSequencePage() {
                                                 value={step.htmlBody}
                                                 onChange={(e) => updateStep(step.id, { htmlBody: e.target.value })}
                                                 rows={5}
+                                                placeholder="Hi {{firstName}}, ..."
+                                                className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="mb-1 block text-sm font-medium text-foreground">Variant A plain-text body</label>
+                                            <textarea
+                                                value={step.plainBody}
+                                                onChange={(e) => updateStep(step.id, { plainBody: e.target.value })}
+                                                rows={4}
                                                 placeholder="Hi {{firstName}}, ..."
                                                 className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
                                             />
@@ -388,6 +416,16 @@ export function NewSequencePage() {
                                                             className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
                                                         />
                                                     </div>
+                                                    <div>
+                                                        <label className="mb-1 block text-sm font-medium text-foreground">Variant B plain-text body</label>
+                                                        <textarea
+                                                            value={step.plainBodyB}
+                                                            onChange={(e) => updateStep(step.id, { plainBodyB: e.target.value })}
+                                                            rows={4}
+                                                            placeholder="Alternative plain-text message"
+                                                            className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
+                                                        />
+                                                    </div>
                                                 </div>
                                             )}
                                         </div>
@@ -416,7 +454,6 @@ export function NewSequencePage() {
                     </div>
                 </div>
             </div>
-        </OutreachLayout>
     )
 }
 

@@ -632,6 +632,7 @@ const hooks = vi.hoisted(() => {
             list: makeListReturn([]),
             detail: { data: undefined as InboxConversationDetail | undefined, isLoading: false, isError: false, refetch: vi.fn() },
             labelAttachPending: false,
+            readStateMutate: vi.fn(),
         },
         makeListReturn,
     }
@@ -667,7 +668,7 @@ vi.mock('@/hooks/useUnifiedInbox', () => ({
     useInboxUnreadCount: () => ({ data: 0 }),
     // Operator mutations are stubbed for the page/wiring tests; the REAL implementations are
     // exercised against a fake network in the "operator mutations" describe via importActual.
-    useInboxReadState: () => stubMutation(),
+    useInboxReadState: () => ({ ...stubMutation(), mutate: hooks.state.readStateMutate }),
     useInboxArchive: () => stubMutation(),
     useInboxStatus: () => stubMutation(),
     useInboxLabelAttach: () => ({ ...stubMutation(), isPending: hooks.state.labelAttachPending }),
@@ -704,6 +705,41 @@ describe('UnifiedInboxPage: tenant isolation + selection', () => {
         hooks.state.list = hooks.makeListReturn([])
         hooks.state.detail = { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
         hooks.state.labelAttachPending = false
+        hooks.state.readStateMutate = vi.fn()
+    })
+
+    // Opening a conversation used to never mark it read — the only `readState.mutate` call was
+    // the explicit "Mark read" button. The page now marks read once the opened conversation's
+    // detail resolves unread, without disturbing the manual toggle.
+    it('marks the opened conversation read once its detail resolves unread', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        render(<UnifiedInboxPage />)
+        expect(hooks.state.readStateMutate).toHaveBeenCalledWith({ conversationId: CONV_1, read: true })
+        expect(hooks.state.readStateMutate).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not mark read again on a re-render of the same open conversation', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        const view = render(<UnifiedInboxPage />)
+        view.rerender(<UnifiedInboxPage />)
+        expect(hooks.state.readStateMutate).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not auto-mark read when the opened conversation is already read', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = {
+            data: makeDetail({ conversation: { ...makeDetail().conversation, unread: false } }),
+            isLoading: false,
+            isError: false,
+            refetch: vi.fn(),
+        }
+        render(<UnifiedInboxPage />)
+        expect(hooks.state.readStateMutate).not.toHaveBeenCalled()
     })
 
     it('prompts to pick an organization when none is selected', () => {

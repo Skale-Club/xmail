@@ -71,6 +71,12 @@ function compactRecord(value: unknown): Record<string, unknown> {
     }
 }
 
+// Apollo returns this literal placeholder address (instead of omitting the field) when a
+// person's real email exists but is locked behind a paid unlock/reveal. Treated exactly like an
+// absent email below — never surfaced as a real address, never left to fall through to
+// 'unavailable'.
+const EMAIL_NOT_UNLOCKED_PATTERN = /^email_not_unlocked@/i
+
 function normalizeEmailStatus(status: string | null | undefined, email: string | null | undefined): NormalizedProspect['emailStatus'] {
     const value = status?.trim().toLowerCase()
     if (value === 'verified') return 'verified'
@@ -82,7 +88,12 @@ function normalizeEmailStatus(status: string | null | undefined, email: string |
 
 function normalizePerson(input: z.infer<typeof personSchema>): NormalizedProspect {
     const location = [input.city, input.state, input.country].filter(Boolean).join(', ') || undefined
-    const email = input.email?.trim().toLowerCase()
+    const rawEmail = input.email?.trim().toLowerCase()
+    // A locked-email placeholder or a genuinely blank email are both "no email" — status
+    // 'unknown', not 'unavailable': the person may still have a real (unlocked, verified, etc.)
+    // email later, unlike a confirmed-unavailable case.
+    const hasRealEmail = !!rawEmail && !EMAIL_NOT_UNLOCKED_PATTERN.test(rawEmail)
+    const email = hasRealEmail ? rawEmail : undefined
     return {
         externalPersonId: input.id,
         firstName: input.first_name ?? undefined,
@@ -95,8 +106,8 @@ function normalizePerson(input: z.infer<typeof personSchema>): NormalizedProspec
         companyDomain: input.organization?.primary_domain ?? undefined,
         companyIndustry: input.organization?.industry ?? undefined,
         companyEmployeeCount: input.organization?.estimated_num_employees ?? undefined,
-        email: email || undefined,
-        emailStatus: normalizeEmailStatus(input.email_status, email),
+        email,
+        emailStatus: hasRealEmail ? normalizeEmailStatus(input.email_status, email) : 'unknown',
         rawPayload: compactRecord(input),
     }
 }

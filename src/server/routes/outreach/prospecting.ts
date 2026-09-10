@@ -42,6 +42,12 @@ router.get('/runs/:id/candidates', async (req, res) => {
     try {
         const query = z.object({ organizationId: z.string().uuid(), limit: z.coerce.number().int().min(1).max(100).default(100) }).parse(req.query)
         if (!await requireOutreachRead(req, res, query.organizationId)) return
+        // Hardening pass: a malformed uuid path param reaching Postgres throws `invalid input
+        // syntax for type uuid` — an unhandled 500 instead of a clean 404. A row can never exist
+        // under a malformed id anyway. Checked after auth (mirrors campaigns.ts/leads.ts).
+        if (!z.string().uuid().safeParse(req.params.id).success) {
+            return res.status(404).json({ error: 'Prospecting run not found' })
+        }
         const run = await db.query.prospectingRuns.findFirst({
             where: and(eq(prospectingRuns.id, req.params.id), eq(prospectingRuns.organizationId, query.organizationId)),
             columns: { id: true },

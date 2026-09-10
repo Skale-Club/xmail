@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../../db'
 import { emailAccounts, organizationUsers, outlookMailboxes, users } from '../../../db/schema'
-import { eq, and, desc, inArray } from 'drizzle-orm'
+import { eq, and, desc, inArray, sql } from 'drizzle-orm'
 import { requireOutreachRead, requireOutreachWrite } from '../../lib/outreach-access'
 import { encryptSecret, decryptSecret } from '../../lib/crypto'
 import { paginate, paginationQuerySchema } from '../../lib/pagination'
@@ -74,6 +74,61 @@ function canonicalSmtpSecure(port: number | null | undefined, secure: boolean | 
     return resolveSmtpSecurity({ port, secure }).secure
 }
 
+/** Stable short codes for a failed SMTP/IMAP verification probe — same intent as the Outlook
+ * branch's `capability.code` above: a raw nodemailer/imapflow error can embed the mail host,
+ * server banner text, or the attempted username in its message, and none of that belongs in a
+ * stored column or in a response a caller might log/display verbatim. */
+type MailConnectionErrorCode = 'auth_failed' | 'connection_refused' | 'tls_error' | 'timeout' | 'unknown'
+
+interface ClassifiedMailError {
+    protocol: 'SMTP' | 'IMAP'
+    code: MailConnectionErrorCode
+    message: string
+}
+
+/**
+ * Maps a raw SMTP (nodemailer) or IMAP (imapflow) connection error onto one of the stable
+ * codes above plus a short, non-identifying human message. The raw error text is NEVER
+ * returned here — callers must log it separately (console.error/logger) if they need it for
+ * debugging.
+ */
+function classifyMailConnectionError(protocol: 'SMTP' | 'IMAP', error: unknown): ClassifiedMailError {
+    const err = error as { code?: unknown; authenticationFailed?: unknown } | undefined
+    const code = typeof err?.code === 'string' ? err.code.toUpperCase() : ''
+    const message = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase()
+
+    if (
+        err?.authenticationFailed === true ||
+        code === 'EAUTH' ||
+        code === 'AUTHENTICATIONFAILED' ||
+        code === 'NOAUTH' ||
+        message.includes('auth') ||
+        message.includes('invalid login') ||
+        message.includes('invalid credentials')
+    ) {
+        return { protocol, code: 'auth_failed', message: `${protocol} authentication failed — check the username and password.` }
+    }
+    if (code === 'ECONNREFUSED' || message.includes('econnrefused') || message.includes('connection refused')) {
+        return { protocol, code: 'connection_refused', message: `${protocol} connection was refused — check the host and port.` }
+    }
+    if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT' || message.includes('timeout') || message.includes('timed out')) {
+        return { protocol, code: 'timeout', message: `${protocol} connection timed out — the host did not respond in time.` }
+    }
+    if (
+        code === 'ESOCKET' ||
+        code === 'ECONNECTION' ||
+        code === 'CERT_HAS_EXPIRED' ||
+        code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ||
+        message.includes('tls') ||
+        message.includes('ssl') ||
+        message.includes('certificate') ||
+        message.includes('wrong version number')
+    ) {
+        return { protocol, code: 'tls_error', message: `${protocol} TLS/SSL negotiation failed — check the port and secure mode.` }
+    }
+    return { protocol, code: 'unknown', message: `${protocol} connection failed.` }
+}
+
 // SEC — mail hosts are attacker-controllable free text, and both the verify endpoint and the
 // sender open outbound connections to them. Unguarded, that is an SSRF oracle and an internal
 // port scanner (cloud metadata, 127.0.0.1, RFC1918) for anyone who can write an inbox.
@@ -99,6 +154,14 @@ import type { TransportOptions } from 'nodemailer'
 import { createImapClient } from '../../lib/imap-client'
 
 const router = Router()
+
+// Hardening pass: a malformed uuid reaching Postgres as a query parameter throws
+// `invalid input syntax for type uuid`, surfacing as an unhandled 500 instead of a clean 4xx.
+// Resource path params (:id) 404 — a row can never exist under a malformed id anyway; the
+// organizationId QUERY param 400s since it is caller input, not a resource lookup.
+function isUuid(value: string): boolean {
+    return z.string().uuid().safeParse(value).success
+}
 
 // Validation schemas
 //
@@ -200,7 +263,11 @@ const updateEmailAccountSchema = z.object({
     warmupDays: z.number().int().min(1).max(60).optional(),
     warmupSource: z.enum(['none', 'internal', 'vendor', 'provider']).optional(),
     warmupOnly: z.boolean().optional(),
-    status: z.enum(['pending', 'verified', 'failed', 'paused']).optional(),
+    // 'verified' and 'failed' are outcomes of an actual connection/capability probe
+    // (POST /:id/verify) — accepting them here let a caller self-certify "verified" without
+    // ever proving the credentials work. Only the two states a human/operator legitimately
+    // flips by hand remain settable through this PUT.
+    status: z.enum(['pending', 'paused']).optional(),
 })
 
 // NOTE: getDecryptedCredentials helper previously defined here was removed (Phase 12 COR-07 lint
@@ -218,6 +285,9 @@ router.get('/', async (req: Request, res: Response) => {
 
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
 
         const membership = await requireOutreachRead(req, res, organizationId)
@@ -263,6 +333,51 @@ router.get('/providers', async (req: Request, res: Response) => {
     res.json({ providers: listInboxProviders() })
 })
 
+// Aggregate sending-capacity summary for an organization's inboxes. Registered before /:id so
+// "summary" is never matched as an account id. A single grouped-aggregate query rather than
+// pulling every row and reducing in JS — this is meant to be cheap enough for a dashboard poll.
+router.get('/summary', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        const organizationId = req.query.organizationId as string
+
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!organizationId) {
+            return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
+        }
+
+        const membership = await requireOutreachRead(req, res, organizationId)
+        if (!membership) return
+
+        const [row] = await db
+            .select({
+                total: sql<number>`count(*)::int`,
+                verified: sql<number>`count(*) filter (where ${emailAccounts.status} = 'verified')::int`,
+                sentToday: sql<number>`coalesce(sum(${emailAccounts.currentDailySent}), 0)::int`,
+                dailyLimitTotal: sql<number>`coalesce(sum(${emailAccounts.dailySendLimit}), 0)::int`,
+            })
+            .from(emailAccounts)
+            .where(eq(emailAccounts.organizationId, organizationId))
+
+        res.json({
+            summary: {
+                total: row?.total ?? 0,
+                verified: row?.verified ?? 0,
+                sentToday: row?.sentToday ?? 0,
+                dailyLimitTotal: row?.dailyLimitTotal ?? 0,
+            },
+        })
+    } catch (error) {
+        console.error('Error fetching email account summary:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
 // Bulk-import mailbox credentials from an inbox provider (P006).
 // Vendors like IceMail and Primeforge export standard SMTP/IMAP credentials in bulk; this endpoint
 // ingests them into email_accounts (encrypted, status 'pending'), tagging each row with its
@@ -279,6 +394,9 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
         }
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
 
         const membership = await requireOutreachWrite(req, res, organizationId)
@@ -393,6 +511,9 @@ router.get('/:id', async (req: Request, res: Response) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(accountId)) {
+            return res.status(404).json({ error: 'Email account not found' })
+        }
 
         const account = await db.query.emailAccounts.findFirst({
             where: eq(emailAccounts.id, accountId),
@@ -437,6 +558,9 @@ router.post('/', async (req: Request, res: Response) => {
 
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
 
         const membership = await requireOutreachWrite(req, res, organizationId)
@@ -594,6 +718,9 @@ router.put('/:id', async (req: Request, res: Response) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(accountId)) {
+            return res.status(404).json({ error: 'Email account not found' })
+        }
 
         const account = await db.query.emailAccounts.findFirst({
             where: eq(emailAccounts.id, accountId),
@@ -692,6 +819,9 @@ router.delete('/:id', async (req: Request, res: Response) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(accountId)) {
+            return res.status(404).json({ error: 'Email account not found' })
+        }
 
         const account = await db.query.emailAccounts.findFirst({
             where: eq(emailAccounts.id, accountId),
@@ -722,6 +852,9 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(accountId)) {
+            return res.status(404).json({ error: 'Email account not found' })
+        }
 
         const account = await db.query.emailAccounts.findFirst({
             where: eq(emailAccounts.id, accountId),
@@ -736,6 +869,7 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
 
         const smtpPassword = account.smtpPassword ? decryptSecret(account.smtpPassword) : null
         const errors: string[] = []
+        const classifiedErrors: ClassifiedMailError[] = []
 
         if (account.provider === 'outlook') {
             // PROV-02: this used to mark the account verified unconditionally — no scope
@@ -914,8 +1048,17 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
             await smtpTransporter.verify()
             smtpTransporter.close()
         } catch (smtpError) {
-            const msg = smtpError instanceof Error ? smtpError.message : 'SMTP connection failed'
-            errors.push(`SMTP: ${msg}`)
+            const classified = classifyMailConnectionError('SMTP', smtpError)
+            log.error({
+                action: 'outreach.email_accounts.smtp_verify_failed',
+                emailAccountId: account.id,
+                code: classified.code,
+                // Raw provider text stays in the logger only — see classifyMailConnectionError's
+                // doc comment. Never persisted or returned to the caller.
+                error: smtpError instanceof Error ? smtpError.message : String(smtpError),
+            }, 'SMTP verification failed')
+            classifiedErrors.push(classified)
+            errors.push(`SMTP: ${classified.message}`)
         }
 
         // Test IMAP connection (if configured)
@@ -936,16 +1079,29 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
                 await imapClient.connect()
                 await imapClient.logout()
             } catch (imapError) {
-                const msg = imapError instanceof Error ? imapError.message : 'IMAP connection failed'
-                errors.push(`IMAP: ${msg}`)
+                const classified = classifyMailConnectionError('IMAP', imapError)
+                log.error({
+                    action: 'outreach.email_accounts.imap_verify_failed',
+                    emailAccountId: account.id,
+                    code: classified.code,
+                    // Raw provider text stays in the logger only — never persisted or returned.
+                    error: imapError instanceof Error ? imapError.message : String(imapError),
+                }, 'IMAP verification failed')
+                classifiedErrors.push(classified)
+                errors.push(`IMAP: ${classified.message}`)
             }
         }
 
         if (errors.length > 0) {
+            // Sanitized codes + short messages only (see classifyMailConnectionError) — the raw
+            // provider text was already logged above and never reaches this stored column.
+            const lastError = classifiedErrors
+                .map((e) => `${e.protocol.toLowerCase()}:${e.code}: ${e.message}`)
+                .join('; ')
             const [updatedAccount] = await db.update(emailAccounts)
                 .set({
                     status: 'failed',
-                    lastError: errors.join('; '),
+                    lastError,
                     updatedAt: new Date(),
                 })
                 .where(eq(emailAccounts.id, accountId))
@@ -959,6 +1115,7 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
                 },
                 verified: false,
                 errors,
+                codes: classifiedErrors.map((e) => ({ protocol: e.protocol, code: e.code })),
             })
         }
 

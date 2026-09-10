@@ -16,7 +16,6 @@ import {
     AlertCircle,
     Upload
 } from 'lucide-react'
-import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { PaginationControls } from '../../components/ui/PaginationControls'
 import { ImportInboxesDialog } from './inboxes/ImportInboxesDialog'
 import { apiFetch, apiRequest } from '../../lib/api-client'
@@ -55,6 +54,23 @@ async function fetchEmailAccounts(organizationId: string, page = 1, limit = 25):
         accounts: data.emailAccounts || [],
         pagination: data.pagination || { page: 1, limit: 25, total: 0, totalPages: 0 },
     }
+}
+
+interface EmailAccountsSummary {
+    total: number
+    verified: number
+    sentToday: number
+    dailyLimitTotal: number
+}
+
+// Org-wide totals — the account list is paginated, so summing the current page under-counts
+// verified/sentToday/dailyLimitTotal past the first page. This hits a dedicated aggregate
+// endpoint instead of the paginated list.
+async function fetchEmailAccountsSummary(organizationId: string): Promise<EmailAccountsSummary> {
+    const data = await apiFetch<{ summary: EmailAccountsSummary }>(
+        `/api/outreach/email-accounts/summary?organizationId=${organizationId}`
+    )
+    return data.summary
 }
 
 async function verifyEmailAccount(organizationId: string, id: string): Promise<void> {
@@ -306,16 +322,27 @@ export function InboxesPage() {
         enabled: !!currentOrganization,
     })
 
+    // Org-wide aggregate, independent of pagination — the previous stats summed only the
+    // currently loaded page, so "Verified" / "Sent Today" / "Daily Limit" undercounted past
+    // the first 25 inboxes.
+    const { data: summary } = useQuery({
+        queryKey: ['email-accounts-summary', currentOrganization?.id],
+        queryFn: () => fetchEmailAccountsSummary(currentOrganization!.id),
+        enabled: !!currentOrganization,
+    })
+
     const verifyMutation = useMutation({
         mutationFn: (id: string) => verifyEmailAccount(currentOrganization!.id, id),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
+            queryClient.invalidateQueries({ queryKey: ['email-accounts-summary'] })
             toast({ title: 'Inbox verified', variant: 'success' })
         },
         onError: (err) => {
             // A failed verification sets the account to 'failed' server-side, so refetch to
             // reflect the new status (and expose the retry affordance for failed accounts).
             queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
+            queryClient.invalidateQueries({ queryKey: ['email-accounts-summary'] })
             toast({ title: 'Verification failed', description: (err as Error).message, variant: 'destructive' })
         },
     })
@@ -324,6 +351,7 @@ export function InboxesPage() {
         mutationFn: (id: string) => deleteEmailAccount(currentOrganization!.id, id),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
+            queryClient.invalidateQueries({ queryKey: ['email-accounts-summary'] })
             toast({ title: 'Inbox deleted', variant: 'success' })
         },
         onError: (err) => {
@@ -341,13 +369,13 @@ export function InboxesPage() {
         }
     }
 
-    const totalAccounts = accountsData?.pagination?.total || 0
-    const verifiedAccounts = accountsData?.accounts?.filter(a => a.status === 'verified').length || 0
-    const totalSentToday = accountsData?.accounts?.reduce((sum, a) => sum + a.sentToday, 0) || 0
-    const totalDailyLimit = accountsData?.accounts?.reduce((sum, a) => sum + a.dailyLimit, 0) || 0
+    const totalAccounts = summary?.total ?? accountsData?.pagination?.total ?? 0
+    const verifiedAccounts = summary?.verified ?? 0
+    const totalSentToday = summary?.sentToday ?? 0
+    const totalDailyLimit = summary?.dailyLimitTotal ?? 0
 
     return (
-        <OutreachLayout>
+        <>
             {!currentOrganization ? (
                 <div className="flex items-center justify-center h-64">
                     <p className="text-muted-foreground">Select an organization to view inboxes</p>
@@ -513,7 +541,7 @@ export function InboxesPage() {
                 </div>
             </div>
             )}
-        </OutreachLayout>
+        </>
     )
 }
 

@@ -8,7 +8,6 @@ import {
     RefreshCw,
     ShieldAlert
 } from 'lucide-react'
-import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
@@ -22,6 +21,7 @@ import {
     type OrgAiAutomationSettings,
 } from '../../lib/unified-inbox-api'
 import { useOrganization } from '../../hooks/useOrganization'
+import { toast } from '../../components/ui/toaster'
 
 interface OutreachSettings {
     general: {
@@ -77,7 +77,11 @@ export function SettingsPage() {
         mutationFn: (settings: Partial<OutreachSettings>) => updateSettings(currentOrganization!.id, settings),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['outreach-settings'] })
-        }
+            toast({ title: 'Settings saved', variant: 'success' })
+        },
+        onError: (err) => {
+            toast({ title: 'Failed to save settings', description: (err as Error).message, variant: 'destructive' })
+        },
     })
 
     // --- AI Assistant & Automation controls (Phase 23 AI-03/AI-06) ---
@@ -158,16 +162,14 @@ export function SettingsPage() {
 
     if (isLoading) {
         return (
-            <OutreachLayout>
                 <div className="flex items-center justify-center min-h-[60vh]">
                     <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
                 </div>
-            </OutreachLayout>
         )
     }
 
     return (
-        <OutreachLayout>
+        <>
             {!currentOrganization ? (
                 <div className="flex items-center justify-center h-64">
                     <p className="text-muted-foreground">Select an organization to view settings</p>
@@ -202,7 +204,7 @@ export function SettingsPage() {
                                 <Label htmlFor="timezone">Default Timezone</Label>
                                 <select
                                     id="timezone"
-                                    className="w-full mt-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-sm"
+                                    className="w-full mt-1 px-3 py-2 border border-input rounded-lg bg-background text-foreground text-sm"
                                     value={formData.general?.defaultTimezone || 'UTC'}
                                     onChange={(e) => updateGeneral('defaultTimezone', e.target.value)}
                                 >
@@ -336,7 +338,7 @@ export function SettingsPage() {
                     </div>
                 </div>
 
-                {/* Notification Settings */}
+                {/* Deliverability circuit breaker */}
                 <div className="bg-card rounded-lg border border-border">
                     <div className="p-4 border-b border-border">
                         <div className="flex items-center gap-2">
@@ -438,7 +440,7 @@ export function SettingsPage() {
                   */}
             </div>
             )}
-        </OutreachLayout>
+        </>
     )
 }
 

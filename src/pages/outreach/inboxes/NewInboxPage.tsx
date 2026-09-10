@@ -1,6 +1,6 @@
 import React from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Link, useLocation } from 'wouter'
+import { Link, useLocation, useParams } from 'wouter'
 import {
     ArrowLeft,
     Mail,
@@ -10,8 +10,9 @@ import {
     Eye,
     EyeOff,
 } from 'lucide-react'
-import { OutreachLayout } from '../../../components/outreach/OutreachLayout'
 import { apiFetch } from '../../../lib/api-client'
+import { useAuth } from '../../../hooks/useAuth'
+import { useOrganization } from '../../../hooks/useOrganization'
 import {
     describeSmtpSecurityMode,
     isStandardSmtpPort,
@@ -116,7 +117,10 @@ function detectProvider(email: string): string | null {
     return null
 }
 
-async function fetchOrganizations(): Promise<Organization[]> {
+// All-organizations lookup — used ONLY as a fallback for a platform admin who has no
+// organization membership (and therefore no `currentOrganization` from useOrganization) but
+// still passes the OutreachAccessGate via isAdmin. Every other caller uses their own org.
+async function fetchAllOrganizations(): Promise<Organization[]> {
     const data = await apiFetch<{ organizations: Organization[] }>('/api/organizations')
     return data.organizations || []
 }
@@ -157,29 +161,142 @@ async function createEmailAccount(organizationId: string, form: SmtpForm): Promi
     return data
 }
 
+interface ExistingEmailAccount {
+    id: string
+    email: string
+    displayName: string | null
+    provider: 'smtp' | 'outlook' | 'native'
+    smtpHost: string | null
+    smtpPort: number | null
+    smtpUsername: string | null
+    smtpSecure: boolean | null
+    imapHost: string | null
+    imapPort: number | null
+    imapUsername: string | null
+    imapSecure: boolean | null
+    dailyLimit: number
+    warmupEnabled: boolean
+    warmupDays: number
+    warmupSource?: 'none' | 'internal' | 'vendor' | 'provider'
+    warmupOnly?: boolean
+}
+
+async function fetchEmailAccount(organizationId: string, id: string): Promise<ExistingEmailAccount> {
+    const data = await apiFetch<{ emailAccount: ExistingEmailAccount }>(
+        `/api/outreach/email-accounts/${id}?organizationId=${organizationId}`
+    )
+    return data.emailAccount
+}
+
+interface EditableFields {
+    displayName: string
+    smtpHost: string
+    smtpPort: number
+    smtpUsername: string
+    smtpPassword: string
+    smtpSecure: boolean
+    imapHost: string
+    imapPort: number
+    imapUsername: string
+    imapPassword: string
+    imapSecure: boolean
+    dailySendLimit: number
+    warmupEnabled: boolean
+    warmupDays: number
+    joinWarmupMesh: boolean
+    warmupOnly: boolean
+}
+
+async function updateEmailAccount(organizationId: string, id: string, form: EditableFields, isSmtp: boolean): Promise<void> {
+    const body: Record<string, unknown> = {
+        displayName: form.displayName || undefined,
+        dailySendLimit: form.dailySendLimit,
+        warmupEnabled: form.warmupEnabled,
+        warmupDays: form.warmupDays,
+        warmupSource: form.joinWarmupMesh ? 'internal' : 'none',
+        warmupOnly: form.joinWarmupMesh ? form.warmupOnly : false,
+    }
+    if (isSmtp) {
+        body.smtpHost = form.smtpHost
+        body.smtpPort = form.smtpPort
+        body.smtpUsername = form.smtpUsername
+        // Blank means "leave unchanged" — the server-side schema treats the field as optional.
+        if (form.smtpPassword) body.smtpPassword = form.smtpPassword
+        body.smtpSecure = form.smtpSecure
+        body.imapHost = form.imapHost || undefined
+        body.imapPort = form.imapPort
+        body.imapUsername = form.imapUsername || undefined
+        if (form.imapPassword) body.imapPassword = form.imapPassword
+        body.imapSecure = form.imapSecure
+    }
+    await apiFetch(`/api/outreach/email-accounts/${id}?organizationId=${organizationId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    })
+}
+
 export function NewInboxPage() {
     const [, setLocation] = useLocation()
+    const params = useParams<{ id?: string }>()
+    const accountId = params?.id
+    const isEdit = !!accountId
+
+    const { isAdmin } = useAuth()
+    const { currentOrganization } = useOrganization()
+
     const [method, setMethod] = React.useState<'outlook' | 'smtp'>('outlook')
     const [form, setForm] = React.useState<SmtpForm>(defaultForm)
-    const [organizations, setOrganizations] = React.useState<Organization[]>([])
     const [selectedOrgId, setSelectedOrgId] = React.useState('')
     const [showSmtpPassword, setShowSmtpPassword] = React.useState(false)
     const [showImapPassword, setShowImapPassword] = React.useState(false)
     const [error, setError] = React.useState<string | null>(null)
 
+    // The organization is always the caller's current one. The only case that still needs a
+    // picker is a platform admin with no organization membership (currentOrganization is null
+    // but OutreachAccessGate still let them in) — that fallback reuses the all-organizations
+    // lookup instead of assuming membership.
+    React.useEffect(() => {
+        if (currentOrganization) setSelectedOrgId(currentOrganization.id)
+    }, [currentOrganization])
+
+    const needsOrgPicker = !currentOrganization && isAdmin === true
     const { isLoading: loadingOrgs, data: orgsData } = useQuery({
         queryKey: ['organizations'],
-        queryFn: fetchOrganizations,
+        queryFn: fetchAllOrganizations,
+        enabled: needsOrgPicker,
+    })
+
+    // Edit mode: load the existing account and prefill the form. Only 'smtp' accounts expose
+    // editable connection settings here — 'outlook'/'native' accounts have no SMTP/IMAP
+    // credentials to edit, so only sending/warmup settings apply to them.
+    const { data: existingAccount, isLoading: loadingAccount, isError: loadAccountError } = useQuery({
+        queryKey: ['email-account', accountId],
+        queryFn: () => fetchEmailAccount(selectedOrgId, accountId as string),
+        enabled: isEdit && !!selectedOrgId,
     })
 
     React.useEffect(() => {
-        if (orgsData) {
-            setOrganizations(orgsData)
-            if (orgsData.length === 1) {
-                setSelectedOrgId(orgsData[0].id)
-            }
-        }
-    }, [orgsData])
+        if (!existingAccount) return
+        setForm(prev => ({
+            ...prev,
+            email: existingAccount.email,
+            displayName: existingAccount.displayName ?? '',
+            smtpHost: existingAccount.smtpHost ?? '',
+            smtpPort: existingAccount.smtpPort ?? 587,
+            smtpUsername: existingAccount.smtpUsername ?? '',
+            smtpSecure: existingAccount.smtpSecure ?? resolveSmtpSecurity({ port: existingAccount.smtpPort ?? 587 }).secure,
+            imapHost: existingAccount.imapHost ?? '',
+            imapPort: existingAccount.imapPort ?? 993,
+            imapUsername: existingAccount.imapUsername ?? '',
+            imapSecure: existingAccount.imapSecure ?? true,
+            dailySendLimit: existingAccount.dailyLimit,
+            warmupEnabled: existingAccount.warmupEnabled,
+            warmupDays: existingAccount.warmupDays,
+            joinWarmupMesh: existingAccount.warmupSource === 'internal',
+            warmupOnly: existingAccount.warmupOnly ?? false,
+        }))
+    }, [existingAccount])
 
     const outlookMutation = useMutation({
         mutationFn: () => startOutlookConnect(selectedOrgId, form.email || undefined),
@@ -198,6 +315,16 @@ export function NewInboxPage() {
         },
         onError: (err: Error) => {
             setError(err.message || 'Failed to create email account')
+        },
+    })
+
+    const updateMutation = useMutation({
+        mutationFn: () => updateEmailAccount(selectedOrgId, accountId as string, form, existingAccount?.provider === 'smtp'),
+        onSuccess: () => {
+            setLocation('/outreach/inboxes')
+        },
+        onError: (err: Error) => {
+            setError(err.message || 'Failed to update inbox')
         },
     })
 
@@ -227,6 +354,15 @@ export function NewInboxPage() {
             return
         }
 
+        if (isEdit) {
+            if (existingAccount?.provider === 'smtp' && (!form.smtpHost || !form.smtpUsername)) {
+                setError('Please fill in all required SMTP fields')
+                return
+            }
+            updateMutation.mutate()
+            return
+        }
+
         if (method === 'outlook') {
             outlookMutation.mutate()
         } else {
@@ -238,68 +374,90 @@ export function NewInboxPage() {
         }
     }
 
-    const isLoading = outlookMutation.isPending || smtpMutation.isPending
+    const isLoading = outlookMutation.isPending || smtpMutation.isPending || updateMutation.isPending
     const smtpSecurity = resolveSmtpSecurity({ port: form.smtpPort, secure: form.smtpSecure })
+    // In edit mode the connection method is fixed by the account's existing provider — there is
+    // no method picker, and the SMTP/IMAP section only renders for 'smtp' accounts.
+    const showSmtpSection = isEdit ? existingAccount?.provider === 'smtp' : method === 'smtp'
+    const showOutlookNotice = isEdit ? existingAccount?.provider === 'outlook' : method === 'outlook'
+
+    if (isEdit && loadingAccount) {
+        return (
+            <div className="flex items-center justify-center py-24">
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+        )
+    }
+
+    if (isEdit && loadAccountError) {
+        return (
+            <div className="mx-auto max-w-2xl space-y-4 py-12 text-center">
+                <p className="text-foreground">Could not load this inbox.</p>
+                <Link href="/outreach/inboxes" className="text-primary hover:underline">Back to inboxes</Link>
+            </div>
+        )
+    }
 
     return (
-        <OutreachLayout>
             <div className="max-w-2xl mx-auto space-y-6">
                 <div className="flex items-center gap-4">
                     <Link
                         href="/outreach/inboxes"
-                        className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+                        className="p-2 rounded-lg hover:bg-accent"
                     >
                         <ArrowLeft className="w-5 h-5" />
                     </Link>
                     <div>
-                        <h1 className="text-2xl font-bold text-foreground">Add Inbox</h1>
+                        <h1 className="text-2xl font-bold text-foreground">{isEdit ? 'Edit Inbox' : 'Add Inbox'}</h1>
                         <p className="text-muted-foreground">
-                            Connect an email account for sending outreach emails
+                            {isEdit ? 'Update this sending account\'s settings' : 'Connect an email account for sending outreach emails'}
                         </p>
                     </div>
                 </div>
 
                 {error && (
-                    <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 flex items-center gap-3">
-                        <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400" />
-                        <p className="text-red-800 dark:text-red-200">{error}</p>
+                    <div className="bg-destructive/10 border border-destructive/30 rounded-lg p-4 flex items-center gap-3">
+                        <AlertCircle className="w-5 h-5 text-destructive" />
+                        <p className="text-destructive">{error}</p>
                     </div>
                 )}
 
                 <form onSubmit={handleSubmit} className="space-y-6">
-                    <div className="bg-card rounded-lg border border-border p-6 space-y-4">
-                        <h2 className="text-lg font-semibold text-foreground">Organization</h2>
+                    {needsOrgPicker && (
+                        <div className="bg-card rounded-lg border border-border p-6 space-y-4">
+                            <h2 className="text-lg font-semibold text-foreground">Organization</h2>
 
-                        {loadingOrgs ? (
-                            <div className="flex items-center gap-2 text-muted-foreground">
-                                <Loader2 className="w-4 h-4 animate-spin" />
-                                Loading organizations...
-                            </div>
-                        ) : organizations.length === 0 ? (
-                            <p className="text-muted-foreground">
-                                No organizations found. Please create an organization first.
-                            </p>
-                        ) : (
-                            <select
-                                value={selectedOrgId}
-                                onChange={(e) => setSelectedOrgId(e.target.value)}
-                                className="w-full px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary focus:border-transparent"
-                            >
-                                <option value="">Select an organization</option>
-                                {organizations.map((org) => (
-                                    <option key={org.id} value={org.id}>
-                                        {org.name}
-                                    </option>
-                                ))}
-                            </select>
-                        )}
-                    </div>
+                            {loadingOrgs ? (
+                                <div className="flex items-center gap-2 text-muted-foreground">
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    Loading organizations...
+                                </div>
+                            ) : !orgsData || orgsData.length === 0 ? (
+                                <p className="text-muted-foreground">
+                                    No organizations found. Please create an organization first.
+                                </p>
+                            ) : (
+                                <select
+                                    value={selectedOrgId}
+                                    onChange={(e) => setSelectedOrgId(e.target.value)}
+                                    className="w-full px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary focus:border-transparent"
+                                >
+                                    <option value="">Select an organization</option>
+                                    {orgsData.map((org) => (
+                                        <option key={org.id} value={org.id}>
+                                            {org.name}
+                                        </option>
+                                    ))}
+                                </select>
+                            )}
+                        </div>
+                    )}
 
                     <div className="bg-card rounded-lg border border-border p-6 space-y-4">
                         <h2 className="text-lg font-semibold text-foreground">Email Address</h2>
 
                         <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label className="block text-sm font-medium text-foreground mb-1">
                                 Email Address
                             </label>
                             <input
@@ -307,16 +465,19 @@ export function NewInboxPage() {
                                 value={form.email}
                                 onChange={(e) => handleEmailChange(e.target.value)}
                                 placeholder="your@email.com"
-                                className="w-full px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary focus:border-transparent"
+                                disabled={isEdit}
+                                className="w-full px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary focus:border-transparent disabled:opacity-60"
                                 required
                             />
-                            <p className="mt-1 text-xs text-muted-foreground">
-                                We'll auto-detect your email provider settings
-                            </p>
+                            {!isEdit && (
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                    We'll auto-detect your email provider settings
+                                </p>
+                            )}
                         </div>
 
                         <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                            <label className="block text-sm font-medium text-foreground mb-1">
                                 Display Name (optional)
                             </label>
                             <input
@@ -329,85 +490,100 @@ export function NewInboxPage() {
                         </div>
                     </div>
 
-                    <div className="bg-card rounded-lg border border-border p-6 space-y-4">
-                        <h2 className="text-lg font-semibold text-foreground">Connection Method</h2>
+                    {!isEdit && (
+                        <div className="bg-card rounded-lg border border-border p-6 space-y-4">
+                            <h2 className="text-lg font-semibold text-foreground">Connection Method</h2>
 
-                        <div className="grid grid-cols-2 gap-4">
-                            <button
-                                type="button"
-                                onClick={() => setMethod('outlook')}
-                                className={`p-4 rounded-lg border-2 transition-all ${method === 'outlook'
-                                        ? 'border-primary bg-primary/10'
-                                        : 'border-border hover:border-gray-300 dark:hover:border-gray-600'
-                                    }`}
-                            >
-                                <div className="flex items-center gap-3 mb-2">
-                                    <svg className="w-6 h-6" viewBox="0 0 23 23">
-                                        <path fill="#f35325" d="M0 0h11v11H0z"/>
-                                        <path fill="#81bc06" d="M12 0h11v11H12z"/>
-                                        <path fill="#05a6f0" d="M0 12h11v11H0z"/>
-                                        <path fill="#ffba08" d="M12 12h11v11H12z"/>
-                                    </svg>
-                                    <span className="font-medium text-foreground">Outlook / Microsoft 365</span>
-                                </div>
-                                <p className="text-xs text-muted-foreground text-left">
-                                    Connect via OAuth (recommended for Outlook, Office 365, GoDaddy)
-                                </p>
-                            </button>
+                            <div className="grid grid-cols-2 gap-4">
+                                <button
+                                    type="button"
+                                    onClick={() => setMethod('outlook')}
+                                    className={`p-4 rounded-lg border-2 transition-all ${method === 'outlook'
+                                            ? 'border-primary bg-primary/10'
+                                            : 'border-border hover:border-muted-foreground/40'
+                                        }`}
+                                >
+                                    <div className="flex items-center gap-3 mb-2">
+                                        <svg className="w-6 h-6" viewBox="0 0 23 23">
+                                            <path fill="#f35325" d="M0 0h11v11H0z"/>
+                                            <path fill="#81bc06" d="M12 0h11v11H12z"/>
+                                            <path fill="#05a6f0" d="M0 12h11v11H0z"/>
+                                            <path fill="#ffba08" d="M12 12h11v11H12z"/>
+                                        </svg>
+                                        <span className="font-medium text-foreground">Outlook / Microsoft 365</span>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground text-left">
+                                        Connect via OAuth (recommended for Outlook, Office 365, GoDaddy)
+                                    </p>
+                                </button>
 
-                            <button
-                                type="button"
-                                onClick={() => setMethod('smtp')}
-                                className={`p-4 rounded-lg border-2 transition-all ${method === 'smtp'
-                                        ? 'border-primary bg-primary/10'
-                                        : 'border-border hover:border-gray-300 dark:hover:border-gray-600'
-                                    }`}
-                            >
-                                <div className="flex items-center gap-3 mb-2">
-                                    <Mail className="w-6 h-6 text-muted-foreground" />
-                                    <span className="font-medium text-foreground">SMTP / IMAP</span>
-                                </div>
-                                <p className="text-xs text-muted-foreground text-left">
-                                    Manual configuration for any email provider
-                                </p>
-                            </button>
-                        </div>
-                    </div>
-
-                    {method === 'outlook' && (
-                        <div className="bg-primary/10 rounded-lg border border-primary/20 p-6">
-                            <h3 className="font-medium text-blue-900 dark:text-blue-100 mb-2">
-                                Connect via Microsoft
-                            </h3>
-                            <p className="text-sm text-primary mb-4">
-                                Click the button below to authorize access to your Outlook or Microsoft 365 account.
-                                This includes accounts from GoDaddy, Office 365, and Outlook.com.
-                            </p>
-                            <ul className="text-sm text-primary space-y-1 mb-4">
-                                <li className="flex items-center gap-2">
-                                    <CheckCircle className="w-4 h-4" />
-                                    Secure OAuth 2.0 authentication
-                                </li>
-                                <li className="flex items-center gap-2">
-                                    <CheckCircle className="w-4 h-4" />
-                                    No password stored - uses tokens
-                                </li>
-                                <li className="flex items-center gap-2">
-                                    <CheckCircle className="w-4 h-4" />
-                                    Automatic token refresh
-                                </li>
-                            </ul>
+                                <button
+                                    type="button"
+                                    onClick={() => setMethod('smtp')}
+                                    className={`p-4 rounded-lg border-2 transition-all ${method === 'smtp'
+                                            ? 'border-primary bg-primary/10'
+                                            : 'border-border hover:border-muted-foreground/40'
+                                        }`}
+                                >
+                                    <div className="flex items-center gap-3 mb-2">
+                                        <Mail className="w-6 h-6 text-muted-foreground" />
+                                        <span className="font-medium text-foreground">SMTP / IMAP</span>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground text-left">
+                                        Manual configuration for any email provider
+                                    </p>
+                                </button>
+                            </div>
                         </div>
                     )}
 
-                    {method === 'smtp' && (
+                    {showOutlookNotice && (
+                        <div className="bg-primary/10 rounded-lg border border-primary/20 p-6">
+                            <h3 className="font-medium text-foreground mb-2">
+                                {isEdit ? 'Connected via Microsoft' : 'Connect via Microsoft'}
+                            </h3>
+                            <p className="text-sm text-primary mb-4">
+                                {isEdit
+                                    ? 'This inbox authenticates via Microsoft OAuth. Only its sending settings below can be changed here — reconnect from Sending accounts if the Microsoft grant itself needs to change.'
+                                    : 'Click the button below to authorize access to your Outlook or Microsoft 365 account. This includes accounts from GoDaddy, Office 365, and Outlook.com.'}
+                            </p>
+                            {!isEdit && (
+                                <ul className="text-sm text-primary space-y-1 mb-4">
+                                    <li className="flex items-center gap-2">
+                                        <CheckCircle className="w-4 h-4" />
+                                        Secure OAuth 2.0 authentication
+                                    </li>
+                                    <li className="flex items-center gap-2">
+                                        <CheckCircle className="w-4 h-4" />
+                                        No password stored - uses tokens
+                                    </li>
+                                    <li className="flex items-center gap-2">
+                                        <CheckCircle className="w-4 h-4" />
+                                        Automatic token refresh
+                                    </li>
+                                </ul>
+                            )}
+                        </div>
+                    )}
+
+                    {isEdit && existingAccount?.provider === 'native' && (
+                        <div className="bg-primary/10 rounded-lg border border-primary/20 p-6">
+                            <h3 className="font-medium text-foreground mb-2">Native platform mailbox</h3>
+                            <p className="text-sm text-primary">
+                                This inbox sends through the platform's own mailbox model — there are no SMTP/IMAP
+                                credentials to edit. Only its sending settings below can be changed here.
+                            </p>
+                        </div>
+                    )}
+
+                    {showSmtpSection && (
                         <div className="space-y-6">
                             <div className="bg-card rounded-lg border border-border p-6 space-y-4">
                                 <h3 className="text-lg font-semibold text-foreground">SMTP Settings</h3>
 
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                        <label className="block text-sm font-medium text-foreground mb-1">
                                             SMTP Host *
                                         </label>
                                         <input
@@ -420,7 +596,7 @@ export function NewInboxPage() {
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                        <label className="block text-sm font-medium text-foreground mb-1">
                                             Port
                                         </label>
                                         <input
@@ -434,7 +610,7 @@ export function NewInboxPage() {
 
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                        <label className="block text-sm font-medium text-foreground mb-1">
                                             Username *
                                         </label>
                                         <input
@@ -447,22 +623,22 @@ export function NewInboxPage() {
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                                            Password *
+                                        <label className="block text-sm font-medium text-foreground mb-1">
+                                            Password {isEdit ? '' : '*'}
                                         </label>
                                         <div className="relative">
                                             <input
                                                 type={showSmtpPassword ? 'text' : 'password'}
                                                 value={form.smtpPassword}
                                                 onChange={(e) => setForm(prev => ({ ...prev, smtpPassword: e.target.value }))}
-                                                placeholder="••••••••"
-                                                className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                                required
+                                                placeholder={isEdit ? 'Leave blank to keep unchanged' : '••••••••'}
+                                                className="w-full px-3 py-2 pr-10 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary focus:border-transparent"
+                                                required={!isEdit}
                                             />
                                             <button
                                                 type="button"
                                                 onClick={() => setShowSmtpPassword(!showSmtpPassword)}
-                                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground"
                                             >
                                                 {showSmtpPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                             </button>
@@ -494,7 +670,7 @@ export function NewInboxPage() {
                                                 onChange={(e) => setForm(prev => withCanonicalSmtpSecurity({ ...prev, smtpSecure: e.target.checked }))}
                                                 className="rounded border-input text-primary focus:ring-primary"
                                             />
-                                            <label htmlFor="smtpSecure" className="text-sm text-gray-700 dark:text-gray-300">
+                                            <label htmlFor="smtpSecure" className="text-sm text-foreground">
                                                 Port {form.smtpPort} uses implicit TLS (SSL) from connection start
                                             </label>
                                         </div>
@@ -513,7 +689,7 @@ export function NewInboxPage() {
 
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                        <label className="block text-sm font-medium text-foreground mb-1">
                                             IMAP Host
                                         </label>
                                         <input
@@ -525,7 +701,7 @@ export function NewInboxPage() {
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                        <label className="block text-sm font-medium text-foreground mb-1">
                                             Port
                                         </label>
                                         <input
@@ -539,7 +715,7 @@ export function NewInboxPage() {
 
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                        <label className="block text-sm font-medium text-foreground mb-1">
                                             Username
                                         </label>
                                         <input
@@ -551,7 +727,7 @@ export function NewInboxPage() {
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                        <label className="block text-sm font-medium text-foreground mb-1">
                                             Password
                                         </label>
                                         <div className="relative">
@@ -559,13 +735,13 @@ export function NewInboxPage() {
                                                 type={showImapPassword ? 'text' : 'password'}
                                                 value={form.imapPassword}
                                                 onChange={(e) => setForm(prev => ({ ...prev, imapPassword: e.target.value }))}
-                                                placeholder="••••••••"
-                                                className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                                placeholder={isEdit ? 'Leave blank to keep unchanged' : '••••••••'}
+                                                className="w-full px-3 py-2 pr-10 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary focus:border-transparent"
                                             />
                                             <button
                                                 type="button"
                                                 onClick={() => setShowImapPassword(!showImapPassword)}
-                                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground"
                                             >
                                                 {showImapPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                             </button>
@@ -581,7 +757,7 @@ export function NewInboxPage() {
                                         onChange={(e) => setForm(prev => ({ ...prev, imapSecure: e.target.checked }))}
                                         className="rounded border-input text-primary focus:ring-primary"
                                     />
-                                    <label htmlFor="imapSecure" className="text-sm text-gray-700 dark:text-gray-300">
+                                    <label htmlFor="imapSecure" className="text-sm text-foreground">
                                         Use TLS/SSL
                                     </label>
                                 </div>
@@ -594,7 +770,7 @@ export function NewInboxPage() {
 
                         <div className="grid grid-cols-2 gap-4">
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                <label className="block text-sm font-medium text-foreground mb-1">
                                     Daily Send Limit
                                 </label>
                                 <input
@@ -610,7 +786,7 @@ export function NewInboxPage() {
                                 </p>
                             </div>
                             <div>
-                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                                <label className="block text-sm font-medium text-foreground mb-1">
                                     Warmup Period (days)
                                 </label>
                                 <input
@@ -632,7 +808,7 @@ export function NewInboxPage() {
                                 onChange={(e) => setForm(prev => ({ ...prev, warmupEnabled: e.target.checked }))}
                                 className="rounded border-input text-primary focus:ring-primary"
                             />
-                            <label htmlFor="warmupEnabled" className="text-sm text-gray-700 dark:text-gray-300">
+                            <label htmlFor="warmupEnabled" className="text-sm text-foreground">
                                 Enable warmup mode (gradually increase sending volume)
                             </label>
                         </div>
@@ -645,7 +821,7 @@ export function NewInboxPage() {
                                 onChange={(e) => setForm(prev => ({ ...prev, joinWarmupMesh: e.target.checked }))}
                                 className="rounded border-input text-primary focus:ring-primary"
                             />
-                            <label htmlFor="joinWarmupMesh" className="text-sm text-gray-700 dark:text-gray-300">
+                            <label htmlFor="joinWarmupMesh" className="text-sm text-foreground">
                                 Join the internal warm-up mesh (exchange real warm-up mail with our other inboxes; conversations are auto-archived)
                             </label>
                         </div>
@@ -659,7 +835,7 @@ export function NewInboxPage() {
                                     onChange={(e) => setForm(prev => ({ ...prev, warmupOnly: e.target.checked }))}
                                     className="rounded border-input text-primary focus:ring-primary"
                                 />
-                                <label htmlFor="warmupOnly" className="text-sm text-gray-700 dark:text-gray-300">
+                                <label htmlFor="warmupOnly" className="text-sm text-foreground">
                                     Warm-up only (this inbox can never be assigned to campaigns)
                                 </label>
                             </div>
@@ -669,22 +845,21 @@ export function NewInboxPage() {
                     <div className="flex items-center justify-end gap-4">
                         <Link
                             href="/outreach/inboxes"
-                            className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
+                            className="px-4 py-2 text-foreground hover:text-foreground/80"
                         >
                             Cancel
                         </Link>
                         <button
                             type="submit"
-                            disabled={isLoading || !selectedOrgId || !form.email}
+                            disabled={isLoading || !selectedOrgId || (!isEdit && !form.email)}
                             className="flex items-center gap-2 px-6 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                         >
                             {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-                            {method === 'outlook' ? 'Connect with Microsoft' : 'Add Inbox'}
+                            {isEdit ? 'Save Changes' : method === 'outlook' ? 'Connect with Microsoft' : 'Add Inbox'}
                         </button>
                     </div>
                 </form>
             </div>
-        </OutreachLayout>
     )
 }
 

@@ -2,7 +2,6 @@ import * as React from 'react'
 import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { TrendingUp, Mail, Users, Target, Eye, MousePointer } from 'lucide-react'
-import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { apiFetch } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
 
@@ -182,7 +181,7 @@ export function AnalyticsPage() {
     }))
 
     return (
-        <OutreachLayout>
+        <>
             {!currentOrganization ? (
                 <div className="flex items-center justify-center h-64">
                     <p className="text-muted-foreground">Select an organization to view analytics</p>
@@ -359,7 +358,7 @@ export function AnalyticsPage() {
                 </div>
             </div>
             )}
-        </OutreachLayout>
+        </>
     )
 }
 

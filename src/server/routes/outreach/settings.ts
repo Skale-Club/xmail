@@ -8,8 +8,17 @@ import {
     resolveOutreachSettings,
     toApiOutreachSettings,
 } from '../../lib/outreach-settings'
+import { timeToMinutes } from './campaigns'
 
 const router = Router()
+
+// Hardening pass: a malformed uuid reaching Postgres as a query parameter throws
+// `invalid input syntax for type uuid`, surfacing as an unhandled 500 instead of a clean 4xx.
+// Only organizationId appears here (no resource path params in this file), so it always 400s —
+// it is caller input, not a resource lookup. Mirrors the isUuid helper in campaigns.ts/leads.ts.
+function isUuid(value: string): boolean {
+    return z.string().uuid().safeParse(value).success
+}
 
 // The API accepts and returns exactly the settings that are actually consumed somewhere.
 // `weekly_report` is deliberately absent: there is no weekly-report transport, so the control
@@ -24,7 +33,21 @@ const updateSettingsSchema = z.object({
         sendOnWeekends: z.boolean().optional(),
         trackOpens: z.boolean().optional(),
         trackClicks: z.boolean().optional(),
-    }).optional(),
+    })
+        // Same ordering rule campaigns.ts enforces on a campaign's own sendStartTime/sendEndTime
+        // (refineSendWindow) — reuses its timeToMinutes parser and keeps the message text
+        // identical, just against this object's own field names/path.
+        .superRefine((data, ctx) => {
+            if (!data.defaultSendStartTime || !data.defaultSendEndTime) return
+            if (timeToMinutes(data.defaultSendStartTime) >= timeToMinutes(data.defaultSendEndTime)) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['defaultSendEndTime'],
+                    message: 'sendEndTime must be after sendStartTime',
+                })
+            }
+        })
+        .optional(),
     sending: z.object({
         defaultDailyLimit: z.number().int().min(1).max(10000).optional(),
         defaultMinMinutesBetweenEmails: z.number().int().min(0).max(1440).optional(),
@@ -58,6 +81,9 @@ router.get('/', async (req: Request, res: Response) => {
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
         }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
+        }
 
         const membership = await requireOutreachRead(req, res, organizationId)
         if (!membership) return
@@ -82,6 +108,9 @@ router.patch('/', async (req: Request, res: Response) => {
 
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
 
         const membership = await requireOutreachWrite(req, res, organizationId)

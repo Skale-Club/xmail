@@ -16,6 +16,8 @@ import {
     replaceCanonicalSequence,
     deleteSequenceStep,
     sequencePayloadSchema,
+    type SequencePayload,
+    type SequenceStepInput,
 } from '../../lib/outreach-sequences'
 import { buildCampaignActivationPreview } from '../../lib/outreach-approval-preview'
 
@@ -32,11 +34,59 @@ function resultRows<T>(value: unknown): T[] {
     return []
 }
 
+// Hardening pass: a malformed uuid reaching Postgres as a query parameter throws
+// `invalid input syntax for type uuid`, which surfaces as an unhandled 500 instead of a clean
+// 4xx. Resource path params (:id/:campaignId/:leadId/:sequenceId/:stepId) 404 — a row can never
+// exist under a malformed id anyway, so this is indistinguishable from "not found" to the
+// caller. The organizationId QUERY param 400s instead: it is caller input, not a resource lookup.
+// Exported so every other outreach route module (settings.ts, prospecting.ts, agent-outreach.ts,
+// agent-prospecting.ts) applies the identical check instead of re-declaring it per file.
+export function isUuid(value: string): boolean {
+    return z.string().uuid().safeParse(value).success
+}
+
+const CAMPAIGN_STATUSES = ['draft', 'active', 'paused', 'completed', 'archived'] as const
+const campaignListQuerySchema = paginationQuerySchema.extend({
+    status: z.enum(CAMPAIGN_STATUSES).optional(),
+})
+
+// Mirrors leads.ts's LEAD_STATUSES — campaign_leads.status shares the same lead_status enum
+// (src/db/schema.ts), it is not a separate DB type.
+const CAMPAIGN_LEAD_STATUSES = ['new', 'contacted', 'replied', 'interested', 'not_interested', 'bounced', 'unsubscribed'] as const
+const campaignLeadsQuerySchema = paginationQuerySchema.extend({
+    status: z.enum(CAMPAIGN_LEAD_STATUSES).optional(),
+})
+
 // Validation schemas
 //
 // Defaultable fields are OPTIONAL (not Zod `.default(...)`) so the handler can tell an omitted
 // field from an explicit one and inherit the organization's stored settings for the former only
 // (Phase 20 CONS-03). Zod `.default()` erases that distinction at parse time.
+// HH:mm -> minutes-since-midnight, for the send-window ordering check below. Exported so
+// settings.ts can apply the identical ordering rule to its general.defaultSendStartTime/
+// defaultSendEndTime pair without re-implementing the parse.
+export function timeToMinutes(value: string): number {
+    const [hours, minutes] = value.split(':').map(Number)
+    return hours * 60 + (minutes || 0)
+}
+
+// A campaign whose window is omitted on both ends inherits the organization's stored default
+// (resolveOutreachSettings), which is itself validated the same way (see settings.ts) — so this
+// only needs to reject an explicit, self-contradictory pair supplied together in ONE request.
+function refineSendWindow<T extends { sendStartTime?: string; sendEndTime?: string }>(
+    data: T,
+    ctx: z.RefinementCtx,
+): void {
+    if (!data.sendStartTime || !data.sendEndTime) return
+    if (timeToMinutes(data.sendStartTime) >= timeToMinutes(data.sendEndTime)) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['sendEndTime'],
+            message: 'sendEndTime must be after sendStartTime',
+        })
+    }
+}
+
 const createCampaignSchema = z.object({
     name: z.string().min(1, 'Name is required').max(100),
     description: z.string().optional(),
@@ -49,7 +99,7 @@ const createCampaignSchema = z.object({
     sendEndTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/).optional(),
     trackOpens: z.boolean().optional(),
     trackClicks: z.boolean().optional(),
-})
+}).superRefine(refineSendWindow)
 
 const updateCampaignSchema = z.object({
     name: z.string().min(1).max(100).optional(),
@@ -63,8 +113,8 @@ const updateCampaignSchema = z.object({
     sendEndTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/).optional(),
     trackOpens: z.boolean().optional(),
     trackClicks: z.boolean().optional(),
-    status: z.enum(['draft', 'active', 'paused', 'completed', 'archived']).optional(),
-})
+    status: z.enum(CAMPAIGN_STATUSES).optional(),
+}).superRefine(refineSendWindow)
 
 // Analytics window: the frontend only ever offers 7/30/90-day options, so an out-of-range value
 // (bad query string, stale bookmark) is clamped to the nearest of those three rather than
@@ -141,6 +191,39 @@ function allowsUnwarmedActivation(): boolean {
     return process.env.OUTREACH_ALLOW_UNWARMED_ACTIVATION === 'true'
 }
 
+export interface ProtectedSendingDomainViolation {
+    code: 'protected_sending_domain'
+    message: string
+}
+
+/**
+ * P009 — reputation isolation: cold outreach must never send from the primary transactional
+ * domain (mx.skale.club / MAIL_DOMAIN), which would burn its reputation. Use a disposable
+ * provider (IceMail/Primeforge) inbox instead.
+ *
+ * Previously only checked inside `validateCampaignReadyForActivation` — i.e. at activation time,
+ * which means a human or the agent could enroll leads onto a protected-domain inbox and not find
+ * out until they tried to flip the campaign to active. Also called from `POST
+ * /:campaignId/leads` below and from `agent-outreach.ts`'s `POST /campaigns/:id/enroll-draft` so
+ * the violation surfaces at enroll time (system map §8 finding #7).
+ */
+export function checkProtectedSendingDomains(
+    accounts: Array<{ email: string }>,
+): ProtectedSendingDomainViolation | null {
+    const protectedDomains = getProtectedSendingDomains()
+    if (protectedDomains.size === 0 || accounts.length === 0) return null
+    const offending = accounts.filter((a) => {
+        const domain = a.email.split('@')[1]?.toLowerCase()
+        return domain != null && protectedDomains.has(domain)
+    })
+    if (offending.length === 0) return null
+    return {
+        code: 'protected_sending_domain',
+        message: `Cold outreach cannot send from the primary domain (${offending.map((a) => a.email).join(', ')}). ` +
+            'Assign a disposable/provider inbox instead.',
+    }
+}
+
 type CampaignActivationIssue = SequenceValidationIssue | {
     code:
         | 'sequence_missing'
@@ -206,23 +289,8 @@ export async function validateCampaignReadyForActivation(campaignId: string, org
             })
         }
 
-        // P009 — reputation isolation: cold outreach must never send from the primary
-        // transactional domain (mx.skale.club / MAIL_DOMAIN), which would burn its reputation.
-        // Use disposable provider (IceMail/Primeforge) inboxes instead.
-        const protectedDomains = getProtectedSendingDomains()
-        if (protectedDomains.size > 0) {
-            const offending = verifiedAccounts.filter(a => {
-                const domain = a.email.split('@')[1]?.toLowerCase()
-                return domain != null && protectedDomains.has(domain)
-            })
-            if (offending.length > 0) {
-                issues.push({
-                    code: 'protected_sending_domain',
-                    message: `Cold outreach cannot send from the primary domain (${offending.map(a => a.email).join(', ')}). ` +
-                        'Assign a disposable/provider inbox instead.',
-                })
-            }
-        }
+        const protectedViolation = checkProtectedSendingDomains(verifiedAccounts)
+        if (protectedViolation) issues.push(protectedViolation)
 
         // Migration 051 — a mailbox that exists only to feed the warm-up mesh must never carry
         // campaign traffic: its "engagement" history is synthetic and burning it defeats the mesh.
@@ -349,7 +417,6 @@ router.get('/', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
         const organizationId = req.query.organizationId as string
-        const status = req.query.status as string
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
@@ -358,16 +425,19 @@ router.get('/', async (req: Request, res: Response) => {
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
         }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
+        }
 
         const membership = await requireOutreachRead(req, res, organizationId)
         if (!membership) return
 
-        const { page, limit } = paginationQuerySchema.parse(req.query)
+        const { page, limit, status } = campaignListQuerySchema.parse(req.query)
 
         const conditions = [eq(campaigns.organizationId, organizationId)]
 
         if (status) {
-            conditions.push(eq(campaigns.status, status as any))
+            conditions.push(eq(campaigns.status, status))
         }
 
         const result = await paginate(db, campaigns, {
@@ -416,6 +486,9 @@ router.get('/', async (req: Request, res: Response) => {
 
         res.json({ campaigns: campaignsWithMetrics, pagination: result.pagination })
     } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: 'Validation error', details: error.errors })
+        }
         console.error('Error fetching campaigns:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
@@ -434,6 +507,9 @@ router.get('/stats', async (req: Request, res: Response) => {
 
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
 
         const membership = await requireOutreachRead(req, res, organizationId)
@@ -502,6 +578,9 @@ router.get('/sequences', async (req: Request, res: Response) => {
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
         }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
+        }
 
         const membership = await requireOutreachRead(req, res, organizationId)
         if (!membership) return
@@ -554,6 +633,9 @@ router.get('/analytics', async (req: Request, res: Response) => {
 
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
 
         const membership = await requireOutreachRead(req, res, organizationId)
@@ -625,6 +707,9 @@ router.get('/analytics/daily', async (req: Request, res: Response) => {
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
         }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
+        }
 
         const membership = await requireOutreachRead(req, res, organizationId)
         if (!membership) return
@@ -684,6 +769,9 @@ router.get('/:id', async (req: Request, res: Response) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
+        }
 
         const campaign = await db.query.campaigns.findFirst({
             where: eq(campaigns.id, campaignId),
@@ -724,6 +812,9 @@ router.get('/:campaignId/activation-preview', async (req: Request, res: Response
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
+        }
 
         const campaign = await db.query.campaigns.findFirst({
             where: eq(campaigns.id, campaignId),
@@ -756,6 +847,9 @@ router.post('/', async (req: Request, res: Response) => {
 
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
 
         const membership = await requireOutreachWrite(req, res, organizationId)
@@ -819,6 +913,9 @@ router.put('/:id', async (req: Request, res: Response) => {
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
         }
 
         const campaign = await db.query.campaigns.findFirst({
@@ -884,6 +981,9 @@ router.delete('/:id', async (req: Request, res: Response) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
+        }
 
         const campaign = await db.query.campaigns.findFirst({
             where: eq(campaigns.id, campaignId),
@@ -911,6 +1011,125 @@ router.delete('/:id', async (req: Request, res: Response) => {
     }
 })
 
+// Duplicate campaign: copies the campaign's settings and its canonical sequence + steps as a new
+// draft named "<name> (copy)". Never copies leads or accumulated stats — totalLeads/totalOpens/
+// etc. all start at zero (the column defaults) exactly like any other freshly created campaign,
+// and agentCredentialId/agentIdempotencyKey/activationApprovalId are left unset since this is a
+// human-initiated copy, not an agent draft or an in-flight activation. Reuses
+// replaceCanonicalSequence (outreach-sequences.ts) instead of hand-rolling a second sequence
+// insert path.
+router.post('/:id/duplicate', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        const campaignId = req.params.id
+
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
+        }
+
+        const source = await db.query.campaigns.findFirst({
+            where: eq(campaigns.id, campaignId),
+        })
+        if (!source) {
+            return res.status(404).json({ error: 'Campaign not found' })
+        }
+
+        // Organization is derived from the source campaign, not from a client-supplied query
+        // param — a duplicate always belongs to the same organization as its source.
+        const membership = await requireOutreachWrite(req, res, source.organizationId)
+        if (!membership) return
+
+        const sourceSequence = await getCanonicalSequence(campaignId, source.organizationId)
+        const duplicateName = `${source.name} (copy)`.slice(0, 100)
+
+        const newCampaign = await db.transaction(async (tx) => {
+            const [created] = await tx.insert(campaigns).values({
+                organizationId: source.organizationId,
+                name: duplicateName,
+                description: source.description,
+                contentLanguage: source.contentLanguage,
+                fromName: source.fromName,
+                replyToEmail: source.replyToEmail,
+                timezone: source.timezone,
+                sendOnWeekends: source.sendOnWeekends,
+                sendStartTime: source.sendStartTime,
+                sendEndTime: source.sendEndTime,
+                trackOpens: source.trackOpens,
+                trackClicks: source.trackClicks,
+                agenticFollowupEnabled: source.agenticFollowupEnabled,
+                maxFollowUps: source.maxFollowUps,
+                aiAutonomousEnabled: source.aiAutonomousEnabled,
+                status: 'draft',
+            }).returning()
+            return created
+        })
+
+        if (sourceSequence && sourceSequence.steps.length > 0) {
+            const payload: SequencePayload = {
+                name: sourceSequence.name,
+                description: sourceSequence.description,
+                steps: [...sourceSequence.steps]
+                    .sort((a, b) => a.stepOrder - b.stepOrder)
+                    .map((step): SequenceStepInput => {
+                        if (step.type === 'email') {
+                            return {
+                                type: 'email',
+                                delayHours: step.delayHours,
+                                subject: step.subject ?? '',
+                                plainBody: step.plainBody ?? undefined,
+                                htmlBody: step.htmlBody ?? undefined,
+                                subjectB: step.subjectB ?? undefined,
+                                plainBodyB: step.plainBodyB ?? undefined,
+                                htmlBodyB: step.htmlBodyB ?? undefined,
+                                abTestEnabled: step.abTestEnabled,
+                                abTestPercentage: step.abTestPercentage ?? 50,
+                            }
+                        }
+                        if (step.type === 'condition') {
+                            return { type: 'condition', delayHours: step.delayHours }
+                        }
+                        return { type: 'delay', delayHours: step.delayHours }
+                    }),
+            }
+            const result = await replaceCanonicalSequence({
+                campaignId: newCampaign.id,
+                organizationId: source.organizationId,
+                payload,
+            })
+            if (!result.ok) {
+                // The new campaign is freshly created with no history, so the only realistic
+                // failure here is campaign_not_found — surfacing it as a 500 makes an otherwise
+                // silent partial duplicate (a campaign with no sequence) visible.
+                throw new Error(`Failed to copy sequence onto duplicated campaign: ${result.reason}`)
+            }
+        }
+
+        const campaignWithSequence = await db.query.campaigns.findFirst({
+            where: eq(campaigns.id, newCampaign.id),
+            with: {
+                sequences: {
+                    with: {
+                        steps: {
+                            orderBy: (steps, { asc }) => [asc(steps.stepOrder)],
+                        },
+                    },
+                },
+            },
+        })
+
+        res.status(201).json({ campaign: campaignWithSequence ?? newCampaign })
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: 'Validation error', details: error.errors })
+        }
+        console.error('Error duplicating campaign:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
 // ============ CANONICAL SEQUENCE (Phase 20) ============
 
 // Get the single canonical sequence for a campaign.
@@ -921,6 +1140,9 @@ router.get('/:campaignId/sequence', async (req: Request, res: Response) => {
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
         }
 
         const campaign = await db.query.campaigns.findFirst({
@@ -950,6 +1172,9 @@ router.put('/:campaignId/sequence', async (req: Request, res: Response) => {
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
         }
 
         const campaign = await db.query.campaigns.findFirst({
@@ -1009,6 +1234,9 @@ router.get('/:campaignId/sequences', async (req: Request, res: Response) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
+        }
 
         const campaign = await db.query.campaigns.findFirst({
             where: eq(campaigns.id, campaignId),
@@ -1041,6 +1269,9 @@ router.post('/:campaignId/sequences', async (req: Request, res: Response) => {
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
         }
 
         const campaign = await db.query.campaigns.findFirst({
@@ -1096,6 +1327,9 @@ router.delete('/sequences/:sequenceId', async (req: Request, res: Response) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(sequenceId)) {
+            return res.status(404).json({ error: 'Sequence not found' })
+        }
 
         const sequence = await db.query.sequences.findFirst({
             where: eq(sequences.id, sequenceId),
@@ -1132,6 +1366,9 @@ router.post('/sequences/:sequenceId/steps', async (req: Request, res: Response) 
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(sequenceId)) {
+            return res.status(404).json({ error: 'Sequence not found' })
         }
 
         const sequence = await db.query.sequences.findFirst({
@@ -1173,6 +1410,9 @@ router.put('/sequences/steps/:stepId', async (req: Request, res: Response) => {
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(stepId)) {
+            return res.status(404).json({ error: 'Step not found' })
         }
 
         const step = await db.query.sequenceSteps.findFirst({
@@ -1229,6 +1469,9 @@ router.delete('/sequences/steps/:stepId', async (req: Request, res: Response) =>
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(stepId)) {
+            return res.status(404).json({ error: 'Step not found' })
+        }
 
         const step = await db.query.sequenceSteps.findFirst({
             where: eq(sequenceSteps.id, stepId),
@@ -1277,12 +1520,12 @@ router.get('/:campaignId/leads', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
         const campaignId = req.params.campaignId
-        const page = parseInt(req.query.page as string) || 1
-        const limit = parseInt(req.query.limit as string) || 50
-        const status = req.query.status as string
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
         }
 
         const campaign = await db.query.campaigns.findFirst({
@@ -1296,12 +1539,13 @@ router.get('/:campaignId/leads', async (req: Request, res: Response) => {
         const membership = await requireOutreachRead(req, res, campaign.organizationId)
         if (!membership) return
 
+        const { page, limit, status } = campaignLeadsQuerySchema.parse(req.query)
         const offset = (page - 1) * limit
 
         const conditions = [eq(campaignLeads.campaignId, campaignId)]
 
         if (status) {
-            conditions.push(eq(campaignLeads.status, status as any))
+            conditions.push(eq(campaignLeads.status, status))
         }
 
         const countResult = await db
@@ -1354,6 +1598,9 @@ router.get('/:campaignId/leads', async (req: Request, res: Response) => {
             },
         })
     } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: 'Validation error', details: error.errors })
+        }
         console.error('Error fetching campaign leads:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
@@ -1367,6 +1614,9 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
         }
 
         const campaign = await db.query.campaigns.findFirst({
@@ -1412,13 +1662,20 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
                     eq(emailAccounts.id, validatedData.emailAccountId),
                     eq(emailAccounts.organizationId, campaign.organizationId)
                 ),
-                columns: { id: true, warmupOnly: true },
+                columns: { id: true, email: true, warmupOnly: true },
             })
             if (!account) {
                 return res.status(400).json({ error: 'Email account not found or access denied' })
             }
             if (account.warmupOnly) {
                 return res.status(422).json({ error: 'This inbox is warm-up-only and cannot be assigned to campaign leads' })
+            }
+            // System map §8 finding #7: P009 used to be checked only at activation, so the agent
+            // (or a human) discovered a protected-domain assignment late. Check it here too, at
+            // enroll time.
+            const protectedViolation = checkProtectedSendingDomains([account])
+            if (protectedViolation) {
+                return res.status(422).json({ error: protectedViolation.message, code: protectedViolation.code })
             }
         }
 
@@ -1573,6 +1830,9 @@ router.delete('/:campaignId/leads/:leadId', async (req: Request, res: Response) 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(campaignId) || !isUuid(leadId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
+        }
 
         const campaign = await db.query.campaigns.findFirst({
             where: eq(campaigns.id, campaignId),
@@ -1615,6 +1875,9 @@ router.get('/:id/stats', async (req: Request, res: Response) => {
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(campaignId)) {
+            return res.status(404).json({ error: 'Campaign not found' })
         }
 
         const campaign = await db.query.campaigns.findFirst({

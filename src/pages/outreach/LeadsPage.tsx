@@ -1,6 +1,5 @@
 import React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'wouter'
 import {
     Plus,
     Search,
@@ -14,9 +13,21 @@ import {
     UserPlus,
     FileText
 } from 'lucide-react'
-import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { PaginationControls } from '../../components/ui/PaginationControls'
 import { LeadVerificationBadge, type LeadEmailVerificationStatus } from '../../components/outreach/LeadVerificationBadge'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '../../components/ui/Dialog'
+import { Button } from '../../components/ui/button'
+import { ImportLeadsDialog } from './leads/ImportLeadsDialog'
+import { AddLeadDialog } from './leads/AddLeadDialog'
+import { LeadDetailDialog } from './leads/LeadDetailDialog'
 import { apiFetch, apiRequest } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
 import { toast } from '../../components/ui/toaster'
@@ -80,6 +91,48 @@ async function deleteLead(organizationId: string, id: string): Promise<void> {
     })
 }
 
+async function bulkDeleteLeads(organizationId: string, leadIds: string[]): Promise<void> {
+    await apiRequest(`/api/outreach/leads/bulk-delete?organizationId=${organizationId}`, {
+        method: 'POST',
+        body: JSON.stringify({ leadIds }),
+    })
+}
+
+interface CampaignOption {
+    id: string
+    name: string
+    status: string
+}
+
+async function fetchEnrollableCampaigns(organizationId: string): Promise<CampaignOption[]> {
+    const data = await apiFetch<{ campaigns?: CampaignOption[] }>(`/api/outreach/campaigns?organizationId=${organizationId}&limit=100`)
+    return (data.campaigns ?? []).filter((c) => c.status === 'draft' || c.status === 'active')
+}
+
+interface EnrollResult {
+    added: number
+    existing: number
+    skipped_invalid: number
+}
+
+async function enrollLeadsInCampaign(organizationId: string, campaignId: string, leadIds: string[]): Promise<EnrollResult> {
+    return apiFetch<EnrollResult>(`/api/outreach/campaigns/${campaignId}/leads?organizationId=${organizationId}`, {
+        method: 'POST',
+        body: JSON.stringify({ leadIds }),
+    })
+}
+
+async function assignLeadsToList(organizationId: string, leadIds: string[], leadListId: string | null): Promise<void> {
+    // No bulk "set list" endpoint exists yet — apply sequentially so one failure doesn't hide
+    // which lead it failed on, and so partial progress before a failure still lands.
+    for (const leadId of leadIds) {
+        await apiFetch(`/api/outreach/leads/${leadId}?organizationId=${organizationId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ leadListId }),
+        })
+    }
+}
+
 const statusColors: Record<string, string> = {
     new: 'bg-primary/10 text-primary',
     contacted: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400',
@@ -90,19 +143,44 @@ const statusColors: Record<string, string> = {
     unsubscribed: 'bg-orange-100 text-orange-800 dark:bg-orange-900/20 dark:text-orange-400',
 }
 
-function LeadRow({ lead, onDelete }: { lead: Lead; onDelete: (id: string) => void }) {
+function LeadRow({
+    lead,
+    selected,
+    onToggleSelect,
+    onDelete,
+    onViewDetails,
+}: {
+    lead: Lead
+    selected: boolean
+    onToggleSelect: (id: string) => void
+    onDelete: (id: string) => void
+    onViewDetails: (id: string) => void
+}) {
     const [showMenu, setShowMenu] = React.useState(false)
     const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(' ') || lead.email
 
     return (
         <tr className="border-b border-border hover:bg-muted/50">
             <td className="py-3 px-4">
-                <div className="flex items-center gap-3">
+                <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => onToggleSelect(lead.id)}
+                    aria-label={`Select ${fullName}`}
+                    className="rounded border-input"
+                />
+            </td>
+            <td className="py-3 px-4">
+                <button
+                    type="button"
+                    onClick={() => onViewDetails(lead.id)}
+                    className="flex items-center gap-3 text-left"
+                >
                     <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary text-sm font-medium">
                         {fullName.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                        <p className="font-medium text-foreground">{fullName}</p>
+                        <p className="font-medium text-foreground hover:underline">{fullName}</p>
                         <div className="flex items-center gap-2">
                             <p className="text-sm text-muted-foreground">{lead.email}</p>
                             <LeadVerificationBadge
@@ -112,7 +190,7 @@ function LeadRow({ lead, onDelete }: { lead: Lead; onDelete: (id: string) => voi
                             />
                         </div>
                     </div>
-                </div>
+                </button>
             </td>
             <td className="py-3 px-4">
                 {lead.companyName && (
@@ -142,6 +220,8 @@ function LeadRow({ lead, onDelete }: { lead: Lead; onDelete: (id: string) => voi
                     <button
                         onClick={() => setShowMenu(!showMenu)}
                         className="p-1 rounded hover:bg-accent"
+                        aria-haspopup="menu"
+                        aria-expanded={showMenu}
                     >
                         <MoreVertical className="w-5 h-5 text-muted-foreground" />
                     </button>
@@ -149,13 +229,12 @@ function LeadRow({ lead, onDelete }: { lead: Lead; onDelete: (id: string) => voi
                         <>
                             <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
                             <div className="absolute right-0 top-8 z-20 w-40 bg-popover rounded-lg shadow-lg border border-border py-1">
-                                <Link
-                                    href={`/outreach/leads/${lead.id}`}
+                                <button
+                                    onClick={() => { onViewDetails(lead.id); setShowMenu(false) }}
                                     className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2"
-                                    onClick={() => setShowMenu(false)}
                                 >
                                     <FileText className="w-4 h-4" /> View Details
-                                </Link>
+                                </button>
                                 <button
                                     onClick={() => { onDelete(lead.id); setShowMenu(false) }}
                                     className="w-full px-4 py-2 text-left text-sm hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-500 hover:text-red-600 dark:hover:text-red-400 flex items-center gap-2 transition-colors"
@@ -171,6 +250,144 @@ function LeadRow({ lead, onDelete }: { lead: Lead; onDelete: (id: string) => voi
     )
 }
 
+function AddToCampaignDialog({
+    open,
+    onOpenChange,
+    organizationId,
+    leadIds,
+    onDone,
+}: {
+    open: boolean
+    onOpenChange: (open: boolean) => void
+    organizationId: string
+    leadIds: string[]
+    onDone: () => void
+}) {
+    const [campaignId, setCampaignId] = React.useState('')
+
+    const { data: campaigns = [], isLoading } = useQuery({
+        queryKey: ['campaigns', 'enrollable', organizationId],
+        queryFn: () => fetchEnrollableCampaigns(organizationId),
+        enabled: open,
+    })
+
+    React.useEffect(() => {
+        if (open) setCampaignId('')
+    }, [open])
+
+    const mutation = useMutation({
+        mutationFn: () => enrollLeadsInCampaign(organizationId, campaignId, leadIds),
+        onSuccess: (result) => {
+            toast({
+                title: `Added ${result.added} lead${result.added === 1 ? '' : 's'} to campaign`,
+                description: result.existing > 0 || result.skipped_invalid > 0
+                    ? `${result.existing} already enrolled, ${result.skipped_invalid} skipped (invalid email).`
+                    : undefined,
+                variant: 'success',
+            })
+            onDone()
+        },
+        onError: (err) => {
+            toast({ title: 'Failed to add leads to campaign', description: (err as Error).message, variant: 'destructive' })
+        },
+    })
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-md">
+                <DialogHeader>
+                    <DialogTitle>Add to campaign</DialogTitle>
+                    <DialogDescription>Enroll {leadIds.length} selected lead{leadIds.length === 1 ? '' : 's'} into a draft or active campaign.</DialogDescription>
+                </DialogHeader>
+                <div className="py-2">
+                    <select
+                        value={campaignId}
+                        onChange={(e) => setCampaignId(e.target.value)}
+                        disabled={isLoading}
+                        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
+                    >
+                        <option value="">{isLoading ? 'Loading…' : 'Select a campaign'}</option>
+                        {campaigns.map((c) => (
+                            <option key={c.id} value={c.id}>{c.name} ({c.status})</option>
+                        ))}
+                    </select>
+                    {!isLoading && campaigns.length === 0 && (
+                        <p className="mt-2 text-xs text-muted-foreground">No draft or active campaigns to enroll into.</p>
+                    )}
+                </div>
+                <DialogFooter>
+                    <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+                    <Button type="button" disabled={!campaignId || mutation.isPending} onClick={() => mutation.mutate()}>
+                        {mutation.isPending ? 'Adding…' : 'Add leads'}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    )
+}
+
+function AddToListDialog({
+    open,
+    onOpenChange,
+    organizationId,
+    leadIds,
+    leadLists,
+    onDone,
+}: {
+    open: boolean
+    onOpenChange: (open: boolean) => void
+    organizationId: string
+    leadIds: string[]
+    leadLists: LeadList[]
+    onDone: () => void
+}) {
+    const [leadListId, setLeadListId] = React.useState('')
+
+    React.useEffect(() => {
+        if (open) setLeadListId('')
+    }, [open])
+
+    const mutation = useMutation({
+        mutationFn: () => assignLeadsToList(organizationId, leadIds, leadListId || null),
+        onSuccess: () => {
+            toast({ title: `Moved ${leadIds.length} lead${leadIds.length === 1 ? '' : 's'} to list`, variant: 'success' })
+            onDone()
+        },
+        onError: (err) => {
+            toast({ title: 'Failed to add leads to list', description: (err as Error).message, variant: 'destructive' })
+        },
+    })
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-md">
+                <DialogHeader>
+                    <DialogTitle>Add to list</DialogTitle>
+                    <DialogDescription>Move {leadIds.length} selected lead{leadIds.length === 1 ? '' : 's'} into a lead list.</DialogDescription>
+                </DialogHeader>
+                <div className="py-2">
+                    <select
+                        value={leadListId}
+                        onChange={(e) => setLeadListId(e.target.value)}
+                        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
+                    >
+                        <option value="">No list (remove from list)</option>
+                        {leadLists.map((list) => (
+                            <option key={list.id} value={list.id}>{list.name}</option>
+                        ))}
+                    </select>
+                </div>
+                <DialogFooter>
+                    <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+                    <Button type="button" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
+                        {mutation.isPending ? 'Saving…' : 'Save'}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    )
+}
+
 export function LeadsPage() {
     const { currentOrganization } = useOrganization()
     const [search, setSearch] = React.useState('')
@@ -178,6 +395,12 @@ export function LeadsPage() {
     const [listFilter, setListFilter] = React.useState('all')
     const [selectedLeads, setSelectedLeads] = React.useState<string[]>([])
     const [page, setPage] = React.useState(1)
+    const [showImport, setShowImport] = React.useState(false)
+    const [showAddLead, setShowAddLead] = React.useState(false)
+    const [showAddToCampaign, setShowAddToCampaign] = React.useState(false)
+    const [showAddToList, setShowAddToList] = React.useState(false)
+    const [confirmBulkDelete, setConfirmBulkDelete] = React.useState(false)
+    const [viewLeadId, setViewLeadId] = React.useState<string | null>(null)
     const queryClient = useQueryClient()
 
     const { data: leadsData, isLoading: leadsLoading } = useQuery({
@@ -202,10 +425,28 @@ export function LeadsPage() {
         },
     })
 
+    const bulkDeleteMutation = useMutation({
+        mutationFn: (leadIds: string[]) => bulkDeleteLeads(currentOrganization!.id, leadIds),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['leads'] })
+            queryClient.invalidateQueries({ queryKey: ['lead-lists'] })
+            toast({ title: `Deleted ${selectedLeads.length} lead${selectedLeads.length === 1 ? '' : 's'}`, variant: 'success' })
+            setSelectedLeads([])
+            setConfirmBulkDelete(false)
+        },
+        onError: (err) => {
+            toast({ title: 'Failed to delete leads', description: (err as Error).message, variant: 'destructive' })
+        },
+    })
+
     const handleDelete = (id: string) => {
         if (confirm('Are you sure you want to delete this lead?')) {
             deleteMutation.mutate(id)
         }
+    }
+
+    const toggleSelectLead = (id: string) => {
+        setSelectedLeads((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id])
     }
 
     const handleSelectAll = () => {
@@ -218,8 +459,16 @@ export function LeadsPage() {
         }
     }
 
+    const closeBulkDialogs = () => {
+        queryClient.invalidateQueries({ queryKey: ['leads'] })
+        queryClient.invalidateQueries({ queryKey: ['lead-lists'] })
+        setSelectedLeads([])
+        setShowAddToCampaign(false)
+        setShowAddToList(false)
+    }
+
     return (
-        <OutreachLayout>
+        <>
             {!currentOrganization ? (
                 <div className="flex items-center justify-center h-64">
                     <p className="text-muted-foreground">Select an organization to view leads</p>
@@ -235,22 +484,66 @@ export function LeadsPage() {
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
-                        <Link
-                            href="/outreach/leads/import"
+                        <button
+                            onClick={() => setShowImport(true)}
                             className="flex items-center gap-2 px-4 py-2 border border-input text-muted-foreground rounded-lg hover:bg-accent transition-colors"
                         >
                             <Upload className="w-5 h-5" />
                             Import
-                        </Link>
-                        <Link
-                            href="/outreach/leads/new"
+                        </button>
+                        <button
+                            onClick={() => setShowAddLead(true)}
                             className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
                         >
                             <Plus className="w-5 h-5" />
                             Add Lead
-                        </Link>
+                        </button>
                     </div>
                 </div>
+
+                {showImport && (
+                    <ImportLeadsDialog
+                        organizationId={currentOrganization.id}
+                        leadLists={leadLists ?? []}
+                        onClose={() => setShowImport(false)}
+                    />
+                )}
+                <AddLeadDialog
+                    open={showAddLead}
+                    onOpenChange={setShowAddLead}
+                    organizationId={currentOrganization.id}
+                    leadLists={leadLists ?? []}
+                />
+                <LeadDetailDialog
+                    leadId={viewLeadId}
+                    organizationId={currentOrganization.id}
+                    onOpenChange={(open) => { if (!open) setViewLeadId(null) }}
+                />
+                <AddToCampaignDialog
+                    open={showAddToCampaign}
+                    onOpenChange={setShowAddToCampaign}
+                    organizationId={currentOrganization.id}
+                    leadIds={selectedLeads}
+                    onDone={closeBulkDialogs}
+                />
+                <AddToListDialog
+                    open={showAddToList}
+                    onOpenChange={setShowAddToList}
+                    organizationId={currentOrganization.id}
+                    leadIds={selectedLeads}
+                    leadLists={leadLists ?? []}
+                    onDone={closeBulkDialogs}
+                />
+                <ConfirmDialog
+                    open={confirmBulkDelete}
+                    onOpenChange={setConfirmBulkDelete}
+                    title={`Delete ${selectedLeads.length} lead${selectedLeads.length === 1 ? '' : 's'}?`}
+                    description="This action cannot be undone."
+                    confirmLabel="Delete"
+                    variant="danger"
+                    loading={bulkDeleteMutation.isPending}
+                    onConfirm={() => bulkDeleteMutation.mutate(selectedLeads)}
+                />
 
                 {/* Stats */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -356,13 +649,22 @@ export function LeadsPage() {
                             {selectedLeads.length} lead(s) selected
                         </span>
                         <div className="flex items-center gap-2">
-                            <button className="px-3 py-1 text-sm bg-popover border border-input rounded hover:bg-accent">
+                            <button
+                                onClick={() => setShowAddToCampaign(true)}
+                                className="px-3 py-1 text-sm bg-popover border border-input rounded hover:bg-accent"
+                            >
                                 Add to Campaign
                             </button>
-                            <button className="px-3 py-1 text-sm bg-popover border border-input rounded hover:bg-accent">
+                            <button
+                                onClick={() => setShowAddToList(true)}
+                                className="px-3 py-1 text-sm bg-popover border border-input rounded hover:bg-accent"
+                            >
                                 Add to List
                             </button>
-                            <button className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded hover:bg-red-200 dark:hover:bg-red-900/30">
+                            <button
+                                onClick={() => setConfirmBulkDelete(true)}
+                                className="px-3 py-1 text-sm bg-red-100 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded hover:bg-red-200 dark:hover:bg-red-900/30"
+                            >
                                 Delete
                             </button>
                         </div>
@@ -394,6 +696,7 @@ export function LeadsPage() {
                                                 type="checkbox"
                                                 checked={selectedLeads.length === leadsData.leads.length}
                                                 onChange={handleSelectAll}
+                                                aria-label="Select all leads"
                                                 className="rounded border-input"
                                             />
                                         </th>
@@ -408,7 +711,14 @@ export function LeadsPage() {
                                 </thead>
                                 <tbody>
                                     {leadsData.leads.map((lead) => (
-                                        <LeadRow key={lead.id} lead={lead} onDelete={handleDelete} />
+                                        <LeadRow
+                                            key={lead.id}
+                                            lead={lead}
+                                            selected={selectedLeads.includes(lead.id)}
+                                            onToggleSelect={toggleSelectLead}
+                                            onDelete={handleDelete}
+                                            onViewDetails={setViewLeadId}
+                                        />
                                     ))}
                                 </tbody>
                             </table>
@@ -437,20 +747,20 @@ export function LeadsPage() {
                             </p>
                             {!search && statusFilter === 'all' && listFilter === 'all' && (
                                 <div className="flex items-center justify-center gap-2">
-                                    <Link
-                                        href="/outreach/leads/import"
+                                    <button
+                                        onClick={() => setShowImport(true)}
                                         className="flex items-center gap-2 px-4 py-2 border border-input text-muted-foreground rounded-lg hover:bg-accent transition-colors"
                                     >
                                         <Upload className="w-5 h-5" />
                                         Import Leads
-                                    </Link>
-                                    <Link
-                                        href="/outreach/leads/new"
+                                    </button>
+                                    <button
+                                        onClick={() => setShowAddLead(true)}
                                         className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
-                                        >
+                                    >
                                         <Plus className="w-5 h-5" />
                                         Add Lead
-                                    </Link>
+                                    </button>
                                 </div>
                             )}
                         </div>
@@ -458,7 +768,7 @@ export function LeadsPage() {
                 </div>
             </div>
             )}
-        </OutreachLayout>
+        </>
     )
 }
 

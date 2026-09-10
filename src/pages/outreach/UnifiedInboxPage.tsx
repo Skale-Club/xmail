@@ -1,7 +1,6 @@
 import React from 'react'
 import { useLocation, useSearch } from 'wouter'
 import { Filter, X } from 'lucide-react'
-import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { InboxFilterRail } from '../../components/outreach/inbox/InboxFilterRail'
 import { ConversationList } from '../../components/outreach/inbox/ConversationList'
 import { ConversationThread } from '../../components/outreach/inbox/ConversationThread'
@@ -139,6 +138,19 @@ export function UnifiedInboxPage() {
     const suppression = useInboxSuppression(organizationId)
     const snippetsQuery = useInboxSnippets(organizationId)
     const composer = useInboxComposer(organizationId, state.conversation)
+
+    // --- Auto mark-as-read: once the opened conversation's detail resolves unread, mark it read.
+    // Bounded to once per conversation id via a ref (not state) so it never re-fires on a
+    // background refetch of the same conversation, and never fights the manual "Mark unread"
+    // toggle in ConversationActions (which stays the only way back to unread).
+    const autoReadMarkedRef = React.useRef<Set<string>>(new Set())
+    React.useEffect(() => {
+        const conversation = detailQuery.data?.conversation
+        if (!conversation || !conversation.unread) return
+        if (autoReadMarkedRef.current.has(conversation.id)) return
+        autoReadMarkedRef.current.add(conversation.id)
+        readState.mutate({ conversationId: conversation.id, read: true })
+    }, [detailQuery.data, readState])
 
     // --- AI draft assistant (human-in-the-loop; never sends — locked #6) ---
     const aiSettings = useInboxAiSettings(organizationId)
@@ -304,11 +316,9 @@ export function UnifiedInboxPage() {
 
     if (!organizationId) {
         return (
-            <OutreachLayout>
                 <div className="flex h-64 items-center justify-center">
                     <p className="text-muted-foreground">Select an organization to open the inbox</p>
                 </div>
-            </OutreachLayout>
         )
     }
 
@@ -333,7 +343,6 @@ export function UnifiedInboxPage() {
     }
 
     return (
-        <OutreachLayout>
             <div className="-m-4 flex h-[calc(100vh-4rem)] flex-col lg:-m-6">
                 {/* Workspace header */}
                 <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
@@ -443,7 +452,6 @@ export function UnifiedInboxPage() {
                     </div>
                 )}
             </div>
-        </OutreachLayout>
     )
 }
 

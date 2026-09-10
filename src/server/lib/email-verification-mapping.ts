@@ -113,3 +113,30 @@ export async function resolveLeadVerificationFields(
         return mapped
     }
 }
+
+// Verification vendors whose ok/verified result the agent-import path (POST
+// /api/agent/outreach/prospects/import) trusts enough to grant the full 'verified' status.
+// SAME set runVerificationSchema (prospecting/verification.ts) accepts for the Xphere
+// verification-batch endpoint — a real MillionVerifier/NeverBounce run behind the claim, not
+// just an agent restating its own guess.
+const TRUSTED_AGENT_VERIFICATION_PROVIDERS = new Set(['millionverifier', 'neverbounce', 'mixed'])
+
+/**
+ * Caps an agent-supplied `email_status: 'ok'` at `'likely'` instead of `'verified'` unless
+ * `customFields.email_verification_provider` names a vendor from
+ * TRUSTED_AGENT_VERIFICATION_PROVIDERS above — the "provider verification marker" this mapping
+ * already trusts. Hermes (or any other outreach agent) is an LLM-driven caller that can put
+ * whatever it wants in `customFields.email_status`; unlike Xphere's own `/external-runs/*
+ * /verification` route (a service-key-authenticated, machine-to-machine record of a batch that
+ * actually ran through MillionVerifier/NeverBounce), a bare agent claim of "ok" carries no
+ * independent evidence and must not unlock full 'verified' — which the agent gateway's own
+ * enroll-draft/campaign paths otherwise treat as clearance to send without further review.
+ * `'likely'`/`'invalid'`/`'unknown'` outcomes are left untouched: only 'verified' is capped, and
+ * only downward.
+ */
+export function capVerificationStatusForAgentImport(fields: MappedVerificationFields): MappedVerificationFields {
+    if (fields.emailVerificationStatus !== 'verified') return fields
+    const provider = fields.emailVerificationProvider?.trim().toLowerCase()
+    if (provider && TRUSTED_AGENT_VERIFICATION_PROVIDERS.has(provider)) return fields
+    return { ...fields, emailVerificationStatus: 'likely' }
+}

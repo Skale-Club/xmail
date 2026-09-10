@@ -15,7 +15,7 @@ ${remoteDbRefusal}
 `)
     process.exit(1)
 }
-import express from 'express'
+import express, { type Request } from 'express'
 import cors from 'cors'
 import { join } from 'path'
 import { existsSync } from 'fs'
@@ -123,9 +123,28 @@ const testConnectionLimiter = rateLimit({
 
 // Public unsubscribe endpoint — pre-empts P1-20. Tighter limit than /t/ because
 // /o/u/ is human-interactive (one click per recipient), not pixel-hit volume.
+//
+// Keyed on the token (the path segment right after /o/u/) + IP rather than IP alone: an IP-only
+// key lets one shared IP (corporate NAT, a mail-scanner farm) exhaust the whole bucket and lock
+// out every OTHER recipient's unsubscribe link on that IP. Keying on the token means each
+// recipient's own link has its own budget, and a missing/malformed token still falls back to
+// IP-only so the limiter never throws on a malformed request.
+//
+// max is higher for POST than GET: GET renders the RFC 8058 confirmation page (one per click,
+// plus prefetch/scanner GETs); POST is the one-click action itself, which Gmail/Outlook can
+// retry on transient failure, and which the confirmation page's own form also POSTs — a lower
+// ceiling than GET would make retries fail exactly when they're needed.
+function unsubscribeRateLimitKey(req: Request): string {
+    const pathname = req.originalUrl.split('?')[0]
+    const token = pathname.match(/\/o\/u\/([^/]+)/)?.[1]
+    return token ? `${token}:${req.ip}` : `ip:${req.ip}`
+}
 const unsubscribeLimiter = rateLimit({
     windowMs: 60 * 1000,
-    max: 30,
+    max: (req) => (req.method === 'POST' ? 120 : 30),
+    keyGenerator: unsubscribeRateLimitKey,
+    standardHeaders: true,
+    legacyHeaders: false,
     message: { error: 'Too many unsubscribe requests, please try again later.' },
 })
 app.use('/o/u/', unsubscribeLimiter)

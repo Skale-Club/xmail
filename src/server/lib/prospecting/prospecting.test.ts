@@ -81,7 +81,10 @@ describe('Apollo provider adapter', () => {
         expect(result.prospects[0]).toMatchObject({
             externalPersonId: 'apollo-1',
             firstName: 'Ada',
-            emailStatus: 'unavailable',
+            // No email + no email_status: normalizePerson now maps a blank email to 'unknown'
+            // (same as the locked "email_not_unlocked@" placeholder) rather than 'unavailable' —
+            // see the dedicated test below.
+            emailStatus: 'unknown',
             companyDomain: 'engines.example',
             companyEmployeeCount: 80,
         })
@@ -112,5 +115,23 @@ describe('Apollo provider adapter', () => {
         await expect(provider.enrich(Array.from({ length: 11 }, (_, index) => `person-${index}`)))
             .rejects.toThrow('1-10 people')
         expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('treats a locked "email_not_unlocked@" placeholder (and a blank email) as no email with status unknown', async () => {
+        const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+            matches: [
+                { id: 'apollo-locked', email: 'email_not_unlocked@engines.example', email_status: 'verified' },
+                { id: 'apollo-blank', email: null, email_status: null },
+            ],
+        }), { status: 200, headers: { 'content-type': 'application/json' } }))
+        const provider = new ApolloProspectProvider('secret-key', fetchMock)
+
+        const result = await provider.enrich(['apollo-locked', 'apollo-blank'])
+
+        expect(result.prospects).toHaveLength(2)
+        for (const prospect of result.prospects) {
+            expect(prospect.email).toBeUndefined()
+            expect(prospect.emailStatus).toBe('unknown')
+        }
     })
 })

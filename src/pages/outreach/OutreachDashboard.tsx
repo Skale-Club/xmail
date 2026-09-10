@@ -13,7 +13,6 @@ import {
     MousePointer,
     Reply
 } from 'lucide-react'
-import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { apiFetch } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
 
@@ -158,7 +157,7 @@ export function OutreachDashboard() {
     })
 
     return (
-        <OutreachLayout>
+        <>
             {!currentOrganization ? (
                 <div className="flex items-center justify-center h-64">
                     <p className="text-muted-foreground">Select an organization to view outreach data</p>
@@ -267,7 +266,7 @@ export function OutreachDashboard() {
                         <QuickAction
                             title="Import Leads"
                             description="Add new leads to your lists"
-                            href="/outreach/leads/import"
+                            href="/outreach/leads"
                             icon={<Users className="w-5 h-5" />}
                         />
                         <QuickAction
@@ -340,7 +339,7 @@ export function OutreachDashboard() {
                 </div>
             </div>
             )}
-        </OutreachLayout>
+        </>
     )
 }
 

@@ -13,10 +13,10 @@ import {
     Sparkles,
     X,
 } from 'lucide-react'
-import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { CampaignActivationPreviewCard, type CampaignActivationPreview } from '../../components/outreach/CampaignActivationPreview'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/button'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useOrganization } from '../../hooks/useOrganization'
 import { apiFetch } from '../../lib/api-client'
 
@@ -103,6 +103,7 @@ export default function AgentOpsPage() {
     const isAdmin = currentOrganization?.role === 'admin'
     const [selectedRunId, setSelectedRunId] = React.useState<string | null>(null)
     const [actionError, setActionError] = React.useState<string | null>(null)
+    const [confirmReview, setConfirmReview] = React.useState<{ approval: Approval; decision: 'approve' | 'reject' } | null>(null)
 
     const runsQuery = useQuery({
         queryKey: ['agent-ops-runs', organizationId],
@@ -155,21 +156,34 @@ export default function AgentOpsPage() {
     const totalCredits = runs.reduce((sum, run) => sum + run.consumedCreditEstimate, 0)
     const queryError = runsQuery.error ?? approvalsQuery.error
     const reviewApproval = (approval: Approval, decision: 'approve' | 'reject') => {
+        setConfirmReview({ approval, decision })
+    }
+    const confirmReviewAction = () => {
+        const approval = confirmReview?.approval
+        const decision = confirmReview?.decision
+        if (!approval || !decision) return
+        reviewMutation.mutate({ approval, decision }, { onSuccess: () => setConfirmReview(null) })
+    }
+    const confirmReviewCopy = (() => {
+        if (!confirmReview) return null
+        const { approval, decision } = confirmReview
         const action = approval.actionKind === 'prospect_enrichment'
             ? `spend up to ${approval.maximumCreditCost} enrichment credits`
             : 'activate this campaign'
         const blockers = approval.campaignPreview?.compliance.blockers ?? []
         const blockerWarning = decision === 'approve' && blockers.length > 0
-            ? `\n\nWARNING — compliance blocker(s) shown above:\n${blockers.map((b) => `• ${b.message}`).join('\n')}`
+            ? ` WARNING — compliance blocker(s) shown above: ${blockers.map((b) => b.message).join('; ')}`
             : ''
-        const prompt = decision === 'approve'
-            ? `Confirm that you want to ${action}?${blockerWarning}`
-            : `Reject the request to ${action}?`
-        if (window.confirm(prompt)) reviewMutation.mutate({ approval, decision })
-    }
+        return {
+            title: decision === 'approve' ? 'Approve this action?' : 'Reject this action?',
+            description: decision === 'approve'
+                ? `Confirm that you want to ${action}.${blockerWarning}`
+                : `Reject the request to ${action}?`,
+        }
+    })()
 
     return (
-        <OutreachLayout>
+        <>
             <main className="relative min-h-full overflow-hidden bg-[radial-gradient(circle_at_15%_10%,hsl(var(--primary)/0.09),transparent_28%),radial-gradient(circle_at_90%_0%,hsl(var(--muted-foreground)/0.08),transparent_24%)] p-4 sm:p-6 lg:p-8">
                 <div className="pointer-events-none absolute inset-0 opacity-[0.035] [background-image:linear-gradient(hsl(var(--foreground))_1px,transparent_1px),linear-gradient(90deg,hsl(var(--foreground))_1px,transparent_1px)] [background-size:32px_32px]" />
                 <div className="relative mx-auto max-w-[1500px] space-y-6">
@@ -201,7 +215,7 @@ export default function AgentOpsPage() {
                             { label: 'Awaiting a human', value: requested.length, icon: ShieldCheck, accent: 'text-amber-600 dark:text-amber-300' },
                             { label: 'Prospecting runs', value: runs.length, icon: Search, accent: 'text-cyan-600 dark:text-cyan-300' },
                             { label: 'Candidates mapped', value: totalCandidates, icon: Sparkles, accent: 'text-violet-600 dark:text-violet-300' },
-                            { label: 'Max credits recorded', value: totalCredits, icon: Coins, accent: 'text-emerald-600 dark:text-emerald-300' },
+                            { label: 'Estimated credits consumed', value: totalCredits, icon: Coins, accent: 'text-emerald-600 dark:text-emerald-300' },
                         ].map((metric) => (
                             <div key={metric.label} className="group rounded-xl border border-border/70 bg-card/75 p-4 shadow-sm backdrop-blur transition-transform hover:-translate-y-0.5">
                                 <div className="flex items-center justify-between">
@@ -305,6 +319,16 @@ export default function AgentOpsPage() {
                     )}
                 </div>
             </main>
-        </OutreachLayout>
+            <ConfirmDialog
+                open={!!confirmReview}
+                onOpenChange={(open) => { if (!open) setConfirmReview(null) }}
+                title={confirmReviewCopy?.title ?? ''}
+                description={confirmReviewCopy?.description ?? ''}
+                confirmLabel={confirmReview?.decision === 'approve' ? 'Approve' : 'Reject'}
+                variant={confirmReview?.decision === 'reject' ? 'warning' : 'default'}
+                loading={reviewMutation.isPending}
+                onConfirm={confirmReviewAction}
+            />
+        </>
     )
 }

@@ -150,6 +150,8 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                             <div className="relative">
                                 <button
                                     onClick={() => setOrgSelectorOpen(!orgSelectorOpen)}
+                                    aria-haspopup="listbox"
+                                    aria-expanded={orgSelectorOpen}
                                     className="flex items-center gap-2 w-full px-3 py-2 text-sm bg-muted/50 hover:bg-muted rounded-md border border-border transition-colors"
                                 >
                                     <Building2 className="w-4 h-4 text-muted-foreground" />

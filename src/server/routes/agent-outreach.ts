@@ -25,8 +25,18 @@ import agentApprovalsRouter from './agent-approvals'
 import agentAssessmentsRouter from './agent-assessments'
 import { jsonbParam } from '../lib/jsonb'
 import { withSourceRunId } from '../lib/prospecting/source-run-id'
+import { checkProtectedSendingDomains } from './outreach/campaigns'
+import { capVerificationStatusForAgentImport } from '../lib/email-verification-mapping'
 
 const router = Router()
+
+// Hardening pass: a malformed uuid path param reaching Postgres throws `invalid input syntax
+// for type uuid`, surfacing as an unhandled 500 instead of a clean 4xx. A row can never exist
+// under a malformed id anyway, so this is indistinguishable from "not found" to the caller.
+// Mirrors the isUuid helper in routes/outreach/campaigns.ts and leads.ts.
+function isUuid(value: string): boolean {
+    return z.string().uuid().safeParse(value).success
+}
 
 router.use('/prospecting', agentProspectingRouter)
 router.use('/', agentApprovalsRouter)
@@ -163,9 +173,17 @@ router.post('/prospects/import', async (req, res) => {
         // onto the existing verification columns, falling back to the free MX pre-filter (step 4)
         // only when no email_status was supplied. Duplicates are skipped via onConflictDoNothing
         // as before — this only affects the insert path.
+        //
+        // capVerificationStatusForAgentImport caps an agent-claimed 'verified' down to 'likely'
+        // unless customFields.email_verification_provider names a trusted verification vendor
+        // (see its doc comment in email-verification-mapping.ts) — this is the agent/Hermes
+        // import path, so an LLM-driven "email_status: ok" claim with no such marker must not
+        // grant the same clearance a real verification batch would.
         const prospectsWithVerification = await Promise.all(uniqueProspects.map(async (prospect) => ({
             prospect,
-            verification: await resolveLeadVerificationFields(prospect.email, prospect.customFields),
+            verification: capVerificationStatusForAgentImport(
+                await resolveLeadVerificationFields(prospect.email, prospect.customFields),
+            ),
         })))
         const inserted = await db.insert(leads).values(prospectsWithVerification.map(({ prospect, verification }) => ({
             organizationId: principal.organizationId,
@@ -349,6 +367,7 @@ router.post('/campaigns/:id/enroll-draft', async (req, res) => {
     try {
         const principal = requireScope(req, res, 'campaigns:draft')
         if (!principal) return
+        if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Campaign not found' })
         const input = enrollDraftSchema.parse(req.body)
         const campaign = await db.query.campaigns.findFirst({
             where: and(eq(campaigns.id, req.params.id), eq(campaigns.organizationId, principal.organizationId)),
@@ -365,9 +384,17 @@ router.post('/campaigns/:id/enroll-draft', async (req, res) => {
                 // Warm-up-only inboxes never carry campaign traffic (migration 051).
                 eq(emailAccounts.warmupOnly, false),
             ),
-            columns: { id: true },
+            columns: { id: true, email: true },
         })
         if (!account) return res.status(400).json({ error: 'Verified sending inbox not found or access denied' })
+        // System map §8 finding #7 / P009: cold outreach must never send from the primary
+        // transactional domain. campaigns.ts already enforces this at human activation time and
+        // at POST /:campaignId/leads; the agent's own enroll-draft path is a third way onto a
+        // campaign's sending inbox and must not bypass the same guard.
+        const protectedViolation = checkProtectedSendingDomains([account])
+        if (protectedViolation) {
+            return res.status(422).json({ error: protectedViolation.message, code: protectedViolation.code })
+        }
 
         let requestedLeadIds = input.leadIds ? [...new Set(input.leadIds)] : []
         if (requestedLeadIds.length === 0 && input.leadListId) {
@@ -453,6 +480,7 @@ router.post('/campaigns/:id/pause', async (req, res) => {
     try {
         const principal = requireScope(req, res, 'campaigns:pause')
         if (!principal) return
+        if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Campaign not found' })
         const campaign = await db.query.campaigns.findFirst({
             where: and(eq(campaigns.id, req.params.id), eq(campaigns.organizationId, principal.organizationId)),
         })
@@ -487,6 +515,30 @@ router.post('/campaigns/:id/pause', async (req, res) => {
     }
 })
 
+/** `j***@domain` — first character, three literal asterisks, the original domain. Applied only
+ * to the string returned by GET /events; the underlying outreach_event_outbox row is untouched. */
+function redactEmailForAgentEvent(email: string): string {
+    const at = email.indexOf('@')
+    if (at <= 0) return email
+    return `${email[0]}***@${email.slice(at + 1)}`
+}
+
+/**
+ * Redacts an event-outbox payload before it reaches the agent's GET /events poll: `email` is
+ * masked to `j***@domain` and `customFields` is dropped entirely (it can carry arbitrary
+ * lead-supplied free text/PII that the event stream never needed to expose). Redaction is
+ * response-shaping only — outreachEventOutbox rows and every other consumer of the outbox
+ * (webhook delivery, the internal dashboard) are untouched.
+ */
+function redactAgentEventPayload(payload: unknown): unknown {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload
+    const { customFields: _customFields, ...rest } = payload as Record<string, unknown>
+    if (typeof rest.email === 'string') {
+        rest.email = redactEmailForAgentEvent(rest.email)
+    }
+    return rest
+}
+
 router.get('/events', async (req, res) => {
     try {
         const principal = requireScope(req, res, 'events:read')
@@ -519,7 +571,7 @@ router.get('/events', async (req, res) => {
             },
         })
         res.json({
-            events,
+            events: events.map((event) => ({ ...event, payload: redactAgentEventPayload(event.payload) })),
             acknowledgedCursor: credential?.eventCursor ?? 0,
             nextCursor: events.length > 0 ? events[events.length - 1].sequenceNumber : after,
         })

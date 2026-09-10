@@ -41,6 +41,14 @@ function escapeLikePattern(input: string): string {
     return input.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
+// Hardening pass: a malformed uuid reaching Postgres as a query parameter throws
+// `invalid input syntax for type uuid`, surfacing as an unhandled 500 instead of a clean 4xx.
+// Resource path params (:id) 404 — a row can never exist under a malformed id anyway; the
+// organizationId QUERY param 400s since it is caller input, not a resource lookup.
+function isUuid(value: string): boolean {
+    return z.string().uuid().safeParse(value).success
+}
+
 // Validation schemas
 const createLeadSchema = z.object({
     // audit-2026-07 (H4/#2): normalize email to lowercase at the boundary so suppression
@@ -75,11 +83,17 @@ const updateLeadSchema = z.object({
     location: z.string().optional(),
     customFields: z.record(z.any()).optional(),
     status: z.enum(['new', 'contacted', 'replied', 'interested', 'not_interested', 'bounced', 'unsubscribed']).optional(),
+    // null detaches the lead from its list; the list must belong to the same org (checked in PUT).
+    leadListId: z.string().uuid().nullable().optional(),
 })
 
 const bulkImportSchema = z.object({
     leads: z.array(createLeadSchema).min(1).max(1000),
     leadListId: z.string().uuid().optional(),
+})
+
+const bulkDeleteLeadsSchema = z.object({
+    leadIds: z.array(z.string().uuid()).min(1).max(1000),
 })
 
 const createLeadListSchema = z.object({
@@ -115,6 +129,9 @@ router.get('/lists', async (req: Request, res: Response) => {
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
         }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
+        }
 
         const membership = await requireOutreachRead(req, res, organizationId)
         if (!membership) return
@@ -148,6 +165,9 @@ router.post('/lists', async (req: Request, res: Response) => {
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
         }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
+        }
 
         const membership = await requireOutreachWrite(req, res, organizationId)
         if (!membership) return
@@ -177,6 +197,9 @@ router.delete('/lists/:id', async (req: Request, res: Response) => {
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(listId)) {
+            return res.status(404).json({ error: 'Lead list not found' })
         }
 
         const list = await db.query.leadLists.findFirst({
@@ -218,6 +241,9 @@ router.get('/', async (req: Request, res: Response) => {
 
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
 
         const membership = await requireOutreachRead(req, res, organizationId)
@@ -368,6 +394,9 @@ router.get('/:id', async (req: Request, res: Response) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(leadId)) {
+            return res.status(404).json({ error: 'Lead not found' })
+        }
 
         const lead = await db.query.leads.findFirst({
             where: eq(leads.id, leadId),
@@ -402,6 +431,9 @@ router.post('/', async (req: Request, res: Response) => {
 
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
 
         const membership = await requireOutreachWrite(req, res, organizationId)
@@ -475,6 +507,9 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
 
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
+        }
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
 
         const membership = await requireOutreachWrite(req, res, organizationId)
@@ -636,6 +671,9 @@ router.put('/:id', async (req: Request, res: Response) => {
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
         }
+        if (!isUuid(leadId)) {
+            return res.status(404).json({ error: 'Lead not found' })
+        }
 
         const lead = await db.query.leads.findFirst({
             where: eq(leads.id, leadId),
@@ -649,10 +687,20 @@ router.put('/:id', async (req: Request, res: Response) => {
         if (!membership) return
 
         const validatedData = updateLeadSchema.parse(req.body)
+        const { customFields, ...rest } = validatedData
 
+        if (rest.leadListId && !(await validateLeadListAccess(lead.organizationId, rest.leadListId))) {
+            return res.status(400).json({ error: 'Lead list not found in this organization' })
+        }
+
+        // jsonbParam — same reason as the create path above (§13 of the system map): without the
+        // cast via text, Supavisor double-encodes the value and the column stores a JSON STRING
+        // instead of an object. This PUT wrote `customFields` with the plain Drizzle binding —
+        // exactly the write the create path's own comment warns against.
         const [updatedLead] = await db.update(leads)
             .set({
-                ...validatedData,
+                ...rest,
+                ...(customFields !== undefined ? { customFields: jsonbParam(customFields) } : {}),
                 updatedAt: new Date(),
             })
             .where(eq(leads.id, leadId))
@@ -678,6 +726,9 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
+        }
+        if (!isUuid(leadId)) {
+            return res.status(404).json({ error: 'Lead not found' })
         }
 
         const lead = await db.query.leads.findFirst({
@@ -714,7 +765,6 @@ router.post('/bulk-delete', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
         const organizationId = req.query.organizationId as string
-        const { leadIds } = req.body as { leadIds: string[] }
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
@@ -723,10 +773,11 @@ router.post('/bulk-delete', async (req: Request, res: Response) => {
         if (!organizationId) {
             return res.status(400).json({ error: 'organizationId is required' })
         }
-
-        if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
-            return res.status(400).json({ error: 'leadIds array is required' })
+        if (!isUuid(organizationId)) {
+            return res.status(400).json({ error: 'organizationId must be a valid UUID' })
         }
+
+        const { leadIds } = bulkDeleteLeadsSchema.parse(req.body)
 
         const membership = await requireOutreachWrite(req, res, organizationId)
         if (!membership) return
@@ -747,6 +798,9 @@ router.post('/bulk-delete', async (req: Request, res: Response) => {
 
         res.json({ success: true, deleted: leadsToDelete.length })
     } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: 'Validation error', details: error.errors })
+        }
         console.error('Error bulk deleting leads:', error)
         res.status(500).json({ error: 'Internal server error' })
     }

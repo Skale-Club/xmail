@@ -2,7 +2,6 @@ import React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation } from 'wouter'
 import { Plus, Mail, Clock, Trash2 } from 'lucide-react'
-import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { PaginationControls } from '../../components/ui/PaginationControls'
 import { apiFetch } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
@@ -567,7 +566,7 @@ export function SequencesPage() {
     })
 
     return (
-        <OutreachLayout>
+        <>
             {!currentOrganization ? (
                 <div className="flex items-center justify-center h-64">
                     <p className="text-muted-foreground">Select an organization to view sequences</p>
@@ -652,7 +651,7 @@ export function SequencesPage() {
                 onSubmit={(payload) => createMutation.mutate(payload)}
                 isSaving={createMutation.isPending}
             />
-        </OutreachLayout>
+        </>
     )
 }
 

@@ -1,22 +1,10 @@
 import React from 'react'
 import { useLocation } from 'wouter'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Save } from 'lucide-react'
-import { OutreachLayout } from '../../../components/outreach/OutreachLayout'
 import { toast } from '../../../components/ui/toaster'
 import { apiFetch } from '../../../lib/api-client'
 import { useOrganization } from '../../../hooks/useOrganization'
-
-interface EmailAccount {
-    id: string
-    email: string
-    displayName: string | null
-    status: string
-}
-
-interface EmailAccountsResponse {
-    emailAccounts: EmailAccount[]
-}
 
 interface CreateCampaignResponse {
     campaign: { id: string; name: string }
@@ -29,17 +17,6 @@ export function NewCampaignPage() {
     const [name, setName] = React.useState('')
     const [description, setDescription] = React.useState('')
     const [contentLanguage, setContentLanguage] = React.useState('en')
-    const [fromEmailAccountId, setFromEmailAccountId] = React.useState<string>('')
-
-    const { data: accountsData, isLoading: accountsLoading } = useQuery({
-        queryKey: ['outreach-email-accounts', currentOrganization?.id],
-        queryFn: () => apiFetch<EmailAccountsResponse>(
-            `/api/outreach/email-accounts?organizationId=${currentOrganization!.id}&limit=100`
-        ),
-        enabled: !!currentOrganization?.id,
-    })
-
-    const verifiedAccounts = (accountsData?.emailAccounts ?? []).filter(a => a.status === 'verified')
 
     const createMutation = useMutation({
         mutationFn: async () => {
@@ -53,10 +30,8 @@ export function NewCampaignPage() {
                         name: name.trim(),
                         description: description.trim() || undefined,
                         contentLanguage,
-                        // NOTE: from_email_account_id is collected but NOT in createCampaignSchema today;
-                        // the backend stores assignment per-campaign-lead, not per-campaign.
-                        // We capture it here for future use AND so the user knows which inbox the
-                        // campaign will default to when they add leads. For v1 we just don't send it.
+                        // Inboxes are assigned per lead, not per campaign — createCampaignSchema has
+                        // no sending-inbox field (see src/server/routes/outreach/campaigns.ts).
                     }),
                 }
             )
@@ -83,7 +58,6 @@ export function NewCampaignPage() {
     }
 
     return (
-        <OutreachLayout>
             <div className="mx-auto max-w-2xl space-y-6">
                 <div className="flex items-center gap-4 border-b border-border pb-6">
                     <a href="/outreach/campaigns" className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground">
@@ -138,27 +112,8 @@ export function NewCampaignPage() {
                                 Template tokens stay in English; personalized values render in this language.
                             </p>
                         </div>
-                        <div>
-                            <label className="mb-1 block text-sm font-medium text-foreground">Default sending inbox</label>
-                            <select
-                                value={fromEmailAccountId}
-                                onChange={(e) => setFromEmailAccountId(e.target.value)}
-                                disabled={accountsLoading}
-                                className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
-                            >
-                                <option value="">{accountsLoading ? 'Loading…' : 'Select an inbox (assign per-lead later)'}</option>
-                                {verifiedAccounts.map(acc => (
-                                    <option key={acc.id} value={acc.id}>
-                                        {acc.displayName ? `${acc.displayName} <${acc.email}>` : acc.email}
-                                    </option>
-                                ))}
-                            </select>
-                            {!accountsLoading && verifiedAccounts.length === 0 && (
-                                <p className="mt-1 text-xs text-muted-foreground">
-                                    No verified inboxes yet. <a href="/outreach/inboxes/new" className="text-primary hover:underline">Add one</a>.
-                                </p>
-                            )}
-                        </div>
+                        {/* No "default sending inbox" field: the backend assigns an inbox per lead,
+                            not per campaign — see campaigns.ts createCampaignSchema. */}
                         <div className="flex justify-end gap-3 border-t border-border pt-6">
                             <a
                                 href="/outreach/campaigns"
@@ -178,7 +133,6 @@ export function NewCampaignPage() {
                     </form>
                 )}
             </div>
-        </OutreachLayout>
     )
 }
 

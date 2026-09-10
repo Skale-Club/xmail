@@ -1,6 +1,6 @@
 import React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'wouter'
+import { Link, useLocation } from 'wouter'
 import {
     Plus,
     Search,
@@ -15,7 +15,6 @@ import {
     Mail,
     TrendingUp
 } from 'lucide-react'
-import { OutreachLayout } from '../../components/outreach/OutreachLayout'
 import { PaginationControls } from '../../components/ui/PaginationControls'
 import { apiFetch, apiRequest } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
@@ -64,10 +63,19 @@ async function deleteCampaign(organizationId: string, id: string): Promise<void>
     })
 }
 
-function CampaignCard({ campaign, onStatusChange, onDelete }: {
+async function duplicateCampaign(organizationId: string, id: string): Promise<{ campaign: { id: string; name: string } }> {
+    return apiFetch<{ campaign: { id: string; name: string } }>(
+        `/api/outreach/campaigns/${id}/duplicate?organizationId=${organizationId}`,
+        { method: 'POST' }
+    )
+}
+
+function CampaignCard({ campaign, onStatusChange, onDelete, onDuplicate, duplicating }: {
     campaign: Campaign
     onStatusChange: (id: string, status: string) => void
     onDelete: (id: string) => void
+    onDuplicate: (id: string) => void
+    duplicating: boolean
 }) {
     const [showMenu, setShowMenu] = React.useState(false)
 
@@ -156,8 +164,9 @@ function CampaignCard({ campaign, onStatusChange, onDelete }: {
                                     </button>
                                 )}
                                 <button
-                                    onClick={() => setShowMenu(false)}
-                                    className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2"
+                                    onClick={() => { onDuplicate(campaign.id); setShowMenu(false) }}
+                                    disabled={duplicating}
+                                    className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2 disabled:opacity-50"
                                 >
                                     <Copy className="w-4 h-4" /> Duplicate
                                 </button>
@@ -194,6 +203,7 @@ function CampaignMetric({ icon, label, value }: {
 
 export function CampaignsPage() {
     const { currentOrganization } = useOrganization()
+    const [, navigate] = useLocation()
     const [search, setSearch] = React.useState('')
     const [statusFilter, setStatusFilter] = React.useState('all')
     const [page, setPage] = React.useState(1)
@@ -230,8 +240,25 @@ export function CampaignsPage() {
         },
     })
 
+    const duplicateMutation = useMutation({
+        mutationFn: (id: string) => duplicateCampaign(currentOrganization!.id, id),
+        onSuccess: (result) => {
+            queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+            queryClient.invalidateQueries({ queryKey: ['recent-campaigns'] })
+            toast({ title: `Duplicated as "${result.campaign.name}"`, variant: 'success' })
+            navigate(`/outreach/campaigns/${result.campaign.id}`)
+        },
+        onError: (err) => {
+            toast({ title: 'Failed to duplicate campaign', description: (err as Error).message, variant: 'destructive' })
+        },
+    })
+
     const handleStatusChange = (id: string, status: string) => {
         statusMutation.mutate({ id, status })
+    }
+
+    const handleDuplicate = (id: string) => {
+        duplicateMutation.mutate(id)
     }
 
     const handleDelete = (id: string) => {
@@ -241,7 +268,7 @@ export function CampaignsPage() {
     }
 
     return (
-        <OutreachLayout>
+        <>
             {!currentOrganization ? (
                 <div className="flex items-center justify-center h-64">
                     <p className="text-muted-foreground">Select an organization to view campaigns</p>
@@ -326,6 +353,8 @@ export function CampaignsPage() {
                                 campaign={campaign}
                                 onStatusChange={handleStatusChange}
                                 onDelete={handleDelete}
+                                onDuplicate={handleDuplicate}
+                                duplicating={duplicateMutation.isPending}
                             />
                         ))}
                     </div>
@@ -364,7 +393,7 @@ export function CampaignsPage() {
                 )}
             </div>
             )}
-        </OutreachLayout>
+        </>
     )
 }
 

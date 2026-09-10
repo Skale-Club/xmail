@@ -1,56 +1,46 @@
 import React from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, Upload, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { apiFetch } from '../../../lib/api-client'
-import { parseMailboxCsv, type ParsedMailbox } from './parse-mailbox-csv'
+import { parseLeadCsv, type ParsedLead } from './parse-lead-csv'
 import { toast } from '../../../components/ui/toaster'
 
-interface InboxProvider {
+interface LeadList {
     id: string
-    label: string
-    description: string
-    supportsProvisioning: boolean
-    supportsCredentialImport: boolean
+    name: string
 }
 
 interface ImportResult {
     imported: number
     duplicates: number
-    provider: string
 }
 
-interface ImportInboxesDialogProps {
+interface ImportLeadsDialogProps {
     organizationId: string
+    leadLists: LeadList[]
     onClose: () => void
 }
 
-export function ImportInboxesDialog({ organizationId, onClose }: ImportInboxesDialogProps) {
+export function ImportLeadsDialog({ organizationId, leadLists, onClose }: ImportLeadsDialogProps) {
     const queryClient = useQueryClient()
-    const [provider, setProvider] = React.useState('manual')
+    const [leadListId, setLeadListId] = React.useState('')
     const [raw, setRaw] = React.useState('')
 
-    const { data: providersData } = useQuery({
-        queryKey: ['inbox-providers'],
-        queryFn: () => apiFetch<{ providers: InboxProvider[] }>('/api/outreach/email-accounts/providers'),
-    })
-
-    const parsed = React.useMemo(() => (raw.trim() ? parseMailboxCsv(raw) : null), [raw])
+    const parsed = React.useMemo(() => (raw.trim() ? parseLeadCsv(raw) : null), [raw])
 
     const importMutation = useMutation({
-        // apiFetch, not apiRequest: apiRequest resolves to the raw Response, so reading
-        // result.imported off it yields undefined rather than the count.
-        mutationFn: (mailboxes: ParsedMailbox[]) =>
-            apiFetch<ImportResult>(`/api/outreach/email-accounts/bulk-import?organizationId=${organizationId}`, {
+        mutationFn: (parsedLeads: ParsedLead[]) =>
+            apiFetch<ImportResult>(`/api/outreach/leads/bulk-import?organizationId=${organizationId}`, {
                 method: 'POST',
-                body: JSON.stringify({ provider, mailboxes }),
+                body: JSON.stringify({ leadListId: leadListId || undefined, leads: parsedLeads }),
             }),
         onSuccess: (result) => {
-            queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
-            queryClient.invalidateQueries({ queryKey: ['email-accounts-summary'] })
-            const dupNote = result.duplicates > 0 ? ` ${result.duplicates} already existed and were skipped.` : ''
+            queryClient.invalidateQueries({ queryKey: ['leads'] })
+            queryClient.invalidateQueries({ queryKey: ['lead-lists'] })
+            const dupNote = result.duplicates > 0 ? ` ${result.duplicates} already existed and were updated.` : ''
             toast({
-                title: `Imported ${result.imported} inbox${result.imported === 1 ? '' : 'es'}`,
-                description: `${dupNote} Verify each one before sending — verification is what checks the credentials actually work.`.trim(),
+                title: `Imported ${result.imported} lead${result.imported === 1 ? '' : 's'}`,
+                description: dupNote.trim() || undefined,
                 variant: 'success',
             })
             onClose()
@@ -60,14 +50,13 @@ export function ImportInboxesDialog({ organizationId, onClose }: ImportInboxesDi
         },
     })
 
-    const importable = parsed?.mailboxes.length ?? 0
-    const providers = providersData?.providers ?? []
+    const importable = parsed?.leads.length ?? 0
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="Import inboxes">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="Import leads">
             <div className="bg-card border border-border rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto">
                 <div className="flex items-center justify-between p-4 border-b border-border">
-                    <h2 className="text-lg font-semibold text-foreground">Import Inboxes</h2>
+                    <h2 className="text-lg font-semibold text-foreground">Import Leads</h2>
                     <button onClick={onClose} className="p-1 rounded hover:bg-muted" aria-label="Close">
                         <X className="w-5 h-5 text-muted-foreground" />
                     </button>
@@ -75,35 +64,33 @@ export function ImportInboxesDialog({ organizationId, onClose }: ImportInboxesDi
 
                 <div className="p-4 space-y-4">
                     <div>
-                        <label htmlFor="import-provider" className="block text-sm font-medium text-foreground mb-1">
-                            Where did these come from?
+                        <label htmlFor="import-lead-list" className="block text-sm font-medium text-foreground mb-1">
+                            Add to list (optional)
                         </label>
                         <select
-                            id="import-provider"
-                            value={provider}
-                            onChange={(e) => setProvider(e.target.value)}
+                            id="import-lead-list"
+                            value={leadListId}
+                            onChange={(e) => setLeadListId(e.target.value)}
                             className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground"
                         >
-                            {providers.map((p) => (
-                                <option key={p.id} value={p.id}>{p.label}</option>
+                            <option value="">No list</option>
+                            {leadLists.map((list) => (
+                                <option key={list.id} value={list.id}>{list.name}</option>
                             ))}
                         </select>
-                        <p className="text-xs text-muted-foreground mt-1">
-                            Recorded against each inbox so warmup state can be synced back later. It does not change how mail is sent.
-                        </p>
                     </div>
 
                     <div>
-                        <label htmlFor="import-csv" className="block text-sm font-medium text-foreground mb-1">
-                            Paste the CSV your provider exported
+                        <label htmlFor="import-lead-csv" className="block text-sm font-medium text-foreground mb-1">
+                            Paste your lead CSV
                         </label>
                         <textarea
-                            id="import-csv"
+                            id="import-lead-csv"
                             value={raw}
                             onChange={(e) => setRaw(e.target.value)}
                             rows={10}
                             spellCheck={false}
-                            placeholder={'Email,SMTP Host,SMTP Port,SMTP Password,IMAP Host,IMAP Port\njane@acme-outbound.com,smtp.provider.com,587,s3cret,imap.provider.com,993'}
+                            placeholder={'Email,First Name,Last Name,Company,Title\njane@acme.example,Jane,Doe,Acme Inc,VP Sales'}
                             className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground font-mono text-xs"
                         />
                         <p className="text-xs text-muted-foreground mt-1">
@@ -118,9 +105,9 @@ export function ImportInboxesDialog({ organizationId, onClose }: ImportInboxesDi
                                 <div className="flex items-start gap-2 text-sm text-foreground bg-primary/5 border border-primary/20 rounded-lg p-3">
                                     <CheckCircle2 className="w-4 h-4 text-primary mt-0.5 shrink-0" />
                                     <div>
-                                        <p className="font-medium">{importable} inbox{importable === 1 ? '' : 'es'} ready to import</p>
+                                        <p className="font-medium">{importable} lead{importable === 1 ? '' : 's'} ready to import</p>
                                         <p className="text-muted-foreground text-xs mt-0.5">
-                                            {parsed.mailboxes.slice(0, 3).map((m) => m.email).join(', ')}
+                                            {parsed.leads.slice(0, 3).map((l) => l.email).join(', ')}
                                             {importable > 3 ? ` and ${importable - 3} more` : ''}
                                         </p>
                                     </div>
@@ -142,12 +129,6 @@ export function ImportInboxesDialog({ organizationId, onClose }: ImportInboxesDi
                             )}
                         </div>
                     )}
-
-                    <p className="text-xs text-muted-foreground">
-                        Credentials are encrypted before they are stored and are never sent back to the browser.
-                        Imported inboxes land as <span className="font-medium text-foreground">pending</span> — hit Verify on each
-                        to confirm the credentials work. IMAP is required for reply and bounce detection.
-                    </p>
                 </div>
 
                 <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
@@ -158,7 +139,7 @@ export function ImportInboxesDialog({ organizationId, onClose }: ImportInboxesDi
                         Cancel
                     </button>
                     <button
-                        onClick={() => parsed && importMutation.mutate(parsed.mailboxes)}
+                        onClick={() => parsed && importMutation.mutate(parsed.leads)}
                         disabled={importable === 0 || importMutation.isPending}
                         className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >

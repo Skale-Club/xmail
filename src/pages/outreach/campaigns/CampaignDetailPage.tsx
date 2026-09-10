@@ -2,7 +2,6 @@ import React from 'react'
 import { useParams, useLocation, Link } from 'wouter'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Play, Pause, Trash2 } from 'lucide-react'
-import { OutreachLayout } from '../../../components/outreach/OutreachLayout'
 import { apiFetch, apiRequest } from '../../../lib/api-client'
 import { useOrganization } from '../../../hooks/useOrganization'
 import { toast } from '../../../components/ui/toaster'
@@ -141,7 +140,7 @@ function CampaignDetailPage() {
     }
 
     return (
-        <OutreachLayout>
+        <>
             {!currentOrganization ? (
                 <div className="flex items-center justify-center h-64">
                     <p className="text-muted-foreground">Select an organization to view this campaign</p>
@@ -318,7 +317,7 @@ function CampaignDetailPage() {
                 loading={deleteMutation.isPending}
                 onConfirm={() => deleteMutation.mutate()}
             />
-        </OutreachLayout>
+        </>
     )
 }
 

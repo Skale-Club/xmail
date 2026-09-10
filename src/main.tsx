@@ -13,6 +13,7 @@ import AdminLayout from './components/admin/AdminLayout'
 import { OrganizationProvider, useOrganization } from './hooks/useOrganization'
 import { ComposeProvider } from './hooks/useCompose'
 import { MailLayout } from './components/mail/MailLayout'
+import { OutreachLayout } from './components/outreach/OutreachLayout'
 import { AppErrorBoundary } from './components/AppErrorBoundary'
 import './index.css'
 
@@ -229,6 +230,67 @@ function OutreachCheck({ children }: { children: React.ReactNode }) {
     )
 }
 
+// OutreachLayout is mounted ONCE here, around the whole /outreach/* Switch — the same pattern
+// MailRoutes uses for MailLayout. Every outreach page used to import and wrap itself in
+// OutreachLayout individually (SettingsPage did it twice), which needlessly remounted the
+// sidebar/org-selector/SSE stream on every navigation between outreach pages.
+function OutreachRoutes() {
+    return (
+        <OutreachLayout>
+            <Switch>
+                <Route path="/outreach">
+                    <PageSuspense><OutreachDashboard /></PageSuspense>
+                </Route>
+                <Route path="/outreach/unified-inbox">
+                    <PageSuspense><UnifiedInboxPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/campaigns/new">
+                    <PageSuspense><NewCampaignPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/campaigns/:id/sequences/new">
+                    <PageSuspense><NewSequencePage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/campaigns/:id">
+                    <PageSuspense><CampaignDetailPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/campaigns">
+                    <PageSuspense><CampaignsPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/leads">
+                    <PageSuspense><LeadsPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/inboxes/new">
+                    <PageSuspense><NewInboxPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/inboxes/:id">
+                    <PageSuspense><NewInboxPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/inboxes">
+                    <PageSuspense><InboxesPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/sequences/new">
+                    <PageSuspense><SequencesPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/sequences">
+                    <PageSuspense><SequencesPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/analytics">
+                    <PageSuspense><OutreachAnalyticsPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/settings">
+                    <PageSuspense><OutreachSettingsPage /></PageSuspense>
+                </Route>
+                <Route path="/outreach/agent-ops">
+                    <PageSuspense><AgentOpsPage /></PageSuspense>
+                </Route>
+                <Route>
+                    <NotFound />
+                </Route>
+            </Switch>
+        </OutreachLayout>
+    )
+}
+
 function RootRedirect() {
     const { user, isAdmin, isLoading } = useAuth()
     const [, navigate] = useLocation()
@@ -246,9 +308,10 @@ function RootRedirect() {
     return <Spinner />
 }
 
-// audit-2026-07 (frontend C4): catch-all for unmatched routes. Several in-app links
-// (e.g. /outreach/leads/:id, /outreach/inboxes/:id) point at paths with no registered
-// Route; without this fallback wouter rendered a blank page (no layout, no way back).
+// audit-2026-07 (frontend C4): catch-all for unmatched routes — without this fallback
+// wouter rendered a blank page (no layout, no way back) for any unmatched path. Also used
+// as OutreachRoutes' own trailing Route, so an unmatched /outreach/* path still renders
+// inside the sidebar/layout instead of a bare page.
 function NotFound() {
     const [, navigate] = useLocation()
     return (
@@ -447,6 +510,10 @@ function App() {
                                     <MailCheck>
                                         <MailRoutes />
                                     </MailCheck>
+                                ) : location.startsWith('/outreach') ? (
+                                    <OutreachCheck>
+                                        <OutreachRoutes />
+                                    </OutreachCheck>
                                 ) : (
                                 <Switch>
                                 <Route path="/login">
@@ -504,77 +571,6 @@ function App() {
                                             <PageSuspense><IntegrationsPage /></PageSuspense>
                                         </AdminLayout>
                                     </AdminCheck>
-                                </Route>
-
-                                <Route path="/outreach">
-                                    <OutreachCheck>
-                                        <PageSuspense><OutreachDashboard /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/unified-inbox">
-                                    <OutreachCheck>
-                                        <PageSuspense><UnifiedInboxPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/campaigns/new">
-                                    <OutreachCheck>
-                                        <PageSuspense><NewCampaignPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/campaigns/:id/sequences/new">
-                                    <OutreachCheck>
-                                        <PageSuspense><NewSequencePage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/campaigns/:id">
-                                    <OutreachCheck>
-                                        <PageSuspense><CampaignDetailPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/campaigns">
-                                    <OutreachCheck>
-                                        <PageSuspense><CampaignsPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/leads">
-                                    <OutreachCheck>
-                                        <PageSuspense><LeadsPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/inboxes">
-                                    <OutreachCheck>
-                                        <PageSuspense><InboxesPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/inboxes/new">
-                                    <OutreachCheck>
-                                        <PageSuspense><NewInboxPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/sequences/new">
-                                    <OutreachCheck>
-                                        <PageSuspense><SequencesPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/sequences">
-                                    <OutreachCheck>
-                                        <PageSuspense><SequencesPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/analytics">
-                                    <OutreachCheck>
-                                        <PageSuspense><OutreachAnalyticsPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/settings">
-                                    <OutreachCheck>
-                                        <PageSuspense><OutreachSettingsPage /></PageSuspense>
-                                    </OutreachCheck>
-                                </Route>
-                                <Route path="/outreach/agent-ops">
-                                    <OutreachCheck>
-                                        <PageSuspense><AgentOpsPage /></PageSuspense>
-                                    </OutreachCheck>
                                 </Route>
 
                                 <Route path="/">

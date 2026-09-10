@@ -30,6 +30,14 @@ import { publishOutreachEvent } from '../lib/xphere-events'
 
 const router = Router()
 
+// Hardening pass: a malformed uuid path param reaching Postgres throws `invalid input syntax
+// for type uuid`, surfacing as an unhandled 500 instead of a clean 4xx. A row can never exist
+// under a malformed id anyway, so this is indistinguishable from "not found" to the caller.
+// Mirrors the isUuid helper in routes/outreach/campaigns.ts and leads.ts.
+function isUuid(value: string): boolean {
+    return z.string().uuid().safeParse(value).success
+}
+
 function requireScope(req: Request, res: Response, scope: OutreachAgentScope): AgentPrincipal | null {
     const principal = getAgentPrincipal(req)
     if (!principal) {
@@ -95,6 +103,7 @@ router.post('/runs/:id/notes', async (req, res) => {
     try {
         const principal = requireScope(req, res, 'prospects:write')
         if (!principal) return
+        if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Prospecting run not found' })
         const input = journeyNoteSchema.parse(req.body)
         const run = await db.query.prospectingRuns.findFirst({
             where: and(
@@ -247,12 +256,17 @@ router.post('/searches', async (req, res) => {
             provider: input.provider,
             idempotencyKey: input.idempotencyKey,
             status: 'searching',
-            searchFilters: input.filters,
-            scoringCriteria: input.scoringCriteria,
+            // jsonbParam — same reason every other jsonb write in this file/route family
+            // documents (§13 of the system map): without the cast via text, Supavisor
+            // double-encodes the value and the column stores a JSON STRING instead of an
+            // object, which breaks every downstream reader (advisory.ts, the response echo
+            // below, measureProspectingOutcomes.ts) expecting a real object.
+            searchFilters: jsonbParam(input.filters),
+            scoringCriteria: jsonbParam(input.scoringCriteria),
             qualificationThreshold: input.qualificationThreshold,
             requestedLimit: input.limit,
             providerPage: input.page,
-            hypothesis: input.hypothesis,
+            hypothesis: jsonbParam(input.hypothesis),
             startedAt: new Date(),
         }).onConflictDoNothing({
             target: [prospectingRuns.organizationId, prospectingRuns.provider, prospectingRuns.idempotencyKey],
@@ -267,6 +281,13 @@ router.post('/searches', async (req, res) => {
                 ),
             })
             if (!replay) throw new Error('Idempotent search conflict could not be resolved')
+            // A replayed idempotencyKey against a run that already failed must not report success
+            // with an empty candidate list — the caller (Hermes) would read 200 + [] as "search
+            // ran, found nothing" instead of "the previous attempt errored out". Surface the
+            // stored failure instead so the agent can decide whether to retry with a new key.
+            if (replay.status === 'failed') {
+                return res.status(409).json({ run: replay, error: replay.lastError, idempotentReplay: true })
+            }
             const candidates = await db.query.prospectCandidates.findMany({
                 where: and(
                     eq(prospectCandidates.organizationId, principal.organizationId),
@@ -421,6 +442,7 @@ router.get('/searches/:id', async (req, res) => {
     try {
         const principal = requireScope(req, res, 'outreach:read')
         if (!principal) return
+        if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Prospecting run not found' })
         const run = await db.query.prospectingRuns.findFirst({
             where: and(eq(prospectingRuns.id, req.params.id), eq(prospectingRuns.organizationId, principal.organizationId)),
         })
@@ -436,6 +458,7 @@ router.get('/searches/:id/candidates', async (req, res) => {
     try {
         const principal = requireScope(req, res, 'outreach:read')
         if (!principal) return
+        if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Prospecting run not found' })
         const query = z.object({
             minimumScore: z.coerce.number().int().min(0).max(100).default(0),
             limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -466,6 +489,7 @@ router.post('/searches/:id/enrich', async (req, res) => {
     try {
         const principal = requireScope(req, res, 'prospects:enrich')
         if (!principal) return
+        if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Prospecting run not found' })
         const input = enrichSchema.parse(req.body)
         const run = await db.query.prospectingRuns.findFirst({
             where: and(eq(prospectingRuns.id, req.params.id), eq(prospectingRuns.organizationId, principal.organizationId)),
@@ -735,6 +759,7 @@ router.post('/searches/:id/import', async (req, res) => {
     try {
         const principal = requireScope(req, res, 'prospects:write')
         if (!principal) return
+        if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Prospecting run not found' })
         const input = importSchema.parse(req.body)
         const run = await db.query.prospectingRuns.findFirst({
             where: and(eq(prospectingRuns.id, req.params.id), eq(prospectingRuns.organizationId, principal.organizationId)),
