@@ -299,8 +299,8 @@ export default function MailSettingsPage() {
             <div className="h-full overflow-y-auto">
                 <div className="max-w-5xl mx-auto p-6">
                     <div className="mb-8">
-                        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Settings</h1>
-                        <p className="text-gray-500 dark:text-gray-400 mt-1">
+                        <h1 className="text-3xl font-bold text-foreground">Settings</h1>
+                        <p className="text-muted-foreground mt-1">
                             Manage your email account settings
                         </p>
                     </div>
@@ -642,7 +642,7 @@ export default function MailSettingsPage() {
                                                         {newFilter.conditions.map((condition, index) => (
                                                             <div key={index} className="flex items-center gap-2">
                                                                 <select
-                                                                    className="px-3 py-2 border rounded-lg bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700"
+                                                                    className="px-3 py-2 border rounded-lg bg-background border-input"
                                                                     value={condition.field}
                                                                     onChange={(e) => updateCondition(index, 'field', e.target.value)}
                                                                 >
@@ -653,7 +653,7 @@ export default function MailSettingsPage() {
                                                                     <option value="hasAttachment">Has Attachment</option>
                                                                 </select>
                                                                 <select
-                                                                    className="px-3 py-2 border rounded-lg bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700"
+                                                                    className="px-3 py-2 border rounded-lg bg-background border-input"
                                                                     value={condition.operator}
                                                                     onChange={(e) => updateCondition(index, 'operator', e.target.value)}
                                                                 >
@@ -673,7 +673,7 @@ export default function MailSettingsPage() {
                                                                 )}
                                                                 {condition.field === 'hasAttachment' && (
                                                                     <select
-                                                                        className="px-3 py-2 border rounded-lg bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700"
+                                                                        className="px-3 py-2 border rounded-lg bg-background border-input"
                                                                         value={condition.value}
                                                                         onChange={(e) => updateCondition(index, 'value', e.target.value)}
                                                                     >
@@ -682,7 +682,7 @@ export default function MailSettingsPage() {
                                                                     </select>
                                                                 )}
                                                                 <Button variant="ghost" size="sm" onClick={() => removeCondition(index)} disabled={newFilter.conditions.length === 1}>
-                                                                    <Trash className="w-4 h-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                                                    <Trash className="w-4 h-4 text-muted-foreground hover:text-red-500 transition-colors" />
                                                                 </Button>
                                                             </div>
                                                         ))}
@@ -698,7 +698,7 @@ export default function MailSettingsPage() {
                                                         {newFilter.actions.map((action, index) => (
                                                             <div key={index} className="flex items-center gap-2">
                                                                 <select
-                                                                    className="px-3 py-2 border rounded-lg bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700"
+                                                                    className="px-3 py-2 border rounded-lg bg-background border-input"
                                                                     value={action.action}
                                                                     onChange={(e) => updateAction(index, 'action', e.target.value)}
                                                                 >
@@ -711,7 +711,7 @@ export default function MailSettingsPage() {
                                                                     <option value="markNotSpam">Mark as not spam</option>
                                                                 </select>
                                                                 <Button variant="ghost" size="sm" onClick={() => removeAction(index)} disabled={newFilter.actions.length === 1}>
-                                                                    <Trash className="w-4 h-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                                                    <Trash className="w-4 h-4 text-muted-foreground hover:text-red-500 transition-colors" />
                                                                 </Button>
                                                             </div>
                                                         ))}
@@ -755,7 +755,7 @@ export default function MailSettingsPage() {
                                                 <div className="mb-4">
                                                     <Label>Select Account</Label>
                                                     <select
-                                                        className="w-full mt-1 px-3 py-2 border rounded-lg bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700"
+                                                        className="w-full mt-1 px-3 py-2 border rounded-lg bg-background border-input"
                                                         value={selectedMailboxId || ''}
                                                         onChange={(e) => setSelectedMailboxId(e.target.value)}
                                                     >
@@ -768,11 +768,11 @@ export default function MailSettingsPage() {
                                             )}
 
                                             {isLoadingSignatures ? (
-                                                <p className="text-gray-500">Loading signatures...</p>
+                                                <p className="text-muted-foreground">Loading signatures...</p>
                                             ) : signatures.length === 0 ? (
                                                 <div className="text-center py-8">
-                                                    <PenTool className="w-12 h-12 mx-auto text-gray-400 mb-4" />
-                                                    <p className="text-gray-500 mb-4">No signatures created yet</p>
+                                                    <PenTool className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                                                    <p className="text-muted-foreground mb-4">No signatures created yet</p>
                                                     {selectedMailboxId && (
                                                         <Button onClick={() => setShowAddSignature(true)}>
                                                             <Plus className="w-4 h-4 mr-2" />
@@ -783,14 +783,14 @@ export default function MailSettingsPage() {
                                             ) : (
                                                 <div className="space-y-3">
                                                     {signatures.map((sig) => (
-                                                        <div key={sig.id} className="flex items-center justify-between p-4 border border-gray-200 dark:border-gray-700 rounded-xl">
+                                                        <div key={sig.id} className="flex items-center justify-between p-4 border border-input rounded-xl">
                                                             <div className="flex items-center gap-4">
                                                                 <div className="w-10 h-10 rounded-lg bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center">
                                                                     <PenTool className="w-5 h-5 text-purple-600" />
                                                                 </div>
                                                                 <div>
                                                                     <h3 className="font-medium">{sig.name}</h3>
-                                                                    <p className="text-sm text-gray-500">
+                                                                    <p className="text-sm text-muted-foreground">
                                                                         {sig.isDefault && <span className="text-blue-600">Default • </span>}
                                                                         Updated {new Date(sig.updatedAt).toLocaleDateString()}
                                                                     </p>
@@ -828,7 +828,7 @@ export default function MailSettingsPage() {
                                                                         }
                                                                     }
                                                                 }}>
-                                                                    <Trash2 className="w-4 h-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                                                    <Trash2 className="w-4 h-4 text-muted-foreground hover:text-red-500 transition-colors" />
                                                                 </Button>
                                                             </div>
                                                         </div>
@@ -886,7 +886,7 @@ export default function MailSettingsPage() {
                                             </CardDescription>
                                         </CardHeader>
                                         <CardContent>
-                                            <p className="text-gray-500">More settings coming soon...</p>
+                                            <p className="text-muted-foreground">More settings coming soon...</p>
                                         </CardContent>
                                     </Card>
                                 </div>
@@ -954,9 +954,9 @@ function SignatureEditor({
                         value={content}
                         onChange={(e) => setContent(e.target.value)}
                         placeholder="Your signature..."
-                        className="mt-1 w-full min-h-[200px] px-3 py-2 border rounded-lg bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700 resize-y"
+                        className="mt-1 w-full min-h-[200px] px-3 py-2 border rounded-lg bg-background border-input resize-y"
                     />
-                    <p className="text-xs text-gray-500 mt-1">
+                    <p className="text-xs text-muted-foreground mt-1">
                         Tip: You can use HTML tags for formatting (e.g., &lt;b&gt;, &lt;i&gt;, &lt;a href="..."&gt;)
                     </p>
                 </div>

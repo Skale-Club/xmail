@@ -24,7 +24,8 @@ import {
     Archive,
     ShieldAlert,
     Users,
-    ArrowLeft
+    ArrowLeft,
+    Target
 } from 'lucide-react'
 import { useFolders } from '../../hooks/useMail'
 import { NotificationBell } from './NotificationBell'
@@ -227,7 +228,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
     const { isAdmin } = useAuth()
     const isMobile = useIsMobile()
     const { isOpen: shortcutsOpen, openHelp: openShortcuts, closeHelp: closeShortcuts } = useKeyboardShortcutHelp()
-    const [location] = useLocation()
+    const [location, navigate] = useLocation()
     const [sidebarOpen, setSidebarOpen] = React.useState(false)
     const [isCollapsed, setIsCollapsed] = React.useState(false)
     const [searchOpen, setSearchOpen] = React.useState(false)
@@ -241,7 +242,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault()
         if (searchQuery.trim()) {
-            window.location.href = `/mail/search?q=${encodeURIComponent(searchQuery)}`
+            navigate(`/mail/search?q=${encodeURIComponent(searchQuery)}`)
             setSearchOpen(false)
         }
     }
@@ -336,6 +337,16 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                                     <span>Exit to Admin</span>
                                 </Link>
                             )}
+
+                            {/* Visible to every user — the outreach gate on the other side
+                                decides whether they actually have access. */}
+                            <Link
+                                href="/outreach"
+                                className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg border border-border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                                <Target className="w-4 h-4" />
+                                <span>Open Outreach</span>
+                            </Link>
 
                             {isMobile && !searchOpen && (
                                 <button

@@ -3,6 +3,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, type InfiniteData } from '@tanstack/react-query'
 
+// useUnifiedInboxEvents connects with authenticated `fetch` — NEVER EventSource. It used to
+// go through lib/api's fetchWithAuth; it now goes through lib/api-client's apiRequest (the
+// mail area's refresh-on-401 client — see CLAUDE.md "Outreach Hermes Gateway" migration notes).
+// Mock this so the near-real-time hook drives a controllable stream/failure.
+const apiMocks = vi.hoisted(() => ({ fetchWithAuth: vi.fn() }))
+
 // The operator mutation hooks call apiFetch<T> through api-client. Mock the module so the
 // REAL hooks (loaded via vi.importActual below) drive a fake network we fully control — no
 // supabase session, no real fetch. ApiClientError mirrors the real class's status/details.
@@ -23,13 +29,10 @@ const apiClientMocks = vi.hoisted(() => {
 })
 vi.mock('@/lib/api-client', () => ({
     apiFetch: apiClientMocks.apiFetch,
-    apiRequest: vi.fn(),
+    apiRequest: apiMocks.fetchWithAuth,
     ApiClientError: apiClientMocks.ApiClientError,
 }))
 
-// useUnifiedInboxEvents connects with authenticated `fetch` (fetchWithAuth) — NEVER EventSource.
-// Mock the auth-fetch module so the near-real-time hook drives a controllable stream/failure.
-const apiMocks = vi.hoisted(() => ({ fetchWithAuth: vi.fn() }))
 vi.mock('@/lib/api', () => ({
     fetchWithAuth: apiMocks.fetchWithAuth,
     apiFetch: vi.fn(),

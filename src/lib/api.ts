@@ -1,3 +1,12 @@
+/**
+ * @deprecated Use `src/lib/api-client.ts` instead. This client signs the user out
+ * globally on ANY 401 (see handleUnauthorized() below), whereas api-client.ts
+ * retries once with a refreshed Supabase session before giving up — the mail,
+ * outreach and admin areas have all migrated to it. As of 2026-09, nothing in
+ * the app imports this module anymore (grep `from '.*lib/api'` outside this
+ * file and its own tests to confirm before deleting it); it is kept only so a
+ * stray import doesn't hard-fail while the migration is verified.
+ */
 import { supabase } from './supabase'
 
 export class ApiError extends Error {

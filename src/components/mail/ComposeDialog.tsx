@@ -183,6 +183,11 @@ export function ComposeDialog() {
     }
 
     const handleSaveDraft = async () => {
+        // Guards a double Ctrl+S (or the auto-save-on-close path racing a manual
+        // save) from firing two overlapping saveDraft mutations, which would
+        // create two drafts.
+        if (saveDraft.isPending) return
+
         if (!selectedMailbox) return
 
         try {

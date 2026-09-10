@@ -125,7 +125,7 @@ export default function SearchPage() {
             const params = new URLSearchParams()
             params.set('q', filters.query)
             if (filters.folder) params.set('folder', filters.folder)
-            window.history.pushState({}, '', `/mail/search?${params}`)
+            navigate(`/mail/search?${params}`)
             refetch()
         }
     }
@@ -782,6 +782,7 @@ function EmailDetail({
                             plainText={fullMessage?.bodyText || fullMessage?.plainBody || email.snippet}
                             emailDarkMode={emailDarkMode}
                             isLoading={isMessageLoading}
+                            senderEmail={email.from.email}
                         />
                     </div>
 

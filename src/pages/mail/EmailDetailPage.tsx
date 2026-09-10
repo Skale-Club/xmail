@@ -9,7 +9,7 @@ import { mailApi } from '../../lib/mail-api'
 import { EmailHtmlViewer } from '../../components/mail/EmailHtmlViewer'
 import { EmailMessageHeader } from '../../components/mail/EmailMessageHeader'
 import { EmailThreadView } from '../../components/mail/EmailThread'
-import { EmailThread, ThreadMessage } from '../../lib/email-threading'
+import { ThreadMessage } from '../../lib/email-threading'
 import { getSenderAuthStatus } from '../../lib/mail-auth-status'
 import {
     ArrowLeft,
@@ -29,130 +29,6 @@ import {
     MessagesSquare
 } from 'lucide-react'
 
-const mockEmails: Record<string, { subject: string; body: string; from: { name: string; email: string }; to: { name: string; email: string }[]; date: Date; starred: boolean; attachments?: { name: string; size: string; type: string }[] }> = {
-    '1': {
-        subject: 'Welcome to Xmail!',
-        body: `Dear User,
-
-Thank you for using Xmail! We are thrilled to have you as part of our growing community.
-
-Here's what you can do with your new email account:
-
-1. Send and receive emails professionally
-2. Organize your inbox with folders and labels
-3. Track email opens and clicks
-4. Create email templates for faster composing
-5. Set up webhooks for automated workflows
-
-If you have any questions or need assistance, don't hesitate to reach out to our support team.
-
-Best regards,
-The Skale Club Team
-
----
-Xmail - Professional Email Made Simple
-Website: https://skaleclub.com
-Support: support@skaleclub.com`,
-        from: { name: 'Skale Club Team', email: 'noreply@skaleclub.com' },
-        to: [{ name: 'User', email: 'user@skaleclub.com' }],
-        date: new Date(),
-        starred: true,
-        attachments: [
-            { name: 'getting-started.pdf', size: '245 KB', type: 'pdf' },
-            { name: 'welcome-guide.pdf', size: '1.2 MB', type: 'pdf' }
-        ]
-    },
-    '2': {
-        subject: 'Meeting Tomorrow at 10 AM',
-        body: `Hi team,
-
-Just a reminder about our weekly sync meeting tomorrow at 10 AM. Please come prepared with your updates.
-
-Agenda:
-1. Sprint review
-2. Blockers discussion
-3. Planning for next week
-
-See you there!
-
-Best,
-John`,
-        from: { name: 'John Smith', email: 'john.smith@company.com' },
-        to: [{ name: 'User', email: 'user@skaleclub.com' }],
-        date: new Date(Date.now() - 3600000),
-        starred: false,
-    },
-    'thread-1': {
-        subject: 'Re: Project Discussion',
-        body: `Thanks for the update! I think we should proceed with option A.
-
-Let me know your thoughts.
-
-Best,
-Sarah`,
-        from: { name: 'Sarah Johnson', email: 'sarah@company.com' },
-        to: [{ name: 'User', email: 'user@skaleclub.com' }],
-        date: new Date(Date.now() - 7200000),
-        starred: false,
-    }
-}
-
-const mockThreads: Record<string, EmailThread> = {
-    'thread-1': {
-        threadId: 'thread-1',
-        subject: 'Project Discussion',
-        messages: [
-            {
-                id: 'msg-1',
-                from: { name: 'John Smith', email: 'john@company.com' },
-                to: [{ name: 'Team', email: 'team@company.com' }],
-                date: new Date(Date.now() - 86400000),
-                subject: 'Project Discussion',
-                body: 'Hi team,\n\nI wanted to start a discussion about our upcoming project. We have two options:\n\n1. Build from scratch\n2. Use existing framework\n\nWhat do you think?',
-                snippet: 'I wanted to start a discussion about our upcoming project...',
-                read: true,
-                starred: false,
-                messageId: 'msg-1'
-            },
-            {
-                id: 'msg-2',
-                from: { name: 'Sarah Johnson', email: 'sarah@company.com' },
-                to: [{ name: 'Team', email: 'team@company.com' }],
-                date: new Date(Date.now() - 43200000),
-                subject: 'Re: Project Discussion',
-                body: 'Hi John,\n\nI think option 2 would be faster, but option 1 gives us more flexibility.\n\nLet\'s discuss in our next meeting.\n\nSarah',
-                snippet: 'I think option 2 would be faster, but option 1 gives us more flexibility...',
-                read: true,
-                starred: false,
-                inReplyTo: 'msg-1',
-                messageId: 'msg-2'
-            },
-            {
-                id: 'thread-1',
-                from: { name: 'User', email: 'user@skaleclub.com' },
-                to: [{ name: 'Team', email: 'team@company.com' }],
-                date: new Date(Date.now() - 7200000),
-                subject: 'Re: Project Discussion',
-                body: 'Thanks for the input!\n\nI agree with Sarah. Let\'s go with option 2 for the MVP and consider option 1 for the next version.\n\nI\'ll schedule a meeting for tomorrow.',
-                snippet: 'Thanks for the input! I agree with Sarah...',
-                read: false,
-                starred: false,
-                inReplyTo: 'msg-2',
-                messageId: 'thread-1'
-            }
-        ],
-        participants: [
-            { name: 'John Smith', email: 'john@company.com' },
-            { name: 'Sarah Johnson', email: 'sarah@company.com' },
-            { name: 'User', email: 'user@skaleclub.com' }
-        ],
-        lastMessageAt: new Date(Date.now() - 7200000),
-        unreadCount: 1,
-        starred: false,
-        hasAttachments: false
-    }
-}
-
 export default function EmailDetailPage() {
     const params = useParams<{ folder: string; id: string }>()
     const [, setLocation] = useLocation()
@@ -169,35 +45,6 @@ export default function EmailDetailPage() {
     const spamMessage = useSpamMessage()
 
     const thread = React.useMemo(() => {
-        const mockThread = mockThreads[params.id]
-        if (mockThread) return mockThread
-
-        const mock = mockEmails[params.id]
-        if (mock) {
-            return {
-                threadId: params.id,
-                subject: mock.subject,
-                messages: [{
-                    id: params.id,
-                    from: mock.from,
-                    to: mock.to,
-                    date: mock.date,
-                    subject: mock.subject,
-                    body: mock.body,
-                    snippet: mock.body.slice(0, 150),
-                    read: true,
-                    starred: mock.starred,
-                    attachments: mock.attachments,
-                    messageId: params.id
-                }],
-                participants: [{ ...mock.from }, ...mock.to],
-                lastMessageAt: mock.date,
-                unreadCount: 0,
-                starred: mock.starred,
-                hasAttachments: !!mock.attachments?.length
-            }
-        }
-
         if (apiMessage?.message) {
             const emailItem = mapMessageToEmailItem(apiMessage.message)
             return {
@@ -235,12 +82,19 @@ export default function EmailDetailPage() {
 
     const email = thread?.messages[thread.messages.length - 1] || null
 
-    // Mark as read as soon as the user opens the email.
+    // useMutation's returned object (and its .mutate) is not reference-stable across
+    // renders, so putting `updateMessage` itself in the deps below reran this effect
+    // (and re-fired the mutation) on every render, not just once per message. A ref
+    // always calls the latest mutate function without being a dependency itself.
+    const updateMessageRef = React.useRef(updateMessage.mutate)
+    updateMessageRef.current = updateMessage.mutate
+
+    // Mark as read as soon as the user opens the email — fires once per message.
     React.useEffect(() => {
         if (!email || !selectedMailbox || email.read) return
 
-        updateMessage.mutate({ messageId: email.id, data: { read: true } })
-    }, [email?.id, email?.read, selectedMailbox, updateMessage])
+        updateMessageRef.current({ messageId: email.id, data: { read: true } })
+    }, [email?.id, email?.read, selectedMailbox])
 
     const handleToggleRead = (messageId?: string) => {
         const id = messageId || email?.id
@@ -648,6 +502,7 @@ function SingleEmailView({
                             html={message.htmlBody}
                             plainText={message.body || message.snippet}
                             emailDarkMode={emailDarkMode}
+                            senderEmail={message.from.email}
                         />
                     </div>
 

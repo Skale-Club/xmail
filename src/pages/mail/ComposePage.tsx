@@ -2,6 +2,7 @@ import React from 'react'
 import { Link, useLocation, useSearch } from 'wouter'
 import { MailLayout } from '../../components/mail/MailLayout'
 import { toast } from '../../components/ui/toaster'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { useMailbox } from '../../hooks/useMailbox'
 import { useSendEmail, useSaveDraft, useMessage } from '../../hooks/useMail'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
@@ -179,6 +180,10 @@ export default function ComposePage() {
     }
 
     const handleSaveDraft = async () => {
+        // Guards a double Ctrl+S (or a stray click while a save is already in flight)
+        // from firing two overlapping saveDraft mutations, which would create two drafts.
+        if (saveDraft.isPending) return
+
         if (!selectedMailbox) {
             toast({ title: 'No email account selected', variant: 'destructive' })
             return
@@ -487,32 +492,16 @@ export default function ComposePage() {
                 </div>
             </div>
 
-            {discardConfirm && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-                    <div className="bg-background rounded-2xl shadow-2xl p-6 max-w-md w-full mx-4">
-                        <h2 className="text-xl font-bold text-foreground mb-4">
-                            Discard this message?
-                        </h2>
-                        <p className="text-muted-foreground mb-6">
-                            This will permanently delete this message. This action cannot be undone.
-                        </p>
-                        <div className="flex items-center justify-end gap-3">
-                            <button
-                                onClick={() => setDiscardConfirm(false)}
-                                className="px-4 py-2 text-foreground hover:bg-muted rounded-lg font-medium transition-colors"
-                            >
-                                Keep
-                            </button>
-                            <button
-                                onClick={confirmDiscard}
-                                className="px-4 py-2 bg-destructive hover:bg-destructive/90 text-destructive-foreground rounded-lg font-medium transition-colors"
-                            >
-                                Discard
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmDialog
+                open={discardConfirm}
+                onOpenChange={setDiscardConfirm}
+                title="Discard this message?"
+                description="This will permanently delete this message. This action cannot be undone."
+                confirmLabel="Discard"
+                cancelLabel="Keep"
+                variant="danger"
+                onConfirm={confirmDiscard}
+            />
         </MailLayout>
     )
 }

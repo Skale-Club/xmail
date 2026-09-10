@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import { eq, and, desc, inArray, sql, ilike, or } from 'drizzle-orm'
+import { eq, and, desc, inArray, sql, ilike, or, not } from 'drizzle-orm'
 import Imap from 'imap'
 import { db } from '../../../db'
 import { mailMessages, mailFolders, INBOX_ATTACHMENTS_BUCKET } from '../../../db/schema'
@@ -44,6 +44,13 @@ function isTrashFolderIdentifier(value: string | null | undefined) {
     if (!value) return false
     const upper = value.toUpperCase()
     return upper === 'TRASH' || upper === 'DELETED' || upper === 'DELETED ITEMS' || upper.endsWith('TRASH') || upper === 'BIN' || upper === 'DELETED MESSAGES'
+}
+
+// Accepts '1'/'true' (case-insensitive) as truthy — matches how the mail-api client
+// serializes boolean filters (?unread=1, ?starred=1, ?hasAttachments=1).
+function parseBoolFlag(value: unknown): boolean {
+    if (typeof value !== 'string') return false
+    return value === '1' || value.toLowerCase() === 'true'
 }
 
 function isInboxFolderIdentifier(value: string | null | undefined) {
@@ -225,6 +232,10 @@ router.get('/:mailboxId/messages', async (req: Request, res: Response) => {
         const page = parseInt(req.query.page as string) || 1
         const limit = Math.min(parseInt(req.query.limit as string) || 50, 100)
         const offset = (page - 1) * limit
+        const unreadOnly = parseBoolFlag(req.query.unread)
+        const starredOnly = parseBoolFlag(req.query.starred)
+        const attachmentsOnly = parseBoolFlag(req.query.hasAttachments)
+        const q = typeof req.query.q === 'string' ? req.query.q.trim() : undefined
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
@@ -269,6 +280,38 @@ router.get('/:mailboxId/messages', async (req: Request, res: Response) => {
 
         if (folderId) {
             conditions.push(eq(mailMessages.folderId, folderId))
+        } else if (!folderType) {
+            // No folder specified at all — this is the mailbox-wide listing (e.g. the
+            // "Starred" view across every folder). Keep it out of Trash/Spam so a
+            // starred-then-trashed message doesn't resurface in a unified view.
+            const excludedFolders = await db.query.mailFolders.findMany({
+                where: and(eq(mailFolders.mailboxId, mailboxId), inArray(mailFolders.type, ['trash', 'spam'])),
+                columns: { id: true },
+            })
+            if (excludedFolders.length > 0) {
+                conditions.push(not(inArray(mailMessages.folderId, excludedFolders.map((f) => f.id))))
+            }
+        }
+
+        if (unreadOnly) {
+            conditions.push(eq(mailMessages.isRead, false))
+        }
+        if (starredOnly) {
+            conditions.push(eq(mailMessages.isStarred, true))
+        }
+        if (attachmentsOnly) {
+            conditions.push(eq(mailMessages.hasAttachments, true))
+        }
+        if (q && q.length >= 2) {
+            // Same substring match as GET /:mailboxId/search, reused here so a folder's
+            // in-place search box and page size stay consistent with the folder list.
+            const textMatch = or(
+                ilike(mailMessages.subject, `%${q}%`),
+                ilike(mailMessages.fromName, `%${q}%`),
+                ilike(mailMessages.fromAddress, `%${q}%`),
+                ilike(mailMessages.plainBody, `%${q}%`),
+            )
+            if (textMatch) conditions.push(textMatch)
         }
 
         const [messages, countResult] = await Promise.all([

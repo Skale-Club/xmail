@@ -1,8 +1,19 @@
 import { useState, useCallback } from 'react'
 import { toast } from '../components/ui/toaster'
-import { ApiError, isNetworkError, isAuthError } from '../lib/api'
+import { ApiClientError } from '../lib/api-client'
 
-export { ApiError, isNetworkError, isAuthError }
+export { ApiClientError }
+
+// api-client.ts's ApiClientError doesn't carry the isNetworkError/isAuthError
+// helpers api.ts had — reconstructed here from status/code so callers keep the
+// same checks after the switch off the sign-out-on-any-401 client.
+export function isNetworkError(error: unknown): boolean {
+    return error instanceof ApiClientError && (error.code === 'network_error' || error.status === 0)
+}
+
+export function isAuthError(error: unknown): boolean {
+    return error instanceof ApiClientError && (error.status === 401 || error.status === 403)
+}
 
 interface ApiErrorState {
     message: string
@@ -21,7 +32,7 @@ export function useApiError() {
             details: err
         }
 
-        if (err instanceof ApiError) {
+        if (err instanceof ApiClientError) {
             apiError.message = err.message
             apiError.code = err.code
             apiError.status = err.status
@@ -68,7 +79,7 @@ export function useApiError() {
 }
 
 export function parseApiError(error: unknown): ApiErrorState {
-    if (error instanceof ApiError) {
+    if (error instanceof ApiClientError) {
         return { message: error.message, code: error.code, status: error.status, details: error }
     }
 
@@ -94,5 +105,5 @@ export function getErrorMessage(error: unknown): string {
 }
 
 export function isNotFoundError(error: unknown): boolean {
-    return error instanceof ApiError && error.status === 404
+    return error instanceof ApiClientError && error.status === 404
 }

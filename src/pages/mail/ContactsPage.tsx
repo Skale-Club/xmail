@@ -1,6 +1,7 @@
 import React from 'react'
 import { MailLayout } from '../../components/mail/MailLayout'
 import { toast } from '../../components/ui/toaster'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
 import { useContacts, useCreateContact, useUpdateContact, useDeleteContact, useImportContactsCsv } from '../../hooks/useMail'
 import {
     Plus,
@@ -364,21 +365,15 @@ export default function ContactsPage() {
                 )}
             </div>
 
-            {showForm && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-                    <div className="bg-background rounded-2xl shadow-2xl p-6 max-w-md w-full mx-4">
-                        <div className="flex items-center justify-between mb-6">
-                            <h2 className="text-xl font-bold text-foreground">
-                                {editingId ? 'Edit Contact' : 'New Contact'}
-                            </h2>
-                            <button
-                                onClick={() => { setShowForm(false); setEditingId(null) }}
-                                className="p-2 rounded-lg hover:bg-muted text-muted-foreground transition-colors"
-                            >
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-                        <div className="space-y-4">
+            <Dialog
+                open={showForm}
+                onOpenChange={(open) => { setShowForm(open); if (!open) setEditingId(null) }}
+            >
+                <DialogContent className="max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>{editingId ? 'Edit Contact' : 'New Contact'}</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
                             <div>
                                 <label className="block text-sm font-medium text-foreground mb-1.5">Email *</label>
                                 <input
@@ -437,22 +432,17 @@ export default function ContactsPage() {
                                 {createContact.isPending || updateContact.isPending ? 'Saving...' : editingId ? 'Update' : 'Create'}
                             </button>
                         </div>
-                    </div>
-                </div>
-            )}
+                </DialogContent>
+            </Dialog>
 
-            {showImport && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-                    <div className="bg-background rounded-2xl shadow-2xl p-6 max-w-md w-full mx-4">
-                        <div className="flex items-center justify-between mb-6">
-                            <h2 className="text-xl font-bold text-foreground">Import Contacts from CSV</h2>
-                            <button
-                                onClick={() => { setShowImport(false); setCsvFile(null) }}
-                                className="p-2 rounded-lg hover:bg-muted text-muted-foreground transition-colors"
-                            >
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
+            <Dialog
+                open={showImport}
+                onOpenChange={(open) => { setShowImport(open); if (!open) setCsvFile(null) }}
+            >
+                <DialogContent className="max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Import Contacts from CSV</DialogTitle>
+                    </DialogHeader>
 
                         <div
                             onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
@@ -505,9 +495,8 @@ export default function ContactsPage() {
                                 Supports comma and semicolon delimiters. Duplicate emails are skipped.
                             </p>
                         </div>
-                    </div>
-                </div>
-            )}
+                </DialogContent>
+            </Dialog>
         </MailLayout>
     )
 }

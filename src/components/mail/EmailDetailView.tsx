@@ -17,6 +17,9 @@ interface EmailDetailViewProps {
     archiveTitle?: string
     archiveAriaLabel?: string
     archiveIcon?: 'archive' | 'inbox'
+    /** Which of the reply/reply-all/forward buttons to show. Defaults to all three
+     *  (Inbox/Archive/Starred). Sent only forwards; Spam shows none of them. */
+    replyActions?: 'all' | 'forwardOnly' | 'none'
 }
 
 export function EmailDetailView({
@@ -30,6 +33,7 @@ export function EmailDetailView({
     archiveTitle,
     archiveAriaLabel,
     archiveIcon,
+    replyActions = 'all',
 }: EmailDetailViewProps) {
     const { openCompose } = useCompose()
     const { data: messageData, isLoading: isMessageLoading } = useMessage(email.id)
@@ -86,6 +90,7 @@ export function EmailDetailView({
                             plainText={fullMessage?.bodyText || fullMessage?.plainBody || email.snippet}
                             emailDarkMode={emailDarkMode}
                             isLoading={isMessageLoading}
+                            senderEmail={email.from.email}
                         />
                     </div>
 
@@ -104,31 +109,41 @@ export function EmailDetailView({
                         </div>
                     )}
 
-                    <div className="mt-8 pt-6 border-t border-border">
-                        <div className="flex items-center gap-3">
-                            <button
-                                onClick={() => openCompose({ replyToId: email.id })}
-                                className="inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-colors"
-                            >
-                                <Reply className="w-4 h-4" />
-                                Reply
-                            </button>
-                            <button
-                                onClick={() => openCompose({ replyToId: email.id, replyAll: true })}
-                                className="inline-flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 text-secondary-foreground rounded-lg text-sm font-medium transition-colors"
-                            >
-                                <ReplyAll className="w-4 h-4" />
-                                Reply All
-                            </button>
-                            <button
-                                onClick={() => openCompose({ forwardId: email.id })}
-                                className="inline-flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 text-secondary-foreground rounded-lg text-sm font-medium transition-colors"
-                            >
-                                <Forward className="w-4 h-4" />
-                                Forward
-                            </button>
+                    {replyActions !== 'none' && (
+                        <div className="mt-8 pt-6 border-t border-border">
+                            <div className="flex items-center gap-3">
+                                {replyActions === 'all' && (
+                                    <>
+                                        <button
+                                            onClick={() => openCompose({ replyToId: email.id })}
+                                            className="inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-colors"
+                                        >
+                                            <Reply className="w-4 h-4" />
+                                            Reply
+                                        </button>
+                                        <button
+                                            onClick={() => openCompose({ replyToId: email.id, replyAll: true })}
+                                            className="inline-flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 text-secondary-foreground rounded-lg text-sm font-medium transition-colors"
+                                        >
+                                            <ReplyAll className="w-4 h-4" />
+                                            Reply All
+                                        </button>
+                                    </>
+                                )}
+                                <button
+                                    onClick={() => openCompose({ forwardId: email.id })}
+                                    className={
+                                        replyActions === 'forwardOnly'
+                                            ? 'inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-colors'
+                                            : 'inline-flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 text-secondary-foreground rounded-lg text-sm font-medium transition-colors'
+                                    }
+                                >
+                                    <Forward className="w-4 h-4" />
+                                    Forward
+                                </button>
+                            </div>
                         </div>
-                    </div>
+                    )}
                 </div>
             </div>
         </div>

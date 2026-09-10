@@ -1,5 +1,4 @@
-import { apiFetch, ApiError } from '../lib/api'
-import { supabase } from '../lib/supabase'
+import { apiFetch, ApiClientError, getAccessToken } from '../lib/api-client'
 
 interface RecipientInput {
     address: string
@@ -230,18 +229,34 @@ export const mailApi = {
 
     getMessages(
         mailboxId: string,
-        folderIdOrType: string,
-        params?: { page?: number; limit?: number; search?: string; isType?: boolean }
+        // Omit folderIdOrType (undefined) for a mailbox-wide listing (used by the
+        // cross-folder "Starred" view) — the server then lists across every folder
+        // except Trash/Spam instead of resolving a single one.
+        folderIdOrType: string | undefined,
+        params?: {
+            page?: number
+            limit?: number
+            search?: string
+            isType?: boolean
+            unread?: boolean
+            starred?: boolean
+            hasAttachments?: boolean
+        }
     ): Promise<MessageListResponse> {
         const searchParams = new URLSearchParams()
-        if (params?.isType) {
-            searchParams.set('folderType', folderIdOrType)
-        } else {
-            searchParams.set('folderId', folderIdOrType)
+        if (folderIdOrType) {
+            if (params?.isType) {
+                searchParams.set('folderType', folderIdOrType)
+            } else {
+                searchParams.set('folderId', folderIdOrType)
+            }
         }
         if (params?.page !== undefined) searchParams.set('page', String(params.page))
         if (params?.limit !== undefined) searchParams.set('limit', String(params.limit))
-        if (params?.search) searchParams.set('search', params.search)
+        if (params?.search) searchParams.set('q', params.search)
+        if (params?.unread) searchParams.set('unread', '1')
+        if (params?.starred) searchParams.set('starred', '1')
+        if (params?.hasAttachments) searchParams.set('hasAttachments', '1')
 
         return apiFetch<RawMessageListResponse>(`/api/mail/mailboxes/${mailboxId}/messages?${searchParams}`)
             .then(normalizeMessageListResponse)
@@ -352,13 +367,13 @@ export const mailApi = {
     // responses, so this bypasses it and drives fetch() directly, same auth header
     // included, then hands the browser a blob to save.
     async downloadAttachment(mailboxId: string, messageId: string, index: number, filename: string): Promise<void> {
-        const { data: { session } } = await supabase.auth.getSession()
-        if (!session?.access_token) {
-            throw new ApiError('Not authenticated', 401, 'NOT_AUTHENTICATED')
+        const token = await getAccessToken()
+        if (!token) {
+            throw new ApiClientError('Not authenticated', { status: 401, path: 'session', code: 'NOT_AUTHENTICATED' })
         }
 
         const response = await fetch(`/api/mail/mailboxes/${mailboxId}/messages/${messageId}/attachments/${index}`, {
-            headers: { Authorization: `Bearer ${session.access_token}` },
+            headers: { Authorization: `Bearer ${token}` },
             cache: 'no-store',
         })
 
@@ -372,7 +387,7 @@ export const mailApi = {
             } catch {
                 // Non-JSON error body — keep the statusText fallback above.
             }
-            throw new ApiError(message, response.status, String(response.status))
+            throw new ApiClientError(message, { status: response.status, path: `/api/mail/mailboxes/${mailboxId}/messages/${messageId}/attachments/${index}` })
         }
 
         const blob = await response.blob()

@@ -256,6 +256,7 @@ function ThreadMessageCard({
                             html={message.htmlBody}
                             plainText={message.body || message.snippet}
                             emailDarkMode={emailDarkMode}
+                            senderEmail={message.from.email}
                         />
                     </div>
 

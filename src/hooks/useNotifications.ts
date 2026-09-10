@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { mailApi } from '../lib/mail-api'
+import { useAuth } from './useAuth'
 
 export interface UserNotification {
     id: string
@@ -13,17 +14,25 @@ export interface UserNotification {
 }
 
 export function useNotifications(page = 1, limit = 20) {
+    const { user } = useAuth()
+
     return useQuery({
-        queryKey: ['notifications', page, limit],
+        // Scoped by user id so switching accounts can't briefly render (or act on)
+        // notifications fetched for the previous session — see useMultiSession.
+        queryKey: ['notifications', user?.id, page, limit],
         queryFn: () => mailApi.getNotifications({ page, limit }),
+        enabled: !!user,
         staleTime: 30000,
     })
 }
 
 export function useUnreadCount() {
+    const { user } = useAuth()
+
     return useQuery({
-        queryKey: ['notifications', 'unread-count'],
+        queryKey: ['notifications', user?.id, 'unread-count'],
         queryFn: () => mailApi.getUnreadCount(),
+        enabled: !!user,
         staleTime: 60000,
         refetchInterval: 120000,
     })

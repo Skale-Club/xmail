@@ -86,6 +86,9 @@ export function useKeyboardShortcuts({
             }
 
             if (event.ctrlKey || event.metaKey) {
+                // These two must keep working while focus is in the compose editor
+                // (subject/body/contentEditable) — they never conflict with native
+                // input behavior, unlike Ctrl+A below.
                 switch (currentKey) {
                     case 'enter':
                         event.preventDefault()
@@ -95,6 +98,17 @@ export function useKeyboardShortcuts({
                         event.preventDefault()
                         onSaveDraft?.()
                         return
+                }
+
+                // Everything else (Ctrl+A select-all-messages, Ctrl+Shift+A deselect-all,
+                // ...) is a list-view shortcut. Inside an input/textarea/contentEditable it
+                // would hijack native editing behavior (e.g. "select all text"), so let the
+                // browser handle it there instead.
+                if (isInput) {
+                    return
+                }
+
+                switch (currentKey) {
                     case 'a':
                         event.preventDefault()
                         if (event.shiftKey) {

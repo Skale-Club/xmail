@@ -1,5 +1,5 @@
-import { useRef, useEffect, useState } from 'react'
-import { Maximize2 } from 'lucide-react'
+import { useRef, useEffect, useState, useMemo } from 'react'
+import { Maximize2, ImageOff } from 'lucide-react'
 import { Dialog, DialogContent } from '../ui/Dialog'
 
 interface EmailHtmlViewerProps {
@@ -8,6 +8,98 @@ interface EmailHtmlViewerProps {
     emailDarkMode?: boolean
     expandable?: boolean
     isLoading?: boolean
+    /** Sender address, used to remember a "always show images" choice per sender
+     *  in localStorage. Without it the "Show images" choice is session-only. */
+    senderEmail?: string | null
+}
+
+// 1x1 transparent GIF — stands in for any blocked remote image so the layout
+// doesn't jump when a message is first rendered with images off.
+const BLOCKED_IMAGE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+const REMOTE_URL_RE = /^https?:\/\//i
+const CSS_URL_RE = /url\(\s*(['"]?)(https?:\/\/[^'")]+)\1\s*\)/gi
+const STORAGE_PREFIX = 'xmail:show-images:'
+
+function rememberSenderChoice(senderEmail: string | null | undefined) {
+    if (!senderEmail) return
+    try {
+        window.localStorage.setItem(`${STORAGE_PREFIX}${senderEmail.toLowerCase()}`, '1')
+    } catch {
+        // Storage unavailable (private mode, quota, etc.) — the choice just won't persist.
+    }
+}
+
+function senderAlwaysShowsImages(senderEmail: string | null | undefined): boolean {
+    if (!senderEmail) return false
+    try {
+        return window.localStorage.getItem(`${STORAGE_PREFIX}${senderEmail.toLowerCase()}`) === '1'
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Rewrites every remote (http/https) image reference in `html` — <img src>,
+ * <img srcset>, inline style="...url(...)" and <style> block backgrounds — to
+ * a same-origin data: placeholder. `cid:` (inline attachment) and `data:`
+ * images are left untouched since they never leave the sandbox. Returns
+ * whether anything was actually blocked, so the caller can show the
+ * "Show images" bar only when there's something to show.
+ */
+function blockRemoteImages(html: string): { safeHtml: string; hadRemoteImages: boolean } {
+    if (typeof DOMParser === 'undefined') {
+        return { safeHtml: html, hadRemoteImages: false }
+    }
+
+    let hadRemoteImages = false
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+
+    doc.querySelectorAll('img').forEach((img) => {
+        const src = img.getAttribute('src')
+        if (src && REMOTE_URL_RE.test(src.trim())) {
+            hadRemoteImages = true
+            img.setAttribute('src', BLOCKED_IMAGE_PLACEHOLDER)
+        }
+
+        const srcset = img.getAttribute('srcset')
+        if (srcset) {
+            const rewritten = srcset
+                .split(',')
+                .map((candidate) => {
+                    const [url, descriptor] = candidate.trim().split(/\s+/, 2)
+                    if (url && REMOTE_URL_RE.test(url)) {
+                        hadRemoteImages = true
+                        return [BLOCKED_IMAGE_PLACEHOLDER, descriptor].filter(Boolean).join(' ')
+                    }
+                    return candidate.trim()
+                })
+                .join(', ')
+            img.setAttribute('srcset', rewritten)
+        }
+    })
+
+    // Global regexes carry mutable lastIndex state across calls, which would
+    // desync test()/replace() pairs reused across many elements — so each use
+    // below just replaces and compares strings rather than test()-ing first.
+    doc.querySelectorAll<HTMLElement>('[style]').forEach((el) => {
+        const style = el.getAttribute('style') || ''
+        const rewritten = style.replace(CSS_URL_RE, `url($1${BLOCKED_IMAGE_PLACEHOLDER}$1)`)
+        if (rewritten !== style) {
+            hadRemoteImages = true
+            el.setAttribute('style', rewritten)
+        }
+    })
+
+    doc.querySelectorAll('style').forEach((styleTag) => {
+        const css = styleTag.textContent || ''
+        const rewritten = css.replace(CSS_URL_RE, `url($1${BLOCKED_IMAGE_PLACEHOLDER}$1)`)
+        if (rewritten !== css) {
+            hadRemoteImages = true
+            styleTag.textContent = rewritten
+        }
+    })
+
+    return { safeHtml: doc.body.innerHTML, hadRemoteImages }
 }
 
 function buildEmailDoc(html: string) {
@@ -50,16 +142,33 @@ function buildEmailDoc(html: string) {
  * Falls back to plain text if no HTML is available.
  * The iframe auto-resizes to fit its content.
  */
-export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = true, isLoading = false }: EmailHtmlViewerProps) {
+export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = true, isLoading = false, senderEmail }: EmailHtmlViewerProps) {
     const iframeRef = useRef<HTMLIFrameElement>(null)
     const [height, setHeight] = useState(200)
     const [isExpanded, setIsExpanded] = useState(false)
     const [srcdoc, setSrcdoc] = useState<string | undefined>(undefined)
+    const [allowImages, setAllowImages] = useState(() => senderAlwaysShowsImages(senderEmail))
+
+    // A new message from a different sender starts from that sender's remembered
+    // choice again, rather than carrying over whatever the previous message used.
+    useEffect(() => {
+        setAllowImages(senderAlwaysShowsImages(senderEmail))
+    }, [senderEmail])
+
+    const { safeHtml, hadRemoteImages: hasRemoteImages } = useMemo(
+        () => (html ? blockRemoteImages(html) : { safeHtml: '', hadRemoteImages: false }),
+        [html]
+    )
 
     useEffect(() => {
         if (!html) return
-        setSrcdoc(buildEmailDoc(html))
-    }, [html])
+        setSrcdoc(buildEmailDoc(allowImages ? html : safeHtml))
+    }, [html, safeHtml, allowImages])
+
+    const handleShowImages = () => {
+        setAllowImages(true)
+        rememberSenderChoice(senderEmail)
+    }
 
     useEffect(() => {
         const iframe = iframeRef.current
@@ -151,6 +260,21 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
 
     return (
         <>
+            {hasRemoteImages && !allowImages && (
+                <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-2">
+                        <ImageOff className="h-3.5 w-3.5 flex-shrink-0" />
+                        Images in this message have been blocked to protect your privacy.
+                    </span>
+                    <button
+                        type="button"
+                        onClick={handleShowImages}
+                        className="flex-shrink-0 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                    >
+                        Show images
+                    </button>
+                </div>
+            )}
             <div className="relative group">
                 {expandable && (
                     <button
@@ -188,6 +312,7 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
                                 plainText={plainText}
                                 emailDarkMode={emailDarkMode}
                                 expandable={false}
+                                senderEmail={senderEmail}
                             />
                         </div>
                     </DialogContent>

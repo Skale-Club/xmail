@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
 import { clearTokenCache } from '../lib/api-client'
 import {
@@ -25,6 +26,7 @@ interface MultiSessionContextType {
 const MultiSessionContext = createContext<MultiSessionContextType | null>(null)
 
 export function MultiSessionProvider({ children }: { children: React.ReactNode }) {
+    const queryClient = useQueryClient()
     const [sessions, setSessions] = useState<SessionInfo[]>([])
     const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null)
     const [initialized, setInitialized] = useState(false)
@@ -140,9 +142,15 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
             throw new Error('Session expired. Please sign in again.')
         }
 
+        // Every cached query (mailboxes, messages, folders, contacts, notifications,
+        // organizations...) was fetched under the previous user's auth token. Without
+        // dropping it, the new session would briefly render — or worse, act on — the
+        // last session's data until each query happened to refetch on its own.
+        queryClient.clear()
+
         setActiveSessionIdState(userId)
         setActiveSessionId(userId)
-    }, [activeSessionId, refreshSessions])
+    }, [activeSessionId, refreshSessions, queryClient])
 
     const removeAccount = useCallback(async (userId: string) => {
         const wasActive = userId === activeSessionId
@@ -168,18 +176,21 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
                         await removeAccount(after[0].userId)
                     } else {
                         clearAllSessions()
+                        queryClient.clear()
                         await supabase.auth.signOut().catch(() => {})
                     }
                     return
                 }
+                queryClient.clear()
                 setActiveSessionIdState(next.userId)
                 setActiveSessionId(next.userId)
             } else {
                 clearAllSessions()
+                queryClient.clear()
                 await supabase.auth.signOut().catch(() => {})
             }
         }
-    }, [activeSessionId, refreshSessions])
+    }, [activeSessionId, refreshSessions, queryClient])
 
     const value = React.useMemo<MultiSessionContextType>(() => ({
         sessions,

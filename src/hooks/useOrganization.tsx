@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 import { apiFetch } from '../lib/api-client'
+import { useMultiSession } from './useMultiSession'
 
 interface Organization {
     id: string
@@ -24,13 +25,18 @@ const OrganizationContext = createContext<OrganizationContextValue>({
 const STORAGE_KEY = 'skale_outreach_org'
 
 export function OrganizationProvider({ children }: { children: ReactNode }) {
+    const { activeSessionId } = useMultiSession()
     const [organizations, setOrganizations] = useState<Organization[]>([])
     const [currentOrganization, setCurrentOrganizationState] = useState<Organization | null>(null)
     const [isLoading, setIsLoading] = useState(true)
 
+    // Re-fetch whenever the active account changes (AccountSwitcher / multi-session)
+    // — otherwise switching accounts kept showing the previous user's organizations
+    // and outreach-access decision until an unrelated remount happened to refire this.
     useEffect(() => {
+        setIsLoading(true)
         void loadOrganizations()
-    }, [])
+    }, [activeSessionId])
 
     async function loadOrganizations() {
         try {
@@ -43,19 +49,28 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
             if (stored) {
                 try {
                     const storedOrg = JSON.parse(stored) as Organization
-                    // Verify the stored org still exists in the list
-                    if (orgs.some(o => o.id === storedOrg.id)) {
-                        setCurrentOrganizationState(storedOrg)
+                    // Re-resolve from the freshly-fetched list rather than trusting the
+                    // stored snapshot verbatim — the stored `role` can be stale (e.g. an
+                    // admin downgraded the user since it was cached), which would let
+                    // JS-side role checks elsewhere act on a permission the user no
+                    // longer has.
+                    const resolved = orgs.find(o => o.id === storedOrg.id)
+                    if (resolved) {
+                        setCurrentOrganizationState(resolved)
                     } else {
                         // Clear invalid stored org
                         localStorage.removeItem(STORAGE_KEY)
+                        setCurrentOrganizationState(orgs[0] ?? null)
                     }
                 } catch {
                     localStorage.removeItem(STORAGE_KEY)
+                    setCurrentOrganizationState(orgs[0] ?? null)
                 }
             } else if (orgs.length > 0) {
                 // Default to first organization
                 setCurrentOrganizationState(orgs[0])
+            } else {
+                setCurrentOrganizationState(null)
             }
         } catch (error) {
             console.error('Error loading organizations:', error)

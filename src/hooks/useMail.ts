@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient, useInfiniteQuery, InfiniteData }
 import React from 'react'
 import { mailApi, Message, SendEmailPayload, SaveDraftPayload, MessageListResponse } from '../lib/mail-api'
 import { useMailbox } from './useMailbox'
+import { useAuth } from './useAuth'
 
 type MessageQuerySnapshot = Array<[readonly unknown[], unknown]>
 
@@ -82,46 +83,25 @@ export function useFolders() {
     })
 }
 
-export function useMessages(folderType: string, page = 1, limit = 50, search?: string) {
-    const { selectedMailbox } = useMailbox()
-    const foldersQuery = useFolders()
-
-    // Prefer resolved folderId from cache; fall back to folderType for server-side resolution
-    const folderId = React.useMemo(() => {
-        if (!foldersQuery.data?.folders) return undefined
-        const folder = foldersQuery.data.folders.find(
-            (f: { remoteId?: string; type?: string; id: string }) =>
-                f.type === folderType || f.remoteId?.toLowerCase() === folderType.toLowerCase()
-        )
-        return folder?.id
-    }, [foldersQuery.data, folderType])
-
-    const messagesQuery = useQuery({
-        queryKey: ['messages', selectedMailbox?.id, folderType, folderId, page, limit, search],
-        queryFn: () => {
-            if (!selectedMailbox) throw new Error('No mailbox selected')
-            // If folderId resolved from cache, use it; otherwise let server resolve by type
-            if (folderId) {
-                return mailApi.getMessages(selectedMailbox.id, folderId, { page, limit, search })
-            }
-            return mailApi.getMessages(selectedMailbox.id, folderType, { page, limit, search, isType: true })
-        },
-        enabled: !!selectedMailbox,
-        staleTime: 30000,
-    })
-
-    return {
-        ...messagesQuery,
-        isLoading: messagesQuery.isLoading || foldersQuery.isLoading,
-    }
+export interface MessageFilters {
+    unread?: boolean
+    starred?: boolean
+    hasAttachments?: boolean
+    search?: string
 }
 
-export function useInfiniteMessages(folderType: string, limit = 30) {
+/**
+ * Infinite, server-filtered message list for a folder page. Pass `folderType`
+ * undefined for a mailbox-wide listing across every folder except Trash/Spam
+ * (used by the cross-folder "Starred" view) — see mailApi.getMessages().
+ */
+export function useInfiniteMessages(folderType: string | undefined, limit = 30, filters: MessageFilters = {}) {
     const { selectedMailbox } = useMailbox()
     const foldersQuery = useFolders()
+    const { unread, starred, hasAttachments, search } = filters
 
     const folderId = React.useMemo(() => {
-        if (!foldersQuery.data?.folders) return undefined
+        if (!folderType || !foldersQuery.data?.folders) return undefined
         const folder = foldersQuery.data.folders.find(
             (f: { remoteId?: string; type?: string; id: string }) =>
                 f.type === folderType || f.remoteId?.toLowerCase() === folderType.toLowerCase()
@@ -130,13 +110,17 @@ export function useInfiniteMessages(folderType: string, limit = 30) {
     }, [foldersQuery.data, folderType])
 
     const messagesQuery = useInfiniteQuery({
-        queryKey: ['messages', 'infinite', selectedMailbox?.id, folderType, folderId],
+        queryKey: ['messages', 'infinite', selectedMailbox?.id, folderType ?? null, folderId, { unread, starred, hasAttachments, search }],
         queryFn: async ({ pageParam = 1 }) => {
             if (!selectedMailbox) throw new Error('No mailbox selected')
-            if (folderId) {
-                return mailApi.getMessages(selectedMailbox.id, folderId, { page: pageParam, limit })
+            const params = { page: pageParam, limit, unread, starred, hasAttachments, search }
+            if (!folderType) {
+                return mailApi.getMessages(selectedMailbox.id, undefined, params)
             }
-            return mailApi.getMessages(selectedMailbox.id, folderType, { page: pageParam, limit, isType: true })
+            if (folderId) {
+                return mailApi.getMessages(selectedMailbox.id, folderId, params)
+            }
+            return mailApi.getMessages(selectedMailbox.id, folderType, { ...params, isType: true })
         },
         getNextPageParam: (lastPage, allPages) => {
             if (!lastPage.hasMore) return undefined
@@ -149,7 +133,7 @@ export function useInfiniteMessages(folderType: string, limit = 30) {
 
     return {
         ...messagesQuery,
-        isLoading: messagesQuery.isLoading || foldersQuery.isLoading,
+        isLoading: messagesQuery.isLoading || (!!folderType && foldersQuery.isLoading),
     }
 }
 
@@ -549,20 +533,27 @@ export function mapMessageToEmailItem(message: Message): import('../components/m
     }
 }
 
-// Contacts hooks
+// Contacts hooks (user-scoped, not mailbox-scoped — see mailApi.getContacts).
+// Query keys carry the user id so switching accounts can't briefly render (or
+// act on) another user's contacts — see useMultiSession's queryClient.clear().
 export function useContacts(search?: string, page = 1, limit = 50) {
+    const { user } = useAuth()
+
     return useQuery({
-        queryKey: ['contacts', search, page, limit],
+        queryKey: ['contacts', user?.id, search, page, limit],
         queryFn: () => mailApi.getContacts({ search, page, limit }),
+        enabled: !!user,
         staleTime: 30000,
     })
 }
 
 export function useSearchContacts(query: string) {
+    const { user } = useAuth()
+
     return useQuery({
-        queryKey: ['contacts', 'search', query],
+        queryKey: ['contacts', user?.id, 'search', query],
         queryFn: () => mailApi.searchContacts(query),
-        enabled: query.length >= 1,
+        enabled: !!user && query.length >= 1,
         staleTime: 10000,
     })
 }

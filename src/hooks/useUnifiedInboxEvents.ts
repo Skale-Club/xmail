@@ -17,7 +17,7 @@
 
 import React from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { fetchWithAuth } from '../lib/api'
+import { apiRequest } from '../lib/api-client'
 import { inboxKeys, isInboxListQueryKey } from '../lib/unified-inbox-api'
 
 const RECONNECT_BASE_MS = 1_000
@@ -143,9 +143,12 @@ export function useUnifiedInboxEvents(organizationId: string | undefined): Inbox
             controller = new AbortController()
             setStatus((prev) => (prev === 'live' ? prev : 'connecting'))
             try {
-                const res = await fetchWithAuth(
+                // retry:false — this hook already owns reconnection (capped exponential
+                // backoff below); api-client's own retry-on-network-error would just
+                // race a second attempt against it.
+                const res = await apiRequest(
                     `${EVENTS_PATH}?organizationId=${encodeURIComponent(organizationId)}`,
-                    { signal: controller.signal, headers: { Accept: 'text/event-stream' } },
+                    { signal: controller.signal, headers: { Accept: 'text/event-stream' }, retry: false },
                 )
                 if (!res.ok || !res.body) throw new Error(`sse_status_${res.status}`)
 
