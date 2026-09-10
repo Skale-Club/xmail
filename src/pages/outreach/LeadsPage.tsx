@@ -14,6 +14,7 @@ import {
     FileText
 } from 'lucide-react'
 import { PaginationControls } from '../../components/ui/PaginationControls'
+import { PageHeader } from '../../components/ui/page-header'
 import { LeadVerificationBadge, type LeadEmailVerificationStatus } from '../../components/outreach/LeadVerificationBadge'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import {
@@ -24,6 +25,8 @@ import {
     DialogHeader,
     DialogTitle,
 } from '../../components/ui/Dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import { Button } from '../../components/ui/button'
 import { ImportLeadsDialog } from './leads/ImportLeadsDialog'
 import { AddLeadDialog } from './leads/AddLeadDialog'
@@ -31,6 +34,10 @@ import { LeadDetailDialog } from './leads/LeadDetailDialog'
 import { apiFetch, apiRequest } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
 import { toast } from '../../components/ui/toaster'
+
+// Radix Select items cannot carry an empty-string value, so "no list selected" (which the
+// API represents as null/'') is sent as this sentinel and translated back at the boundary.
+const NO_LIST_VALUE = '__none__'
 
 interface Lead {
     id: string
@@ -139,7 +146,7 @@ const statusColors: Record<string, string> = {
     replied: 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400',
     interested: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-400',
     not_interested: 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400',
-    bounced: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+    bounced: 'bg-muted text-muted-foreground',
     unsubscribed: 'bg-orange-100 text-orange-800 dark:bg-orange-900/20 dark:text-orange-400',
 }
 
@@ -156,7 +163,6 @@ function LeadRow({
     onDelete: (id: string) => void
     onViewDetails: (id: string) => void
 }) {
-    const [showMenu, setShowMenu] = React.useState(false)
     const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(' ') || lead.email
 
     return (
@@ -216,35 +222,24 @@ function LeadRow({
                 {lead.totalReplies}
             </td>
             <td className="py-3 px-4">
-                <div className="relative">
-                    <button
-                        onClick={() => setShowMenu(!showMenu)}
-                        className="p-1 rounded hover:bg-accent"
-                        aria-haspopup="menu"
-                        aria-expanded={showMenu}
-                    >
-                        <MoreVertical className="w-5 h-5 text-muted-foreground" />
-                    </button>
-                    {showMenu && (
-                        <>
-                            <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-                            <div className="absolute right-0 top-8 z-20 w-40 bg-popover rounded-lg shadow-lg border border-border py-1">
-                                <button
-                                    onClick={() => { onViewDetails(lead.id); setShowMenu(false) }}
-                                    className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2"
-                                >
-                                    <FileText className="w-4 h-4" /> View Details
-                                </button>
-                                <button
-                                    onClick={() => { onDelete(lead.id); setShowMenu(false) }}
-                                    className="w-full px-4 py-2 text-left text-sm hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-500 hover:text-red-600 dark:hover:text-red-400 flex items-center gap-2 transition-colors"
-                                >
-                                    <Trash2 className="w-4 h-4" /> Delete
-                                </button>
-                            </div>
-                        </>
-                    )}
-                </div>
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        <button className="p-1 rounded hover:bg-accent" aria-label={`Actions for ${fullName}`}>
+                            <MoreVertical className="w-5 h-5 text-muted-foreground" />
+                        </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-40">
+                        <DropdownMenuItem onClick={() => onViewDetails(lead.id)}>
+                            <FileText className="w-4 h-4" /> View Details
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                            onClick={() => onDelete(lead.id)}
+                            className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                        >
+                            <Trash2 className="w-4 h-4" /> Delete
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
             </td>
         </tr>
     )
@@ -300,17 +295,16 @@ function AddToCampaignDialog({
                     <DialogDescription>Enroll {leadIds.length} selected lead{leadIds.length === 1 ? '' : 's'} into a draft or active campaign.</DialogDescription>
                 </DialogHeader>
                 <div className="py-2">
-                    <select
-                        value={campaignId}
-                        onChange={(e) => setCampaignId(e.target.value)}
-                        disabled={isLoading}
-                        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
-                    >
-                        <option value="">{isLoading ? 'Loading…' : 'Select a campaign'}</option>
-                        {campaigns.map((c) => (
-                            <option key={c.id} value={c.id}>{c.name} ({c.status})</option>
-                        ))}
-                    </select>
+                    <Select value={campaignId} onValueChange={setCampaignId} disabled={isLoading}>
+                        <SelectTrigger>
+                            <SelectValue placeholder={isLoading ? 'Loading…' : 'Select a campaign'} />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {campaigns.map((c) => (
+                                <SelectItem key={c.id} value={c.id}>{c.name} ({c.status})</SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
                     {!isLoading && campaigns.length === 0 && (
                         <p className="mt-2 text-xs text-muted-foreground">No draft or active campaigns to enroll into.</p>
                     )}
@@ -366,16 +360,20 @@ function AddToListDialog({
                     <DialogDescription>Move {leadIds.length} selected lead{leadIds.length === 1 ? '' : 's'} into a lead list.</DialogDescription>
                 </DialogHeader>
                 <div className="py-2">
-                    <select
-                        value={leadListId}
-                        onChange={(e) => setLeadListId(e.target.value)}
-                        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
+                    <Select
+                        value={leadListId || NO_LIST_VALUE}
+                        onValueChange={(value) => setLeadListId(value === NO_LIST_VALUE ? '' : value)}
                     >
-                        <option value="">No list (remove from list)</option>
-                        {leadLists.map((list) => (
-                            <option key={list.id} value={list.id}>{list.name}</option>
-                        ))}
-                    </select>
+                        <SelectTrigger>
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value={NO_LIST_VALUE}>No list (remove from list)</SelectItem>
+                            {leadLists.map((list) => (
+                                <SelectItem key={list.id} value={list.id}>{list.name}</SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
                 </div>
                 <DialogFooter>
                     <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -400,6 +398,7 @@ export function LeadsPage() {
     const [showAddToCampaign, setShowAddToCampaign] = React.useState(false)
     const [showAddToList, setShowAddToList] = React.useState(false)
     const [confirmBulkDelete, setConfirmBulkDelete] = React.useState(false)
+    const [leadToDelete, setLeadToDelete] = React.useState<string | null>(null)
     const [viewLeadId, setViewLeadId] = React.useState<string | null>(null)
     const queryClient = useQueryClient()
 
@@ -419,6 +418,8 @@ export function LeadsPage() {
         mutationFn: (id: string) => deleteLead(currentOrganization!.id, id),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['leads'] })
+            toast({ title: 'Lead deleted', variant: 'success' })
+            setLeadToDelete(null)
         },
         onError: (err) => {
             toast({ title: 'Failed to delete lead', description: (err as Error).message, variant: 'destructive' })
@@ -440,9 +441,7 @@ export function LeadsPage() {
     })
 
     const handleDelete = (id: string) => {
-        if (confirm('Are you sure you want to delete this lead?')) {
-            deleteMutation.mutate(id)
-        }
+        setLeadToDelete(id)
     }
 
     const toggleSelectLead = (id: string) => {
@@ -475,31 +474,28 @@ export function LeadsPage() {
                 </div>
             ) : (
             <div className="space-y-6">
-                {/* Header */}
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h1 className="text-2xl font-bold text-foreground">Leads</h1>
-                        <p className="text-muted-foreground mt-1">
-                            Manage your prospects and lead lists
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={() => setShowImport(true)}
-                            className="flex items-center gap-2 px-4 py-2 border border-input text-muted-foreground rounded-lg hover:bg-accent transition-colors"
-                        >
-                            <Upload className="w-5 h-5" />
-                            Import
-                        </button>
-                        <button
-                            onClick={() => setShowAddLead(true)}
-                            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
-                        >
-                            <Plus className="w-5 h-5" />
-                            Add Lead
-                        </button>
-                    </div>
-                </div>
+                <PageHeader
+                    title="Leads"
+                    description="Manage your prospects and lead lists"
+                    actions={
+                        <>
+                            <button
+                                onClick={() => setShowImport(true)}
+                                className="flex items-center gap-2 px-4 py-2 border border-input text-muted-foreground rounded-lg hover:bg-accent transition-colors"
+                            >
+                                <Upload className="w-5 h-5" />
+                                Import
+                            </button>
+                            <button
+                                onClick={() => setShowAddLead(true)}
+                                className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
+                            >
+                                <Plus className="w-5 h-5" />
+                                Add Lead
+                            </button>
+                        </>
+                    }
+                />
 
                 {showImport && (
                     <ImportLeadsDialog
@@ -543,6 +539,16 @@ export function LeadsPage() {
                     variant="danger"
                     loading={bulkDeleteMutation.isPending}
                     onConfirm={() => bulkDeleteMutation.mutate(selectedLeads)}
+                />
+                <ConfirmDialog
+                    open={leadToDelete !== null}
+                    onOpenChange={(open) => { if (!open) setLeadToDelete(null) }}
+                    title="Delete lead"
+                    description="This lead and its outreach history will be permanently deleted. This action cannot be undone."
+                    confirmLabel="Delete"
+                    variant="danger"
+                    loading={deleteMutation.isPending}
+                    onConfirm={() => leadToDelete && deleteMutation.mutate(leadToDelete)}
                 />
 
                 {/* Stats */}
@@ -615,30 +621,32 @@ export function LeadsPage() {
                     </div>
                     <div className="flex items-center gap-2">
                         <Filter className="w-5 h-5 text-muted-foreground" />
-                        <select
-                            value={statusFilter}
-                            onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}
-                            className="px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary"
-                        >
-                            <option value="all">All Status</option>
-                            <option value="new">New</option>
-                            <option value="contacted">Contacted</option>
-                            <option value="replied">Replied</option>
-                            <option value="interested">Interested</option>
-                            <option value="not_interested">Not Interested</option>
-                            <option value="bounced">Bounced</option>
-                            <option value="unsubscribed">Unsubscribed</option>
-                        </select>
-                        <select
-                            value={listFilter}
-                            onChange={(e) => { setListFilter(e.target.value); setPage(1) }}
-                            className="px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary"
-                        >
-                            <option value="all">All Lists</option>
-                            {leadLists?.map(list => (
-                                <option key={list.id} value={list.id}>{list.name}</option>
-                            ))}
-                        </select>
+                        <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value); setPage(1) }}>
+                            <SelectTrigger className="w-44">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All Status</SelectItem>
+                                <SelectItem value="new">New</SelectItem>
+                                <SelectItem value="contacted">Contacted</SelectItem>
+                                <SelectItem value="replied">Replied</SelectItem>
+                                <SelectItem value="interested">Interested</SelectItem>
+                                <SelectItem value="not_interested">Not Interested</SelectItem>
+                                <SelectItem value="bounced">Bounced</SelectItem>
+                                <SelectItem value="unsubscribed">Unsubscribed</SelectItem>
+                            </SelectContent>
+                        </Select>
+                        <Select value={listFilter} onValueChange={(value) => { setListFilter(value); setPage(1) }}>
+                            <SelectTrigger className="w-44">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All Lists</SelectItem>
+                                {leadLists?.map(list => (
+                                    <SelectItem key={list.id} value={list.id}>{list.name}</SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
                     </div>
                 </div>
 

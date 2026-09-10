@@ -16,6 +16,10 @@ import {
     TrendingUp
 } from 'lucide-react'
 import { PaginationControls } from '../../components/ui/PaginationControls'
+import { PageHeader } from '../../components/ui/page-header'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { apiFetch, apiRequest } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
 import { toast } from '../../components/ui/toaster'
@@ -77,8 +81,6 @@ function CampaignCard({ campaign, onStatusChange, onDelete, onDuplicate, duplica
     onDuplicate: (id: string) => void
     duplicating: boolean
 }) {
-    const [showMenu, setShowMenu] = React.useState(false)
-
     const statusColors: Record<string, string> = {
         active: 'bg-primary/10 text-primary',
         paused: 'bg-secondary text-secondary-foreground',
@@ -123,62 +125,43 @@ function CampaignCard({ campaign, onStatusChange, onDelete, onDuplicate, duplica
                 </div>
 
                 {/* Actions */}
-                <div className="relative flex justify-end border-t border-border pt-3 lg:border-0 lg:pt-0">
-                    <button
-                        onClick={() => setShowMenu(!showMenu)}
-                        className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                        aria-label={`Actions for ${campaign.name}`}
-                        aria-expanded={showMenu}
-                    >
-                        <MoreVertical className="h-5 w-5" />
-                    </button>
-                    {showMenu && (
-                        <>
-                            <div
-                                className="fixed inset-0 z-10"
-                                onClick={() => setShowMenu(false)}
-                            />
-                            <div className="absolute right-0 top-8 z-20 w-48 bg-popover rounded-lg shadow-lg border border-border py-1">
-                                {campaign.status === 'active' && (
-                                    <button
-                                        onClick={() => { onStatusChange(campaign.id, 'paused'); setShowMenu(false) }}
-                                        className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2"
-                                    >
-                                        <Pause className="w-4 h-4" /> Pause
-                                    </button>
-                                )}
-                                {campaign.status === 'paused' && (
-                                    <button
-                                        onClick={() => { onStatusChange(campaign.id, 'active'); setShowMenu(false) }}
-                                        className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2"
-                                    >
-                                        <Play className="w-4 h-4" /> Resume
-                                    </button>
-                                )}
-                                {campaign.status === 'draft' && (
-                                    <button
-                                        onClick={() => { onStatusChange(campaign.id, 'active'); setShowMenu(false) }}
-                                        className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2"
-                                    >
-                                        <Play className="w-4 h-4" /> Start
-                                    </button>
-                                )}
-                                <button
-                                    onClick={() => { onDuplicate(campaign.id); setShowMenu(false) }}
-                                    disabled={duplicating}
-                                    className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2 disabled:opacity-50"
-                                >
-                                    <Copy className="w-4 h-4" /> Duplicate
-                                </button>
-                                <button
-                                    onClick={() => { onDelete(campaign.id); setShowMenu(false) }}
-                                    className="w-full px-4 py-2 text-left text-sm hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-500 hover:text-red-600 dark:hover:text-red-400 flex items-center gap-2 transition-colors"
-                                >
-                                    <Trash2 className="w-4 h-4" /> Delete
-                                </button>
-                            </div>
-                        </>
-                    )}
+                <div className="flex justify-end border-t border-border pt-3 lg:border-0 lg:pt-0">
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <button
+                                className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                                aria-label={`Actions for ${campaign.name}`}
+                            >
+                                <MoreVertical className="h-5 w-5" />
+                            </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-48">
+                            {campaign.status === 'active' && (
+                                <DropdownMenuItem onClick={() => onStatusChange(campaign.id, 'paused')}>
+                                    <Pause className="w-4 h-4" /> Pause
+                                </DropdownMenuItem>
+                            )}
+                            {campaign.status === 'paused' && (
+                                <DropdownMenuItem onClick={() => onStatusChange(campaign.id, 'active')}>
+                                    <Play className="w-4 h-4" /> Resume
+                                </DropdownMenuItem>
+                            )}
+                            {campaign.status === 'draft' && (
+                                <DropdownMenuItem onClick={() => onStatusChange(campaign.id, 'active')}>
+                                    <Play className="w-4 h-4" /> Start
+                                </DropdownMenuItem>
+                            )}
+                            <DropdownMenuItem onClick={() => onDuplicate(campaign.id)} disabled={duplicating}>
+                                <Copy className="w-4 h-4" /> Duplicate
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => onDelete(campaign.id)}
+                                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                            >
+                                <Trash2 className="w-4 h-4" /> Delete
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
                 </div>
             </div>
         </div>
@@ -207,6 +190,7 @@ export function CampaignsPage() {
     const [search, setSearch] = React.useState('')
     const [statusFilter, setStatusFilter] = React.useState('all')
     const [page, setPage] = React.useState(1)
+    const [campaignToDelete, setCampaignToDelete] = React.useState<string | null>(null)
     const queryClient = useQueryClient()
 
     const { data, isLoading } = useQuery({
@@ -234,6 +218,7 @@ export function CampaignsPage() {
             queryClient.invalidateQueries({ queryKey: ['recent-campaigns'] })
             queryClient.invalidateQueries({ queryKey: ['outreach-stats'] })
             toast({ title: 'Campaign deleted', variant: 'success' })
+            setCampaignToDelete(null)
         },
         onError: (err) => {
             toast({ title: 'Failed to delete campaign', description: (err as Error).message, variant: 'destructive' })
@@ -262,9 +247,7 @@ export function CampaignsPage() {
     }
 
     const handleDelete = (id: string) => {
-        if (confirm('Are you sure you want to delete this campaign?')) {
-            deleteMutation.mutate(id)
-        }
+        setCampaignToDelete(id)
     }
 
     return (
@@ -275,22 +258,19 @@ export function CampaignsPage() {
                 </div>
             ) : (
             <div className="space-y-6">
-                {/* Header */}
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h1 className="text-2xl font-bold text-foreground">Campaigns</h1>
-                        <p className="text-muted-foreground mt-1">
-                            Manage your cold email outreach campaigns
-                        </p>
-                    </div>
-                    <Link
-                        href="/outreach/campaigns/new"
-                        className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
-                    >
-                        <Plus className="w-5 h-5" />
-                        New Campaign
-                    </Link>
-                </div>
+                <PageHeader
+                    title="Campaigns"
+                    description="Manage your cold email outreach campaigns"
+                    actions={
+                        <Link
+                            href="/outreach/campaigns/new"
+                            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors"
+                        >
+                            <Plus className="w-5 h-5" />
+                            New Campaign
+                        </Link>
+                    }
+                />
 
                 {/* Filters */}
                 <div className="flex flex-col sm:flex-row gap-4">
@@ -306,18 +286,19 @@ export function CampaignsPage() {
                     </div>
                     <div className="flex items-center gap-2">
                         <Filter className="w-5 h-5 text-muted-foreground" />
-                        <select
-                            value={statusFilter}
-                            onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}
-                            className="px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary"
-                        >
-                            <option value="all">All Status</option>
-                            <option value="draft">Draft</option>
-                            <option value="active">Active</option>
-                            <option value="paused">Paused</option>
-                            <option value="completed">Completed</option>
-                            <option value="archived">Archived</option>
-                        </select>
+                        <Select value={statusFilter} onValueChange={(value) => { setStatusFilter(value); setPage(1) }}>
+                            <SelectTrigger className="w-40">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All Status</SelectItem>
+                                <SelectItem value="draft">Draft</SelectItem>
+                                <SelectItem value="active">Active</SelectItem>
+                                <SelectItem value="paused">Paused</SelectItem>
+                                <SelectItem value="completed">Completed</SelectItem>
+                                <SelectItem value="archived">Archived</SelectItem>
+                            </SelectContent>
+                        </Select>
                     </div>
                 </div>
 
@@ -393,6 +374,16 @@ export function CampaignsPage() {
                 )}
             </div>
             )}
+            <ConfirmDialog
+                open={campaignToDelete !== null}
+                onOpenChange={(open) => { if (!open) setCampaignToDelete(null) }}
+                title="Delete campaign"
+                description="This campaign and its sequence data will be permanently deleted. This action cannot be undone."
+                confirmLabel="Delete"
+                variant="danger"
+                loading={deleteMutation.isPending}
+                onConfirm={() => campaignToDelete && deleteMutation.mutate(campaignToDelete)}
+            />
         </>
     )
 }

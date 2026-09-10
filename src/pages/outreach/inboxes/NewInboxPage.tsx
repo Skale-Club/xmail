@@ -13,6 +13,7 @@ import {
 import { apiFetch } from '../../../lib/api-client'
 import { useAuth } from '../../../hooks/useAuth'
 import { useOrganization } from '../../../hooks/useOrganization'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select'
 import {
     describeSmtpSecurityMode,
     isStandardSmtpPort,
@@ -437,18 +438,18 @@ export function NewInboxPage() {
                                     No organizations found. Please create an organization first.
                                 </p>
                             ) : (
-                                <select
-                                    value={selectedOrgId}
-                                    onChange={(e) => setSelectedOrgId(e.target.value)}
-                                    className="w-full px-3 py-2 border border-input rounded-lg bg-background text-foreground focus:ring-2 focus:ring-primary focus:border-transparent"
-                                >
-                                    <option value="">Select an organization</option>
-                                    {orgsData.map((org) => (
-                                        <option key={org.id} value={org.id}>
-                                            {org.name}
-                                        </option>
-                                    ))}
-                                </select>
+                                <Select value={selectedOrgId} onValueChange={setSelectedOrgId}>
+                                    <SelectTrigger>
+                                        <SelectValue placeholder="Select an organization" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {orgsData.map((org) => (
+                                            <SelectItem key={org.id} value={org.id}>
+                                                {org.name}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
                             )}
                         </div>
                     )}

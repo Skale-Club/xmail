@@ -10,7 +10,13 @@ import { AppLogo } from '../AppLogo'
 import { Button } from '../ui/button'
 import { DeployFooter } from '../DeployFooter'
 import {
-    ArrowLeft,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from '../ui/dropdown-menu'
+import { CommandPalette } from '../ui/command-palette'
+import {
     Inbox,
     LayoutDashboard,
     Mail,
@@ -25,6 +31,7 @@ import {
     Building2,
     ChevronDown,
     Bot,
+    Shield,
 } from 'lucide-react'
 
 import { ModeToggle } from '../mode-toggle'
@@ -73,7 +80,7 @@ function InboxUnreadBadge() {
 }
 
 export function OutreachLayout({ children }: OutreachLayoutProps) {
-    const { user } = useAuth()
+    const { user, isAdmin } = useAuth()
     const { branding } = useBranding()
     const { organizations, currentOrganization, setCurrentOrganization, isLoading } = useOrganization()
     const [location, navigate] = useLocation()
@@ -135,6 +142,7 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                             size="icon"
                             className="lg:hidden"
                             onClick={() => setSidebarOpen(false)}
+                            aria-label="Close sidebar"
                         >
                             <X className="w-5 h-5" />
                         </Button>
@@ -147,36 +155,34 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                         ) : organizations.length === 0 ? (
                             <p className="text-sm text-muted-foreground">No organizations</p>
                         ) : (
-                            <div className="relative">
-                                <button
-                                    onClick={() => setOrgSelectorOpen(!orgSelectorOpen)}
-                                    aria-haspopup="listbox"
-                                    aria-expanded={orgSelectorOpen}
-                                    className="flex items-center gap-2 w-full px-3 py-2 text-sm bg-muted/50 hover:bg-muted rounded-md border border-border transition-colors"
-                                >
-                                    <Building2 className="w-4 h-4 text-muted-foreground" />
-                                    <span className="flex-1 text-left truncate font-medium">
-                                        {currentOrganization?.name || 'Select Organization'}
-                                    </span>
-                                    <ChevronDown className="w-4 h-4 text-muted-foreground" />
-                                </button>
-                                {orgSelectorOpen && (
-                                    <div className="absolute top-full left-0 right-0 mt-1 bg-card border border-border rounded-md shadow-lg z-10 max-h-60 overflow-y-auto">
-                                        {organizations.map((org) => (
-                                            <button
-                                                key={org.id}
-                                                onClick={() => handleOrganizationChange(org.id)}
-                                                className={`w-full px-3 py-2 text-sm text-left hover:bg-accent transition-colors ${
-                                                    currentOrganization?.id === org.id ? 'bg-accent text-accent-foreground' : ''
-                                                }`}
-                                            >
+                            <DropdownMenu open={orgSelectorOpen} onOpenChange={setOrgSelectorOpen}>
+                                <DropdownMenuTrigger asChild>
+                                    <button
+                                        aria-label="Switch organization"
+                                        className="flex items-center gap-2 w-full px-3 py-2 text-sm bg-muted/50 hover:bg-muted rounded-md border border-border transition-colors"
+                                    >
+                                        <Building2 className="w-4 h-4 text-muted-foreground" />
+                                        <span className="flex-1 text-left truncate font-medium">
+                                            {currentOrganization?.name || 'Select Organization'}
+                                        </span>
+                                        <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                                    </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="start" className="w-64 max-h-60 overflow-y-auto">
+                                    {organizations.map((org) => (
+                                        <DropdownMenuItem
+                                            key={org.id}
+                                            onClick={() => handleOrganizationChange(org.id)}
+                                            className={currentOrganization?.id === org.id ? 'bg-accent text-accent-foreground' : ''}
+                                        >
+                                            <div className="min-w-0">
                                                 <span className="block truncate">{org.name}</span>
                                                 <span className="block text-xs text-muted-foreground capitalize">{org.role}</span>
-                                            </button>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
+                                            </div>
+                                        </DropdownMenuItem>
+                                    ))}
+                                </DropdownMenuContent>
+                            </DropdownMenu>
                         )}
                     </div>
 
@@ -234,6 +240,7 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                         <button
                             className="lg:hidden p-2 rounded-md hover:bg-accent text-muted-foreground transition-colors"
                             onClick={() => setSidebarOpen(true)}
+                            aria-label="Open sidebar"
                         >
                             <Menu className="w-6 h-6" />
                         </button>
@@ -244,6 +251,8 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                             </span>
                         )}
                         <div className="flex items-center gap-4">
+                            {/* Same two "switch area" actions as AdminLayout/MailLayout: Inbox always,
+                                Admin only for platform admins, current area omitted. */}
                             <button
                                 onClick={() => navigate('/mail/inbox')}
                                 className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
@@ -251,13 +260,15 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                                 <Inbox className="w-4 h-4" />
                                 <span className="hidden sm:inline">Open Inbox</span>
                             </button>
-                            <button
-                                onClick={() => navigate('/admin')}
-                                className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-                            >
-                                <ArrowLeft className="w-4 h-4" />
-                                <span className="hidden sm:inline">Exit Outreach</span>
-                            </button>
+                            {isAdmin && (
+                                <button
+                                    onClick={() => navigate('/admin')}
+                                    className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                                >
+                                    <Shield className="w-4 h-4" />
+                                    <span className="hidden sm:inline">Open Admin</span>
+                                </button>
+                            )}
                             <ModeToggle />
                         </div>
                     </div>
@@ -272,6 +283,7 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                     </InboxRealtimeProvider>
                 </main>
             </div>
+            <CommandPalette area="outreach" isAdmin={!!isAdmin} />
         </div>
     )
 }

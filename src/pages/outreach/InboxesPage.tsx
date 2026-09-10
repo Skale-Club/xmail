@@ -17,6 +17,9 @@ import {
     Upload
 } from 'lucide-react'
 import { PaginationControls } from '../../components/ui/PaginationControls'
+import { PageHeader } from '../../components/ui/page-header'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { ImportInboxesDialog } from './inboxes/ImportInboxesDialog'
 import { apiFetch, apiRequest } from '../../lib/api-client'
 import { toast } from '../../components/ui/toaster'
@@ -102,7 +105,7 @@ const statusConfig: Record<string, { color: string; icon: React.ReactNode; label
         label: 'Failed'
     },
     paused: {
-        color: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+        color: 'bg-muted text-muted-foreground',
         icon: <AlertCircle className="w-4 h-4" />,
         label: 'Paused'
     },
@@ -166,7 +169,6 @@ function InboxCard({ account, onVerify, onDelete }: {
     onVerify: (id: string) => void
     onDelete: (id: string) => void
 }) {
-    const [showMenu, setShowMenu] = React.useState(false)
     const status = statusConfig[account.status] || statusConfig.pending
     const identity = providerIdentity(account)
     const dailyUsage = account.dailyLimit > 0
@@ -267,43 +269,35 @@ function InboxCard({ account, onVerify, onDelete }: {
                 </div>
 
                 {/* Actions */}
-                <div className="relative flex justify-end border-t border-border pt-3 lg:border-0 lg:pt-0">
-                    <button
-                        onClick={() => setShowMenu(!showMenu)}
-                        className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                        aria-label={`Actions for ${account.email}`}
-                        aria-expanded={showMenu}
-                    >
-                        <MoreVertical className="h-5 w-5" />
-                    </button>
-                    {showMenu && (
-                        <>
-                            <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-                            <div className="absolute right-0 top-8 z-20 w-44 bg-popover rounded-lg shadow-lg border border-border py-1">
-                                <Link
-                                    href={`/outreach/inboxes/${account.id}`}
-                                    className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2"
-                                    onClick={() => setShowMenu(false)}
-                                >
+                <div className="flex justify-end border-t border-border pt-3 lg:border-0 lg:pt-0">
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <button
+                                className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                                aria-label={`Actions for ${account.email}`}
+                            >
+                                <MoreVertical className="h-5 w-5" />
+                            </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem asChild>
+                                <Link href={`/outreach/inboxes/${account.id}`}>
                                     <Settings className="w-4 h-4" /> Settings
                                 </Link>
-                                {(account.status === 'pending' || account.status === 'failed') && (
-                                    <button
-                                        onClick={() => { onVerify(account.id); setShowMenu(false) }}
-                                        className="w-full px-4 py-2 text-left text-sm hover:bg-accent flex items-center gap-2"
-                                    >
-                                        <RefreshCw className="w-4 h-4" /> {account.status === 'failed' ? 'Retry verification' : 'Verify'}
-                                    </button>
-                                )}
-                                <button
-                                    onClick={() => { onDelete(account.id); setShowMenu(false) }}
-                                    className="w-full px-4 py-2 text-left text-sm hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-500 hover:text-red-600 dark:hover:text-red-400 flex items-center gap-2 transition-colors"
-                                >
-                                    <Trash2 className="w-4 h-4" /> Delete
-                                </button>
-                            </div>
-                        </>
-                    )}
+                            </DropdownMenuItem>
+                            {(account.status === 'pending' || account.status === 'failed') && (
+                                <DropdownMenuItem onClick={() => onVerify(account.id)}>
+                                    <RefreshCw className="w-4 h-4" /> {account.status === 'failed' ? 'Retry verification' : 'Verify'}
+                                </DropdownMenuItem>
+                            )}
+                            <DropdownMenuItem
+                                onClick={() => onDelete(account.id)}
+                                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                            >
+                                <Trash2 className="w-4 h-4" /> Delete
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
                 </div>
             </div>
         </div>
@@ -314,6 +308,7 @@ export function InboxesPage() {
     const { currentOrganization } = useOrganization()
     const [page, setPage] = React.useState(1)
     const [showImport, setShowImport] = React.useState(false)
+    const [accountToDelete, setAccountToDelete] = React.useState<string | null>(null)
     const queryClient = useQueryClient()
 
     const { data: accountsData, isLoading } = useQuery({
@@ -353,6 +348,7 @@ export function InboxesPage() {
             queryClient.invalidateQueries({ queryKey: ['email-accounts'] })
             queryClient.invalidateQueries({ queryKey: ['email-accounts-summary'] })
             toast({ title: 'Inbox deleted', variant: 'success' })
+            setAccountToDelete(null)
         },
         onError: (err) => {
             toast({ title: 'Failed to delete inbox', description: (err as Error).message, variant: 'destructive' })
@@ -364,9 +360,7 @@ export function InboxesPage() {
     }
 
     const handleDelete = (id: string) => {
-        if (confirm('Are you sure you want to delete this inbox?')) {
-            deleteMutation.mutate(id)
-        }
+        setAccountToDelete(id)
     }
 
     const totalAccounts = summary?.total ?? accountsData?.pagination?.total ?? 0
@@ -382,15 +376,11 @@ export function InboxesPage() {
                 </div>
             ) : (
             <div className="space-y-6">
-                {/* Header */}
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h1 className="text-2xl font-bold text-foreground">Inboxes</h1>
-                        <p className="text-muted-foreground mt-1">
-                            Manage your email accounts for cold outreach
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-2">
+                <PageHeader
+                    title="Inboxes"
+                    description="Manage your email accounts for cold outreach"
+                    actions={
+                    <>
                         {/* Bulk import is the path that matters when mailboxes are bought a batch at
                             a time from a vendor; adding them one by one does not scale past a few. */}
                         <button
@@ -407,8 +397,9 @@ export function InboxesPage() {
                             <Plus className="w-5 h-5" />
                             Add Inbox
                         </Link>
-                    </div>
-                </div>
+                    </>
+                    }
+                />
 
                 {showImport && currentOrganization && (
                     <ImportInboxesDialog
@@ -509,7 +500,7 @@ export function InboxesPage() {
                     </>
                 ) : (
                     <div className="bg-card rounded-lg border border-border p-12 text-center">
-                        <Mail className="w-16 h-16 text-gray-300 dark:text-gray-600 mx-auto mb-4" />
+                        <Mail className="w-16 h-16 text-muted-foreground/40 mx-auto mb-4" />
                         <h3 className="text-lg font-medium text-foreground mb-2">
                             No inboxes connected
                         </h3>
@@ -541,6 +532,16 @@ export function InboxesPage() {
                 </div>
             </div>
             )}
+            <ConfirmDialog
+                open={accountToDelete !== null}
+                onOpenChange={(open) => { if (!open) setAccountToDelete(null) }}
+                title="Delete inbox"
+                description="This email account will stop sending and receiving outreach mail. This action cannot be undone."
+                confirmLabel="Delete"
+                variant="danger"
+                loading={deleteMutation.isPending}
+                onConfirm={() => accountToDelete && deleteMutation.mutate(accountToDelete)}
+            />
         </>
     )
 }

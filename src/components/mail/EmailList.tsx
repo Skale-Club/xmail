@@ -20,6 +20,13 @@ import {
 } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { formatEmailDate, getAvatarColor, getInitials } from '../../lib/utils'
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from '../ui/dropdown-menu'
 
 export interface EmailItem {
     id: string
@@ -75,7 +82,6 @@ export function EmailList({
     hasMore = false,
     loadMoreRef
 }: EmailListProps) {
-    const [menuOpenId, setMenuOpenId] = React.useState<string | null>(null)
     const isMobile = useIsMobile()
     const { openCompose } = useCompose()
 
@@ -147,6 +153,7 @@ export function EmailList({
                             e.stopPropagation()
                             onStar?.(email.id)
                         }}
+                        aria-label={email.starred ? 'Unstar' : 'Star'}
                         className={`
                             flex-shrink-0 p-1 rounded-full transition-colors
                             ${email.starred
@@ -214,14 +221,16 @@ export function EmailList({
                                     onClick={(e) => { e.stopPropagation(); onToggleRead(email.id) }}
                                     className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
                                     title={email.read ? 'Mark as unread' : 'Mark as read'}
+                                    aria-label={email.read ? 'Mark as unread' : 'Mark as read'}
                                 >
                                     {email.read ? <Mail className="w-4 h-4" /> : <MailOpen className="w-4 h-4" />}
                                 </button>
                             )}
                             <button
                                 onClick={(e) => { e.stopPropagation(); onDelete?.(email.id) }}
-                                className="p-1.5 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-all"
+                                className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
                                 title="Delete"
+                                aria-label="Delete"
                             >
                                 <Trash2 className="w-4 h-4" />
                             </button>
@@ -229,116 +238,62 @@ export function EmailList({
                                 onClick={(e) => { e.stopPropagation(); onArchive?.(email.id) }}
                                 className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
                                 title="Archive"
+                                aria-label="Archive"
                             >
                                 <Archive className="w-4 h-4" />
                             </button>
-                            <div className="relative">
-                                <button
-                                    onClick={(e) => {
-                                        e.stopPropagation()
-                                        setMenuOpenId(menuOpenId === email.id ? null : email.id)
-                                    }}
-                                    className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
-                                >
-                                    <MoreVertical className="w-4 h-4" />
-                                </button>
-
-                        {menuOpenId === email.id && (
-                            <>
-                                <div
-                                    className="fixed inset-0 z-40"
-                                    onClick={(e) => {
-                                        e.stopPropagation()
-                                        setMenuOpenId(null)
-                                    }}
-                                />
-                                <div className={`absolute ${isMobile ? 'left-0' : 'right-0'} top-full mt-1 w-48 bg-popover rounded-xl shadow-xl border border-border py-1 z-50`}>
+                            <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
                                     <button
-                                        onClick={(e) => {
-                                            e.stopPropagation()
-                                            setMenuOpenId(null)
-                                            openCompose({ replyToId: email.id })
-                                        }}
-                                        className="flex items-center gap-3 w-full px-4 py-2 text-sm text-popover-foreground hover:bg-accent hover:text-accent-foreground"
+                                        onClick={(e) => e.stopPropagation()}
+                                        aria-label="More actions"
+                                        className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
                                     >
+                                        <MoreVertical className="w-4 h-4" />
+                                    </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align={isMobile ? 'start' : 'end'} className="w-48" onClick={(e) => e.stopPropagation()}>
+                                    <DropdownMenuItem onClick={() => openCompose({ replyToId: email.id })}>
                                         <Reply className="w-4 h-4" />
                                         Reply
-                                    </button>
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation()
-                                            setMenuOpenId(null)
-                                            openCompose({ replyToId: email.id, replyAll: true })
-                                        }}
-                                        className="flex items-center gap-3 w-full px-4 py-2 text-sm text-popover-foreground hover:bg-accent hover:text-accent-foreground"
-                                    >
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => openCompose({ replyToId: email.id, replyAll: true })}>
                                         <ReplyAll className="w-4 h-4" />
                                         Reply All
-                                    </button>
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation()
-                                            setMenuOpenId(null)
-                                            openCompose({ forwardId: email.id })
-                                        }}
-                                        className="flex items-center gap-3 w-full px-4 py-2 text-sm text-popover-foreground hover:bg-accent hover:text-accent-foreground"
-                                    >
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => openCompose({ forwardId: email.id })}>
                                         <Forward className="w-4 h-4" />
                                         Forward
-                                    </button>
+                                    </DropdownMenuItem>
                                     {onToggleRead && (
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation()
-                                                onToggleRead(email.id)
-                                                setMenuOpenId(null)
-                                            }}
-                                            className="flex items-center gap-3 w-full px-4 py-2 text-sm text-popover-foreground hover:bg-accent hover:text-accent-foreground"
-                                        >
+                                        <DropdownMenuItem onClick={() => onToggleRead(email.id)}>
                                             {email.read ? <Mail className="w-4 h-4" /> : <MailOpen className="w-4 h-4" />}
                                             {email.read ? 'Mark as unread' : 'Mark as read'}
-                                        </button>
+                                        </DropdownMenuItem>
                                     )}
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation()
-                                            onArchive?.(email.id)
-                                            setMenuOpenId(null)
-                                        }}
-                                        className="flex items-center gap-3 w-full px-4 py-2 text-sm text-popover-foreground hover:bg-accent hover:text-accent-foreground"
-                                    >
+                                    <DropdownMenuItem onClick={() => onArchive?.(email.id)}>
                                         <Archive className="w-4 h-4" />
                                         Archive
-                                    </button>
+                                    </DropdownMenuItem>
                                     {onSpam && (
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation()
-                                                onSpam(email.id)
-                                                setMenuOpenId(null)
-                                            }}
-                                            className="flex items-center gap-3 w-full px-4 py-2 text-sm text-amber-500 hover:bg-amber-500/10"
+                                        <DropdownMenuItem
+                                            onClick={() => onSpam(email.id)}
+                                            className="text-amber-500 focus:bg-amber-500/10 focus:text-amber-500"
                                         >
                                             <ShieldAlert className="w-4 h-4" />
                                             Mark as spam
-                                        </button>
+                                        </DropdownMenuItem>
                                     )}
-                                    <div className="border-t border-border my-1" />
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation()
-                                            onDelete?.(email.id)
-                                            setMenuOpenId(null)
-                                        }}
-                                        className="flex items-center gap-3 w-full px-4 py-2 text-sm text-gray-500 hover:text-red-500 hover:bg-red-500/10"
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                        onClick={() => onDelete?.(email.id)}
+                                        className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                                     >
                                         <Trash2 className="w-4 h-4" />
                                         Delete
-                                    </button>
-                                </div>
-                            </>
-                        )}
-                            </div>
+                                    </DropdownMenuItem>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
                         </div>
                     </div>
                 </div>
@@ -441,6 +396,7 @@ export function EmailToolbar({
                     onClick={onRefresh}
                     className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
                     title="Refresh"
+                    aria-label="Refresh"
                 >
                     <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
                 </button>
@@ -466,6 +422,7 @@ export function EmailToolbar({
                             onClick={onArchive}
                             className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
                             title="Archive"
+                            aria-label="Archive"
                         >
                             <Archive className="w-4 h-4" />
                         </button>
@@ -474,14 +431,16 @@ export function EmailToolbar({
                                 onClick={onSpam}
                                 className="p-1.5 rounded-lg text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10 transition-colors"
                                 title={spamLabel}
+                                aria-label={spamLabel}
                             >
                                 <ShieldAlert className="w-4 h-4" />
                             </button>
                         )}
                         <button
                             onClick={onDelete}
-                            className="p-1.5 rounded-lg text-gray-500 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                            className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                             title="Delete"
+                            aria-label="Delete"
                         >
                             <Trash2 className="w-4 h-4" />
                         </button>

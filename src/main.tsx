@@ -15,6 +15,9 @@ import { ComposeProvider } from './hooks/useCompose'
 import { MailLayout } from './components/mail/MailLayout'
 import { OutreachLayout } from './components/outreach/OutreachLayout'
 import { AppErrorBoundary } from './components/AppErrorBoundary'
+import { AppLogo } from './components/AppLogo'
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './components/ui/card'
+import { Button } from './components/ui/button'
 import './index.css'
 
 // ---------------------------------------------------------------------------
@@ -139,8 +142,8 @@ const queryClient = new QueryClient({
 
 function Spinner() {
     return (
-        <div className="flex min-h-screen items-center justify-center">
-            <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary" />
+        <div className="flex min-h-screen items-center justify-center bg-background">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted border-t-primary" />
         </div>
     )
 }
@@ -183,15 +186,27 @@ function MailCheck({ children }: { children: React.ReactNode }) {
 function NoOutreachAccess() {
     const [, navigate] = useLocation()
     return (
-        <div className="min-h-screen flex flex-col items-center justify-center gap-4 text-center p-8">
-            <p className="text-2xl font-semibold text-foreground">Outreach isn’t available for your account</p>
-            <p className="text-muted-foreground">You aren’t a member of an organization with outreach access. Ask an organization admin to add you, or head back to your inbox.</p>
-            <button
-                onClick={() => navigate('/mail/inbox')}
-                className="mt-2 inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-            >
-                Go to inbox
-            </button>
+        <div className="flex min-h-screen items-center justify-center bg-background p-4 sm:p-6">
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-secondary via-background to-background -z-10" />
+            <Card className="w-full max-w-md shadow-lg-soft border-border/40">
+                <CardHeader className="space-y-0 text-center pb-4 sm:pb-6 pt-6 sm:pt-8 px-5 sm:px-6">
+                    <div className="flex flex-col items-center justify-center gap-1">
+                        <AppLogo className="h-14 w-14 sm:h-16 sm:w-16 shadow-sm-soft" />
+                        <CardTitle className="text-xl sm:text-2xl font-semibold tracking-tight">
+                            Outreach isn&rsquo;t available
+                        </CardTitle>
+                        <CardDescription>
+                            You aren&rsquo;t a member of an organization with outreach access. Ask an
+                            organization admin to add you, or head back to your inbox.
+                        </CardDescription>
+                    </div>
+                </CardHeader>
+                <CardContent className="flex justify-center px-5 sm:px-6 pb-6 sm:pb-8">
+                    <Button onClick={() => navigate('/mail/inbox')} className="h-11">
+                        Go to inbox
+                    </Button>
+                </CardContent>
+            </Card>
         </div>
     )
 }
@@ -315,15 +330,26 @@ function RootRedirect() {
 function NotFound() {
     const [, navigate] = useLocation()
     return (
-        <div className="min-h-screen flex flex-col items-center justify-center gap-4 text-center p-8">
-            <p className="text-2xl font-semibold text-foreground">Page not found</p>
-            <p className="text-muted-foreground">The page you’re looking for doesn’t exist or isn’t available yet.</p>
-            <button
-                onClick={() => navigate('/')}
-                className="mt-2 inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-            >
-                Go back home
-            </button>
+        <div className="flex min-h-screen items-center justify-center bg-background p-4 sm:p-6">
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-secondary via-background to-background -z-10" />
+            <Card className="w-full max-w-md shadow-lg-soft border-border/40">
+                <CardHeader className="space-y-0 text-center pb-4 sm:pb-6 pt-6 sm:pt-8 px-5 sm:px-6">
+                    <div className="flex flex-col items-center justify-center gap-1">
+                        <AppLogo className="h-14 w-14 sm:h-16 sm:w-16 shadow-sm-soft" />
+                        <CardTitle className="text-xl sm:text-2xl font-semibold tracking-tight">
+                            Page not found
+                        </CardTitle>
+                        <CardDescription>
+                            The page you&rsquo;re looking for doesn&rsquo;t exist or isn&rsquo;t available yet.
+                        </CardDescription>
+                    </div>
+                </CardHeader>
+                <CardContent className="flex justify-center px-5 sm:px-6 pb-6 sm:pb-8">
+                    <Button onClick={() => navigate('/')} className="h-11">
+                        Go back home
+                    </Button>
+                </CardContent>
+            </Card>
         </div>
     )
 }

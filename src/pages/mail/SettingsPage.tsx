@@ -27,6 +27,8 @@ import {
     ExternalLink,
 } from 'lucide-react'
 import { Switch } from '../../components/ui/switch'
+import { PageHeader } from '../../components/ui/page-header'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
 import { apiFetch } from '../../lib/api-client'
 import { ConnectMailboxDialog } from '../../components/mail/ConnectMailboxDialog'
 import { useAuth } from '../../hooks/useAuth'
@@ -298,12 +300,11 @@ export default function MailSettingsPage() {
         <MailLayout>
             <div className="h-full overflow-y-auto">
                 <div className="max-w-5xl mx-auto p-6">
-                    <div className="mb-8">
-                        <h1 className="text-3xl font-bold text-foreground">Settings</h1>
-                        <p className="text-muted-foreground mt-1">
-                            Manage your email account settings
-                        </p>
-                    </div>
+                    <PageHeader
+                        title="Settings"
+                        description="Manage your email account settings"
+                        className="pb-8"
+                    />
 
                     <div className="flex flex-col lg:flex-row gap-6">
                         <div className="lg:w-64 flex-shrink-0">
@@ -315,8 +316,8 @@ export default function MailSettingsPage() {
                                         className={`
                                             w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all
                                             ${activeTab === tab.id
-                                                ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
-                                                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-800'
+                                                ? 'bg-accent text-accent-foreground'
+                                                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
                                             }
                                         `}
                                     >
@@ -396,7 +397,7 @@ export default function MailSettingsPage() {
                                                                             <RefreshCw className="w-4 h-4" />
                                                                         </Button>
                                                                         <Button variant="outline" size="sm" onClick={() => handleDeleteMailbox(mb.id)}>
-                                                                            <Trash2 className="w-4 h-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                                                            <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive transition-colors" />
                                                                         </Button>
                                                                     </>
                                                                 )}
@@ -561,25 +562,28 @@ export default function MailSettingsPage() {
                                             {mailboxes.length > 0 && (
                                                 <div className="mb-4">
                                                     <Label>Select Account</Label>
-                                                    <select
-                                                        className="w-full mt-1 px-3 py-2 border rounded-lg bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700"
+                                                    <Select
                                                         value={selectedMailboxId || ''}
-                                                        onChange={(e) => setSelectedMailboxId(e.target.value)}
+                                                        onValueChange={setSelectedMailboxId}
                                                     >
-                                                        <option value="">Select an account...</option>
-                                                        {mailboxes.map((mb) => (
-                                                            <option key={mb.id} value={mb.id}>{mb.email}</option>
-                                                        ))}
-                                                    </select>
+                                                        <SelectTrigger className="mt-1">
+                                                            <SelectValue placeholder="Select an account..." />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {mailboxes.map((mb) => (
+                                                                <SelectItem key={mb.id} value={mb.id}>{mb.email}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
                                                 </div>
                                             )}
 
                                             {isLoadingFilters ? (
-                                                <p className="text-gray-500">Loading filters...</p>
+                                                <p className="text-muted-foreground">Loading filters...</p>
                                             ) : filters.length === 0 ? (
                                                 <div className="text-center py-8">
-                                                    <Filter className="w-12 h-12 mx-auto text-gray-400 mb-4" />
-                                                    <p className="text-gray-500 mb-4">No filters created yet</p>
+                                                    <Filter className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                                                    <p className="text-muted-foreground mb-4">No filters created yet</p>
                                                     {selectedMailboxId && (
                                                         <Button onClick={() => setShowAddFilter(true)}>
                                                             <Plus className="w-4 h-4 mr-2" />
@@ -590,7 +594,7 @@ export default function MailSettingsPage() {
                                             ) : (
                                                 <div className="space-y-3">
                                                     {filters.map((filter) => (
-                                                        <div key={filter.id} className="flex items-center justify-between p-4 border border-gray-200 dark:border-gray-700 rounded-xl">
+                                                        <div key={filter.id} className="flex items-center justify-between p-4 border border-border rounded-xl">
                                                             <div className="flex items-center gap-4">
                                                                 <Switch
                                                                     checked={filter.isActive}
@@ -598,13 +602,13 @@ export default function MailSettingsPage() {
                                                                 />
                                                                 <div>
                                                                     <h3 className="font-medium">{filter.name}</h3>
-                                                                    <p className="text-sm text-gray-500">
+                                                                    <p className="text-sm text-muted-foreground">
                                                                         {filter.conditions.length} condition(s), {filter.actions.length} action(s)
                                                                     </p>
                                                                 </div>
                                                             </div>
                                                             <Button variant="outline" size="sm" onClick={() => handleDeleteFilter(filter.id)}>
-                                                                <Trash2 className="w-4 h-4 text-gray-500 hover:text-red-500 transition-colors" />
+                                                                <Trash2 className="w-4 h-4 text-muted-foreground hover:text-destructive transition-colors" />
                                                             </Button>
                                                         </div>
                                                     ))}
@@ -641,28 +645,36 @@ export default function MailSettingsPage() {
                                                     <div className="space-y-2">
                                                         {newFilter.conditions.map((condition, index) => (
                                                             <div key={index} className="flex items-center gap-2">
-                                                                <select
-                                                                    className="px-3 py-2 border rounded-lg bg-background border-input"
+                                                                <Select
                                                                     value={condition.field}
-                                                                    onChange={(e) => updateCondition(index, 'field', e.target.value)}
+                                                                    onValueChange={(value) => updateCondition(index, 'field', value)}
                                                                 >
-                                                                    <option value="from">From</option>
-                                                                    <option value="to">To</option>
-                                                                    <option value="subject">Subject</option>
-                                                                    <option value="body">Body</option>
-                                                                    <option value="hasAttachment">Has Attachment</option>
-                                                                </select>
-                                                                <select
-                                                                    className="px-3 py-2 border rounded-lg bg-background border-input"
+                                                                    <SelectTrigger className="w-40">
+                                                                        <SelectValue />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent>
+                                                                        <SelectItem value="from">From</SelectItem>
+                                                                        <SelectItem value="to">To</SelectItem>
+                                                                        <SelectItem value="subject">Subject</SelectItem>
+                                                                        <SelectItem value="body">Body</SelectItem>
+                                                                        <SelectItem value="hasAttachment">Has Attachment</SelectItem>
+                                                                    </SelectContent>
+                                                                </Select>
+                                                                <Select
                                                                     value={condition.operator}
-                                                                    onChange={(e) => updateCondition(index, 'operator', e.target.value)}
+                                                                    onValueChange={(value) => updateCondition(index, 'operator', value)}
                                                                 >
-                                                                    <option value="contains">contains</option>
-                                                                    <option value="notContains">does not contain</option>
-                                                                    <option value="equals">equals</option>
-                                                                    <option value="startsWith">starts with</option>
-                                                                    <option value="regex">matches regex</option>
-                                                                </select>
+                                                                    <SelectTrigger className="w-44">
+                                                                        <SelectValue />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent>
+                                                                        <SelectItem value="contains">contains</SelectItem>
+                                                                        <SelectItem value="notContains">does not contain</SelectItem>
+                                                                        <SelectItem value="equals">equals</SelectItem>
+                                                                        <SelectItem value="startsWith">starts with</SelectItem>
+                                                                        <SelectItem value="regex">matches regex</SelectItem>
+                                                                    </SelectContent>
+                                                                </Select>
                                                                 {condition.field !== 'hasAttachment' && (
                                                                     <Input
                                                                         value={condition.value}
@@ -672,17 +684,21 @@ export default function MailSettingsPage() {
                                                                     />
                                                                 )}
                                                                 {condition.field === 'hasAttachment' && (
-                                                                    <select
-                                                                        className="px-3 py-2 border rounded-lg bg-background border-input"
+                                                                    <Select
                                                                         value={condition.value}
-                                                                        onChange={(e) => updateCondition(index, 'value', e.target.value)}
+                                                                        onValueChange={(value) => updateCondition(index, 'value', value)}
                                                                     >
-                                                                        <option value="yes">Yes</option>
-                                                                        <option value="no">No</option>
-                                                                    </select>
+                                                                        <SelectTrigger className="w-28">
+                                                                            <SelectValue />
+                                                                        </SelectTrigger>
+                                                                        <SelectContent>
+                                                                            <SelectItem value="yes">Yes</SelectItem>
+                                                                            <SelectItem value="no">No</SelectItem>
+                                                                        </SelectContent>
+                                                                    </Select>
                                                                 )}
                                                                 <Button variant="ghost" size="sm" onClick={() => removeCondition(index)} disabled={newFilter.conditions.length === 1}>
-                                                                    <Trash className="w-4 h-4 text-muted-foreground hover:text-red-500 transition-colors" />
+                                                                    <Trash className="w-4 h-4 text-muted-foreground hover:text-destructive transition-colors" />
                                                                 </Button>
                                                             </div>
                                                         ))}
@@ -697,21 +713,25 @@ export default function MailSettingsPage() {
                                                     <div className="space-y-2">
                                                         {newFilter.actions.map((action, index) => (
                                                             <div key={index} className="flex items-center gap-2">
-                                                                <select
-                                                                    className="px-3 py-2 border rounded-lg bg-background border-input"
+                                                                <Select
                                                                     value={action.action}
-                                                                    onChange={(e) => updateAction(index, 'action', e.target.value)}
+                                                                    onValueChange={(value) => updateAction(index, 'action', value)}
                                                                 >
-                                                                    <option value="markRead">Mark as read</option>
-                                                                    <option value="markUnread">Mark as unread</option>
-                                                                    <option value="markStarred">Star</option>
-                                                                    <option value="unmarkStarred">Unstar</option>
-                                                                    <option value="archive">Archive</option>
-                                                                    <option value="markSpam">Mark as spam</option>
-                                                                    <option value="markNotSpam">Mark as not spam</option>
-                                                                </select>
+                                                                    <SelectTrigger className="w-56">
+                                                                        <SelectValue />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent>
+                                                                        <SelectItem value="markRead">Mark as read</SelectItem>
+                                                                        <SelectItem value="markUnread">Mark as unread</SelectItem>
+                                                                        <SelectItem value="markStarred">Star</SelectItem>
+                                                                        <SelectItem value="unmarkStarred">Unstar</SelectItem>
+                                                                        <SelectItem value="archive">Archive</SelectItem>
+                                                                        <SelectItem value="markSpam">Mark as spam</SelectItem>
+                                                                        <SelectItem value="markNotSpam">Mark as not spam</SelectItem>
+                                                                    </SelectContent>
+                                                                </Select>
                                                                 <Button variant="ghost" size="sm" onClick={() => removeAction(index)} disabled={newFilter.actions.length === 1}>
-                                                                    <Trash className="w-4 h-4 text-muted-foreground hover:text-red-500 transition-colors" />
+                                                                    <Trash className="w-4 h-4 text-muted-foreground hover:text-destructive transition-colors" />
                                                                 </Button>
                                                             </div>
                                                         ))}
@@ -754,16 +774,19 @@ export default function MailSettingsPage() {
                                             {mailboxes.length > 0 && (
                                                 <div className="mb-4">
                                                     <Label>Select Account</Label>
-                                                    <select
-                                                        className="w-full mt-1 px-3 py-2 border rounded-lg bg-background border-input"
+                                                    <Select
                                                         value={selectedMailboxId || ''}
-                                                        onChange={(e) => setSelectedMailboxId(e.target.value)}
+                                                        onValueChange={setSelectedMailboxId}
                                                     >
-                                                        <option value="">Select an account...</option>
-                                                        {mailboxes.map((mb) => (
-                                                            <option key={mb.id} value={mb.id}>{mb.email}</option>
-                                                        ))}
-                                                    </select>
+                                                        <SelectTrigger className="mt-1">
+                                                            <SelectValue placeholder="Select an account..." />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {mailboxes.map((mb) => (
+                                                                <SelectItem key={mb.id} value={mb.id}>{mb.email}</SelectItem>
+                                                            ))}
+                                                        </SelectContent>
+                                                    </Select>
                                                 </div>
                                             )}
 

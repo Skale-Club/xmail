@@ -4,6 +4,7 @@ import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../ui/Table'
+import { Checkbox } from '../../ui/checkbox'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../ui/Dialog'
 import { toast } from '../../ui/toaster'
@@ -387,11 +388,10 @@ export default function WebhooksTab({ organizationId }: WebhooksTabProps) {
                             <Label>Events</Label>
                             <div className="mt-2 grid grid-cols-2 gap-2">
                                 {availableEvents.map((event) => (
-                                    <label key={event} className="flex items-center gap-2 text-sm">
-                                        <input
-                                            type="checkbox"
+                                    <label key={event} className="flex items-center gap-2 text-sm cursor-pointer">
+                                        <Checkbox
                                             checked={newWebhook.events.includes(event)}
-                                            onChange={() => toggleEvent(event, newWebhook.events.includes(event), 'new')}
+                                            onCheckedChange={() => toggleEvent(event, newWebhook.events.includes(event), 'new')}
                                         />
                                         <span>{event.replace(/_/g, ' ')}</span>
                                     </label>
@@ -434,11 +434,10 @@ export default function WebhooksTab({ organizationId }: WebhooksTabProps) {
                             />
                         </div>
                         <div className="flex items-center gap-2">
-                            <input
+                            <Checkbox
                                 id="editWebhookActive"
-                                type="checkbox"
                                 checked={editData.active}
-                                onChange={(event) => setEditData((current) => ({ ...current, active: event.target.checked }))}
+                                onCheckedChange={(checked) => setEditData((current) => ({ ...current, active: checked === true }))}
                             />
                             <Label htmlFor="editWebhookActive">Active</Label>
                         </div>
@@ -446,11 +445,10 @@ export default function WebhooksTab({ organizationId }: WebhooksTabProps) {
                             <Label>Events</Label>
                             <div className="mt-2 grid grid-cols-2 gap-2">
                                 {availableEvents.map((event) => (
-                                    <label key={event} className="flex items-center gap-2 text-sm">
-                                        <input
-                                            type="checkbox"
+                                    <label key={event} className="flex items-center gap-2 text-sm cursor-pointer">
+                                        <Checkbox
                                             checked={editData.events.includes(event)}
-                                            onChange={() => toggleEvent(event, editData.events.includes(event), 'edit')}
+                                            onCheckedChange={() => toggleEvent(event, editData.events.includes(event), 'edit')}
                                         />
                                         <span>{event.replace(/_/g, ' ')}</span>
                                     </label>

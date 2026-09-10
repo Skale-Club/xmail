@@ -8,6 +8,7 @@ import { ModeToggle } from '../mode-toggle'
 import { DeployFooter } from '../DeployFooter'
 import { supabase } from '../../lib/supabase'
 import { AccountSwitcher } from './AccountSwitcher'
+import { CommandPalette } from '../ui/command-palette'
 import { KeyboardShortcutsHelp, KeyboardShortcutsButton } from './KeyboardShortcutsHelp'
 import { useAuth } from '../../hooks/useAuth'
 import {
@@ -24,7 +25,7 @@ import {
     Archive,
     ShieldAlert,
     Users,
-    ArrowLeft,
+    Shield,
     Target
 } from 'lucide-react'
 import { useFolders } from '../../hooks/useMail'
@@ -71,7 +72,7 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
         { id: 'archive', label: 'Archive', icon: <Archive className="w-5 h-5" />, href: '/mail/archive', badge: archiveUnread || undefined },
         { id: 'drafts',  label: 'Drafts',  icon: <FileText className="w-5 h-5" />, href: '/mail/drafts' },
         { id: 'spam',    label: 'Spam',    icon: <ShieldAlert className="w-5 h-5 text-amber-500" />, href: '/mail/spam', badge: spamUnread || undefined },
-        { id: 'trash',   label: 'Trash',   icon: <Trash2 className="w-5 h-5 text-gray-500 group-hover:text-red-500 transition-colors" />, href: '/mail/trash' },
+        { id: 'trash',   label: 'Trash',   icon: <Trash2 className="w-5 h-5 text-muted-foreground group-hover:text-destructive transition-colors" />, href: '/mail/trash' },
         { id: 'contacts', label: 'Contacts', icon: <Users className="w-5 h-5" />, href: '/mail/contacts' },
     ]
 
@@ -83,6 +84,7 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
                     onClick={() => setIsCollapsed(!isCollapsed)}
                     className="p-2 rounded-lg hover:bg-accent text-muted-foreground shrink-0 hidden lg:block"
                     title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                    aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
                 >
                     <Menu className="w-5 h-5" />
                 </button>
@@ -97,6 +99,7 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
                 <button
                     className="p-2 rounded-lg hover:bg-accent text-muted-foreground transition-colors"
                     onClick={closeSidebar}
+                    aria-label="Close sidebar"
                 >
                     <X className="w-5 h-5" />
                 </button>
@@ -200,6 +203,7 @@ function MobileBottomNav({ location, onOpenSidebar, openCompose }: MobileBottomN
             <button
                 onClick={openCompose}
                 className="flex items-center justify-center w-12 h-12 text-primary bg-primary/10 rounded-full shadow-lg"
+                aria-label="Compose"
             >
                 <Plus className="w-6 h-6" />
             </button>
@@ -280,6 +284,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                                 <button
                                     className="p-2 rounded-lg hover:bg-accent hover:text-accent-foreground text-muted-foreground"
                                     onClick={() => setSidebarOpen(true)}
+                                    aria-label="Open sidebar"
                                 >
                                     <Menu className="w-5 h-5" />
                                 </button>
@@ -303,6 +308,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                                                 setSearchQuery('')
                                             }}
                                             className="p-2 rounded-lg hover:bg-accent text-muted-foreground"
+                                            aria-label="Close search"
                                         >
                                             <X className="w-5 h-5" />
                                         </button>
@@ -328,13 +334,15 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                         </div>
 
                         <div className="flex items-center gap-1 sm:gap-3">
+                            {/* Same two "switch area" actions as AdminLayout/OutreachLayout: Admin
+                                only for platform admins, Outreach always, current area omitted. */}
                             {isAdmin && (
                                 <Link
                                     href="/admin"
                                     className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg border border-border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
                                 >
-                                    <ArrowLeft className="w-4 h-4" />
-                                    <span>Exit to Admin</span>
+                                    <Shield className="w-4 h-4" />
+                                    <span>Open Admin</span>
                                 </Link>
                             )}
 
@@ -352,6 +360,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                                 <button
                                     onClick={() => setSearchOpen(true)}
                                     className="p-2 rounded-xl hover:bg-accent hover:text-accent-foreground text-muted-foreground transition-colors"
+                                    aria-label="Search"
                                 >
                                     <Search className="w-5 h-5" />
                                 </button>
@@ -373,8 +382,9 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
             </div>
 
             {isMobile && <MobileBottomNav location={location} onOpenSidebar={openSidebar} openCompose={openCompose} />}
-            
+
             <KeyboardShortcutsHelp isOpen={shortcutsOpen} onClose={closeShortcuts} />
+            <CommandPalette area="mail" isAdmin={!!isAdmin} />
         </div>
     )
 }

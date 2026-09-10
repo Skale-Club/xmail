@@ -19,6 +19,11 @@ import {
     AlertCircle
 } from 'lucide-react'
 import { ResizablePanels } from '../../components/mail/ResizablePanels'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
+
+// Radix Select items cannot carry an empty-string value, so "any" (hasAttachment === null) is
+// sent as this sentinel and translated back at the boundary.
+const ANY_ATTACHMENT_VALUE = '__any__'
 
 interface SearchFilters {
     query: string
@@ -218,10 +223,10 @@ export default function SearchPage() {
                 <div className="flex items-center justify-center h-full">
                     <div className="text-center max-w-md px-6">
                         <AlertCircle className="w-16 h-16 mx-auto mb-4 text-yellow-500" />
-                        <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-2">
+                        <h2 className="text-xl font-bold text-foreground mb-2">
                             No Email Accounts Connected
                         </h2>
-                        <p className="text-gray-500 dark:text-gray-400 mb-6">
+                        <p className="text-muted-foreground mb-6">
                             Add an email account to search your emails.
                         </p>
                         <Link
@@ -257,7 +262,7 @@ export default function SearchPage() {
                                 className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition-colors ${
                                     showFilters || activeFilterCount > 0
                                         ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600'
-                                        : 'hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-500'
+                                        : 'hover:bg-accent text-muted-foreground'
                                 }`}
                             >
                                 <Filter className="w-4 h-4" />
@@ -330,15 +335,19 @@ export default function SearchPage() {
                                             <Calendar className="w-3 h-3" />
                                             Date
                                         </label>
-                                        <select
+                                        <Select
                                             value={filters.dateRange}
-                                            onChange={(e) => setFilters({ ...filters, dateRange: e.target.value as SearchFilters['dateRange'] })}
-                                            className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                            onValueChange={(value) => setFilters({ ...filters, dateRange: value as SearchFilters['dateRange'] })}
                                         >
-                                            {Object.entries(dateRangeLabels).map(([value, label]) => (
-                                                <option key={value} value={value}>{label}</option>
-                                            ))}
-                                        </select>
+                                            <SelectTrigger>
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {Object.entries(dateRangeLabels).map(([value, label]) => (
+                                                    <SelectItem key={value} value={value}>{label}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
                                     </div>
 
                                     <div>
@@ -346,29 +355,33 @@ export default function SearchPage() {
                                             <Paperclip className="w-3 h-3" />
                                             Attachments
                                         </label>
-                                        <select
-                                            value={filters.hasAttachment === null ? '' : filters.hasAttachment ? 'yes' : 'no'}
-                                            onChange={(e) => setFilters({
+                                        <Select
+                                            value={filters.hasAttachment === null ? ANY_ATTACHMENT_VALUE : filters.hasAttachment ? 'yes' : 'no'}
+                                            onValueChange={(value) => setFilters({
                                                 ...filters,
-                                                hasAttachment: e.target.value === '' ? null : e.target.value === 'yes'
+                                                hasAttachment: value === ANY_ATTACHMENT_VALUE ? null : value === 'yes'
                                             })}
-                                            className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary"
                                         >
-                                            <option value="">Any</option>
-                                            <option value="yes">Has attachments</option>
-                                            <option value="no">No attachments</option>
-                                        </select>
+                                            <SelectTrigger>
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value={ANY_ATTACHMENT_VALUE}>Any</SelectItem>
+                                                <SelectItem value="yes">Has attachments</SelectItem>
+                                                <SelectItem value="no">No attachments</SelectItem>
+                                            </SelectContent>
+                                        </Select>
                                     </div>
                                 </div>
                             </div>
                         )}
 
                         <div className="mt-3 flex items-center justify-between">
-                            <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
+                            <h1 className="text-lg font-semibold text-foreground">
                                 Search Results
                             </h1>
                             {!isLoading && (
-                                <p className="text-sm text-gray-500 dark:text-gray-400">
+                                <p className="text-sm text-muted-foreground">
                                     {emails.length} {emails.length === 1 ? 'result' : 'results'}
                                     {filters.query && ` for "${filters.query}"`}
                                 </p>
@@ -431,11 +444,11 @@ export default function SearchPage() {
                             <div className="flex items-center justify-center h-64">
                                 <div className="flex flex-col items-center gap-4">
                                     <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                                    <p className="text-gray-500 dark:text-gray-400">Searching...</p>
+                                    <p className="text-muted-foreground">Searching...</p>
                                 </div>
                             </div>
                         ) : !filters.query ? (
-                            <div className="flex flex-col items-center justify-center h-64 text-gray-500 dark:text-gray-400">
+                            <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
                                 <SearchIcon className="w-12 h-12 mb-4 opacity-50" />
                                 <p className="text-lg font-medium">Search your emails</p>
                                 <p className="text-sm mt-1">Enter keywords to find emails</p>
@@ -454,7 +467,7 @@ export default function SearchPage() {
                                 emptyMessage="No results found"
                             />
                         ) : (
-                            <div className="flex flex-col items-center justify-center h-64 text-gray-500 dark:text-gray-400">
+                            <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
                                 <SearchIcon className="w-12 h-12 mb-4 opacity-50" />
                                 <p className="text-lg font-medium">No results found</p>
                                 <p className="text-sm mt-1">Try different keywords or check your spelling</p>
@@ -492,7 +505,7 @@ export default function SearchPage() {
                                         className={`absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition-colors ${
                                             showFilters || activeFilterCount > 0
                                                 ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600'
-                                                : 'hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-500'
+                                                : 'hover:bg-accent text-muted-foreground'
                                         }`}
                                     >
                                         <Filter className="w-4 h-4" />
@@ -565,15 +578,19 @@ export default function SearchPage() {
                                                     <Calendar className="w-3 h-3" />
                                                     Date
                                                 </label>
-                                                <select
+                                                <Select
                                                     value={filters.dateRange}
-                                                    onChange={(e) => setFilters({ ...filters, dateRange: e.target.value as SearchFilters['dateRange'] })}
-                                                    className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                                    onValueChange={(value) => setFilters({ ...filters, dateRange: value as SearchFilters['dateRange'] })}
                                                 >
-                                                    {Object.entries(dateRangeLabels).map(([value, label]) => (
-                                                        <option key={value} value={value}>{label}</option>
-                                                    ))}
-                                                </select>
+                                                    <SelectTrigger>
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {Object.entries(dateRangeLabels).map(([value, label]) => (
+                                                            <SelectItem key={value} value={value}>{label}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
                                             </div>
 
                                             <div>
@@ -581,29 +598,33 @@ export default function SearchPage() {
                                                     <Paperclip className="w-3 h-3" />
                                                     Attachments
                                                 </label>
-                                                <select
-                                                    value={filters.hasAttachment === null ? '' : filters.hasAttachment ? 'yes' : 'no'}
-                                                    onChange={(e) => setFilters({
+                                                <Select
+                                                    value={filters.hasAttachment === null ? ANY_ATTACHMENT_VALUE : filters.hasAttachment ? 'yes' : 'no'}
+                                                    onValueChange={(value) => setFilters({
                                                         ...filters,
-                                                        hasAttachment: e.target.value === '' ? null : e.target.value === 'yes'
+                                                        hasAttachment: value === ANY_ATTACHMENT_VALUE ? null : value === 'yes'
                                                     })}
-                                                    className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary"
                                                 >
-                                                    <option value="">Any</option>
-                                                    <option value="yes">Has attachments</option>
-                                                    <option value="no">No attachments</option>
-                                                </select>
+                                                    <SelectTrigger>
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value={ANY_ATTACHMENT_VALUE}>Any</SelectItem>
+                                                        <SelectItem value="yes">Has attachments</SelectItem>
+                                                        <SelectItem value="no">No attachments</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
                                             </div>
                                         </div>
                                     </div>
                                 )}
 
                                 <div className="mt-3 flex items-center justify-between">
-                                    <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
+                                    <h1 className="text-lg font-semibold text-foreground">
                                         Search Results
                                     </h1>
                                     {!isLoading && (
-                                        <p className="text-sm text-gray-500 dark:text-gray-400">
+                                        <p className="text-sm text-muted-foreground">
                                             {emails.length} {emails.length === 1 ? 'result' : 'results'}
                                             {filters.query && ` for "${filters.query}"`}
                                         </p>
@@ -666,11 +687,11 @@ export default function SearchPage() {
                                     <div className="flex items-center justify-center h-64">
                                         <div className="flex flex-col items-center gap-4">
                                             <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                                            <p className="text-gray-500 dark:text-gray-400">Searching...</p>
+                                            <p className="text-muted-foreground">Searching...</p>
                                         </div>
                                     </div>
                                 ) : !filters.query ? (
-                                    <div className="flex flex-col items-center justify-center h-64 text-gray-500 dark:text-gray-400">
+                                    <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
                                         <SearchIcon className="w-12 h-12 mb-4 opacity-50" />
                                         <p className="text-lg font-medium">Search your emails</p>
                                         <p className="text-sm mt-1">Enter keywords to find emails</p>
@@ -689,7 +710,7 @@ export default function SearchPage() {
                                         emptyMessage="No results found"
                                     />
                                 ) : (
-                                    <div className="flex flex-col items-center justify-center h-64 text-gray-500 dark:text-gray-400">
+                                    <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
                                         <SearchIcon className="w-12 h-12 mb-4 opacity-50" />
                                         <p className="text-lg font-medium">No results found</p>
                                         <p className="text-sm mt-1">Try different keywords or check your spelling</p>

@@ -4,6 +4,7 @@ import { Card, CardContent } from '../../ui/card'
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../ui/Table'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../ui/Dialog'
@@ -229,17 +230,23 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                                     </TableCell>
                                     <TableCell>
                                         {isAdmin && member.userId !== ownerId ? (
-                                            <select
-                                                aria-label={`Role for ${member.user.email}`}
-                                                className="h-8 rounded-md border border-input bg-background px-2 text-xs capitalize disabled:opacity-50"
+                                            <Select
                                                 value={member.role}
                                                 disabled={roleChangeId === member.id}
-                                                onChange={(event) => void handleRoleChange(member, event.target.value as MemberRole)}
+                                                onValueChange={(value) => void handleRoleChange(member, value as MemberRole)}
                                             >
-                                                <option value="admin">admin</option>
-                                                <option value="member">member</option>
-                                                <option value="viewer">viewer</option>
-                                            </select>
+                                                <SelectTrigger
+                                                    aria-label={`Role for ${member.user.email}`}
+                                                    className="h-8 w-28 px-2 text-xs capitalize"
+                                                >
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="admin">admin</SelectItem>
+                                                    <SelectItem value="member">member</SelectItem>
+                                                    <SelectItem value="viewer">viewer</SelectItem>
+                                                </SelectContent>
+                                            </Select>
                                         ) : (
                                             <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium capitalize ${getRoleBadgeColor(member.role)}`}>
                                                 {member.role}
@@ -363,32 +370,35 @@ export default function MembersTab({ orgId, members, isAdmin, ownerId, onRefresh
                                             onChange={(e) => setLocalPart(e.target.value)}
                                         />
                                         <span className="select-none px-1 text-sm text-muted-foreground">@</span>
-                                        <select
-                                            aria-label="Domain"
-                                            className="border-l border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-0"
-                                            value={selectedDomain}
-                                            onChange={(e) => setSelectedDomain(e.target.value)}
-                                        >
-                                            {verifiedDomains.map((d) => (
-                                                <option key={d.id} value={d.name}>{d.name}</option>
-                                            ))}
-                                        </select>
+                                        <Select value={selectedDomain} onValueChange={setSelectedDomain}>
+                                            <SelectTrigger
+                                                aria-label="Domain"
+                                                className="h-auto rounded-none border-0 border-l border-input bg-transparent px-3 py-2 text-sm shadow-none focus:ring-0 focus:border-l focus:border-input"
+                                            >
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {verifiedDomains.map((d) => (
+                                                    <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
                                     </div>
                                 )}
                             </div>
 
                             <div className="space-y-2">
                                 <Label>Role</Label>
-                                <select
-                                    aria-label="Role"
-                                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                                    value={role}
-                                    onChange={(e) => setRole(e.target.value as MemberRole)}
-                                >
-                                    <option value="admin">Admin</option>
-                                    <option value="member">Member</option>
-                                    <option value="viewer">Viewer</option>
-                                </select>
+                                <Select value={role} onValueChange={(value) => setRole(value as MemberRole)}>
+                                    <SelectTrigger aria-label="Role">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="admin">Admin</SelectItem>
+                                        <SelectItem value="member">Member</SelectItem>
+                                        <SelectItem value="viewer">Viewer</SelectItem>
+                                    </SelectContent>
+                                </Select>
                             </div>
 
                             <div className="space-y-2">

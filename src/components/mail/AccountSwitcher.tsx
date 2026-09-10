@@ -6,6 +6,7 @@ import { useAuth } from '../../hooks/useAuth'
 import { ConnectMailboxDialog } from './ConnectMailboxDialog'
 import { Plus, Check, AlertCircle, ChevronDown, Mail, RefreshCw, Settings, LogOut, Copy, Trash2 } from 'lucide-react'
 import { toast } from '../../components/ui/toaster'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 
 interface AccountSwitcherProps {
     compact?: boolean
@@ -89,9 +90,10 @@ export function AccountSwitcher({ compact = false, showSignOut = false, onSignOu
 
     return (
         <>
-            <div className="relative">
+            <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+            <DropdownMenuTrigger asChild>
                 <button
-                    onClick={() => setIsOpen(!isOpen)}
+                    aria-label="Switch account"
                     className={`
                         flex items-center gap-2 rounded-xl transition-colors
                         ${showSignOut
@@ -140,20 +142,14 @@ export function AccountSwitcher({ compact = false, showSignOut = false, onSignOu
                             )}
                         </>
                     ) : (
-                        <div className="w-8 h-8 rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center">
-                            <Mail className="w-4 h-4 text-gray-600 dark:text-gray-300" />
+                        <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center">
+                            <Mail className="w-4 h-4 text-muted-foreground" />
                         </div>
                     )}
                     <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${isOpen ? 'rotate-180' : ''} hidden sm:block`} />
                 </button>
-
-                {isOpen && (
-                    <>
-                        <div
-                            className="fixed inset-0 z-40"
-                            onClick={() => setIsOpen(false)}
-                        />
-                        <div className="absolute right-0 z-50 bg-popover border border-border rounded-xl shadow-xl pb-2 mt-2 w-80 overflow-hidden flex flex-col">
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-80 p-0 pb-2 overflow-hidden flex flex-col">
                             {hasMultipleSessions && (
                                 <>
                                     <div className="px-3 pt-3 pb-1">
@@ -238,10 +234,8 @@ export function AccountSwitcher({ compact = false, showSignOut = false, onSignOu
                                     </button>
                                 </div>
                             )}
-                        </div>
-                    </>
-                )}
-            </div>
+            </DropdownMenuContent>
+            </DropdownMenu>
 
             <ConnectMailboxDialog
                 open={showConnectDialog}
@@ -304,6 +298,7 @@ function SessionItem({
                     }}
                     className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
                     title="Remove account"
+                    aria-label="Remove account"
                 >
                     <Trash2 className="w-3.5 h-3.5" />
                 </button>

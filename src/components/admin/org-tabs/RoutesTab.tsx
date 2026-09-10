@@ -3,6 +3,7 @@ import { Edit, Plus, Search, Trash2 } from 'lucide-react'
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../ui/Table'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../ui/Dialog'
@@ -268,16 +269,19 @@ export default function RoutesTab({ organizationId }: RoutesTabProps) {
                         </div>
                         <div>
                             <Label htmlFor="routeMode">Mode</Label>
-                            <select
-                                id="routeMode"
-                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            <Select
                                 value={newRoute.mode}
-                                onChange={(event) => setNewRoute((current) => ({ ...current, mode: event.target.value as 'endpoint' | 'hold' | 'reject' }))}
+                                onValueChange={(value) => setNewRoute((current) => ({ ...current, mode: value as 'endpoint' | 'hold' | 'reject' }))}
                             >
-                                <option value="endpoint">Endpoint (Forward)</option>
-                                <option value="hold">Hold (Review)</option>
-                                <option value="reject">Reject (Block)</option>
-                            </select>
+                                <SelectTrigger id="routeMode">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="endpoint">Endpoint (Forward)</SelectItem>
+                                    <SelectItem value="hold">Hold (Review)</SelectItem>
+                                    <SelectItem value="reject">Reject (Block)</SelectItem>
+                                </SelectContent>
+                            </Select>
                         </div>
                         <div>
                             <Label htmlFor="spamThreshold">Spam Threshold (0-100)</Label>
@@ -327,16 +331,19 @@ export default function RoutesTab({ organizationId }: RoutesTabProps) {
                         </div>
                         <div>
                             <Label htmlFor="editRouteMode">Mode</Label>
-                            <select
-                                id="editRouteMode"
-                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            <Select
                                 value={editData.mode}
-                                onChange={(event) => setEditData((current) => ({ ...current, mode: event.target.value as 'endpoint' | 'hold' | 'reject' }))}
+                                onValueChange={(value) => setEditData((current) => ({ ...current, mode: value as 'endpoint' | 'hold' | 'reject' }))}
                             >
-                                <option value="endpoint">Endpoint (Forward)</option>
-                                <option value="hold">Hold (Review)</option>
-                                <option value="reject">Reject (Block)</option>
-                            </select>
+                                <SelectTrigger id="editRouteMode">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="endpoint">Endpoint (Forward)</SelectItem>
+                                    <SelectItem value="hold">Hold (Review)</SelectItem>
+                                    <SelectItem value="reject">Reject (Block)</SelectItem>
+                                </SelectContent>
+                            </Select>
                         </div>
                         <div>
                             <Label htmlFor="editSpamThreshold">Spam Threshold (0-100)</Label>

@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query'
 import { TrendingUp, Mail, Users, Target, Eye, MousePointer } from 'lucide-react'
 import { apiFetch } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
+import { PageHeader } from '../../components/ui/page-header'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
 
 interface AnalyticsData {
     overview: {
@@ -188,37 +190,40 @@ export function AnalyticsPage() {
                 </div>
             ) : (
             <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h1 className="text-2xl font-bold text-foreground">Analytics</h1>
-                        <p className="mt-1 text-muted-foreground">
-                            Track your cold email campaign performance
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <select
-                            value={days}
-                            onChange={(e) => setDays(Number(e.target.value) as AnalyticsWindowDays)}
-                            className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
-                        >
-                            <option value={7}>Last 7 days</option>
-                            <option value={30}>Last 30 days</option>
-                            <option value={90}>Last 90 days</option>
-                        </select>
-                        <select
-                            value={campaignId}
-                            onChange={(e) => setCampaignId(e.target.value)}
-                            className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
-                        >
-                            <option value="all">All Campaigns</option>
-                            {campaignOptions.map((campaign) => (
-                                <option key={campaign.id} value={campaign.id}>
-                                    {campaign.name}
-                                </option>
-                            ))}
-                        </select>
-                    </div>
-                </div>
+                <PageHeader
+                    title="Analytics"
+                    description="Track your cold email campaign performance"
+                    actions={
+                        <>
+                            <Select
+                                value={String(days)}
+                                onValueChange={(value) => setDays(Number(value) as AnalyticsWindowDays)}
+                            >
+                                <SelectTrigger className="w-40">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="7">Last 7 days</SelectItem>
+                                    <SelectItem value="30">Last 30 days</SelectItem>
+                                    <SelectItem value="90">Last 90 days</SelectItem>
+                                </SelectContent>
+                            </Select>
+                            <Select value={campaignId} onValueChange={setCampaignId}>
+                                <SelectTrigger className="w-48">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">All Campaigns</SelectItem>
+                                    {campaignOptions.map((campaign) => (
+                                        <SelectItem key={campaign.id} value={campaign.id}>
+                                            {campaign.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </>
+                    }
+                />
 
                 {overviewLoading ? (
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">

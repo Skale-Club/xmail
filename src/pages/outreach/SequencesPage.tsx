@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation } from 'wouter'
 import { Plus, Mail, Clock, Trash2 } from 'lucide-react'
 import { PaginationControls } from '../../components/ui/PaginationControls'
+import { PageHeader } from '../../components/ui/page-header'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
 import { apiFetch } from '../../lib/api-client'
 import { useOrganization } from '../../hooks/useOrganization'
 import {
@@ -185,7 +187,7 @@ function SequenceRow({
                 <div className="sm:text-right lg:text-left">
                     <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${sequence.isActive
                         ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
-                        : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                        : 'bg-muted text-muted-foreground'
                         }`}>
                         {sequence.isActive ? 'Active' : 'Inactive'}
                     </span>
@@ -338,21 +340,22 @@ function NewSequenceDialog({
                     <div className="grid gap-4 md:grid-cols-2">
                         <div>
                             <label className="mb-1 block text-sm font-medium text-foreground">Campaign</label>
-                            <select
+                            <Select
                                 value={campaignId}
-                                onChange={(e) => setCampaignId(e.target.value)}
+                                onValueChange={setCampaignId}
                                 disabled={isLoadingCampaigns || noCampaigns}
-                                className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
                             >
-                                <option value="">
-                                    {isLoadingCampaigns ? 'Loading campaigns...' : 'Select a campaign'}
-                                </option>
-                                {campaigns.map((campaign) => (
-                                    <option key={campaign.id} value={campaign.id}>
-                                        {campaign.name}
-                                    </option>
-                                ))}
-                            </select>
+                                <SelectTrigger>
+                                    <SelectValue placeholder={isLoadingCampaigns ? 'Loading campaigns...' : 'Select a campaign'} />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {campaigns.map((campaign) => (
+                                        <SelectItem key={campaign.id} value={campaign.id}>
+                                            {campaign.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
                         <div>
                             <label className="mb-1 block text-sm font-medium text-foreground">Sequence Name</label>
@@ -433,6 +436,16 @@ function NewSequenceDialog({
                                             </div>
                                         ) : (
                                             <>
+                                                <div className="max-w-xs">
+                                                    <label className="mb-1 block text-sm font-medium text-foreground">Wait before sending (hours)</label>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        value={step.delayHours}
+                                                        onChange={(e) => updateStep(step.id, { delayHours: Math.max(0, Number(e.target.value) || 0) })}
+                                                        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
+                                                    />
+                                                </div>
                                                 <div>
                                                     <label className="mb-1 block text-sm font-medium text-foreground">Subject</label>
                                                     <input
@@ -481,15 +494,19 @@ function NewSequenceDialog({
                                                                     placeholder="Variant B subject"
                                                                     className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
                                                                 />
-                                                                <select
-                                                                    value={step.abTestPercentage}
-                                                                    onChange={(e) => updateStep(step.id, { abTestPercentage: Number(e.target.value) })}
-                                                                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
+                                                                <Select
+                                                                    value={String(step.abTestPercentage)}
+                                                                    onValueChange={(value) => updateStep(step.id, { abTestPercentage: Number(value) })}
                                                                 >
-                                                                    <option value={50}>50% / 50%</option>
-                                                                    <option value={70}>70% / 30%</option>
-                                                                    <option value={80}>80% / 20%</option>
-                                                                </select>
+                                                                    <SelectTrigger>
+                                                                        <SelectValue />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent>
+                                                                        <SelectItem value="50">50% / 50%</SelectItem>
+                                                                        <SelectItem value="70">70% / 30%</SelectItem>
+                                                                        <SelectItem value="80">80% / 20%</SelectItem>
+                                                                    </SelectContent>
+                                                                </Select>
                                                             </div>
                                                             <textarea
                                                                 value={step.htmlBodyB}
@@ -573,22 +590,20 @@ export function SequencesPage() {
                 </div>
             ) : (
             <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h1 className="text-2xl font-bold text-foreground">Sequences</h1>
-                        <p className="mt-1 text-muted-foreground">
-                            Create email sequences for automated follow-ups
-                        </p>
-                    </div>
-                    <button
-                        type="button"
-                        onClick={() => setLocation('/outreach/sequences/new')}
-                        className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/90"
-                    >
-                        <Plus className="h-5 w-5" />
-                        New Sequence
-                    </button>
-                </div>
+                <PageHeader
+                    title="Sequences"
+                    description="Create email sequences for automated follow-ups"
+                    actions={
+                        <button
+                            type="button"
+                            onClick={() => setLocation('/outreach/sequences/new')}
+                            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/90"
+                        >
+                            <Plus className="h-5 w-5" />
+                            New Sequence
+                        </button>
+                    }
+                />
 
                 {isLoading ? (
                     <div className="space-y-3">
@@ -626,7 +641,7 @@ export function SequencesPage() {
                     </>
                 ) : (
                     <div className="rounded-lg border border-border bg-card p-12 text-center">
-                        <Mail className="mx-auto mb-4 h-16 w-16 text-gray-300 dark:text-gray-600" />
+                        <Mail className="mx-auto mb-4 h-16 w-16 text-muted-foreground/40" />
                         <h3 className="mb-2 text-lg font-medium text-foreground">No sequences yet</h3>
                         <p className="mb-4 text-muted-foreground">
                             Create your first email sequence to automate follow-ups

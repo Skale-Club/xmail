@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
 import { toast } from '../../components/ui/toaster'
@@ -221,16 +222,19 @@ export default function OrganizationsPage() {
                         </div>
                         <div className="space-y-2">
                             <Label htmlFor="timezone">Timezone</Label>
-                            <select
-                                id="timezone"
-                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            <Select
                                 value={newOrg.timezone}
-                                onChange={(e) => setNewOrg((current) => ({ ...current, timezone: e.target.value }))}
+                                onValueChange={(value) => setNewOrg((current) => ({ ...current, timezone: value }))}
                             >
-                                {timezoneOptions.map((timezone) => (
-                                    <option key={timezone} value={timezone}>{timezone}</option>
-                                ))}
-                            </select>
+                                <SelectTrigger id="timezone">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {timezoneOptions.map((timezone) => (
+                                        <SelectItem key={timezone} value={timezone}>{timezone}</SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
                     </div>
                     <DialogFooter>

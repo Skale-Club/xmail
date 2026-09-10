@@ -302,6 +302,7 @@ export default function ContactsPage() {
                                                         onClick={() => handleOpenEdit(contact)}
                                                         className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                                                         title="Edit"
+                                                        aria-label={`Edit ${getDisplayName(contact)}`}
                                                     >
                                                         <Edit2 className="w-4 h-4" />
                                                     </button>
@@ -323,8 +324,9 @@ export default function ContactsPage() {
                                                     ) : (
                                                         <button
                                                             onClick={() => setDeleteConfirm(contact.id)}
-                                                            className="p-1.5 rounded-lg hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-colors"
+                                                            className="p-1.5 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
                                                             title="Delete"
+                                                            aria-label={`Delete ${getDisplayName(contact)}`}
                                                         >
                                                             <Trash2 className="w-4 h-4" />
                                                         </button>

@@ -11,6 +11,9 @@ import {
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
+import { PageHeader } from '../../components/ui/page-header'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
+import { Checkbox } from '../../components/ui/checkbox'
 import { OrgAiAutomationControl } from '../../components/outreach/inbox/AiAutonomyControls'
 import { apiFetch, apiRequest } from '../../lib/api-client'
 import {
@@ -163,7 +166,7 @@ export function SettingsPage() {
     if (isLoading) {
         return (
                 <div className="flex items-center justify-center min-h-[60vh]">
-                    <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
+                    <RefreshCw className="w-8 h-8 animate-spin text-muted-foreground" />
                 </div>
         )
     }
@@ -176,25 +179,22 @@ export function SettingsPage() {
                 </div>
             ) : (
             <div className="space-y-6">
-                {/* Header */}
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h1 className="text-2xl font-bold text-foreground">Settings</h1>
-                        <p className="text-muted-foreground mt-1">
-                            Configure your cold email outreach preferences
-                        </p>
-                    </div>
-                    <Button onClick={handleSave} disabled={updateMutation.isPending}>
-                        <Save className="w-4 h-4 mr-2" />
-                        {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
-                    </Button>
-                </div>
+                <PageHeader
+                    title="Settings"
+                    description="Configure your cold email outreach preferences"
+                    actions={
+                        <Button onClick={handleSave} disabled={updateMutation.isPending}>
+                            <Save className="w-4 h-4 mr-2" />
+                            {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
+                        </Button>
+                    }
+                />
 
                 {/* General Settings */}
                 <div className="bg-card rounded-lg border border-border">
                     <div className="p-4 border-b border-border">
                         <div className="flex items-center gap-2">
-                            <Globe className="w-5 h-5 text-gray-500" />
+                            <Globe className="w-5 h-5 text-muted-foreground" />
                             <h3 className="font-semibold text-foreground">General Settings</h3>
                         </div>
                     </div>
@@ -202,20 +202,23 @@ export function SettingsPage() {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                                 <Label htmlFor="timezone">Default Timezone</Label>
-                                <select
-                                    id="timezone"
-                                    className="w-full mt-1 px-3 py-2 border border-input rounded-lg bg-background text-foreground text-sm"
+                                <Select
                                     value={formData.general?.defaultTimezone || 'UTC'}
-                                    onChange={(e) => updateGeneral('defaultTimezone', e.target.value)}
+                                    onValueChange={(value) => updateGeneral('defaultTimezone', value)}
                                 >
-                                    <option value="UTC">UTC</option>
-                                    <option value="America/New_York">Eastern Time (ET)</option>
-                                    <option value="America/Chicago">Central Time (CT)</option>
-                                    <option value="America/Denver">Mountain Time (MT)</option>
-                                    <option value="America/Los_Angeles">Pacific Time (PT)</option>
-                                    <option value="Europe/London">London (GMT)</option>
-                                    <option value="Europe/Paris">Paris (CET)</option>
-                                </select>
+                                    <SelectTrigger id="timezone" className="mt-1">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="UTC">UTC</SelectItem>
+                                        <SelectItem value="America/New_York">Eastern Time (ET)</SelectItem>
+                                        <SelectItem value="America/Chicago">Central Time (CT)</SelectItem>
+                                        <SelectItem value="America/Denver">Mountain Time (MT)</SelectItem>
+                                        <SelectItem value="America/Los_Angeles">Pacific Time (PT)</SelectItem>
+                                        <SelectItem value="Europe/London">London (GMT)</SelectItem>
+                                        <SelectItem value="Europe/Paris">Paris (CET)</SelectItem>
+                                    </SelectContent>
+                                </Select>
                             </div>
                             <div className="flex items-center gap-4">
                                 <div className="flex-1">
@@ -242,31 +245,25 @@ export function SettingsPage() {
                         </div>
                         <div className="flex flex-wrap gap-4">
                             <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                    type="checkbox"
-                                    className="rounded border-gray-300"
+                                <Checkbox
                                     checked={formData.general?.sendOnWeekends || false}
-                                    onChange={(e) => updateGeneral('sendOnWeekends', e.target.checked)}
+                                    onCheckedChange={(checked) => updateGeneral('sendOnWeekends', checked === true)}
                                 />
-                                <span className="text-sm text-gray-700 dark:text-gray-300">Send on weekends</span>
+                                <span className="text-sm text-foreground">Send on weekends</span>
                             </label>
                             <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                    type="checkbox"
-                                    className="rounded border-gray-300"
+                                <Checkbox
                                     checked={formData.general?.trackOpens ?? true}
-                                    onChange={(e) => updateGeneral('trackOpens', e.target.checked)}
+                                    onCheckedChange={(checked) => updateGeneral('trackOpens', checked === true)}
                                 />
-                                <span className="text-sm text-gray-700 dark:text-gray-300">Track opens</span>
+                                <span className="text-sm text-foreground">Track opens</span>
                             </label>
                             <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                    type="checkbox"
-                                    className="rounded border-gray-300"
+                                <Checkbox
                                     checked={formData.general?.trackClicks ?? true}
-                                    onChange={(e) => updateGeneral('trackClicks', e.target.checked)}
+                                    onCheckedChange={(checked) => updateGeneral('trackClicks', checked === true)}
                                 />
-                                <span className="text-sm text-gray-700 dark:text-gray-300">Track clicks</span>
+                                <span className="text-sm text-foreground">Track clicks</span>
                             </label>
                         </div>
                     </div>
@@ -276,7 +273,7 @@ export function SettingsPage() {
                 <div className="bg-card rounded-lg border border-border">
                     <div className="p-4 border-b border-border">
                         <div className="flex items-center gap-2">
-                            <Mail className="w-5 h-5 text-gray-500" />
+                            <Mail className="w-5 h-5 text-muted-foreground" />
                             <h3 className="font-semibold text-foreground">Sending Settings</h3>
                         </div>
                     </div>
@@ -293,7 +290,7 @@ export function SettingsPage() {
                                     value={formData.sending?.defaultDailyLimit || 50}
                                     onChange={(e) => updateSending('defaultDailyLimit', parseInt(e.target.value))}
                                 />
-                                <p className="text-xs text-gray-500 mt-1">Maximum emails per inbox per day</p>
+                                <p className="text-xs text-muted-foreground mt-1">Maximum emails per inbox per day</p>
                             </div>
                             <div>
                                 <Label htmlFor="minMinutes">Min Minutes Between Emails</Label>
@@ -306,20 +303,18 @@ export function SettingsPage() {
                                     value={formData.sending?.defaultMinMinutesBetweenEmails || 5}
                                     onChange={(e) => updateSending('defaultMinMinutesBetweenEmails', parseInt(e.target.value))}
                                 />
-                                <p className="text-xs text-gray-500 mt-1">Minimum wait time between sends</p>
+                                <p className="text-xs text-muted-foreground mt-1">Minimum wait time between sends</p>
                             </div>
                         </div>
                         <div className="border-t border-border pt-4">
                             <h4 className="font-medium text-foreground mb-3">Warmup Settings</h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <label className="flex items-center gap-2 cursor-pointer">
-                                    <input
-                                        type="checkbox"
-                                        className="rounded border-gray-300"
+                                    <Checkbox
                                         checked={formData.sending?.warmupEnabled ?? true}
-                                        onChange={(e) => updateSending('warmupEnabled', e.target.checked)}
+                                        onCheckedChange={(checked) => updateSending('warmupEnabled', checked === true)}
                                     />
-                                    <span className="text-sm text-gray-700 dark:text-gray-300">Enable automatic warmup</span>
+                                    <span className="text-sm text-foreground">Enable automatic warmup</span>
                                 </label>
                                 <div>
                                     <Label htmlFor="warmupDays">Warmup Period (Days)</Label>
@@ -348,11 +343,10 @@ export function SettingsPage() {
                     </div>
                     <div className="p-4 space-y-4">
                         <label className="flex items-start gap-3 cursor-pointer">
-                            <input
-                                type="checkbox"
-                                className="mt-1 rounded border-gray-300"
+                            <Checkbox
+                                className="mt-1"
                                 checked={formData.deliverability?.guardEnabled ?? true}
-                                onChange={(e) => updateDeliverability('guardEnabled', e.target.checked)}
+                                onCheckedChange={(checked) => updateDeliverability('guardEnabled', checked === true)}
                             />
                             <span><span className="block text-sm font-medium text-foreground">Pause unhealthy active campaigns automatically</span><span className="block text-xs text-muted-foreground">A paused campaign requires human review before it can resume.</span></span>
                         </label>
@@ -379,7 +373,7 @@ export function SettingsPage() {
                 <div className="bg-card rounded-lg border border-border">
                     <div className="p-4 border-b border-border">
                         <div className="flex items-center gap-2">
-                            <Bell className="w-5 h-5 text-gray-500" />
+                            <Bell className="w-5 h-5 text-muted-foreground" />
                             <h3 className="font-semibold text-foreground">Notifications</h3>
                         </div>
                     </div>
@@ -390,31 +384,25 @@ export function SettingsPage() {
                             gates only that event notification — inbound processing always runs.
                         </p>
                         <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                                type="checkbox"
-                                className="rounded border-gray-300"
+                            <Checkbox
                                 checked={formData.notifications?.notifyOnReply ?? true}
-                                onChange={(e) => updateNotifications('notifyOnReply', e.target.checked)}
+                                onCheckedChange={(checked) => updateNotifications('notifyOnReply', checked === true)}
                             />
-                            <span className="text-sm text-gray-700 dark:text-gray-300">Notify on replies</span>
+                            <span className="text-sm text-foreground">Notify on replies</span>
                         </label>
                         <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                                type="checkbox"
-                                className="rounded border-gray-300"
+                            <Checkbox
                                 checked={formData.notifications?.notifyOnBounce ?? true}
-                                onChange={(e) => updateNotifications('notifyOnBounce', e.target.checked)}
+                                onCheckedChange={(checked) => updateNotifications('notifyOnBounce', checked === true)}
                             />
-                            <span className="text-sm text-gray-700 dark:text-gray-300">Notify on bounces</span>
+                            <span className="text-sm text-foreground">Notify on bounces</span>
                         </label>
                         <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                                type="checkbox"
-                                className="rounded border-gray-300"
+                            <Checkbox
                                 checked={formData.notifications?.notifyOnUnsubscribe || false}
-                                onChange={(e) => updateNotifications('notifyOnUnsubscribe', e.target.checked)}
+                                onCheckedChange={(checked) => updateNotifications('notifyOnUnsubscribe', checked === true)}
                             />
-                            <span className="text-sm text-gray-700 dark:text-gray-300">Notify on unsubscribes</span>
+                            <span className="text-sm text-foreground">Notify on unsubscribes</span>
                         </label>
                     </div>
                 </div>

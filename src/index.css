@@ -25,6 +25,8 @@
         --border: 240 5.9% 90%;
         --input: 240 5.9% 90%;
         --ring: 240 5.9% 10%;
+        --warning: 38 92% 50%;
+        --warning-foreground: 0 0% 100%;
         --radius: 0.75rem;
     }
 
@@ -48,6 +50,8 @@
         --border: 240 4% 15%;
         --input: 240 4% 15%;
         --ring: 240 4.9% 83.9%;
+        --warning: 38 92% 50%;
+        --warning-foreground: 0 0% 10%;
     }
 
     * {

@@ -53,7 +53,7 @@ export function ConfirmDialog({
                             variant === 'danger'
                                 ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
                                 : variant === 'warning'
-                                    ? 'bg-amber-500 text-white hover:bg-amber-600'
+                                    ? 'bg-[hsl(var(--warning))] text-[hsl(var(--warning-foreground))] hover:bg-[hsl(var(--warning))]/90'
                                     : 'bg-primary text-primary-foreground hover:bg-primary/90'
                         }`}
                     >

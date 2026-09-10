@@ -9,6 +9,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { PaginationControls } from '../../components/ui/PaginationControls'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { toast } from '../../components/ui/toaster'
+import { PageHeader } from '../../components/ui/page-header'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
 import { apiFetch, matchesSearch } from './helpers'
 
 const PAGE_SIZE = 25
@@ -124,10 +126,10 @@ export default function UsersPage() {
 
     return (
         <div className="space-y-6">
-            <div>
-                <h2 className="text-2xl font-bold tracking-tight">Users</h2>
-                <p className="text-muted-foreground">All platform users, their admin status and organization roles.</p>
-            </div>
+            <PageHeader
+                title="Users"
+                description="All platform users, their admin status and organization roles."
+            />
 
             <Card>
                 <CardContent className="pt-6">
@@ -202,17 +204,23 @@ export default function UsersPage() {
                                                             {user.organizations.map((org) => (
                                                                 <div key={org.id} className="flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1">
                                                                     <span className="text-xs font-medium">{org.name}</span>
-                                                                    <select
-                                                                        aria-label={`Role for ${user.email} in ${org.name}`}
-                                                                        className="h-6 rounded border border-input bg-background px-1 text-xs capitalize disabled:opacity-50"
+                                                                    <Select
                                                                         value={org.role}
                                                                         disabled={roleChangeKey === `${user.id}:${org.id}`}
-                                                                        onChange={(event) => void handleRoleChange(user.id, org.id, event.target.value as UserOrgMembership['role'])}
+                                                                        onValueChange={(value) => void handleRoleChange(user.id, org.id, value as UserOrgMembership['role'])}
                                                                     >
-                                                                        {roleOptions.map((role) => (
-                                                                            <option key={role} value={role}>{role}</option>
-                                                                        ))}
-                                                                    </select>
+                                                                        <SelectTrigger
+                                                                            aria-label={`Role for ${user.email} in ${org.name}`}
+                                                                            className="h-6 w-24 px-1 text-xs capitalize"
+                                                                        >
+                                                                            <SelectValue />
+                                                                        </SelectTrigger>
+                                                                        <SelectContent>
+                                                                            {roleOptions.map((role) => (
+                                                                                <SelectItem key={role} value={role}>{role}</SelectItem>
+                                                                            ))}
+                                                                        </SelectContent>
+                                                                    </Select>
                                                                 </div>
                                                             ))}
                                                         </div>

@@ -1,7 +1,7 @@
-import { useState } from 'react'
 import { Bell, X, AlertTriangle, Mail, Info } from 'lucide-react'
 import { useNotifications, useUnreadCount, useMarkAsRead, useMarkAllAsRead, useDeleteNotification, UserNotification } from '../../hooks/useNotifications'
 import { cn } from '../../lib/utils'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu'
 
 function getNotificationIcon(type: string) {
     switch (type) {
@@ -71,7 +71,6 @@ function NotificationItem({ notification, onMarkRead, onDelete }: NotificationIt
 }
 
 export function NotificationBell() {
-    const [isOpen, setIsOpen] = useState(false)
     const { data: unreadData } = useUnreadCount()
     const { data: notificationsData, isLoading } = useNotifications(1, 10)
     const markAsRead = useMarkAsRead()
@@ -82,58 +81,53 @@ export function NotificationBell() {
     const notifications = notificationsData?.data || []
 
     return (
-        <div className="relative">
-            <button
-                onClick={() => setIsOpen(!isOpen)}
-                className="p-2 rounded-xl hover:bg-accent hover:text-accent-foreground text-muted-foreground transition-colors relative"
-                title="Notifications"
-            >
-                <Bell className="w-5 h-5" />
-                {unreadCount > 0 && (
-                    <span className="absolute top-1 right-1 w-2 h-2 bg-destructive rounded-full animate-pulse" />
-                )}
-            </button>
+        <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+                <button
+                    className="relative p-2 rounded-xl hover:bg-accent hover:text-accent-foreground text-muted-foreground transition-colors"
+                    aria-label="Notifications"
+                >
+                    <Bell className="w-5 h-5" />
+                    {unreadCount > 0 && (
+                        <span className="absolute top-1 right-1 w-2 h-2 bg-destructive rounded-full animate-pulse" />
+                    )}
+                </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-80 max-h-96 p-0 overflow-hidden">
+                <div className="flex items-center justify-between p-3 border-b border-border">
+                    <h3 className="font-semibold text-sm">Notifications</h3>
+                    {unreadCount > 0 && (
+                        <button
+                            onClick={() => markAllAsRead.mutate()}
+                            disabled={markAllAsRead.isPending}
+                            className="text-xs text-primary hover:underline disabled:opacity-50"
+                        >
+                            Mark all read
+                        </button>
+                    )}
+                </div>
 
-            {isOpen && (
-                <>
-                    <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
-                    <div className="absolute right-0 top-full mt-2 w-80 max-h-96 bg-popover text-popover-foreground rounded-xl shadow-md border border-border overflow-hidden z-50">
-                        <div className="flex items-center justify-between p-3 border-b border-border">
-                            <h3 className="font-semibold text-sm">Notifications</h3>
-                            {unreadCount > 0 && (
-                                <button
-                                    onClick={() => markAllAsRead.mutate()}
-                                    disabled={markAllAsRead.isPending}
-                                    className="text-xs text-primary hover:underline disabled:opacity-50"
-                                >
-                                    Mark all read
-                                </button>
-                            )}
+                <div className="overflow-y-auto max-h-80">
+                    {isLoading ? (
+                        <div className="p-4 text-center text-muted-foreground text-sm">
+                            Loading...
                         </div>
-
-                        <div className="overflow-y-auto max-h-80">
-                            {isLoading ? (
-                                <div className="p-4 text-center text-muted-foreground text-sm">
-                                    Loading...
-                                </div>
-                            ) : notifications.length === 0 ? (
-                                <div className="p-4 text-center text-muted-foreground text-sm">
-                                    No notifications
-                                </div>
-                            ) : (
-                                notifications.map((notification) => (
-                                    <NotificationItem
-                                        key={notification.id}
-                                        notification={notification}
-                                        onMarkRead={(id) => markAsRead.mutate(id)}
-                                        onDelete={(id) => deleteNotification.mutate(id)}
-                                    />
-                                ))
-                            )}
+                    ) : notifications.length === 0 ? (
+                        <div className="p-4 text-center text-muted-foreground text-sm">
+                            No notifications
                         </div>
-                    </div>
-                </>
-            )}
-        </div>
+                    ) : (
+                        notifications.map((notification) => (
+                            <NotificationItem
+                                key={notification.id}
+                                notification={notification}
+                                onMarkRead={(id) => markAsRead.mutate(id)}
+                                onDelete={(id) => deleteNotification.mutate(id)}
+                            />
+                        ))
+                    )}
+                </div>
+            </DropdownMenuContent>
+        </DropdownMenu>
     )
 }

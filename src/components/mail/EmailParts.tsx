@@ -150,25 +150,10 @@ export function EmailActions({ onReply, onReplyAll, onForward, replyHref, replyA
     )
 }
 
-interface EmptyStateProps {
-    icon: React.ReactNode
-    title: string
-    description?: string
-    action?: React.ReactNode
-}
-
-export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
-    return (
-        <div className="flex flex-col items-center justify-center h-full text-muted-foreground py-20">
-            <div className="w-20 h-20 mb-4 rounded-full bg-muted flex items-center justify-center">
-                {icon}
-            </div>
-            <p className="text-lg font-medium text-foreground">{title}</p>
-            {description && <p className="text-sm mt-1">{description}</p>}
-            {action && <div className="mt-4">{action}</div>}
-        </div>
-    )
-}
+// Promoted to the shared design system — src/components/ui/empty-state.tsx.
+// Re-exported here so existing `from '../../components/mail/EmailParts'` imports
+// keep working unchanged.
+export { EmptyState } from '../ui/empty-state'
 
 interface LoadingStateProps {
     message?: string

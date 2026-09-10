@@ -5,6 +5,7 @@ import { useBranding } from '../../lib/branding'
 import { supabase } from '../../lib/supabase'
 import { AppLogo } from '../AppLogo'
 import { Button } from '../ui/button'
+import { CommandPalette } from '../ui/command-palette'
 import { ModeToggle } from '../mode-toggle'
 import { DeployFooter } from '../DeployFooter'
 import {
@@ -188,6 +189,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                 {/* Page content */}
                 <main className="p-4 lg:p-6">{children}</main>
             </div>
+            <CommandPalette area="admin" isAdmin />
         </div>
     )
 }
