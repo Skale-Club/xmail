@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   app:
     build: .
@@ -12,12 +10,16 @@ services:
       # Mount Let's Encrypt certs read-only (Linux host only; mkcert on dev Mac/Win)
       - /etc/letsencrypt:/etc/letsencrypt:ro
     environment:
+      # This list is kept at parity with run_app_container() in
+      # .github/workflows/build-deploy.yml — same variable names, sourced from .env instead
+      # of GitHub secrets — so `docker compose up` reproduces what production actually runs.
       - NODE_ENV=production
       - PORT=9001
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - DATABASE_URL=${DATABASE_URL}
+      - DIRECT_URL=${DIRECT_URL}
       - JWT_SECRET=${JWT_SECRET}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - OUTLOOK_TOKEN_ENCRYPTION_KEY=${OUTLOOK_TOKEN_ENCRYPTION_KEY}
@@ -25,13 +27,36 @@ services:
       - MAIL_HOST=${MAIL_HOST:-mx.skale.club}
       - MAIL_TLS_CERT_PATH=${MAIL_TLS_CERT_PATH:-/etc/letsencrypt/live/mx.skale.club/fullchain.pem}
       - MAIL_TLS_KEY_PATH=${MAIL_TLS_KEY_PATH:-/etc/letsencrypt/live/mx.skale.club/privkey.pem}
+      - APP_COMPANY_NAME=${APP_COMPANY_NAME}
+      - APP_APPLICATION_NAME=${APP_APPLICATION_NAME}
+      # SMTP_HOST / SMTP_USER are deliberately NOT set here, mirroring run_app_container's
+      # comment in build-deploy.yml: leaving both unset makes the platform resolve each
+      # recipient's MX and deliver direct, DKIM-signed with the sender's own domain, instead
+      # of relaying through a third party that rewrites the body and breaks DKIM alignment.
+      - SMTP_PASS=${SMTP_PASS}
+      - SMTP_FROM=${SMTP_FROM}
+      - FRONTEND_URL=${FRONTEND_URL}
       - SMTP_SUBMISSION_PORT=587
       - MX_PORT=25
       - IMAP_PORT=993
       - ENABLE_MAIL_SERVER=true
-      - SMTP_HOST=${SMTP_HOST}
-      - SMTP_PORT=${SMTP_PORT}
-      - SMTP_USER=${SMTP_USER}
-      - SMTP_PASS=${SMTP_PASS}
-      - SMTP_FROM=${SMTP_FROM}
+      - XMAIL_SERVICE_KEY=${XMAIL_SERVICE_KEY}
+      - XMAIL_SERVICE_USER_ID=${XMAIL_SERVICE_USER_ID}
+      - XMAIL_SERVICE_ORGANIZATION_ID=${XMAIL_SERVICE_ORGANIZATION_ID}
+      - XPHERE_EVENTS_URL=${XPHERE_EVENTS_URL}
+      - XPHERE_EVENTS_API_KEY=${XPHERE_EVENTS_API_KEY}
+      - APOLLO_API_KEY=${APOLLO_API_KEY}
+      - XCRAPER_SERVICE_URL=${XCRAPER_SERVICE_URL}
+      - XCRAPER_SERVICE_KEY=${XCRAPER_SERVICE_KEY}
+      - PROSPECTING_DAILY_BUDGET_USD=${PROSPECTING_DAILY_BUDGET_USD}
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_PUBLIC_BASE_URL=${R2_PUBLIC_BASE_URL}
+      - MONITOR_API_TOKEN=${MONITOR_API_TOKEN}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - DB_LIVENESS_INTERVAL_MS=${DB_LIVENESS_INTERVAL_MS}
+      - DB_LIVENESS_PROBE_TIMEOUT_MS=${DB_LIVENESS_PROBE_TIMEOUT_MS}
+      - DB_LIVENESS_EXIT_AFTER_MS=${DB_LIVENESS_EXIT_AFTER_MS}
     restart: unless-stopped

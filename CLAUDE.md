@@ -13,7 +13,7 @@ Xmail is a multi-tenant email server management platform inspired by Postal. It 
 - **Container:** `Dockerfile` at repo root builds + runs `dist/server/index.js`
 - **Container network:** if Docker network `coolify` exists, deploy runs the app with `--network coolify` so Traefik can reach `http://xmail:9001`
 - **Published ports:**
-  - `9001` - HTTP API + SPA, published for health checks and routed by Traefik as `mail.skale.club`
+  - `9001` - HTTP API + SPA, bound to `127.0.0.1:9001` only (not public). Traefik reaches it over the `coolify` Docker network at `http://xmail:9001`; `wait_for_container_health()` probes it via `docker exec` from inside the container. Publishing it on `0.0.0.0` would let a client hit Express directly and forge `X-Forwarded-For` (the app trusts it via `trust proxy`) to dodge the 100 req/IP/15min rate limiter — loopback-only closes that off since 25/587/993 have no such proxy-trust surface to spoof.
   - `25` - SMTP MX inbound, direct public TCP to the Node MX server
   - `587` - SMTP submission, direct public TCP to the Node SMTP server
   - `993` - IMAP, direct public TCP to the Node IMAP server
@@ -22,6 +22,7 @@ Xmail is a multi-tenant email server management platform inspired by Postal. It 
 - **Legacy fallback:** if the `coolify` network is absent and Caddy exists, the deploy script can still add a Caddy reverse-proxy block for `mail.skale.club -> localhost:9001`.
 - **Mail ports bypass proxies:** ports `25`, `587`, and `993` are **not** behind Traefik or Caddy. They are raw TCP published from the container to the internet. TLS for mail ports is handled inside Node via `MAIL_TLS_CERT_PATH` / `MAIL_TLS_KEY_PATH`.
 - **Mail identity:** production sets `MAIL_HOST=mx.skale.club`; MX DNS for `skale.club` points at `mx.skale.club`.
+- **Public origin for tracking links:** `BASE_URL` (optional) is the origin `/api/messages` uses to build open/click tracking links (`/t/*`); when unset it falls back to `FRONTEND_URL`, since the same origin serves both the SPA and `/t/*` in production.
 - **Logs:** production mail arrival logs are in Docker stdout/stderr, e.g. `docker logs xmail --since 24h 2>&1 | grep -E '\[MX\]|\[RouteMatcher\]|\[mail-auth\]'`.
 
 **No Vercel, no serverless, no edge functions.** Traditional long-running Node process in Docker.
@@ -62,7 +63,8 @@ git push origin main   # triggers .github/workflows/build-deploy.yml (deploy-het
 src/
 ├── components/          # React components
 │   ├── ui/              # shadcn/ui primitives (Button, Card, Dialog, etc.)
-│   └── admin/           # Admin layout
+│   ├── admin/           # Admin layout + per-tab org admin components (org-tabs/)
+│   └── mail/            # Webmail UI (ComposeDialog, EmailThread, MailLayout, etc.)
 ├── db/
 │   ├── index.ts         # Drizzle client init
 │   └── schema.ts        # Full database schema (tables, enums, relations)
@@ -73,19 +75,29 @@ src/
 │   └── utils.ts         # Utility functions (cn, etc.)
 ├── pages/
 │   ├── Login.tsx
-│   ├── Dashboard.tsx
-│   └── admin/           # Admin pages (Orgs, Servers, Domains, Messages, etc.)
+│   ├── admin/           # Admin pages (Organizations, Users, Branding, Integrations, and
+│   │                    #   the tabbed OrganizationDetailPage — no per-resource pages)
+│   ├── mail/             # Webmail (Inbox, Sent, Drafts, Trash, Compose, Search, etc.)
+│   └── outreach/         # Outreach/prospecting UI (campaigns, leads, unified inbox)
 ├── server/
 │   ├── index.ts         # Express entry point (middleware, auth, routing)
-│   ├── lib/
-│   │   └── tracking.ts  # Open/click tracking & webhook dispatch
-│   └── routes/          # API route handlers
-│       ├── auth.ts, users.ts, organizations.ts, servers.ts
-│       ├── domains.ts, credentials.ts, routes.ts
-│       ├── messages.ts, webhooks.ts, track.ts, system.ts
+│   ├── lib/              # ~100 files: access.ts (authorization), tracking.ts (open/click
+│   │                    #   + webhook dispatch), mail-tls.ts, health.ts, and the outreach/
+│   │                    #   prospecting/inbox support libs
+│   └── routes/           # API route handlers — auth.ts, users.ts, organizations.ts,
+│       │                #   domains.ts, credentials.ts, routes.ts, messages.ts,
+│       │                #   webhooks.ts, track.ts, system.ts, outlook.ts, templates.ts,
+│       │                #   integrations.ts, notifications.ts, autodiscover.ts,
+│       │                #   agent-outreach.ts / agent-approvals.ts / agent-assessments.ts /
+│       │                #   agent-prospecting.ts (the Hermes gateway, see below)
+│       ├── admin/         # Admin-only routes (outreach-health.ts)
+│       ├── mail/           # Native webmail routes (mailboxes, messages, send, sync, ...)
+│       └── outreach/       # Campaigns, leads, email-accounts, unified-inbox, etc.
+│                          #   (there is no routes/servers.ts — see Multi-Tenancy Model)
 └── main.tsx             # React entry point with routes
-supabase/migrations/     # RLS policies
-scripts/                 # Migration runner scripts
+supabase/migrations/     # Hand-rolled SQL migrations — source of truth for the running DB
+drizzle/archive/         # Historical genesis DDL, never applied (see its README)
+scripts/                 # Migration runner + audit scripts
 ```
 
 ## Commands
@@ -130,8 +142,10 @@ npm run db:audit         # Audit schema drift between schema.ts and the DB
 
 ### Multi-Tenancy Model
 - Users belong to Organizations via `organization_users` (roles: admin, member, viewer)
-- Servers belong to Organizations
-- All resources (domains, credentials, routes, messages, webhooks) belong to Servers
+- The `servers` table was dropped in migration `008_remove_server_legacy.sql` — there is no
+  intermediate server layer any more. All resources (domains, credentials, routes,
+  messages, webhooks, mailboxes, outreach data, etc.) belong directly to Organizations via
+  `organization_id`.
 - **Authorization model:** JS-side helpers in `src/server/lib/access.ts`
   enforce org-scoped data access. RLS policies are defense-in-depth and
   do NOT alone protect tenants (the app role bypasses RLS).
@@ -139,7 +153,7 @@ npm run db:audit         # Audit schema drift between schema.ts and the DB
 ### API Conventions
 - All API routes under `/api/`
 - Rate limited: 100 req/IP/15min
-- Resources typically require a parent ID as query param (e.g., `?serverId=...`, `?organizationId=...`)
+- Resources typically require a parent ID as query param, almost always `?organizationId=...` (no `?serverId=` — that layer no longer exists)
 - Standard REST patterns: GET (list/detail), POST (create), PUT (update), DELETE (remove)
 - Zod validation on request bodies
 
@@ -202,7 +216,7 @@ be rebuilt from scratch. Keep its "achados abertos" table and audit date current
 ### Frontend Patterns
 - All admin pages under `/admin/*` route
 - React Query for server state (auto-refetch, cache invalidation)
-- Forms use react-hook-form + Zod schemas
+- Forms today are plain `useState` + manual validation, not react-hook-form. `react-hook-form`, `@hookform/resolvers`, and `zod` are dependencies and are the intended target for a form-adoption pass in progress — don't assume existing forms use them until that lands.
 - Toast notifications for user feedback
 - Dark/Light/System theme support
 
@@ -261,10 +275,10 @@ All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql
 - For RLS-policy changes, prefer adding to / regenerating the consolidated RLS migration (currently `020_consolidate_rls.sql` — see QUA-03).
 
 **What we DO NOT do:**
-- **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/0000_dear_wolverine.sql`. The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
+- **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/archive/0000_dear_wolverine.sql` (the original genesis DDL — moved into `drizzle/archive/` because it targets the pre-`organization_id`, server-scoped schema and must never be applied against the current database; see `drizzle/archive/README.md`). The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
 - **Do NOT add Drizzle relations / constraints expecting them to apply automatically.** The TS-side schema is for type information; the DB side comes from the SQL migration.
 
-**Numbering convention:** Migrations are sequential integers. As of 2026-08-16 the files run through `061_repair_mail_message_uids.sql`; the next free number is `062`. `060_backfill_lead_source_run_id.sql` and `061` are the most recent additions — re-verify what is actually applied against `supabase_migrations.schema_migrations` before assuming. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+**Numbering convention:** Migrations are sequential integers. As of 2026-09-10 the files run through `066_reconcile_unique_indexes_and_enums.sql`; the next free number is `067`. `065_prospecting_territories.sql` and `066` are the most recent additions — re-verify what is actually applied against `supabase_migrations.schema_migrations` before assuming. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
 
 > **Resolved collision (2026-08-15):** `051_warmup_engine.sql` shared its prefix with the
 > already-applied `051_prospecting_journey_and_costs.sql`. Because the ledger keys on the numeric

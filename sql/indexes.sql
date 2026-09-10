@@ -106,6 +106,14 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_leads_organization_id
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_leads_lead_list_id
     ON leads (lead_list_id);
 
+-- Mirrors lead_org_email_unique, created (non-concurrently) by
+-- supabase/migrations/066_reconcile_unique_indexes_and_enums.sql. Kept here too per this
+-- file's "indexes defined twice" convention (schema.ts for type-awareness, here for the
+-- safe CONCURRENTLY apply path) — CREATE INDEX CONCURRENTLY is itself IF NOT EXISTS, so
+-- running this after 066 already created it non-concurrently is a no-op.
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS lead_org_email_unique
+    ON leads (organization_id, email);
+
 -- =============================================================================
 -- Sequences + steps — campaign/sequence FK indexes
 -- =============================================================================
@@ -131,6 +139,12 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaign_leads_assigned_email_accoun
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaign_leads_current_step_id
     ON campaign_leads (current_step_id);
+
+-- Mirrors campaign_lead_unique, created (non-concurrently) by
+-- supabase/migrations/066_reconcile_unique_indexes_and_enums.sql — see the comment above
+-- lead_org_email_unique in this file for why both live here too.
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS campaign_lead_unique
+    ON campaign_leads (campaign_id, lead_id);
 
 -- =============================================================================
 -- Outreach emails — multiple FK indexes

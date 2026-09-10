@@ -75,12 +75,54 @@ jobs:
 
       - name: Deploy to Hetzner
         uses: appleboy/ssh-action@v1.0.0
+        # Every secret run_app_container() needs on the remote host is declared here and
+        # forwarded by name via `envs:`, instead of being interpolated as `${{ secrets.X }}`
+        # straight into the script body below. A raw `${{ }}` interpolation is a textual
+        # substitution done BEFORE bash ever sees the line — a secret value containing a
+        # quote or backtick would become executable shell (the same class of risk the
+        # Telegram notification step below already avoids for commit messages). Referencing
+        # `$X` inside the script instead lets bash's own quoting handle arbitrary secret
+        # content safely.
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.DIRECT_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          OUTLOOK_TOKEN_ENCRYPTION_KEY: ${{ secrets.OUTLOOK_TOKEN_ENCRYPTION_KEY }}
+          MAIL_DOMAIN: ${{ secrets.MAIL_DOMAIN }}
+          APP_COMPANY_NAME: ${{ secrets.APP_COMPANY_NAME }}
+          APP_APPLICATION_NAME: ${{ secrets.APP_APPLICATION_NAME }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+          XMAIL_SERVICE_KEY: ${{ secrets.XMAIL_SERVICE_KEY }}
+          XMAIL_SERVICE_USER_ID: ${{ secrets.XMAIL_SERVICE_USER_ID }}
+          XMAIL_SERVICE_ORGANIZATION_ID: ${{ secrets.XMAIL_SERVICE_ORGANIZATION_ID }}
+          XPHERE_EVENTS_URL: ${{ secrets.XPHERE_EVENTS_URL }}
+          XPHERE_EVENTS_API_KEY: ${{ secrets.XPHERE_EVENTS_API_KEY }}
+          APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }}
+          XCRAPER_SERVICE_URL: ${{ secrets.XCRAPER_SERVICE_URL }}
+          XCRAPER_SERVICE_KEY: ${{ secrets.XCRAPER_SERVICE_KEY }}
+          PROSPECTING_DAILY_BUDGET_USD: ${{ secrets.PROSPECTING_DAILY_BUDGET_USD }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+          MONITOR_API_TOKEN: ${{ secrets.MONITOR_API_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         with:
           host: ${{ secrets.HETZNER_HOST }}
           username: root
           key: ${{ secrets.HETZNER_SSH_KEY }}
           command_timeout: 10m
-          envs: IMAGE_NAME,HEALTH_CHECK_RETRIES,HEALTH_CHECK_INTERVAL
+          # Single line, no spaces after commas — appleboy/ssh-action splits this on ","
+          # without trimming, and a stray space would turn " SUPABASE_URL" into a lookup
+          # for an env var that doesn't exist under that name.
+          envs: IMAGE_NAME,HEALTH_CHECK_RETRIES,HEALTH_CHECK_INTERVAL,SUPABASE_URL,SUPABASE_ANON_KEY,SUPABASE_SERVICE_ROLE_KEY,DATABASE_URL,DIRECT_URL,JWT_SECRET,ENCRYPTION_KEY,OUTLOOK_TOKEN_ENCRYPTION_KEY,MAIL_DOMAIN,APP_COMPANY_NAME,APP_APPLICATION_NAME,SMTP_PASS,SMTP_FROM,FRONTEND_URL,XMAIL_SERVICE_KEY,XMAIL_SERVICE_USER_ID,XMAIL_SERVICE_ORGANIZATION_ID,XPHERE_EVENTS_URL,XPHERE_EVENTS_API_KEY,APOLLO_API_KEY,XCRAPER_SERVICE_URL,XCRAPER_SERVICE_KEY,PROSPECTING_DAILY_BUDGET_USD,R2_ACCOUNT_ID,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_PUBLIC_BASE_URL,MONITOR_API_TOKEN,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             set -euo pipefail
 
@@ -148,7 +190,17 @@ jobs:
 
               PUBLISH_ARGS=""
               if [ "$PUBLISH_PORTS" = "true" ]; then
-                PUBLISH_ARGS="-p 9001:9001 -p 25:25 -p 587:587 -p 993:993"
+                # 9001 is bound to loopback only. Traefik reaches the container over the
+                # 'coolify' Docker network at http://xmail:9001 (see write_traefik_route),
+                # and wait_for_container_health probes it via `docker exec` from inside the
+                # container's own netns — neither needs the host-published mapping. Publishing
+                # 9001 on 0.0.0.0 would let a request reach Express directly, bypassing
+                # Traefik: the app trusts X-Forwarded-For (`trust proxy`) for the 100
+                # req/IP/15min rate limiter, so a client hitting the public port straight
+                # could spoof that header and dodge the limiter entirely. 25/587/993 stay
+                # public — they are raw TCP with no proxy in front and no header-based trust
+                # to spoof.
+                PUBLISH_ARGS="-p 127.0.0.1:9001:9001 -p 25:25 -p 587:587 -p 993:993"
               fi
               TRAEFIK_ENABLED="true"
               if [ "$NAME" != "$APP_NAME" ]; then
@@ -165,43 +217,43 @@ jobs:
                 -e PORT=9001 \
                 -e DEPLOY_VERSION="$DEPLOY_VERSION" \
                 -e DEPLOYED_AT="$DEPLOYED_AT" \
-                -e SUPABASE_URL="${{ secrets.SUPABASE_URL }}" \
-                -e SUPABASE_ANON_KEY="${{ secrets.SUPABASE_ANON_KEY }}" \
-                -e SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
-                -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
-                -e DIRECT_URL="${{ secrets.DIRECT_URL }}" \
-                -e JWT_SECRET="${{ secrets.JWT_SECRET }}" \
-                -e ENCRYPTION_KEY="${{ secrets.ENCRYPTION_KEY }}" \
-                -e OUTLOOK_TOKEN_ENCRYPTION_KEY="${{ secrets.OUTLOOK_TOKEN_ENCRYPTION_KEY }}" \
-                -e MAIL_DOMAIN="${{ secrets.MAIL_DOMAIN }}" \
+                -e SUPABASE_URL="$SUPABASE_URL" \
+                -e SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \
+                -e SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
+                -e DATABASE_URL="$DATABASE_URL" \
+                -e DIRECT_URL="$DIRECT_URL" \
+                -e JWT_SECRET="$JWT_SECRET" \
+                -e ENCRYPTION_KEY="$ENCRYPTION_KEY" \
+                -e OUTLOOK_TOKEN_ENCRYPTION_KEY="$OUTLOOK_TOKEN_ENCRYPTION_KEY" \
+                -e MAIL_DOMAIN="$MAIL_DOMAIN" \
                 -e MAIL_HOST="mx.skale.club" \
                 -e MAIL_TLS_CERT_PATH="/etc/letsencrypt/live/mx.skale.club/fullchain.pem" \
                 -e MAIL_TLS_KEY_PATH="/etc/letsencrypt/live/mx.skale.club/privkey.pem" \
-                -e APP_COMPANY_NAME="${{ secrets.APP_COMPANY_NAME }}" \
-                -e APP_APPLICATION_NAME="${{ secrets.APP_APPLICATION_NAME }}" \
-                -e SMTP_PASS="${{ secrets.SMTP_PASS }}" \
-                -e SMTP_FROM="${{ secrets.SMTP_FROM }}" \
-                -e FRONTEND_URL="${{ secrets.FRONTEND_URL }}" \
+                -e APP_COMPANY_NAME="$APP_COMPANY_NAME" \
+                -e APP_APPLICATION_NAME="$APP_APPLICATION_NAME" \
+                -e SMTP_PASS="$SMTP_PASS" \
+                -e SMTP_FROM="$SMTP_FROM" \
+                -e FRONTEND_URL="$FRONTEND_URL" \
                 -e SMTP_SUBMISSION_PORT=587 \
                 -e MX_PORT=25 \
                 -e IMAP_PORT=993 \
                 -e ENABLE_MAIL_SERVER=true \
-                -e XMAIL_SERVICE_KEY="${{ secrets.XMAIL_SERVICE_KEY }}" \
-                -e XMAIL_SERVICE_USER_ID="${{ secrets.XMAIL_SERVICE_USER_ID }}" \
-                -e XMAIL_SERVICE_ORGANIZATION_ID="${{ secrets.XMAIL_SERVICE_ORGANIZATION_ID }}" \
-                -e XPHERE_EVENTS_URL="${{ secrets.XPHERE_EVENTS_URL }}" \
-                -e XPHERE_EVENTS_API_KEY="${{ secrets.XPHERE_EVENTS_API_KEY }}" \
-                -e APOLLO_API_KEY="${{ secrets.APOLLO_API_KEY }}" \
-                -e XCRAPER_SERVICE_URL="${{ secrets.XCRAPER_SERVICE_URL }}" \
-                -e XCRAPER_SERVICE_KEY="${{ secrets.XCRAPER_SERVICE_KEY }}" \
-                -e PROSPECTING_DAILY_BUDGET_USD="${{ secrets.PROSPECTING_DAILY_BUDGET_USD }}" \
-                -e R2_ACCOUNT_ID="${{ secrets.R2_ACCOUNT_ID }}" \
-                -e R2_ACCESS_KEY_ID="${{ secrets.R2_ACCESS_KEY_ID }}" \
-                -e R2_SECRET_ACCESS_KEY="${{ secrets.R2_SECRET_ACCESS_KEY }}" \
-                -e R2_PUBLIC_BASE_URL="${{ secrets.R2_PUBLIC_BASE_URL }}" \
-                -e MONITOR_API_TOKEN="${{ secrets.MONITOR_API_TOKEN }}" \
-                -e TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-                -e TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}" \
+                -e XMAIL_SERVICE_KEY="$XMAIL_SERVICE_KEY" \
+                -e XMAIL_SERVICE_USER_ID="$XMAIL_SERVICE_USER_ID" \
+                -e XMAIL_SERVICE_ORGANIZATION_ID="$XMAIL_SERVICE_ORGANIZATION_ID" \
+                -e XPHERE_EVENTS_URL="$XPHERE_EVENTS_URL" \
+                -e XPHERE_EVENTS_API_KEY="$XPHERE_EVENTS_API_KEY" \
+                -e APOLLO_API_KEY="$APOLLO_API_KEY" \
+                -e XCRAPER_SERVICE_URL="$XCRAPER_SERVICE_URL" \
+                -e XCRAPER_SERVICE_KEY="$XCRAPER_SERVICE_KEY" \
+                -e PROSPECTING_DAILY_BUDGET_USD="$PROSPECTING_DAILY_BUDGET_USD" \
+                -e R2_ACCOUNT_ID="$R2_ACCOUNT_ID" \
+                -e R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+                -e R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+                -e R2_PUBLIC_BASE_URL="$R2_PUBLIC_BASE_URL" \
+                -e MONITOR_API_TOKEN="$MONITOR_API_TOKEN" \
+                -e TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
+                -e TELEGRAM_CHAT_ID="$TELEGRAM_CHAT_ID" \
                 -e DB_LIVENESS_INTERVAL_MS="${{ vars.DB_LIVENESS_INTERVAL_MS }}" \
                 -e DB_LIVENESS_PROBE_TIMEOUT_MS="${{ vars.DB_LIVENESS_PROBE_TIMEOUT_MS }}" \
                 -e DB_LIVENESS_EXIT_AFTER_MS="${{ vars.DB_LIVENESS_EXIT_AFTER_MS }}" \
@@ -215,6 +267,16 @@ jobs:
                 "$IMAGE"
             }
 
+            # Gates the blue/green handoff: only a container that passes this is allowed to
+            # take (or keep) traffic. /health is liveness only — "the Express process is up
+            # and answering" — which is true long before the app can actually serve a
+            # request correctly (DB pool not yet connected, Supabase Auth unreachable). Using
+            # only /health here previously meant a candidate could get promoted with a dead
+            # database behind it. /health/ready (src/server/lib/health.ts) runs the real
+            # checks (`select 1` through the pool, a Supabase Auth probe) and returns 503 if
+            # either fails, so it is the one that actually gates promotion. /health is kept
+            # as a first, cheap check so a container that isn't even listening yet fails fast
+            # with a clearer signal than a slower /health/ready timeout would give.
             wait_for_container_health() {
               NAME="$1"
               for i in $(seq 1 "$HEALTH_CHECK_RETRIES"); do
@@ -224,11 +286,15 @@ jobs:
                   docker logs "$NAME" --tail 80 2>&1 || true
                   return 1
                 fi
-                if docker exec "$NAME" node -e "fetch('http://127.0.0.1:9001/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
-                  echo "$NAME passed health check on attempt $i"
+                if ! docker exec "$NAME" node -e "fetch('http://127.0.0.1:9001/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
+                  echo "$NAME health attempt $i/$HEALTH_CHECK_RETRIES failed (liveness)"
+                  continue
+                fi
+                if docker exec "$NAME" node -e "fetch('http://127.0.0.1:9001/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"; then
+                  echo "$NAME passed health check on attempt $i (liveness + ready)"
                   return 0
                 fi
-                echo "$NAME health attempt $i/$HEALTH_CHECK_RETRIES failed"
+                echo "$NAME health attempt $i/$HEALTH_CHECK_RETRIES failed (not ready — DB/auth)"
               done
               docker logs "$NAME" --tail 100 2>&1 || true
               return 1
@@ -279,6 +345,14 @@ jobs:
             cleanup_container() {
               NAME="$1"
               if docker ps -a --filter "name=^/${NAME}$" --format "{{.ID}}" | grep -q .; then
+                # `docker stop` sends SIGTERM first (falling back to SIGKILL only after the
+                # timeout), so src/server/index.ts's SIGTERM handler — closing the mail
+                # servers and the DB pool before exit — actually gets to run. A bare
+                # `docker rm -f` sends SIGKILL immediately and skips that entirely: in-flight
+                # SMTP/IMAP connections get dropped mid-command instead of finished, and
+                # pooled DB connections aren't returned cleanly. 20s comfortably covers the
+                # shutdown path without stalling the rollout if a container is already wedged.
+                docker stop -t 20 "$NAME" || true
                 docker rm -f "$NAME" || true
               fi
             }
@@ -291,6 +365,23 @@ jobs:
                 wait_for_container_health "$APP_NAME"
                 write_traefik_route "$APP_NAME"
                 cleanup_container "$NEXT_NAME"
+              elif docker images "${APP_NAME}:latest" --format "{{.ID}}" | grep -q .; then
+                # No ":previous" to fall back to — this only happens when the host never had
+                # an earlier ":latest" to preserve (first-ever deploy, or ":previous" was
+                # otherwise lost). cleanup_container above already removed the running
+                # "$APP_NAME" container, so doing nothing here leaves production with zero
+                # containers instead of a degraded one. ":latest" is the same image that just
+                # failed its health check, so this is not a fix — but a container that is
+                # merely unhealthy can still be inspected (`docker logs`, `docker exec`) and
+                # may recover from a transient failure, which is strictly better than nothing
+                # answering on 25/587/993/9001 at all.
+                echo "::warning::No ${APP_NAME}:previous image to roll back to. Last resort: re-running ${APP_NAME}:latest (the image that just failed its health check) so the host is not left with no container at all."
+                run_app_container "$APP_NAME" "${APP_NAME}:latest" true
+                wait_for_container_health "$APP_NAME" || echo "::warning::${APP_NAME} restarted on :latest but is still failing its health check — needs a human to look at docker logs ${APP_NAME}."
+                write_traefik_route "$APP_NAME"
+                cleanup_container "$NEXT_NAME"
+              else
+                echo "::error::No ${APP_NAME}:previous AND no ${APP_NAME}:latest image on this host — cannot even attempt a restart. Production is down; a manual docker run or redeploy is required."
               fi
             }
 

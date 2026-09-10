@@ -647,6 +647,9 @@ export const emailAccountStatusEnum = pgEnum('email_account_status', ['pending',
 export const sequenceStepTypeEnum = pgEnum('sequence_step_type', ['email', 'delay', 'condition'])
 
 // Email account provider enum
+// CREATE TYPE lives only in drizzle/archive/0000_dear_wolverine.sql (the genesis DDL,
+// never applied by supabase/migrations); migration 032 only ever ALTERs it. A fresh DB
+// gets the type itself from supabase/migrations/066_reconcile_unique_indexes_and_enums.sql.
 export const emailProviderEnum = pgEnum('email_provider', ['smtp', 'outlook', 'native'])
 
 // Email Accounts (Inboxes for sending outreach emails)
@@ -777,6 +780,8 @@ export const leads = pgTable('leads', {
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
+    // Created by drizzle/archive/0000_dear_wolverine.sql historically; no numbered
+    // migration re-created it until supabase/migrations/066_reconcile_unique_indexes_and_enums.sql.
     orgEmailUnique: uniqueIndex('lead_org_email_unique').on(table.organizationId, table.email),
     idxLeadsOrganizationId: index('idx_leads_organization_id').on(table.organizationId),
     idxLeadsLeadListId: index('idx_leads_lead_list_id').on(table.leadListId),
@@ -946,6 +951,8 @@ export const campaignLeads = pgTable('campaign_leads', {
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
+    // Same drift as leads.orgEmailUnique above — genesis-only until
+    // supabase/migrations/066_reconcile_unique_indexes_and_enums.sql.
     campaignLeadUnique: uniqueIndex('campaign_lead_unique').on(table.campaignId, table.leadId),
     idxCampaignLeadsCampaignId: index('idx_campaign_leads_campaign_id').on(table.campaignId),
     idxCampaignLeadsLeadId: index('idx_campaign_leads_lead_id').on(table.leadId),

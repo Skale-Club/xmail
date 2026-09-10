@@ -146,7 +146,7 @@ async function executeSqlFile(target: MigrationTarget, filePath: string): Promis
 async function applyDrizzleBootstrap(target: MigrationTarget, rootDir: string): Promise<void> {
     assertSafeTestDatabaseUrl(target.databaseUrl, target)
 
-    const bootstrapPath = path.join(rootDir, 'drizzle', '0000_dear_wolverine.sql')
+    const bootstrapPath = path.join(rootDir, 'drizzle', 'archive', '0000_dear_wolverine.sql')
     const contents = await readFile(bootstrapPath, 'utf8')
     const statements = contents
         .split('--> statement-breakpoint')

@@ -47,7 +47,7 @@ coverage
 .kilo/package-lock.json
 
 # Drizzle ORM
-drizzle/meta
+drizzle/archive/meta
 
 # Docker
 .serverless/

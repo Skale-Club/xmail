@@ -9,3 +9,16 @@ dist
 api
 *.log
 README.md
+
+# Not read by the running server (see the runtime-stage comment in the Dockerfile) and not
+# needed to build it either — excluding them just keeps the build context (and layer cache
+# invalidation) smaller.
+hermes/
+docs/
+.planning/
+.github/
+tests/
+**/*.test.ts
+**/__tests__/
+coverage/
+.claude/
