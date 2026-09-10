@@ -1,4 +1,6 @@
 import type { CampaignLead, Lead, SequenceStep } from '../../db/schema'
+import { nextWindowStart, type SendWindow } from './outreach-send-window'
+import { assessCampaignActivationCompliance, type CampaignComplianceStep } from './outreach-campaign-compliance'
 
 /**
  * The exhaustive lead-status contract.
@@ -103,17 +105,19 @@ export function selectFairDueCandidates<T extends DueWorkCandidate>(
         .map(({ candidate }) => candidate)
 }
 
-export interface SequenceSchedule {
-    timezone: string
-    sendStartTime: string
-    sendEndTime: string
-    sendOnWeekends: boolean
-}
+/** @deprecated Use `SendWindow` from `./outreach-send-window` — kept as an alias so existing
+ * imports of the type name keep working. */
+export type SequenceSchedule = SendWindow
 
 export type SequenceQuarantineReason =
     | 'invalid_email_content'
     | 'unsupported_condition_step'
     | 'current_step_not_in_sequence'
+    // No minute within the search horizon satisfies the campaign's send window (e.g. a
+    // misconfigured start >= end). The old behaviour here was to send anyway with whatever
+    // out-of-window candidate the search loop last held — a silent violation of the campaign's
+    // own schedule. Now the lead is held (like any other quarantine reason) instead of shipped.
+    | 'invalid_send_window'
 
 export type SequenceAction =
     | {
@@ -138,6 +142,7 @@ export type SequenceValidationIssueCode =
     | 'invalid_email_content'
     | 'unsupported_condition_step'
     | 'sequence_missing_email'
+    | 'missing_unsubscribe_placeholder'
 
 export interface SequenceValidationIssue {
     code: SequenceValidationIssueCode
@@ -145,76 +150,17 @@ export interface SequenceValidationIssue {
     stepId?: string
 }
 
-interface ZonedDateParts {
-    weekday: number
-    hour: number
-    minute: number
-}
-
-function getZonedDateParts(date: Date, timeZone: string): ZonedDateParts {
-    let parts: Intl.DateTimeFormatPart[]
-    try {
-        parts = new Intl.DateTimeFormat('en-US', {
-            timeZone: timeZone || 'UTC',
-            weekday: 'short',
-            hour: '2-digit',
-            minute: '2-digit',
-            hourCycle: 'h23',
-        }).formatToParts(date)
-    } catch {
-        parts = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'UTC',
-            weekday: 'short',
-            hour: '2-digit',
-            minute: '2-digit',
-            hourCycle: 'h23',
-        }).formatToParts(date)
-    }
-
-    const value = (type: string) => parts.find((part) => part.type === type)?.value
-    const weekdays: Record<string, number> = {
-        Sun: 0,
-        Mon: 1,
-        Tue: 2,
-        Wed: 3,
-        Thu: 4,
-        Fri: 5,
-        Sat: 6,
-    }
-
-    return {
-        weekday: weekdays[value('weekday') || 'Sun'] ?? 0,
-        hour: Number(value('hour') || 0),
-        minute: Number(value('minute') || 0),
-    }
-}
-
-function parseTime(value: string): number {
-    const [hours, minutes] = value.split(':').map(Number)
-    return hours * 60 + (minutes || 0)
-}
-
-function isWithinSchedule(date: Date, schedule: SequenceSchedule): boolean {
-    const zoned = getZonedDateParts(date, schedule.timezone)
-    const isWeekend = zoned.weekday === 0 || zoned.weekday === 6
-    if (isWeekend && !schedule.sendOnWeekends) return false
-
-    const currentMinutes = zoned.hour * 60 + zoned.minute
-    return currentMinutes >= parseTime(schedule.sendStartTime)
-        && currentMinutes <= parseTime(schedule.sendEndTime)
-}
-
-function scheduleAfterDelay(now: Date, delayHours: number, schedule: SequenceSchedule): Date {
+/**
+ * The candidate instant `delayHours` after `now`, rolled forward to the next minute the
+ * schedule actually allows — or `'invalid'` when no minute within the search horizon (14 days)
+ * satisfies the schedule at all (a misconfigured window, e.g. start >= end). The caller MUST
+ * treat `'invalid'` as "do not send" (see `resolveSequenceAction` below): the previous
+ * implementation returned the out-of-window candidate anyway, a silent send-window violation.
+ */
+function scheduleAfterDelay(now: Date, delayHours: number, schedule: SendWindow): Date | 'invalid' {
     const candidate = new Date(now.getTime() + Math.max(0, delayHours) * 60 * 60 * 1000)
-    candidate.setUTCSeconds(0, 0)
-
-    const maxMinutes = 14 * 24 * 60
-    for (let minute = 0; minute <= maxMinutes; minute++) {
-        if (isWithinSchedule(candidate, schedule)) return new Date(candidate)
-        candidate.setUTCMinutes(candidate.getUTCMinutes() + 1)
-    }
-
-    return candidate
+    const next = nextWindowStart(candidate, schedule, { horizonDays: 14 })
+    return next ?? 'invalid'
 }
 
 function isValidEmailStep(step: SequenceStep): boolean {
@@ -256,16 +202,43 @@ export function resolveSequenceAction(
             return { type: 'complete', completedAt: new Date(now) }
         }
 
+        const nextScheduledAt = scheduleAfterDelay(now, currentStep.delayHours, schedule)
+        if (nextScheduledAt === 'invalid') {
+            return { type: 'quarantine', reason: 'invalid_send_window', step: currentStep }
+        }
+
         return {
             type: 'advance_without_send',
             fromStep: currentStep,
             nextStep,
-            nextScheduledAt: scheduleAfterDelay(now, currentStep.delayHours, schedule),
+            nextScheduledAt,
         }
     }
 
     if (!isValidEmailStep(currentStep)) {
         return { type: 'quarantine', reason: 'invalid_email_content', step: currentStep }
+    }
+
+    // Explicit delay rows own their wait. They become due immediately and, when resolved,
+    // schedule the following row after their delayHours.
+    //
+    // If that next schedule turns out to have no valid slot at all (an impossible campaign
+    // window), we quarantine here rather than send this step with a schedule we cannot honor
+    // for the one after it: sending now and leaving the lead pointed at a step with no
+    // computable `nextScheduledAt` would silently strand it mid-sequence with no error anyone
+    // would see. Quarantining the whole row instead makes the misconfiguration visible via the
+    // same `sequence_configuration_error` log line every other quarantine reason already uses.
+    let nextScheduledAt: Date | null = null
+    if (nextStep) {
+        if (nextStep.type === 'email') {
+            const candidate = scheduleAfterDelay(now, nextStep.delayHours, schedule)
+            if (candidate === 'invalid') {
+                return { type: 'quarantine', reason: 'invalid_send_window', step: currentStep }
+            }
+            nextScheduledAt = candidate
+        } else {
+            nextScheduledAt = new Date(now)
+        }
     }
 
     return {
@@ -277,20 +250,43 @@ export function resolveSequenceAction(
             htmlBody: currentStep.htmlBody,
         },
         nextStep,
-        // Explicit delay rows own their wait. They become due immediately and,
-        // when resolved, schedule the following row after their delayHours.
-        nextScheduledAt: nextStep
-            ? nextStep.type === 'email'
-                ? scheduleAfterDelay(now, nextStep.delayHours, schedule)
-                : new Date(now)
-            : null,
+        nextScheduledAt,
     }
 }
 
+/**
+ * Reject activation when any email step's body does not render `{{unsubscribeUrl}}`.
+ *
+ * This is deliberately the SAME detection `outreach-campaign-compliance.ts` uses for the
+ * human-approval preview (Fase 37 / audit finding 2), reused here rather than reimplemented —
+ * the rule (case-sensitive token, checked across plain/HTML body and both A/B variants when
+ * A/B testing is on) lives in exactly one place. The difference is what each caller DOES with
+ * the finding: there it is informational, shown to the human reviewer without blocking
+ * anything (`campaigns.ts` / G9 owns the actual activation gate). HERE it is a hard block —
+ * `validateSequenceForActivation` IS part of that gate, so a campaign whose steps lack the
+ * placeholder cannot be activated at all. That is intentional (CAN-SPAM compliance; this closes
+ * the audit-2026-08-15 finding #6, "nothing exists at all" for the unsubscribe link), not a
+ * regression to work around.
+ */
 export function validateSequenceForActivation(steps: SequenceStep[]): SequenceValidationIssue[] {
     const issues: SequenceValidationIssue[] = []
     const seenOrders = new Set<number>()
     let hasValidEmail = false
+
+    const complianceSteps: CampaignComplianceStep[] = orderedSteps(steps).map((step) => ({
+        stepOrder: step.stepOrder,
+        type: step.type,
+        subject: step.subject,
+        plainBody: step.plainBody,
+        htmlBody: step.htmlBody,
+        subjectB: step.subjectB,
+        plainBodyB: step.plainBodyB,
+        htmlBodyB: step.htmlBodyB,
+        abTestEnabled: step.abTestEnabled,
+    }))
+    const stepOrdersMissingUnsubscribe = new Set(
+        assessCampaignActivationCompliance(complianceSteps).stepsMissingUnsubscribe,
+    )
 
     for (const step of orderedSteps(steps)) {
         if (step.stepOrder < 1) {
@@ -304,6 +300,16 @@ export function validateSequenceForActivation(steps: SequenceStep[]): SequenceVa
         if (step.type === 'email') {
             if (isValidEmailStep(step)) {
                 hasValidEmail = true
+                // Only checked once the step already has real content — an empty step is
+                // already flagged by invalid_email_content above and would trivially "miss" the
+                // placeholder too, which would just be noise on top of the real problem.
+                if (stepOrdersMissingUnsubscribe.has(step.stepOrder)) {
+                    issues.push({
+                        code: 'missing_unsubscribe_placeholder',
+                        message: 'Email steps must render {{unsubscribeUrl}} in the sent body (CAN-SPAM compliance).',
+                        stepId: step.id,
+                    })
+                }
             } else {
                 issues.push({
                     code: 'invalid_email_content',

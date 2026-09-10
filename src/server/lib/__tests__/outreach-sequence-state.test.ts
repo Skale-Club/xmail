@@ -137,6 +137,47 @@ describe('resolveSequenceAction', () => {
             completedAt: new Date('2026-07-16T10:00:00.000Z'),
         })
     })
+
+    const impossibleSchedule: SequenceSchedule = {
+        ...schedule,
+        sendStartTime: '17:00',
+        sendEndTime: '09:00', // start >= end: no minute of any day ever qualifies
+    }
+
+    it('quarantines instead of sending when a delay step cannot compute a valid next send window', () => {
+        const delay = step({ id: 'delay-1', type: 'delay', delayHours: 2, subject: null, plainBody: null })
+        const email = step({ id: 'email-2', stepOrder: 2 })
+
+        expect(resolveSequenceAction(
+            [delay, email],
+            delay,
+            new Date('2026-07-16T10:00:00.000Z'),
+            impossibleSchedule,
+        )).toEqual({
+            type: 'quarantine',
+            reason: 'invalid_send_window',
+            step: delay,
+        })
+    })
+
+    it('quarantines instead of sending when the FOLLOWING email step cannot compute a valid send window', () => {
+        const first = step({ id: 'email-1', stepOrder: 1 })
+        const second = step({ id: 'email-2', stepOrder: 2 })
+
+        // The current step is a perfectly valid, due email — but since we cannot honor a
+        // schedule for whatever comes after it, we must not silently strand the lead by sending
+        // anyway. The whole row is quarantined instead of shipped.
+        expect(resolveSequenceAction(
+            [first, second],
+            first,
+            new Date('2026-07-16T10:00:00.000Z'),
+            impossibleSchedule,
+        )).toEqual({
+            type: 'quarantine',
+            reason: 'invalid_send_window',
+            step: first,
+        })
+    })
 })
 
 describe('validateSequenceForActivation', () => {
@@ -144,6 +185,8 @@ describe('validateSequenceForActivation', () => {
         const issues = validateSequenceForActivation([
             step({ id: 'email-invalid', stepOrder: 0, subject: ' ', plainBody: ' ' }),
             step({ id: 'condition', stepOrder: 2, type: 'condition' }),
+            // Valid content, but (like the default fixture body) missing {{unsubscribeUrl}} —
+            // exercises both issues firing for the same step, in push order.
             step({ id: 'duplicate', stepOrder: 2 }),
         ])
 
@@ -151,6 +194,7 @@ describe('validateSequenceForActivation', () => {
             'invalid_step_order',
             'invalid_email_content',
             'unsupported_condition_step',
+            'missing_unsubscribe_placeholder',
             'duplicate_step_order',
         ])
     })
@@ -161,5 +205,57 @@ describe('validateSequenceForActivation', () => {
         ])
 
         expect(issues.map((issue) => issue.code)).toEqual(['sequence_missing_email'])
+    })
+
+    it('flags an email step whose body does not render {{unsubscribeUrl}}', () => {
+        const issues = validateSequenceForActivation([
+            step({ id: 'no-unsub', plainBody: 'Hi there, no opt-out link here.' }),
+        ])
+
+        expect(issues).toEqual([{
+            code: 'missing_unsubscribe_placeholder',
+            message: 'Email steps must render {{unsubscribeUrl}} in the sent body (CAN-SPAM compliance).',
+            stepId: 'no-unsub',
+        }])
+    })
+
+    it('does not flag an email step that renders {{unsubscribeUrl}} in its plain body', () => {
+        const issues = validateSequenceForActivation([
+            step({ id: 'has-unsub', plainBody: 'Bye. Unsubscribe: {{unsubscribeUrl}}' }),
+        ])
+
+        expect(issues).toEqual([])
+    })
+
+    it('does not flag an email step that renders {{unsubscribeUrl}} only in its HTML body', () => {
+        const issues = validateSequenceForActivation([
+            step({ id: 'has-unsub-html', plainBody: 'Bye, no plain link.', htmlBody: '<a href="{{unsubscribeUrl}}">Unsubscribe</a>' }),
+        ])
+
+        expect(issues).toEqual([])
+    })
+
+    it('does not pile on a missing-placeholder issue for a step already flagged as invalid content', () => {
+        const issues = validateSequenceForActivation([
+            step({ id: 'empty', subject: ' ', plainBody: ' ' }),
+        ])
+
+        // No 'missing_unsubscribe_placeholder' alongside 'invalid_email_content' — the empty
+        // step also has no valid email at all, hence 'sequence_missing_email' too.
+        expect(issues.map((issue) => issue.code)).toEqual(['invalid_email_content', 'sequence_missing_email'])
+    })
+
+    it('requires {{unsubscribeUrl}} in BOTH A/B variants when A/B testing is enabled', () => {
+        const issues = validateSequenceForActivation([
+            step({
+                id: 'ab-step',
+                plainBody: 'Variant A. {{unsubscribeUrl}}',
+                abTestEnabled: true,
+                subjectB: 'Subject B',
+                plainBodyB: 'Variant B, no opt-out link.',
+            }),
+        ])
+
+        expect(issues.map((issue) => issue.code)).toEqual(['missing_unsubscribe_placeholder'])
     })
 })

@@ -3,12 +3,14 @@
  *
  * Phase 19 (PROV-04): this job no longer scans inboxes. It consumes durable
  * outreach_provider_events rows already classified 'bounce' at ingestion, then:
- * - Parses bounce messages (DSN - Delivery Status Notification)
- * - Updates outreach_emails with bounce info
- * - Updates campaign_leads.status to 'bounced'
- * - Updates leads.status to 'bounced'
- * - Increments bounce stats on campaigns and accounts
- * - Suppresses hard-bounced addresses org-wide
+ * - Parses bounce messages (DSN - Delivery Status Notification), classifying hard vs soft
+ * - HARD bounce: updates outreach_emails with bounce info, campaign_leads.status and
+ *   leads.status to 'bounced', increments bounce stats, suppresses the address org-wide
+ * - SOFT bounce (mailbox full, greylisted, rate-limited, ...): does NOT touch
+ *   campaign_leads.status or leads.status — the mailbox may still recover. Records the bounce
+ *   on the specific outreach_email and reschedules campaign_leads.next_scheduled_at with a
+ *   backoff (4h / 24h / 72h). After `SOFT_BOUNCE_GIVE_UP_AFTER` (3) soft bounces on the same
+ *   campaign_lead, gives up and applies the hard-bounce path instead — see `markAsSoftBounced`.
  *
  * Why the change: the old IMAP scan re-read every message from a bounce-sender on
  * every tick with no date/cursor bound, and the native scan only saw unread mail —
@@ -21,11 +23,12 @@
 import { simpleParser } from 'mailparser'
 import { db } from '../../db'
 import { emailAccounts, outreachEmails, campaignLeads, leads, campaigns, suppressions } from '../../db/schema'
-import { eq, and, ne, sql, desc } from 'drizzle-orm'
+import { eq, and, ne, sql, desc, count } from 'drizzle-orm'
 import { createLogger } from '../lib/logger'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
 import { shouldNotifyOutreachEvent } from '../lib/outreach-settings'
 import { JOB_TIMEOUT_BUDGETS_MS, runWithLock } from '../lib/cron-lock'
+import { sqlTimestamp } from '../lib/sql-timestamp'
 import {
     consumeClassifiedEvents,
     createDrizzleInboundEventStore,
@@ -35,6 +38,29 @@ import { ingestOutreachInboundExclusive } from '../lib/outreach-inbound-sources'
 import { TERMINAL_CAMPAIGN_LEAD_STATUSES } from '../lib/outreach-sequence-state'
 
 const log = createLogger('outreach.bounce')
+
+/**
+ * Soft-bounce backoff ladder (Task 3). `outreach-dispatch.ts` also has a backoff
+ * (`calculateDispatchBackoff`), but that one is for TRANSPORT retries of a single send attempt
+ * (seconds-to-minutes scale, capped at 1h) — a different problem from "give a maybe-temporarily
+ * full mailbox real time to recover between sequence sends". Kept local to this job rather than
+ * imported for that reason; hours, not minutes.
+ */
+export const SOFT_BOUNCE_BACKOFF_MS = [4, 24, 72].map((hours) => hours * 60 * 60_000)
+/** After this many soft bounces on the same campaign_lead, stop believing it will recover. */
+export const SOFT_BOUNCE_GIVE_UP_AFTER = SOFT_BOUNCE_BACKOFF_MS.length
+/**
+ * The marker prefix written into `outreach_emails.bounce_reason` for a soft bounce. It is both
+ * the human-readable record AND the only piece of state the soft-bounce counter reads back —
+ * there is no dedicated counter column (checked: neither `campaign_leads` nor `leads` has one),
+ * so "how many times has this campaign_lead soft-bounced" is answered by counting rows whose
+ * `bounce_reason` starts with this prefix, scoped to the campaign_lead.
+ */
+const SOFT_BOUNCE_MARKER_PREFIX = 'soft_bounce'
+
+function softBounceMarker(occurrence: number, reason: string): string {
+    return `${SOFT_BOUNCE_MARKER_PREFIX}(${occurrence}/${SOFT_BOUNCE_GIVE_UP_AFTER}): ${reason}`
+}
 
 interface BounceInfo {
     recipientEmail: string
@@ -212,14 +238,39 @@ export async function findBouncedOutreachEmailByMessageId(
 }
 
 /**
- * Applies a bounce to one lead. Returns whether this call was the one that transitioned it
+ * Applies a bounce to one campaign_lead, routing to the hard or soft path (Task 3).
+ *
+ * `bounceType` defaults to `'hard'` — every call site that predates this parameter (including
+ * the terminal-state race db-test, which calls this with a plain "mailbox full" reason and no
+ * type argument) keeps its exact previous behaviour: an unqualified bounce is a hard bounce.
+ * The two real callers below (`handleBounceEvent`, `processBounceFromWebhook`) both know their
+ * classification already and pass it through explicitly.
+ */
+export async function markAsBounced(
+    outreachEmailId: string,
+    campaignLeadId: string,
+    leadId: string,
+    campaignId: string,
+    accountId: string,
+    organizationId: string,
+    reason: string,
+    bounceType: 'hard' | 'soft' = 'hard',
+): Promise<boolean> {
+    if (bounceType === 'soft') {
+        return markAsSoftBounced(outreachEmailId, campaignLeadId, leadId, campaignId, accountId, organizationId, reason)
+    }
+    return applyHardBounce(outreachEmailId, campaignLeadId, leadId, campaignId, accountId, organizationId, reason)
+}
+
+/**
+ * Applies a HARD bounce to one lead. Returns whether this call was the one that transitioned it
  * — false means another DSN got there first and every counter below was already applied.
  *
  * W-2: the caller used to decide that by reading campaign_leads.status and then writing,
  * with nothing between the two. processReplies holds a *different* advisory lock and runs
  * on the same tick, so the CAS in the campaign_leads UPDATE is the only honest gate.
  */
-export async function markAsBounced(
+async function applyHardBounce(
     outreachEmailId: string,
     campaignLeadId: string,
     leadId: string,
@@ -335,6 +386,139 @@ export async function markAsBounced(
         organizationId,
         reason: reason.slice(0, 200),
     }, 'marked as bounced')
+
+    return true
+}
+
+/**
+ * How many soft bounces this campaign_lead has already recorded, per `outreach_emails
+ * .bounce_reason` markers written by a prior `markAsSoftBounced` call. There is no dedicated
+ * counter column on `campaign_leads` or `leads` (checked both — see the module-level
+ * `SOFT_BOUNCE_MARKER_PREFIX` doc comment), so the count is derived by querying the existing
+ * per-message bounce records instead of maintaining new state.
+ */
+async function countPriorSoftBounces(campaignLeadId: string): Promise<number> {
+    const [row] = await db
+        .select({ value: count() })
+        .from(outreachEmails)
+        .where(and(
+            eq(outreachEmails.campaignLeadId, campaignLeadId),
+            sql`${outreachEmails.bounceReason} LIKE ${`${SOFT_BOUNCE_MARKER_PREFIX}(%`}`,
+        ))
+    return Number(row?.value ?? 0)
+}
+
+/** What to do with one incoming soft bounce, given how many the same campaign_lead already has. */
+export type SoftBounceOutcome =
+    | { type: 'reschedule'; occurrence: number; backoffMs: number; bounceReason: string }
+    | { type: 'give_up'; hardBounceReason: string }
+
+/**
+ * The pure decision at the heart of soft-bounce handling — kept side-effect-free and exported so
+ * the escalation policy (which occurrence gets which backoff, and exactly when to give up) is
+ * unit-testable without a database, mirroring how outreach-delivery-policy.ts splits its pure
+ * `evaluateOutreachDeliverySnapshot` from its I/O `loadOutreachDeliverySnapshot`.
+ */
+export function decideSoftBounceOutcome(priorSoftBounces: number, reason: string): SoftBounceOutcome {
+    const occurrence = priorSoftBounces + 1
+    if (occurrence > SOFT_BOUNCE_GIVE_UP_AFTER) {
+        return {
+            type: 'give_up',
+            // "permanent failure" deliberately matches applyHardBounce's own hard-bounce phrase
+            // detector so this transition suppresses the address org-wide exactly like any other
+            // hard bounce — a mailbox that has soft-bounced this many times in a row is not
+            // meaningfully different from one that hard-bounced outright.
+            hardBounceReason: `permanent failure after ${SOFT_BOUNCE_GIVE_UP_AFTER} repeated soft bounces: ${reason}`,
+        }
+    }
+    return {
+        type: 'reschedule',
+        occurrence,
+        backoffMs: SOFT_BOUNCE_BACKOFF_MS[occurrence - 1],
+        bounceReason: softBounceMarker(occurrence, reason),
+    }
+}
+
+/**
+ * Applies a SOFT bounce (mailbox full, greylisted, rate-limited, deferred, ...) to one
+ * outreach_email. Deliberately does NOT touch `campaign_leads.status` or `leads.status` — the
+ * whole point of the hard/soft distinction is that a soft-bounced mailbox may still recover, so
+ * killing the lead on the first "mailbox full" would be exactly the bug this task fixes.
+ *
+ * Instead: record the bounce on this specific message, reschedule `campaign_leads
+ * .next_scheduled_at` with an escalating backoff, and — once the same campaign_lead has racked
+ * up `SOFT_BOUNCE_GIVE_UP_AFTER` soft bounces (`decideSoftBounceOutcome` above) — stop believing
+ * it will recover and fall through to the hard-bounce path instead.
+ *
+ * Idempotency: unlike the hard path (which CASes on `campaign_leads.status`, since that is what
+ * actually changes), nothing on `campaign_leads` is gated here in the reschedule branch. The gate
+ * is instead `outreach_emails.status <> 'bounced'` on THIS SPECIFIC message: a replayed DSN for
+ * the same already-recorded message returns false without recounting or rescheduling.
+ */
+async function markAsSoftBounced(
+    outreachEmailId: string,
+    campaignLeadId: string,
+    leadId: string,
+    campaignId: string,
+    accountId: string,
+    organizationId: string,
+    reason: string,
+): Promise<boolean> {
+    const now = new Date()
+    const outcome = decideSoftBounceOutcome(await countPriorSoftBounces(campaignLeadId), reason)
+
+    if (outcome.type === 'give_up') {
+        return applyHardBounce(
+            outreachEmailId,
+            campaignLeadId,
+            leadId,
+            campaignId,
+            accountId,
+            organizationId,
+            outcome.hardBounceReason,
+        )
+    }
+
+    const marked = await db.update(outreachEmails)
+        .set({
+            status: 'bounced',
+            bouncedAt: now,
+            bounceReason: outcome.bounceReason,
+            updatedAt: now,
+        })
+        .where(and(
+            eq(outreachEmails.id, outreachEmailId),
+            eq(outreachEmails.emailAccountId, accountId),
+            eq(outreachEmails.organizationId, organizationId),
+            ne(outreachEmails.status, 'bounced'),
+        ))
+        .returning({ id: outreachEmails.id })
+
+    if (marked.length === 0) return false // replayed DSN for a message already recorded
+
+    const backoffAt = new Date(now.getTime() + outcome.backoffMs)
+    // GREATEST(...) extends the schedule out to the backoff floor without ever pulling an
+    // already-later next_scheduled_at (e.g. a long explicit delay step) in earlier.
+    await db.update(campaignLeads)
+        .set({
+            nextScheduledAt: sql`GREATEST(COALESCE(${campaignLeads.nextScheduledAt}, ${sqlTimestamp(backoffAt)}), ${sqlTimestamp(backoffAt)})`,
+            updatedAt: now,
+        })
+        .where(and(eq(campaignLeads.id, campaignLeadId), eq(campaignLeads.campaignId, campaignId)))
+
+    log.info({
+        action: 'outreach.bounce.soft_detected',
+        outreachEmailId,
+        campaignId,
+        campaignLeadId,
+        leadId,
+        emailAccountId: accountId,
+        organizationId,
+        occurrence: outcome.occurrence,
+        softBounceLimit: SOFT_BOUNCE_GIVE_UP_AFTER,
+        backoffHours: outcome.backoffMs / (60 * 60_000),
+        reason: reason.slice(0, 200),
+    }, 'soft bounce recorded; rescheduled with backoff, lead status unchanged')
 
     return true
 }
@@ -457,7 +641,8 @@ async function handleBounceEvent(event: StoredProviderEvent): Promise<boolean> {
 
     // Idempotence is markAsBounced's CAS, not a status read here: this function and
     // processReplies run concurrently, so a check at this distance from the write decides
-    // nothing. Returns false when an earlier DSN already bounced the lead.
+    // nothing. Returns false when an earlier DSN already bounced the lead (hard path) or
+    // already recorded this exact message (soft path).
     return markAsBounced(
         outreachEmail.id,
         campaignLead.id,
@@ -466,6 +651,7 @@ async function handleBounceEvent(event: StoredProviderEvent): Promise<boolean> {
         event.emailAccountId,
         outreachEmail.organizationId,
         fullReason,
+        bounceInfo.bounceType,
     )
 }
 
@@ -520,9 +706,10 @@ export async function processBounceFromWebhook(data: {
         return
     }
 
-    const fullReason = `${bounceType.toUpperCase()}: ${reason}`
-
-    // Same reasoning as the event path: the CAS inside markAsBounced is the gate.
+    // Same reasoning as the event path: the CAS inside markAsBounced (hard) / the
+    // outreach_emails status guard (soft) is the idempotency gate. `bounceType` is passed
+    // through as given by the calling provider webhook rather than re-derived from `reason`
+    // text — it already carries a first-class classification, unlike the DSN text-parsing path.
     await markAsBounced(
         outreachEmail.id,
         campaignLead.id,
@@ -530,6 +717,7 @@ export async function processBounceFromWebhook(data: {
         outreachEmail.campaignId,
         outreachEmail.emailAccountId,
         outreachEmail.organizationId,
-        fullReason
+        reason,
+        bounceType,
     )
 }

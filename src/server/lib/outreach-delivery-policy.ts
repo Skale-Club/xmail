@@ -6,6 +6,7 @@ import {
     organizations,
     suppressions,
 } from '../../db/schema'
+import { isWithinWindow, nextWindowStart, type SendWindow } from './outreach-send-window'
 
 export type OutreachOrigin = 'campaign' | 'manual' | 'agentic' | 'unified_inbox'
 
@@ -97,80 +98,34 @@ export interface DeliveryPolicyDependencies {
     loadSnapshot?: (input: DeliveryPolicyInput) => Promise<DeliveryPolicySnapshot>
 }
 
-interface ZonedDateParts {
-    weekday: number
-    hour: number
-    minute: number
-}
-
-function getZonedDateParts(date: Date, timeZone: string): ZonedDateParts {
-    let parts: Intl.DateTimeFormatPart[]
-    try {
-        parts = new Intl.DateTimeFormat('en-US', {
-            timeZone: timeZone || 'UTC',
-            weekday: 'short',
-            hour: '2-digit',
-            minute: '2-digit',
-            hourCycle: 'h23',
-        }).formatToParts(date)
-    } catch {
-        parts = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'UTC',
-            weekday: 'short',
-            hour: '2-digit',
-            minute: '2-digit',
-            hourCycle: 'h23',
-        }).formatToParts(date)
-    }
-
-    const value = (type: string) => parts.find((part) => part.type === type)?.value
-    const weekdays: Record<string, number> = {
-        Sun: 0,
-        Mon: 1,
-        Tue: 2,
-        Wed: 3,
-        Thu: 4,
-        Fri: 5,
-        Sat: 6,
-    }
-
+function campaignSendWindow(campaign: CampaignPolicySnapshot): SendWindow {
     return {
-        weekday: weekdays[value('weekday') || 'Sun'] ?? 0,
-        hour: Number(value('hour') || 0),
-        minute: Number(value('minute') || 0),
+        timezone: campaign.timezone,
+        sendStartTime: campaign.sendStartTime,
+        sendEndTime: campaign.sendEndTime,
+        sendOnWeekends: campaign.sendOnWeekends,
     }
-}
-
-function parseTime(value: string): number {
-    const [hours, minutes] = value.split(':').map(Number)
-    return hours * 60 + (minutes || 0)
 }
 
 function isWithinCampaignWindow(campaign: CampaignPolicySnapshot, now: Date): boolean {
-    const zoned = getZonedDateParts(now, campaign.timezone)
-    if ((zoned.weekday === 0 || zoned.weekday === 6) && !campaign.sendOnWeekends) {
-        return false
-    }
-
-    const currentMinutes = zoned.hour * 60 + zoned.minute
-    return currentMinutes >= parseTime(campaign.sendStartTime)
-        && currentMinutes <= parseTime(campaign.sendEndTime)
+    return isWithinWindow(now, campaignSendWindow(campaign))
 }
 
 function nextCampaignWindow(campaign: CampaignPolicySnapshot, now: Date): Date {
-    const candidate = new Date(now)
-    candidate.setUTCSeconds(0, 0)
-    candidate.setUTCMinutes(candidate.getUTCMinutes() + 1)
+    // +1 minute: unlike outreach-sequence-state.ts's scheduleAfterDelay (which searches from a
+    // candidate that has already had a delay added to `now`), this is evaluated against "right
+    // now" — searching from `now` itself would immediately re-match if a send-window edge case
+    // ever put `now` inside the window while still failing the caller's own check above.
+    const searchFrom = new Date(now.getTime() + 60_000)
+    const next = nextWindowStart(searchFrom, campaignSendWindow(campaign), { horizonDays: 8 })
 
-    const maxMinutes = 8 * 24 * 60
-    for (let minute = 0; minute < maxMinutes; minute++) {
-        if (isWithinCampaignWindow(campaign, candidate)) return new Date(candidate)
-        candidate.setUTCMinutes(candidate.getUTCMinutes() + 1)
-    }
-
-    // A malformed or permanently closed schedule must still defer rather than
-    // accidentally authorize a send. Returning one week out keeps retryAt stable.
-    return new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+    // A malformed or permanently closed schedule must still defer rather than accidentally
+    // authorize a send. Returning one week out keeps retryAt stable. (This is the ONE place the
+    // two former copies of this rule intentionally still differ post-unification: sequence-state
+    // quarantines a lead when no slot exists at all, because that path decides whether to send;
+    // this one only computes a retry-after for a decision already made elsewhere, so it keeps
+    // deferring instead.)
+    return next ?? new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
 }
 
 function nextUtcDailyReset(now: Date): Date {

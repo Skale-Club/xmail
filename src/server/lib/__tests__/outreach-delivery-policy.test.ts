@@ -151,6 +151,43 @@ describe('evaluateOutreachDeliveryPolicy', () => {
         })
     })
 
+    it('returns the next campaign send-window opening as retryAt when outside the window', async () => {
+        // `now` (2026-07-15T14:00:00Z) is a Wednesday; a 20:00-22:00 UTC window is still ahead
+        // today, so the shared outreach-send-window module should land exactly on 20:00 today.
+        const decision = await evaluateOutreachDeliveryPolicy(input('campaign'), {
+            loadSnapshot: async () => snapshot({
+                campaign: {
+                    ...snapshot().campaign!,
+                    sendStartTime: '20:00',
+                    sendEndTime: '22:00',
+                },
+            }),
+        })
+
+        expect(decision).toEqual({
+            allowed: false,
+            code: 'outside_send_window',
+            retryAt: new Date('2026-07-15T20:00:00.000Z'),
+        })
+    })
+
+    it('falls back to a one-week deferral for an impossible campaign window', async () => {
+        const decision = await evaluateOutreachDeliveryPolicy(input('campaign'), {
+            loadSnapshot: async () => snapshot({
+                campaign: {
+                    ...snapshot().campaign!,
+                    sendStartTime: '17:00',
+                    sendEndTime: '09:00', // start >= end: never satisfiable
+                },
+            }),
+        })
+
+        expect(decision).toMatchObject({ allowed: false, code: 'outside_send_window' })
+        if (!decision.allowed) {
+            expect(decision.retryAt).toEqual(new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000))
+        }
+    })
+
     it.each<OutreachOrigin>(['campaign', 'manual', 'agentic', 'unified_inbox'])(
         'allows %s when every policy check passes',
         async (origin) => {
