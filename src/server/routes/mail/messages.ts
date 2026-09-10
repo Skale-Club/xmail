@@ -3,14 +3,30 @@ import { z } from 'zod'
 import { eq, and, desc, inArray, sql, ilike, or } from 'drizzle-orm'
 import Imap from 'imap'
 import { db } from '../../../db'
-import { mailMessages, mailFolders } from '../../../db/schema'
+import { mailMessages, mailFolders, INBOX_ATTACHMENTS_BUCKET } from '../../../db/schema'
 import { checkUserMailboxAccess } from './mailboxes'
 import { mailMessageToListItem } from '../../lib/mail'
 import { runFiltersOnMessage } from './filters'
 import { decryptSecret } from '../../lib/crypto'
 import { deleteMessagesPermanently, moveMessagesToFolder } from '../../lib/move-messages'
+import { recomputeFolderCounts } from '../../lib/folder-counts'
+import { createObjectStorage } from '../../lib/object-storage'
 
 const router = Router()
+
+interface StoredAttachmentRecord {
+    filename?: string
+    contentType?: string
+    size?: number
+    storageKey?: string
+}
+
+// Strips characters that could break out of the quoted Content-Disposition value or
+// inject a header (CRLF); the RFC 5987 filename* parameter below still carries the
+// full, unstripped unicode name for browsers that support it.
+function safeContentDispositionFilename(name: string): string {
+    return name.replace(/["\r\n\\]/g, '_').slice(0, 255) || 'attachment'
+}
 
 function isArchiveFolderIdentifier(value: string | null | undefined) {
     if (!value) return false
@@ -322,6 +338,10 @@ router.get('/:mailboxId/messages/:messageId', async (req: Request, res: Response
             await db.update(mailMessages)
                 .set({ isRead: true, updatedAt: new Date() })
                 .where(eq(mailMessages.id, messageId))
+            // Auto-mark-read flips is_read without going through moveMessagesToFolder /
+            // deleteMessagesPermanently, so the folder's unread_count would otherwise
+            // drift stale until the next move/delete recomputed it.
+            await recomputeFolderCounts(message.folderId)
         }
 
         res.json({
@@ -347,6 +367,75 @@ router.get('/:mailboxId/messages/:messageId', async (req: Request, res: Response
         })
     } catch (error) {
         console.error('Error fetching message:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+router.get('/:mailboxId/messages/:messageId/attachments/:index', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        const mailboxId = req.params.mailboxId
+        const messageId = req.params.messageId
+        const index = Number.parseInt(req.params.index, 10)
+
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+
+        if (!Number.isInteger(index) || index < 0) {
+            return res.status(400).json({ error: 'Invalid attachment index' })
+        }
+
+        const mailbox = await checkUserMailboxAccess(userId, mailboxId)
+        if (!mailbox) {
+            return res.status(404).json({ error: 'Mailbox not found' })
+        }
+
+        const message = await db.query.mailMessages.findFirst({
+            where: and(
+                eq(mailMessages.id, messageId),
+                eq(mailMessages.mailboxId, mailboxId)
+            ),
+            columns: { attachments: true },
+        })
+
+        if (!message) {
+            return res.status(404).json({ error: 'Message not found' })
+        }
+
+        const attachments = ((message.attachments as StoredAttachmentRecord[] | null) || [])
+        const attachment = attachments[index]
+        if (!attachment || !attachment.storageKey) {
+            return res.status(404).json({ error: 'Attachment not found' })
+        }
+
+        let bytes: Buffer
+        try {
+            bytes = await createObjectStorage().download(INBOX_ATTACHMENTS_BUCKET, attachment.storageKey)
+        } catch (downloadError) {
+            console.error('Error downloading attachment from storage:', downloadError)
+            return res.status(502).json({ error: 'Attachment storage unavailable' })
+        }
+
+        // Never let a stored attachment execute as active content in the browser —
+        // force a neutral type for anything that could render as HTML/SVG/script.
+        const declaredType = (attachment.contentType || 'application/octet-stream').toLowerCase()
+        const forceDownloadTypes = new Set(['text/html', 'application/xhtml+xml', 'image/svg+xml'])
+        const responseType = forceDownloadTypes.has(declaredType) ? 'application/octet-stream' : declaredType
+
+        const rawFilename = attachment.filename || 'attachment'
+        const safeFilename = safeContentDispositionFilename(rawFilename)
+
+        res.setHeader('Content-Type', responseType)
+        res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(rawFilename)}`,
+        )
+        res.setHeader('Content-Length', String(bytes.length))
+        res.setHeader('X-Content-Type-Options', 'nosniff')
+        res.send(bytes)
+    } catch (error) {
+        console.error('Error serving attachment:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
 })
@@ -392,6 +481,12 @@ router.put('/:mailboxId/messages/:messageId', async (req: Request, res: Response
             .set(updateData)
             .where(eq(mailMessages.id, messageId))
             .returning()
+
+        // isRead is the only flag that feeds unread_count, but recompute is cheap
+        // enough to run for either flag rather than special-case which one changed.
+        if (data.isRead !== undefined || data.isStarred !== undefined) {
+            await recomputeFolderCounts(existing.folderId)
+        }
 
         res.json({
             message: mailMessageToListItem(updated),
@@ -844,6 +939,20 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
             await db.update(mailMessages)
                 .set(updateData)
                 .where(and(inArray(mailMessages.id, data.messageIds), eq(mailMessages.mailboxId, mailboxId)))
+        }
+
+        // read/unread/star/unstar never move a folder (destinationFolderId stays null
+        // for them), so the recompute other actions get via moveMessagesToFolder /
+        // deleteMessagesPermanently never runs for these — do it here instead.
+        if (['read', 'unread', 'star', 'unstar'].includes(data.action)) {
+            const affected = await db.query.mailMessages.findMany({
+                where: and(inArray(mailMessages.id, data.messageIds), eq(mailMessages.mailboxId, mailboxId)),
+                columns: { folderId: true },
+            })
+            const affectedFolderIds = [...new Set(affected.map((m) => m.folderId))]
+            for (const folderId of affectedFolderIds) {
+                await recomputeFolderCounts(folderId)
+            }
         }
 
         if (destinationFolderId) {

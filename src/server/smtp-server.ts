@@ -9,8 +9,9 @@
 
 import { SMTPServer } from 'smtp-server'
 import { v4 as uuidv4 } from 'uuid'
+import { randomUUID } from 'node:crypto'
 import { db } from '../db'
-import { mailboxes, mailFolders, mailMessages } from '../db/schema'
+import { mailboxes, mailFolders, mailMessages, INBOX_ATTACHMENTS_BUCKET } from '../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { parseRawEmail } from './lib/mail'
 import { authenticateNativeUser, findLocalUser } from './lib/native-mail'
@@ -23,6 +24,36 @@ import { getDkimConfigForEmail, toNodemailerDkim } from './lib/dkim'
 import { shouldSkipOwnDkimForRelay } from './lib/relay-dkim-policy'
 import { describeOutbound, describeSendFailure, isRelayConfigured, sendOutbound } from './lib/outbound-transport'
 import { jsonbParam } from './lib/jsonb'
+import { sanitizeAttachmentFilename } from './lib/inbox-attachments'
+import { createObjectStorage } from './lib/object-storage'
+
+/**
+ * Uploads attachment bytes under a key scoped to the destination mailbox
+ * (`mail-attachments/<mailboxId>/<groupId>/<index>-<filename>`) and returns the metadata
+ * shape stored in `mail_messages.attachments`. Mirrors mx-server.ts's helper of the same
+ * shape; kept local since the two servers already duplicate storeMessage/storeInbound
+ * rather than share it. A per-attachment failure never blocks storing the message.
+ */
+async function persistSubmissionAttachments(
+    mailboxId: string,
+    groupId: string,
+    attachments: Awaited<ReturnType<typeof parseRawEmail>>['attachments'],
+): Promise<Array<{ filename: string; contentType: string; size: number; storageKey?: string }>> {
+    if (attachments.length === 0) return []
+    const storage = createObjectStorage()
+    return Promise.all(attachments.map(async (attachment, index) => {
+        const base = { filename: attachment.filename, contentType: attachment.contentType, size: attachment.size }
+        try {
+            const filename = sanitizeAttachmentFilename(attachment.filename || `attachment-${index}`)
+            const storageKey = `mail-attachments/${mailboxId}/${groupId}/${index}-${filename}`
+            await storage.upload(INBOX_ATTACHMENTS_BUCKET, storageKey, attachment.content, attachment.contentType || 'application/octet-stream', { upsert: true })
+            return { ...base, storageKey }
+        } catch (err) {
+            console.error(`[SMTP] Failed to persist attachment "${attachment.filename}":`, err)
+            return base
+        }
+    }))
+}
 
 // Find the companion mailboxes entry (for folder/message storage)
 async function getCompanionMailbox(email: string, userId: string) {
@@ -55,6 +86,11 @@ async function storeMessage(
 
     const messageId = parsed.messageId || `<${uuidv4()}@skaleclub.mail>`
     const assignedUid = await allocateNextUid(folder.id)
+    // Server-generated grouping id for the attachment storage path — parsed.messageId
+    // is not trustworthy here (submission clients can put anything in it) and must
+    // never be used as a path component.
+    const attachmentGroupId = randomUUID()
+    const storedAttachments = await persistSubmissionAttachments(mailboxId, attachmentGroupId, parsed.attachments)
 
     await db.insert(mailMessages).values({
         mailboxId,
@@ -73,11 +109,7 @@ async function storeMessage(
         htmlBody: parsed.htmlBody,
         headers: jsonbParam(parsed.headers ?? {}),
         hasAttachments: parsed.hasAttachments,
-        attachments: jsonbParam(parsed.attachments.map(a => ({
-            filename: a.filename,
-            contentType: a.contentType,
-            size: a.size,
-        }))),
+        attachments: jsonbParam(storedAttachments),
         isRead,
         isDraft: false,
         remoteUid: assignedUid,

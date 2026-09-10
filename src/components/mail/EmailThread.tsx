@@ -26,9 +26,10 @@ interface EmailThreadProps {
     onForward?: (messageId: string) => void
     onStar?: (messageId: string) => void
     onToggleRead?: (messageId: string, read: boolean) => void
+    onDownloadAttachment?: (messageId: string, index: number, filename: string) => void
 }
 
-export function EmailThreadView({ thread, onReply, onReplyAll, onForward, onStar, onToggleRead }: EmailThreadProps) {
+export function EmailThreadView({ thread, onReply, onReplyAll, onForward, onStar, onToggleRead, onDownloadAttachment }: EmailThreadProps) {
     const [expandedMessages, setExpandedMessages] = React.useState<Set<string>>(() => {
         const expanded = new Set<string>()
         const lastMessage = thread.messages[thread.messages.length - 1]
@@ -122,6 +123,7 @@ export function EmailThreadView({ thread, onReply, onReplyAll, onForward, onStar
                                 onForward={onForward}
                                 onStar={onStar}
                                 onToggleRead={onToggleRead}
+                                onDownloadAttachment={onDownloadAttachment}
                             />
                         ))}
                     </div>
@@ -150,6 +152,7 @@ interface ThreadMessageCardProps {
     onForward?: (messageId: string) => void
     onStar?: (messageId: string) => void
     onToggleRead?: (messageId: string, read: boolean) => void
+    onDownloadAttachment?: (messageId: string, index: number, filename: string) => void
 }
 
 function ThreadMessageCard({
@@ -160,7 +163,8 @@ function ThreadMessageCard({
     onReplyAll,
     onForward,
     onStar,
-    onToggleRead
+    onToggleRead,
+    onDownloadAttachment
 }: ThreadMessageCardProps) {
     const avatarColor = getAvatarColor(message.from.email)
     const initials = getInitials(message.from.name || message.from.email)
@@ -259,15 +263,19 @@ function ThreadMessageCard({
                         <div className="mt-4 pl-13">
                             <div className="flex flex-wrap gap-2">
                                 {message.attachments.map((attachment, index) => (
-                                    <div
+                                    <button
+                                        type="button"
                                         key={index}
-                                        className="flex items-center gap-2 px-3 py-2 bg-muted rounded-lg text-sm"
+                                        className="flex items-center gap-2 px-3 py-2 bg-muted rounded-lg text-sm hover:bg-accent disabled:cursor-default"
+                                        disabled={!onDownloadAttachment}
+                                        aria-label={`Download ${attachment.name}`}
+                                        onClick={() => onDownloadAttachment?.(message.id, index, attachment.name)}
                                     >
                                         <Paperclip className="w-4 h-4 text-muted-foreground" />
                                         <span className="text-foreground">{attachment.name}</span>
                                         <span className="text-muted-foreground text-xs">({attachment.size})</span>
-                                        <Download className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-foreground" />
-                                    </div>
+                                        <Download className="w-4 h-4 text-muted-foreground hover:text-foreground" />
+                                    </button>
                                 ))}
                             </div>
                         </div>

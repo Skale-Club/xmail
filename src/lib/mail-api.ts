@@ -1,4 +1,5 @@
-import { apiFetch } from '../lib/api'
+import { apiFetch, ApiError } from '../lib/api'
+import { supabase } from '../lib/supabase'
 
 interface RecipientInput {
     address: string
@@ -345,6 +346,47 @@ export const mailApi = {
                 attachments: await mapAttachments(payload.attachments),
             }),
         })
+    },
+
+    // Attachment bytes are not JSON — apiFetch() only knows how to parse JSON/text
+    // responses, so this bypasses it and drives fetch() directly, same auth header
+    // included, then hands the browser a blob to save.
+    async downloadAttachment(mailboxId: string, messageId: string, index: number, filename: string): Promise<void> {
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session?.access_token) {
+            throw new ApiError('Not authenticated', 401, 'NOT_AUTHENTICATED')
+        }
+
+        const response = await fetch(`/api/mail/mailboxes/${mailboxId}/messages/${messageId}/attachments/${index}`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+            cache: 'no-store',
+        })
+
+        if (!response.ok) {
+            let message = response.statusText || 'Failed to download attachment'
+            try {
+                const payload = await response.json()
+                if (payload && typeof payload === 'object' && 'error' in payload) {
+                    message = String(payload.error)
+                }
+            } catch {
+                // Non-JSON error body — keep the statusText fallback above.
+            }
+            throw new ApiError(message, response.status, String(response.status))
+        }
+
+        const blob = await response.blob()
+        const url = URL.createObjectURL(blob)
+        try {
+            const anchor = document.createElement('a')
+            anchor.href = url
+            anchor.download = filename
+            document.body.appendChild(anchor)
+            anchor.click()
+            document.body.removeChild(anchor)
+        } finally {
+            URL.revokeObjectURL(url)
+        }
     },
 
     syncMailbox(mailboxId: string): Promise<void> {

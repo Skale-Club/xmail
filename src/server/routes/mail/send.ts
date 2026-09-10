@@ -4,18 +4,67 @@ import nodemailer from 'nodemailer'
 import Imap from 'imap'
 import { v4 as uuidv4 } from 'uuid'
 import { db } from '../../../db'
-import { mailboxes, mailFolders, mailMessages, contacts } from '../../../db/schema'
+import { mailboxes, mailFolders, mailMessages, contacts, INBOX_ATTACHMENTS_BUCKET } from '../../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
 import { decryptSecret } from '../../lib/crypto'
 import { checkUserMailboxAccess } from './mailboxes'
-import { createMultipartEmail } from '../../lib/html-to-text'
+import { createMultipartEmail, MultipartAttachment } from '../../lib/html-to-text'
 import { findLocalUser } from '../../lib/native-mail'
 import { processInboundEmail, deliverViaRoutes } from '../../lib/route-matcher'
 import { relayMessage, storeMessage } from '../../lib/native-send'
 import { jsonbParam } from '../../lib/jsonb'
 import { allocateUidForNewMessage } from '../../lib/move-messages'
+import { sanitizeAttachmentFilename, InboxAttachmentError } from '../../lib/inbox-attachments'
+import { createObjectStorage } from '../../lib/object-storage'
 
 const router = Router()
+
+// Decoded attachment bytes, not the base64 wire size — this bounds the same content the
+// 10MB express.json() body limit (src/server/index.ts) is meant to cap; a request under
+// that ceiling can still decode to less than this, so it is a second, content-level check.
+const MAX_ATTACHMENT_TOTAL_BYTES = 10 * 1024 * 1024
+
+interface DecodedAttachment {
+    filename: string
+    contentType: string
+    buffer: Buffer
+}
+
+interface StoredAttachment {
+    filename: string
+    contentType: string
+    size: number
+    storageKey: string
+}
+
+/**
+ * Uploads each attachment under a path scoped to the DESTINATION mailbox
+ * (`mail-attachments/<mailboxId>/<messageUuid>/<index>-<filename>`). Native sends fan
+ * out to the Sent copy plus one INBOX copy per local recipient, each a distinct
+ * mailbox, so this is called once per destination — the download route's
+ * `checkUserMailboxAccess` scoping then needs no cross-mailbox sharing to reason about.
+ */
+async function uploadMailAttachments(
+    mailboxId: string,
+    messageUuid: string,
+    attachments: DecodedAttachment[],
+): Promise<StoredAttachment[]> {
+    if (attachments.length === 0) return []
+    const storage = createObjectStorage()
+    const stored: StoredAttachment[] = []
+    for (let index = 0; index < attachments.length; index++) {
+        const attachment = attachments[index]
+        const storageKey = `mail-attachments/${mailboxId}/${messageUuid}/${index}-${attachment.filename}`
+        await storage.upload(INBOX_ATTACHMENTS_BUCKET, storageKey, attachment.buffer, attachment.contentType, { upsert: true })
+        stored.push({
+            filename: attachment.filename,
+            contentType: attachment.contentType,
+            size: attachment.buffer.length,
+            storageKey,
+        })
+    }
+    return stored
+}
 
 async function appendToSentFolder(
     mailbox: any,
@@ -101,6 +150,27 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Message body is required' })
         }
 
+        // Sanitize filenames and decode base64 up front so every downstream use (MIME
+        // build, nodemailer, object storage) sees the same bytes and the same name.
+        let decodedAttachments: DecodedAttachment[]
+        try {
+            decodedAttachments = (data.attachments ?? []).map(att => ({
+                filename: sanitizeAttachmentFilename(att.filename),
+                contentType: att.contentType || 'application/octet-stream',
+                buffer: Buffer.from(att.content, 'base64'),
+            }))
+        } catch (attachmentError) {
+            if (attachmentError instanceof InboxAttachmentError) {
+                return res.status(attachmentError.status).json({ error: attachmentError.message })
+            }
+            throw attachmentError
+        }
+
+        const totalAttachmentBytes = decodedAttachments.reduce((sum, att) => sum + att.buffer.length, 0)
+        if (totalAttachmentBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
+            return res.status(413).json({ error: `Attachments exceed the ${MAX_ATTACHMENT_TOTAL_BYTES}-byte total limit` })
+        }
+
         const allRecipients = [
             ...data.to.map(t => t.address),
             ...(data.cc?.map(c => c.address) || []),
@@ -109,12 +179,22 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
 
         console.log(`[Send] from=${mailbox.email} native=${isNative} to=[${allRecipients.join(',')}] subject="${data.subject.substring(0, 50)}"`)
 
-        const messageId = `<${uuidv4()}@${mailbox.email.split('@')[1] || 'mail.local'}>`
+        // messageUuid also grounds the attachment storage key — it is server-generated
+        // (never taken from caller-controlled headers), so it is always safe as a path
+        // component.
+        const messageUuid = uuidv4()
+        const messageId = `<${messageUuid}@${mailbox.email.split('@')[1] || 'mail.local'}>`
         const fromAddress = mailbox.displayName
             ? `${mailbox.displayName} <${mailbox.email}>`
             : mailbox.email
 
-        const messageData = {
+        const mimeAttachments: MultipartAttachment[] = decodedAttachments.map(att => ({
+            filename: att.filename,
+            contentType: att.contentType,
+            content: att.buffer,
+        }))
+
+        const baseMessageData = {
             messageId,
             inReplyTo: data.inReplyTo,
             references: data.references,
@@ -126,12 +206,6 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
             bccAddresses: data.bcc?.map(b => ({ name: b.name || null, address: b.address })) || [],
             plainBody: data.plainBody,
             htmlBody: data.htmlBody,
-            hasAttachments: (data.attachments?.length || 0) > 0,
-            attachments: data.attachments?.map(att => ({
-                filename: att.filename,
-                contentType: att.contentType || 'application/octet-stream',
-                size: Math.ceil(att.content.length * 0.75),
-            })) || [],
         }
 
         let localDelivered = 0
@@ -139,8 +213,9 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
 
         if (isNative) {
             // Native mailbox: bypass SMTP server, do direct delivery
-            // 1. Build raw email for relay
-            const { headers: contentHeaders, body: contentBody } = createMultipartEmail(data.plainBody, data.htmlBody)
+            // 1. Build raw email for relay (attachments become real MIME parts, not
+            // just metadata — this is the buffer that goes out over the wire).
+            const { headers: contentHeaders, body: contentBody } = createMultipartEmail(data.plainBody, data.htmlBody, mimeAttachments)
 
             const toHeader = data.to.map(t => t.name ? `${t.name} <${t.address}>` : t.address).join(', ')
             const ccHeader = data.cc?.map(c => c.name ? `${c.name} <${c.address}>` : c.address).join(', ')
@@ -159,9 +234,16 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
             ].filter(Boolean).join('\r\n')
             const rawEmailBuffer = Buffer.from(rawEmailParts)
 
-            // 2. Store in sender's Sent folder
+            // 2. Store in sender's Sent folder (attachment bytes uploaded under this
+            // mailbox's own storage key so the download route's per-mailbox access
+            // check is sufficient authorization).
             if (data.saveToSent) {
-                await storeMessage(mailboxId, 'sent', messageData, true)
+                const sentAttachments = await uploadMailAttachments(mailboxId, messageUuid, decodedAttachments)
+                await storeMessage(mailboxId, 'sent', {
+                    ...baseMessageData,
+                    hasAttachments: sentAttachments.length > 0,
+                    attachments: sentAttachments,
+                }, true)
             }
 
             // 3. Separate local vs external recipients
@@ -179,7 +261,9 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
                 }
             }
 
-            // 4. Deliver to local recipients (store directly in their INBOX)
+            // 4. Deliver to local recipients (store directly in their INBOX). Each
+            // recipient is a different mailbox, so attachments are uploaded again
+            // under that mailbox's own key rather than shared across tenants.
             for (const { email: recipientEmail, userId: recipientUserId } of localRecipients) {
                 const recipientMailbox = await db.query.mailboxes.findFirst({
                     where: and(
@@ -188,7 +272,12 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
                     ),
                 })
                 if (recipientMailbox) {
-                    await storeMessage(recipientMailbox.id, 'inbox', messageData, false)
+                    const recipientAttachments = await uploadMailAttachments(recipientMailbox.id, messageUuid, decodedAttachments)
+                    await storeMessage(recipientMailbox.id, 'inbox', {
+                        ...baseMessageData,
+                        hasAttachments: recipientAttachments.length > 0,
+                        attachments: recipientAttachments,
+                    }, false)
                     localDelivered++
                     console.log(`[Send] Local delivery to ${recipientEmail}: stored in inbox`)
                 } else {
@@ -252,18 +341,23 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
                 messageId,
                 inReplyTo: data.inReplyTo,
                 references: data.references,
-                attachments: data.attachments?.map(att => ({
+                attachments: decodedAttachments.map(att => ({
                     filename: att.filename,
-                    content: Buffer.from(att.content, 'base64'),
+                    content: att.buffer,
                     contentType: att.contentType,
                 })),
             })
 
             // Store in Sent folder + append to remote IMAP Sent
             if (data.saveToSent) {
-                await storeMessage(mailboxId, 'sent', messageData, true)
+                const sentAttachments = await uploadMailAttachments(mailboxId, messageUuid, decodedAttachments)
+                await storeMessage(mailboxId, 'sent', {
+                    ...baseMessageData,
+                    hasAttachments: sentAttachments.length > 0,
+                    attachments: sentAttachments,
+                }, true)
 
-                const { headers: contentHeaders, body: contentBody } = createMultipartEmail(data.plainBody, data.htmlBody)
+                const { headers: contentHeaders, body: contentBody } = createMultipartEmail(data.plainBody, data.htmlBody, mimeAttachments)
 
                 const toHeader = data.to.map(t => t.name ? `${t.name} <${t.address}>` : t.address).join(', ')
                 const ccHeader = data.cc?.map(c => c.name ? `${c.name} <${c.address}>` : c.address).join(', ')

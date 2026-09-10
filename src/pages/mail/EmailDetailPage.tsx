@@ -5,6 +5,7 @@ import { toast } from '../../components/ui/toaster'
 import { useMailbox } from '../../hooks/useMailbox'
 import { useCompose } from '../../hooks/useCompose'
 import { useMessage, useUpdateMessage, useDeleteMessage, useArchiveMessage, useSpamMessage, mapMessageToEmailItem } from '../../hooks/useMail'
+import { mailApi } from '../../lib/mail-api'
 import { EmailHtmlViewer } from '../../components/mail/EmailHtmlViewer'
 import { EmailMessageHeader } from '../../components/mail/EmailMessageHeader'
 import { EmailThreadView } from '../../components/mail/EmailThread'
@@ -548,14 +549,27 @@ export default function EmailDetailPage() {
                         onReply={handleReply}
                         onReplyAll={handleReplyAll}
                         onForward={handleForward}
-                        onStar={() => {
-                            toast({ title: 'Star toggled', variant: 'success' })
+                        onStar={(messageId) => {
+                            if (!selectedMailbox) return
+                            const target = thread.messages.find((m) => m.id === messageId)
+                            updateMessage.mutate({ messageId, data: { starred: !target?.starred } })
                         }}
                         onToggleRead={handleToggleReadForThread}
+                        onDownloadAttachment={(messageId, index, filename) => {
+                            if (!selectedMailbox) return
+                            mailApi.downloadAttachment(selectedMailbox.id, messageId, index, filename).catch((err) => {
+                                toast({
+                                    title: 'Failed to download attachment',
+                                    description: err instanceof Error ? err.message : undefined,
+                                    variant: 'destructive',
+                                })
+                            })
+                        }}
                     />
                 ) : (
                     <SingleEmailView
                         message={thread.messages[thread.messages.length - 1]}
+                        mailboxId={selectedMailbox?.id}
                         onReply={() => handleReply(thread.messages[thread.messages.length - 1].id)}
                         onReplyAll={() => handleReplyAll(thread.messages[thread.messages.length - 1].id)}
                         onForward={() => handleForward(thread.messages[thread.messages.length - 1].id)}
@@ -574,6 +588,7 @@ export default function EmailDetailPage() {
 
 function SingleEmailView({
     message,
+    mailboxId,
     onReply,
     onReplyAll,
     onForward,
@@ -585,6 +600,7 @@ function SingleEmailView({
     onStar,
 }: {
     message: ThreadMessage
+    mailboxId?: string
     onReply: () => void
     onReplyAll: () => void
     onForward: () => void
@@ -645,6 +661,16 @@ function SingleEmailView({
                                 {message.attachments.map((attachment, index) => (
                                     <div
                                         key={index}
+                                        onClick={() => {
+                                            if (!mailboxId) return
+                                            mailApi.downloadAttachment(mailboxId, message.id, index, attachment.name).catch((err) => {
+                                                toast({
+                                                    title: 'Failed to download attachment',
+                                                    description: err instanceof Error ? err.message : undefined,
+                                                    variant: 'destructive',
+                                                })
+                                            })
+                                        }}
                                         className="flex items-center gap-2 px-3 py-2 bg-muted rounded-lg hover:bg-muted/80 transition-colors cursor-pointer"
                                     >
                                         <Paperclip className="w-4 h-4 text-muted-foreground" />

@@ -5,9 +5,7 @@ import {
     Reply,
     ReplyAll,
     Forward,
-    Star,
-    Paperclip,
-    Download
+    Star
 } from 'lucide-react'
 
 interface EmailHeaderProps {
@@ -88,40 +86,6 @@ export function EmailBody({ body, className = '' }: EmailBodyProps) {
         <div className={`prose dark:prose-invert max-w-none ${className}`}>
             <div className="text-foreground whitespace-pre-wrap leading-relaxed">
                 {body}
-            </div>
-        </div>
-    )
-}
-
-interface EmailAttachmentsProps {
-    attachments: { name: string; size: string; type?: string }[]
-}
-
-export function EmailAttachments({ attachments }: EmailAttachmentsProps) {
-    if (!attachments || attachments.length === 0) return null
-
-    return (
-        <div className="mt-8">
-            <h3 className="text-sm font-medium text-foreground mb-3 flex items-center gap-2">
-                <Paperclip className="w-4 h-4" />
-                Attachments ({attachments.length})
-            </h3>
-            <div className="flex flex-wrap gap-2">
-                {attachments.map((attachment, index) => (
-                    <div
-                        key={index}
-                        className="flex items-center gap-2 px-3 py-2 bg-muted rounded-lg hover:bg-accent transition-colors cursor-pointer"
-                    >
-                        <Paperclip className="w-4 h-4 text-muted-foreground" />
-                        <div>
-                            <p className="text-sm font-medium text-foreground">
-                                {attachment.name}
-                            </p>
-                            <p className="text-xs text-muted-foreground">{attachment.size}</p>
-                        </div>
-                        <Download className="w-4 h-4 text-muted-foreground ml-2" />
-                    </div>
-                ))}
             </div>
         </div>
     )

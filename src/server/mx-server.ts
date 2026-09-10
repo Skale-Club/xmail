@@ -15,16 +15,16 @@
 
 import { SMTPServer } from 'smtp-server'
 import { v4 as uuidv4 } from 'uuid'
+import { randomUUID } from 'node:crypto'
 import { db } from '../db'
-import { mailboxes, mailFolders, mailMessages, messages } from '../db/schema'
+import { mailboxes, mailFolders, mailMessages, INBOX_ATTACHMENTS_BUCKET } from '../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { parseRawEmail } from './lib/mail'
 import { findLocalUser } from './lib/native-mail'
-import { processInboundEmail, type MatchedRoute } from './lib/route-matcher'
+import { processInboundEmail, deliverViaRoutes } from './lib/route-matcher'
 import { getMailTLSOptions } from './lib/mail-tls'
 import { emitFolderChange } from './lib/mail-events'
 import { allocateNextUid, recomputeFolderCounts } from './lib/folder-counts'
-import { incrementStat } from './lib/tracking'
 import { verifyInbound, sealWithAuthHeader } from './lib/mail-auth'
 import {
     checkConnectRate,
@@ -36,6 +36,37 @@ import {
     isDateTooOld,
 } from './lib/mx-guard'
 import { jsonbParam } from './lib/jsonb'
+import { sanitizeAttachmentFilename } from './lib/inbox-attachments'
+import { createObjectStorage } from './lib/object-storage'
+
+/**
+ * Uploads inbound attachment bytes under a key scoped to the receiving mailbox
+ * (`mail-attachments/<mailboxId>/<groupId>/<index>-<filename>`) and returns the metadata
+ * shape stored in `mail_messages.attachments`. A per-attachment failure never blocks
+ * delivery of the message itself — inbound mail must never be dropped because object
+ * storage hiccuped; the attachment simply carries no `storageKey` and is undownloadable.
+ */
+async function persistInboundAttachments(
+    mailboxId: string,
+    groupId: string,
+    attachments: Awaited<ReturnType<typeof parseRawEmail>>['attachments'],
+    logTag: string,
+): Promise<Array<{ filename: string; contentType: string; size: number; storageKey?: string }>> {
+    if (attachments.length === 0) return []
+    const storage = createObjectStorage()
+    return Promise.all(attachments.map(async (attachment, index) => {
+        const base = { filename: attachment.filename, contentType: attachment.contentType, size: attachment.size }
+        try {
+            const filename = sanitizeAttachmentFilename(attachment.filename || `attachment-${index}`)
+            const storageKey = `mail-attachments/${mailboxId}/${groupId}/${index}-${filename}`
+            await storage.upload(INBOX_ATTACHMENTS_BUCKET, storageKey, attachment.content, attachment.contentType || 'application/octet-stream', { upsert: true })
+            return { ...base, storageKey }
+        } catch (err) {
+            console.error(`${logTag} Failed to persist attachment "${attachment.filename}":`, err)
+            return base
+        }
+    }))
+}
 
 async function findLocalNativeMailbox(recipient: string, userId: string) {
     return db.query.mailboxes.findFirst({
@@ -87,6 +118,10 @@ async function storeInbound(
 
     const messageId = parsed.messageId || `<${uuidv4()}@skaleclub.mail>`
     const assignedUid = await allocateNextUid(folder.id)
+    // Server-generated grouping id for the attachment storage path — parsed.messageId
+    // comes from attacker-controlled inbound headers and must never be used as one.
+    const attachmentGroupId = randomUUID()
+    const storedAttachments = await persistInboundAttachments(mailboxId, attachmentGroupId, parsed.attachments, '[MX]')
 
     await db.insert(mailMessages).values({
         mailboxId,
@@ -108,11 +143,7 @@ async function storeInbound(
         htmlBody: parsed.htmlBody,
         headers: jsonbParam(parsed.headers ?? {}),
         hasAttachments: parsed.hasAttachments,
-        attachments: jsonbParam(parsed.attachments.map(a => ({
-            filename: a.filename,
-            contentType: a.contentType,
-            size: a.size,
-        }))),
+        attachments: jsonbParam(storedAttachments),
         isRead: false,
         isDraft: false,
         remoteUid: assignedUid,
@@ -122,46 +153,6 @@ async function storeInbound(
 
     await recomputeFolderCounts(folder.id)
     emitFolderChange({ folderId: folder.id, mailboxId, kind: 'new' })
-}
-
-async function deliverViaRoutes(
-    recipient: string,
-    rawEmail: Buffer,
-    matchedRoutes: MatchedRoute[],
-    organizationId: string,
-): Promise<void> {
-    for (const { route, endpoint } of matchedRoutes) {
-        if (endpoint.type === 'hold') {
-            await db.insert(messages).values({
-                organizationId,
-                token: uuidv4(),
-                direction: 'incoming',
-                fromAddress: '',
-                toAddresses: [recipient],
-                subject: '(held)',
-                status: 'held',
-                held: true,
-                holdExpiry: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-                heldReason: `Route: ${route.name}`,
-            }).onConflictDoNothing()
-            await incrementStat(organizationId, 'messagesHeld')
-            continue
-        }
-
-        if (endpoint.type === 'http' && endpoint.config) {
-            const cfg = endpoint.config as { url: string; method?: string; headers?: Record<string, string>; includeOriginal?: boolean }
-            const body = cfg.includeOriginal
-                ? { recipient, raw: rawEmail.toString('base64') }
-                : { recipient }
-            await fetch(cfg.url, {
-                method: cfg.method || 'POST',
-                headers: { 'Content-Type': 'application/json', ...(cfg.headers || {}) },
-                body: JSON.stringify(body),
-                signal: AbortSignal.timeout(30_000),
-            }).catch((err) => console.error('[MX] HTTP route error:', err?.message))
-        }
-        // Other endpoint types (smtp, address) require outbound auth; skip in MX.
-    }
 }
 
 export function createMXServer() {

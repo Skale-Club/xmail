@@ -1,10 +1,42 @@
 import Imap from 'imap'
 import { simpleParser } from 'mailparser'
+import { randomUUID } from 'node:crypto'
 import { db } from '../../db'
-import { mailboxes, mailFolders, mailMessages } from '../../db/schema'
+import { mailboxes, mailFolders, mailMessages, INBOX_ATTACHMENTS_BUCKET } from '../../db/schema'
 import { eq, and, desc } from 'drizzle-orm'
 import { decryptSecret } from './crypto'
 import { jsonbParam } from './jsonb'
+import { sanitizeAttachmentFilename } from './inbox-attachments'
+import { createObjectStorage } from './object-storage'
+
+/**
+ * Uploads attachment bytes fetched during an IMAP sync under a key scoped to the
+ * mailbox (`mail-attachments/<mailboxId>/<groupId>/<index>-<filename>`). The sync
+ * fetch here uses `bodies: ''` (the full raw message, not just BODYSTRUCTURE), so
+ * mailparser's simpleParser() returns real attachment content Buffers, not just
+ * structure — persistence is possible. A per-attachment failure never blocks the
+ * message import; that attachment simply carries no `storageKey`.
+ */
+async function persistSyncedAttachments(
+    mailboxId: string,
+    groupId: string,
+    attachments: Array<{ filename?: string; contentType: string; size: number; content: Buffer }>,
+): Promise<Array<{ filename: string; contentType: string; size: number; storageKey?: string }>> {
+    if (attachments.length === 0) return []
+    const storage = createObjectStorage()
+    return Promise.all(attachments.map(async (attachment, index) => {
+        const base = { filename: attachment.filename ?? '', contentType: attachment.contentType, size: attachment.size }
+        try {
+            const filename = sanitizeAttachmentFilename(attachment.filename || `attachment-${index}`)
+            const storageKey = `mail-attachments/${mailboxId}/${groupId}/${index}-${filename}`
+            await storage.upload(INBOX_ATTACHMENTS_BUCKET, storageKey, attachment.content, attachment.contentType || 'application/octet-stream', { upsert: true })
+            return { ...base, storageKey }
+        } catch (err) {
+            console.error(`[MailSync] Failed to persist attachment "${attachment.filename}":`, err)
+            return base
+        }
+    }))
+}
 
 interface SyncResult {
     mailboxId: string
@@ -375,6 +407,12 @@ async function fetchMessagesSync(
                             const refsStr = Array.isArray(refs) ? refs.join(' ') : refs || null
                             const toObj = parsed.to && !Array.isArray(parsed.to) ? parsed.to : Array.isArray(parsed.to) ? parsed.to[0] : undefined
 
+                            // fetch() above used bodies: '' (the full raw message), so
+                            // simpleParser() returns real attachment content — not just
+                            // BODYSTRUCTURE metadata — and persistence below is possible.
+                            const attachmentGroupId = randomUUID()
+                            const storedAttachments = await persistSyncedAttachments(mailboxId, attachmentGroupId, parsed.attachments)
+
                             await db.insert(mailMessages).values({
                                 mailboxId,
                                 folderId,
@@ -394,11 +432,7 @@ async function fetchMessagesSync(
                                 htmlBody: parsed.html as string || null,
                                 headers: jsonbParam({}),
                                 hasAttachments: parsed.attachments.length > 0,
-                                attachments: jsonbParam(parsed.attachments.map((att: any) => ({
-                                    filename: att.filename,
-                                    contentType: att.contentType,
-                                    size: att.size,
-                                }))),
+                                attachments: jsonbParam(storedAttachments),
                                 isRead: false,
                                 isDraft: false,
                                 remoteUid: uid,
