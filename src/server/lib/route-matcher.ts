@@ -18,6 +18,14 @@ import { sendOutbound } from './outbound-transport'
 import { v4 as uuidv4 } from 'uuid'
 import { messages } from '../../db/schema'
 import { incrementStat } from './tracking'
+import { isPrivateHostWithDns } from './network-guard'
+
+// SEC-01 — SSRF guard for inbound-route HTTP forwarding. Mirrors the write-time check in
+// routes.ts / webhooks.ts (isPrivateHostWithDns), plus the redirect/timeout hardening used by
+// webhooks.ts's dispatch fetch and tracking.ts's fireWebhooks. 10s matches the webhook dispatch
+// timeout (see routes/webhooks.ts, lib/tracking.ts) rather than the old 30s here, which was never
+// SSRF-hardened to begin with.
+const HTTP_ROUTE_FETCH_TIMEOUT_MS = 10_000
 
 export interface MatchedRoute {
     route: typeof routes.$inferSelect
@@ -207,6 +215,66 @@ export async function processInboundEmail(
 }
 
 /**
+ * Forward an inbound message to a route's configured HTTP endpoint.
+ *
+ * SEC-01 — fails closed on the SSRF guard: a private/internal host, or a DNS check that itself
+ * throws, both refuse the fetch rather than proceeding. Never throws — every failure path is
+ * logged (under the `[RouteMatcher]` prefix ops already greps for, see CLAUDE.md "Logs") and
+ * swallowed, so one bad endpoint never blocks the rest of the matched routes in the same message
+ * (this was the MX-local copy's behaviour before it was consolidated into this canonical function).
+ */
+async function deliverHttpRoute(
+    recipient: string,
+    rawEmail: Buffer,
+    routeName: string,
+    cfg: { url: string; method?: string; headers?: Record<string, string>; includeOriginal?: boolean },
+): Promise<void> {
+    let hostname: string
+    try {
+        hostname = new URL(cfg.url).hostname
+    } catch {
+        console.error(`[RouteMatcher] HTTP route delivery blocked: route="${routeName}" url="${cfg.url}" reason="invalid URL"`)
+        return
+    }
+
+    let isPrivate: boolean
+    try {
+        isPrivate = await isPrivateHostWithDns(hostname)
+    } catch (dnsErr) {
+        // Fail closed: a DNS check that throws is treated the same as a resolved private host.
+        console.error(`[RouteMatcher] HTTP route delivery blocked: route="${routeName}" url="${cfg.url}" reason="DNS check failed: ${dnsErr instanceof Error ? dnsErr.message : String(dnsErr)}"`)
+        return
+    }
+    if (isPrivate) {
+        console.error(`[RouteMatcher] HTTP route delivery blocked: route="${routeName}" url="${cfg.url}" reason="resolves to a private/internal host"`)
+        return
+    }
+
+    const body = cfg.includeOriginal
+        ? { recipient, raw: rawEmail.toString('base64') }
+        : { recipient }
+
+    try {
+        const response = await fetch(cfg.url, {
+            method: cfg.method || 'POST',
+            headers: { 'Content-Type': 'application/json', ...(cfg.headers || {}) },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(HTTP_ROUTE_FETCH_TIMEOUT_MS),
+            // SEC — do not follow a redirect to an internal address (SSRF via 3xx). Per the fetch
+            // spec a manual-redirect response to a 3xx comes back non-ok (status 0,
+            // type: 'opaqueredirect'), so it is logged as a failure below rather than followed.
+            redirect: 'manual',
+        })
+
+        if (!response.ok) {
+            console.error(`[RouteMatcher] HTTP route delivery failed: route="${routeName}" url="${cfg.url}" status=${response.status}`)
+        }
+    } catch (err) {
+        console.error(`[RouteMatcher] HTTP route delivery error: route="${routeName}" url="${cfg.url}":`, err instanceof Error ? err.message : err)
+    }
+}
+
+/**
  * Deliver email via matched routes (SMTP, HTTP, address forwarding, hold).
  */
 export async function deliverViaRoutes(
@@ -263,16 +331,7 @@ export async function deliverViaRoutes(
 
         if (endpoint.type === 'http' && endpoint.config) {
             const cfg = endpoint.config as { url: string; method?: string; headers?: Record<string, string>; includeOriginal?: boolean }
-            const body = cfg.includeOriginal
-                ? { recipient, raw: rawEmail.toString('base64') }
-                : { recipient }
-
-            await fetch(cfg.url, {
-                method: cfg.method || 'POST',
-                headers: { 'Content-Type': 'application/json', ...(cfg.headers || {}) },
-                body: JSON.stringify(body),
-                signal: AbortSignal.timeout(30_000),
-            })
+            await deliverHttpRoute(recipient, rawEmail, route.name, cfg)
         }
     }
 }

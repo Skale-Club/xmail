@@ -3,11 +3,26 @@ import { db } from '../../db'
 import { deliveries, messages, organizations } from '../../db/schema'
 import { eq, and, inArray } from 'drizzle-orm'
 import { incrementStat, fireWebhooks } from '../lib/tracking'
+import { runWithLock } from '../lib/cron-lock'
 
 let running = false
 
 const MAX_RETRIES = 3
 const RETRY_DELAYS_MS = [60_000, 300_000, 900_000] // 1min, 5min, 15min
+
+// SEC-04 — cross-process mutual exclusion. The in-memory `running` flag below only ever
+// protected a single Node process; a rolling blue-green deploy (or any future horizontal scale)
+// can have two processes each pass their own in-memory check and process the same pending
+// deliveries twice. Every other job in jobs/index.ts goes through runWithLock (cron-lock.ts) for
+// exactly this reason — see processFollowUps.ts / processReplies.ts for the same pattern. Keep
+// the name stable: renaming it lets old/new instances overlap during a rollout.
+const QUEUE_PROCESSOR_LOCK_NAME = 'message-queue-processor'
+
+export async function runQueueProcessorWithLock(): Promise<void> {
+    // jobs/index.ts schedules this every minute; cron-lock's 10-minute default budget is ample
+    // headroom (this job has no known-slow measured latency, so it is not in JOB_TIMEOUT_BUDGETS_MS).
+    await runWithLock(QUEUE_PROCESSOR_LOCK_NAME, () => processQueue())
+}
 
 export async function processQueue(): Promise<void> {
     if (running) return

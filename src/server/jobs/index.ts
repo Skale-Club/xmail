@@ -1,5 +1,5 @@
 import cron from 'node-cron'
-import { processQueue } from './processQueue'
+import { runQueueProcessorWithLock } from './processQueue'
 import { processHeldMessages } from './processHeld'
 import { cleanupOldMessages } from './cleanupMessages'
 import { runOutreachProcessorWithLock, resetDailyLimits } from './processOutreachSequences'
@@ -19,6 +19,7 @@ import { runAmortizeSubscriptionCostsWithLock } from './amortizeSubscriptionCost
 import { runMeasureProspectingOutcomesWithLock } from './measureProspectingOutcomes'
 import { runDailyProspectingWithLock } from './runDailyProspecting'
 import { runAlertWatchdog } from './alertWatchdog'
+import { runWithLock } from '../lib/cron-lock'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
 import { createLogger } from '../lib/logger'
@@ -35,9 +36,11 @@ const log = createLogger('outreach.jobs')
 export function startJobs(): void {
     log.info({ action: 'outreach.jobs.scheduler_start' }, 'starting background job scheduler')
 
-    // Process email queue every minute
+    // Process email queue every minute. Advisory-locked (message-queue-processor) — see
+    // runQueueProcessorWithLock in processQueue.ts; the old in-memory `running` flag only ever
+    // protected a single Node process, not a blue-green rollout overlap.
     cron.schedule('* * * * *', () => {
-        processQueue().catch((err) => {
+        runQueueProcessorWithLock().catch((err) => {
             const e = err instanceof Error ? err : new Error(String(err))
             log.error({
                 action: 'outreach.jobs.processQueue_failed',
@@ -85,8 +88,11 @@ export function startJobs(): void {
     // Explicit timezone option pins the schedule to UTC independently of container TZ env
     // (today alpine defaults to UTC, but pinning here prevents silent breakage if TZ is
     // set by a future ops change). Pair with processOutreachSequences.resetDailyLimits.
+    // SEC-04 — advisory-locked directly at this call site (outreach-reset-daily-limits):
+    // processOutreachSequences.ts isn't touched by this change, so the lock wraps resetDailyLimits
+    // here rather than inside that file. See runWithLock (cron-lock.ts).
     cron.schedule('0 0 * * *', () => {
-        resetDailyLimits().catch((err) => {
+        runWithLock('outreach-reset-daily-limits', () => resetDailyLimits()).catch((err) => {
             const e = err instanceof Error ? err : new Error(String(err))
             log.error({
                 action: 'outreach.jobs.resetDailyLimits_failed',

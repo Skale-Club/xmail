@@ -286,7 +286,12 @@ router.post('/', async (req: Request, res: Response) => {
         const messageToken = uuidv4()
 
         if (htmlBody && !privacyMode && (trackOpens || trackClicks)) {
-            const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 9001}`
+            // audit-2026-09: BASE_URL was never set in any deploy environment, so tracked links
+            // went out as http://localhost. Fall back to FRONTEND_URL (same origin serves /t/*),
+            // exactly like the outreach sender does.
+            const baseUrl = process.env.BASE_URL
+                || process.env.FRONTEND_URL
+                || `http://localhost:${process.env.PORT || 9001}`
             htmlBody = injectTracking(htmlBody, messageToken, baseUrl, trackOpens, trackClicks)
         }
 

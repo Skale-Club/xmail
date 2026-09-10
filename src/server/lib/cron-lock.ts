@@ -46,9 +46,11 @@ export const KNOWN_LOCK_NAMES: readonly string[] = [
     'enforceDeliverabilityGuardrails',
     'expireOutreachApprovals',
     'measureProspectingOutcomes',
+    'message-queue-processor', // processQueue.ts — see runQueueProcessorWithLock
     'outreach-bounces-processor',
     'outreach-followups-processor',
     'outreach-inbox-commands',
+    'outreach-reset-daily-limits', // resetDailyLimits() — locked at the jobs/index.ts call site
     'outreach-sequences-processor',
     'outreach-replies-processor',
     'warmup-mesh-processor',

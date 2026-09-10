@@ -22,7 +22,9 @@ const updateRouteSchema = z.object({
     address: z.string().optional(),
     mode: z.enum(['endpoint', 'hold', 'reject']).optional(),
     spamMode: z.enum(['mark', 'reject']).optional(),
-    spamThreshold: z.number().int().min(0).max(100).default(5),
+    // Was `.default(5)` — every other field here is optional, so a partial PUT that omitted
+    // spamThreshold silently reset it to 5 instead of leaving the stored value alone.
+    spamThreshold: z.number().int().min(0).max(100).optional(),
 })
 
 // Helper to check access
