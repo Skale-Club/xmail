@@ -18,6 +18,7 @@ ${remoteDbRefusal}
 import express, { type Request } from 'express'
 import cors from 'cors'
 import { join } from 'path'
+import { timingSafeEqual } from 'node:crypto'
 import { existsSync } from 'fs'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
@@ -211,11 +212,29 @@ app.get('/health/ready', async (_req, res) => {
     res.status(readiness.ok ? 200 : 503).json(readiness)
 })
 
-// Public mail-server health endpoint — useful for post-deploy diagnostics.
-// Shows which TLS cert was loaded, which env vars are set, and which ports
-// the mail servers are listening on. No secrets are exposed.
-app.get('/health/mail', (_req, res) => {
+// Mail-server health endpoint. The full diagnostic (which env vars are set, cert paths,
+// ports) is an infrastructure fingerprint, so it is only returned to the host itself
+// (runbook: `curl localhost:9001/health/mail`) or to the external monitor presenting
+// MONITOR_API_TOKEN in x-monitor-token. Everyone else gets just the TLS status.
+function isLoopbackRequest(req: Request): boolean {
+    const ip = req.ip || ''
+    return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
+}
+
+function hasMonitorToken(req: Request): boolean {
+    const expected = process.env.MONITOR_API_TOKEN
+    const provided = req.headers['x-monitor-token']
+    if (!expected || typeof provided !== 'string') return false
+    const a = Buffer.from(provided)
+    const b = Buffer.from(expected)
+    return a.length === b.length && timingSafeEqual(a, b)
+}
+
+app.get('/health/mail', (req, res) => {
     const tls = getMailTLSOptions()
+    if (!isLoopbackRequest(req) && !hasMonitorToken(req)) {
+        return res.json({ status: 'ok', timestamp: new Date().toISOString(), tls: { loaded: tls !== null } })
+    }
     const envChecks = {
         SUPABASE_URL:                    !!process.env.SUPABASE_URL,
         SUPABASE_ANON_KEY:               !!process.env.SUPABASE_ANON_KEY,

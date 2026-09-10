@@ -17,7 +17,7 @@ for the right job:
 | `/health/db`    | Database probe only (Drizzle/Postgres).                                 | none | yes          | no             |
 | `/health/auth`  | Supabase Auth probe only.                                               | none | no           | yes            |
 | `/health/ready` | **Readiness — full dependency check.** Use this for K8s/uptime probes.  | none | yes          | yes            |
-| `/health/mail`  | Mail server env/TLS/port diagnostic.                                    | none | no           | no             |
+| `/health/mail`  | Mail server env/TLS/port diagnostic (full body only from loopback or with `x-monitor-token`; others get TLS status only). | loopback / token | no | no |
 
 > **Source:** `src/server/index.ts` (`app.get('/health/...')`) and
 > `src/server/lib/health.ts` (`runReadinessChecks`).
