@@ -178,6 +178,67 @@ export const MIN_TERRITORIES_FOR_QUEUE_CHECK = 1
  */
 export const ANALYZER_STALLED_EVENT_WINDOW_HOURS = 24
 
+// ------------------------------------------------------------------
+// Fase 5 (docs/outbound-authentication-audit.md "Fase 5 — Detectar esta classe de falha
+// sozinho"). Three new rules, same file, same pattern: "isto deveria ter produzido algo e não
+// produziu" (dmarc_report_gap) or "uma taxa cruzou um limiar medido" (warmup_spam_rate_rising),
+// plus one DORMANT rule following the analyzer_stalled precedent immediately above.
+// ------------------------------------------------------------------
+
+/**
+ * Threshold for kind: warmup_spam_rate_rising, MEASURED against the audit doc's own 14-day
+ * baseline — never guessed. The baseline: ten days at 0.0% (29/08-08/09) with one isolated
+ * 1.0% spike on 06/09, then a sustained jump to 9.5% (09/09), 14.5% (10/09), 12.0% (11/09),
+ * 8.3% (12/09). Nobody noticed for three days because nothing compared the rate to anything.
+ *
+ * 3% sits strictly between the isolated healthy spike (1.0%) and the incident's onset rate
+ * (9.5%): high enough that one lucky/unlucky day of ordinary noise never trips it, low enough
+ * that the actual incident would have crossed it on 09/09 — the SAME day the first sustained
+ * spam started at 18:00, instead of the three days it actually took a human to notice. This is
+ * literally the audit doc's own proposed number ("Um limiar de 3% teria disparado em 09/09, no
+ * mesmo dia") — restated here as the enforced constant, not re-derived independently.
+ *
+ * Scoped to EXTERNAL destinations only (email_accounts.provider != 'native' — a real mailbox
+ * we monitor via IMAP folder placement) on purpose: mail landing on our OWN mx-server proves
+ * nothing, because our own server is the judge of its own inbound mail (see the audit doc's
+ * "Ausência de um juiz" section) — a native-to-native or Gmail-to-native send always reads
+ * 0% and always will, regardless of what a real recipient's spam filter thinks.
+ */
+export const WARMUP_SPAM_RATE_THRESHOLD = 0.03
+
+/** Below this many folder-classified external sends in the window, a rate is noise, not signal
+ *  — same shape as MIN_MESH_PARTICIPANTS/MIN_COST_ENTRIES_FOR_SHARE_CHECK above. The audit's
+ *  own 7-day sample was ~100/day for the native-to-Gmail direction; 20 in 24h is comfortably
+ *  below a healthy day's real volume while still being enough messages that one or two
+ *  spam-folder landings do not read as a "rate". */
+export const MIN_EXTERNAL_WARMUP_SAMPLE_FOR_SPAM_CHECK = 20
+
+/**
+ * Threshold for kind: dmarc_report_gap (hours since the last DMARC aggregate report was
+ * ingested). This is literally the audit doc's own figure ("nenhum relatório agregado
+ * processado em 48h"), restated as the enforced constant for the same reason
+ * WARMUP_SPAM_RATE_THRESHOLD is: reporters (Google et al.) send once roughly every 24h per
+ * domain, so 48h is one full missed cycle of margin — a single reporter's report arriving a
+ * few hours late never fires this, but the instrument actually going silent (the mailbox
+ * filling up, the ingest job breaking, the mailbox itself disappearing) is caught within one
+ * extra day, not discovered by a human noticing spam three days late again.
+ */
+export const DMARC_REPORT_GAP_HOURS = 48
+
+/**
+ * The exact substring this check expects Fase 2's self-verification step (native-send.ts,
+ * per the audit doc: "verificar a própria mensagem com dkimVerify... antes de entregar.
+ * Falhou a autoverificação: não entrega, registra erro, alerta") to write into an error field
+ * when it refuses to deliver a message. DORMANT today: nothing in this tree writes this
+ * marker yet (Fase 2 belongs to the other half of this audit's work, on a different outbound
+ * path this module does not own) — see `outboundDkimUnverified24h`'s own doc comment and the
+ * alert block below, same shape as `analyzerStalledEvents24h`/`analyzer_stalled` above. This
+ * constant is the CONTRACT: whichever outbound path implements the self-verify-before-deliver
+ * step should log an error containing this exact substring so this check starts firing the
+ * day that work lands, without either side having to coordinate further.
+ */
+export const OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER = 'own DKIM verification failed'
+
 export interface SilenceMetrics {
     /** Caixas elegíveis ao mesh: `warmup_source='internal'` e verificadas. */
     warmupEligibleInboxes: number
@@ -264,6 +325,29 @@ export interface SilenceMetrics {
      * the day Xphere/Xmail add an endpoint for it -- see the alert's own comment for the name.
      */
     analyzerStalledEvents24h: number
+
+    // ------------------------------------------------------------------
+    // Fase 5 (docs/outbound-authentication-audit.md "Fase 5").
+    // ------------------------------------------------------------------
+
+    /** `warmup_messages` sent in the last 24h to an EXTERNAL destination (email_accounts.provider
+     *  != 'native') with `detected_folder` populated (inbox or spam — a verdict was actually
+     *  observed). See WARMUP_SPAM_RATE_THRESHOLD: only this direction has a real judge. */
+    externalWarmupMessagesWithFolder24h: number
+    /** Of those, how many landed in `detected_folder = 'spam'`. */
+    externalWarmupSpamMessages24h: number
+    /** `max(created_at)` over `dmarc_reports` — null if none has ever been ingested. See
+     *  DMARC_REPORT_GAP_HOURS. */
+    lastDmarcReportProcessedAt: Date | null
+    /** `count(*)` over `dmarc_reports`, all time — guards dmarc_report_gap against firing during
+     *  the initial DNS-propagation window before the first report has ever arrived, same shape
+     *  as MIN_TERRITORIES_FOR_QUEUE_CHECK's fresh-install guard above. */
+    totalDmarcReportsEver: number
+    /** DORMANT (kind: outbound_dkim_unverified) — count of `warmup_messages.last_error` /
+     *  `outreach_emails.last_error_code` containing OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER in the
+     *  last 24h. Always 0 until Fase 2's self-verify-before-deliver step exists and writes that
+     *  marker — see the constant's own doc comment. */
+    outboundDkimUnverified24h: number
 }
 
 /**
@@ -517,6 +601,67 @@ export function buildSilenceAlerts(metrics: SilenceMetrics, now: Date = new Date
             message: `All ${metrics.totalTerritories} territory(ies) are 'done' or 'paused' -- none `
                 + '\'queued\' or \'running\'. A human needs to add territories; topping up the budget will '
                 + 'not help an empty queue.',
+            since,
+        })
+    }
+
+    // ------------------------------------------------------------------
+    // Fase 5 (docs/outbound-authentication-audit.md "Fase 5 — Detectar esta classe de falha
+    // sozinho").
+    // ------------------------------------------------------------------
+
+    // Crítico: ver WARMUP_SPAM_RATE_THRESHOLD acima — o limiar que teria disparado no MESMO dia
+    // do incidente de 09/09, em vez dos três dias que um humano levou para notar. Só a direção
+    // para caixas EXTERNAS conta: nosso próprio mx-server aceitando quase tudo não é notícia.
+    if (metrics.externalWarmupMessagesWithFolder24h >= MIN_EXTERNAL_WARMUP_SAMPLE_FOR_SPAM_CHECK) {
+        const share = metrics.externalWarmupSpamMessages24h / metrics.externalWarmupMessagesWithFolder24h
+        if (share > WARMUP_SPAM_RATE_THRESHOLD) {
+            alerts.push({
+                severity: 'critical',
+                kind: 'warmup_spam_rate_rising',
+                message: `${metrics.externalWarmupSpamMessages24h} of ${metrics.externalWarmupMessagesWithFolder24h} `
+                    + `warm-up mesh send(s) to EXTERNAL mailboxes in the last 24h landed in spam `
+                    + `(${Math.round(share * 100)}%, threshold ${Math.round(WARMUP_SPAM_RATE_THRESHOLD * 100)}%). `
+                    + 'Mail landing on our own mx-server proves nothing — this counts only sends a real '
+                    + 'external provider judged. See docs/outbound-authentication-audit.md.',
+                since,
+            })
+        }
+    }
+
+    // Crítico: o instrumento da Fase 1 parou, e voltamos a voar cego exatamente como antes dele
+    // existir. Guardado contra a instalação nova (nenhum relatório ainda chegou -- ver
+    // MIN_TERRITORIES_FOR_QUEUE_CHECK acima para a mesma forma de guarda) -- sem isso, os
+    // primeiros DMARC_REPORT_GAP_HOURS após dmarc@skale.club existir e antes do primeiro
+    // relatório do Gmail chegar (propagação de DNS) disparariam um alarme falso todo dia um.
+    if (metrics.totalDmarcReportsEver > 0) {
+        const lastAt = metrics.lastDmarcReportProcessedAt
+        const gapHours = lastAt ? (now.getTime() - lastAt.getTime()) / (60 * 60 * 1000) : Infinity
+        if (gapHours > DMARC_REPORT_GAP_HOURS) {
+            const lastLabel = lastAt ? lastAt.toISOString() : 'never'
+            alerts.push({
+                severity: 'critical',
+                kind: 'dmarc_report_gap',
+                message: `No DMARC aggregate report has been ingested in the last ${DMARC_REPORT_GAP_HOURS}h `
+                    + `(last one: ${lastLabel}). Reporters send roughly daily -- this means the Fase 1 `
+                    + 'instrument itself has stopped (mailbox full, ingest job broken, DNS rua changed back) '
+                    + 'and we are flying blind on outbound authentication again.',
+                since,
+            })
+        }
+    }
+
+    // Aviso: DORMANTE (kind: outbound_dkim_unverified) -- ver OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER
+    // acima. Este alerta nunca dispara hoje porque nada nesta árvore ainda escreve esse marcador
+    // -- não é um sinal fingido, é a leitura correta de um dado que ainda não existe, no mesmo
+    // molde de analyzer_stalled logo abaixo.
+    if (metrics.outboundDkimUnverified24h > 0) {
+        alerts.push({
+            severity: 'critical',
+            kind: 'outbound_dkim_unverified',
+            message: `${metrics.outboundDkimUnverified24h} outbound message(s) in the last 24h failed their own `
+                + 'pre-delivery DKIM self-verification and were refused delivery. If our own verification of our '
+                + 'own signature fails, the recipient\'s will too -- see Fase 2 of docs/outbound-authentication-audit.md.',
             since,
         })
     }
