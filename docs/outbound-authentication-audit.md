@@ -118,6 +118,45 @@ o juiz é o nosso próprio servidor. A outra metade mede, e é a que revelou o p
 - Limite diário: as `info@` estão em 50/dia com histórico zero. Para um endereço de dia
   zero, 10 a 15 é o teto sensato, subindo ao longo de duas semanas.
 
+### Remedição de 2026-09-12, e uma correção na tabela do topo
+
+A série diária deste documento (9,5% / 14,5% / 12,0% / 8,3%) está **diluída**: ela divide os
+spams pelo total de mensagens do dia, e metade desse total vai para caixas nossas, onde o
+juiz somos nós e o resultado é 0% por construção. Contando só o que atravessa SMTP e é
+julgado pelo Google, a mesma série dobra:
+
+| Dia | Mensagens para o Google | Spam | Taxa |
+|---|---|---|---|
+| 07/09 | 100 | 0 | 0,0% |
+| 08/09 | 100 | 0 | 0,0% |
+| 09/09 | 100 | 19 | **19,0%** |
+| 10/09 | 100 | 29 | **29,0%** |
+| 11/09 | 100 | 24 | **24,0%** |
+| 12/09 | 83 | 7 | **8,4%** |
+
+O total de 7 dias continua batendo com o que o topo diz (700 mensagens, 11,6%) — o número
+agregado estava certo, o diário é que escondia metade do sinal atrás de um denominador que
+não mede nada. **Um denominador que inclui quem não julga é a mesma doença do resto deste
+documento.**
+
+12/09 caiu para 8,4%, o menor desde o início do incidente. **Não atribuo isso a nenhum
+conserto:** a maior parte das mensagens do dia saiu antes de o `DKIM verified` (16:17 UTC) e
+do `rua` novo (15:21 UTC) estarem no ar. É observação, não causa.
+
+**E o achado que muda a prioridade da fase 4:**
+
+| Grupo remetente | Mensagens em 30 dias | Spam | Taxa |
+|---|---|---|---|
+| Sementes `contato@`/`agenda@` (20 caixas) | 5249 | 154 | 2,9% |
+| `tryskaleclub` via Google (5 caixas) | 1339 | 0 | 0,0% |
+| **`info@` (9 caixas)** | **8** | **4** | **50,0%** |
+
+Oito mensagens é amostra pequena demais para uma taxa, e eu não vou fingir que 50% é uma
+medição. O que ela é: as únicas oito vezes que a caixa que vai disparar a campanha falou com
+o mundo, metade foi para spam. Sete das nove `info@` estão no **dia 0** de 14 (duas no dia 2),
+todas com teto de **50/dia**. Disparar campanha daí é apostar a lista real num endereço sem
+histórico e com o pouco histórico que tem sendo ruim.
+
 ## Fase 5 — Detectar esta classe de falha sozinho
 
 O detector de silêncio já existe e já roda a cada 5 minutos. Regras novas:
