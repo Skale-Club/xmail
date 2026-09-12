@@ -136,8 +136,9 @@ export const VERIFICATION_MISSING_RUN_AGE_HOURS = 6
  * cost entries. Nothing before this fase looked.
  *
  * `runDailyProspecting` is scheduled at 10:00 UTC (jobs/index.ts) and its own job-timeout
- * budget is 90s (cron-lock.ts JOB_TIMEOUT_BUDGETS_MS.runDailyProspecting), so by 10:02 UTC the
- * tick has either fired or failed closed. This gate exists so the check itself is never the
+ * budget is 200s (cron-lock.ts JOB_TIMEOUT_BUDGETS_MS.runDailyProspecting — raised 2026-09-12
+ * to also bound the territory-reconciliation poll), so by roughly 10:04 UTC the tick has either
+ * fired or failed closed. This gate exists so the check itself is never the
  * false alarm: evaluated at 09:00 UTC (the daily digest's own schedule) the engine has not had
  * its turn yet today, and "no lead_source entry today" would be true of every single day at
  * that hour. 12:00 UTC gives a two-hour buffer past the scheduled run before "idle" is treated

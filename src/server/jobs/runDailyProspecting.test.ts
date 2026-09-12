@@ -76,6 +76,7 @@ describe('runDailyProspecting: per-organization decisions', () => {
         queryClientMock
             .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
             .mockResolvedValueOnce([]) // reconcile (no rows flipped)
+            .mockResolvedValueOnce([]) // fetchRunningTerritoriesToPoll (no running territories)
             .mockResolvedValueOnce([{ amountMicros: '2000000' }]) // spend = $2.00
 
         const summaries = await runDailyProspecting(NOW)
@@ -85,7 +86,7 @@ describe('runDailyProspecting: per-organization decisions', () => {
             reconciled: 0,
             decision: { action: 'skip', reason: 'budget_exhausted', spentTodayUsd: 2, dailyBudgetUsd: 2 },
         }])
-        expect(queryClientMock).toHaveBeenCalledTimes(3)
+        expect(queryClientMock).toHaveBeenCalledTimes(4)
         expect(fetch).not.toHaveBeenCalled()
     })
 
@@ -93,6 +94,7 @@ describe('runDailyProspecting: per-organization decisions', () => {
         queryClientMock
             .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
             .mockResolvedValueOnce([]) // reconcile
+            .mockResolvedValueOnce([]) // fetchRunningTerritoriesToPoll
             .mockResolvedValueOnce([{ amountMicros: '0' }]) // spend = $0
             .mockResolvedValueOnce([]) // no queued territory
 
@@ -110,6 +112,7 @@ describe('runDailyProspecting: per-organization decisions', () => {
         queryClientMock
             .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
             .mockResolvedValueOnce([]) // reconcile
+            .mockResolvedValueOnce([]) // fetchRunningTerritoriesToPoll
             .mockResolvedValueOnce([{ amountMicros: '0' }]) // spend = $0
             .mockResolvedValueOnce([territoryRow({ maxResults: 40 })]) // territory
             .mockResolvedValueOnce([]) // no completed-run history
@@ -155,6 +158,7 @@ describe('runDailyProspecting: per-organization decisions', () => {
         queryClientMock
             .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
             .mockResolvedValueOnce([]) // reconcile
+            .mockResolvedValueOnce([]) // fetchRunningTerritoriesToPoll
             .mockResolvedValueOnce([{ amountMicros: '1940000' }]) // spend = $1.94, remaining ~ $0.06
             .mockResolvedValueOnce([territoryRow({ maxResults: 500 })]) // territory (cap not the binding factor)
             .mockResolvedValueOnce([ // 5 completed runs, unit costs matching the 2026-09-08 evidence
@@ -169,13 +173,14 @@ describe('runDailyProspecting: per-organization decisions', () => {
         expect(expectDecided(summaries[0]).decision).toMatchObject({ action: 'skip', reason: 'below_floor', computedMaxResults: 9 })
         expect(fetch).not.toHaveBeenCalled()
         // No UPDATE fired for a territory that was never attempted.
-        expect(queryClientMock).toHaveBeenCalledTimes(5)
+        expect(queryClientMock).toHaveBeenCalledTimes(6)
     })
 
     it('sizes the run from the median of real unit-cost history and marks the territory running on a 2xx response', async () => {
         queryClientMock
             .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
             .mockResolvedValueOnce([]) // reconcile
+            .mockResolvedValueOnce([]) // fetchRunningTerritoriesToPoll
             .mockResolvedValueOnce([{ amountMicros: '0' }]) // spend = $0, full $2.00 remaining
             .mockResolvedValueOnce([territoryRow({ maxResults: 500 })])
             .mockResolvedValueOnce([
@@ -201,6 +206,7 @@ describe('runDailyProspecting: per-organization decisions', () => {
         queryClientMock
             .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
             .mockResolvedValueOnce([]) // reconcile
+            .mockResolvedValueOnce([]) // fetchRunningTerritoriesToPoll
             .mockResolvedValueOnce([{ amountMicros: '0' }]) // spend
             .mockResolvedValueOnce([territoryRow()]) // territory
             .mockResolvedValueOnce([]) // no cost history
@@ -215,13 +221,14 @@ describe('runDailyProspecting: per-organization decisions', () => {
         const summaries = await runDailyProspecting(NOW)
 
         expect(summaries[0]).toMatchObject({ scrapeError: expect.stringContaining('503') })
-        expect(queryClientMock).toHaveBeenCalledTimes(6)
+        expect(queryClientMock).toHaveBeenCalledTimes(7)
     })
 
     it('reconciles a running territory into done before evaluating the budget', async () => {
         queryClientMock
             .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
             .mockResolvedValueOnce([{ id: 'territory-9', query: 'barbershops', location: 'Worcester, MA, USA' }]) // reconciled 1 row
+            .mockResolvedValueOnce([]) // fetchRunningTerritoriesToPoll (nothing left running after the flip above)
             .mockResolvedValueOnce([{ amountMicros: '2000000' }]) // spend already at budget -- stop here
 
         const summaries = await runDailyProspecting(NOW)
@@ -234,6 +241,7 @@ describe('runDailyProspecting: per-organization decisions', () => {
             .mockResolvedValueOnce([{ organizationId: 'org-a' }, { organizationId: 'org-b' }]) // org list
             .mockRejectedValueOnce(new Error('db unreachable')) // org-a reconcile fails
             .mockResolvedValueOnce([]) // org-b reconcile
+            .mockResolvedValueOnce([]) // org-b fetchRunningTerritoriesToPoll
             .mockResolvedValueOnce([{ amountMicros: '2000000' }]) // org-b spend already at budget
 
         const summaries = await runDailyProspecting(NOW)
@@ -241,5 +249,165 @@ describe('runDailyProspecting: per-organization decisions', () => {
         expect(summaries).toHaveLength(2)
         expect(summaries[0]).toMatchObject({ organizationId: 'org-a', error: expect.stringContaining('db unreachable') })
         expect(summaries[1]).toMatchObject({ organizationId: 'org-b', decision: { action: 'skip', reason: 'budget_exhausted' } })
+    })
+})
+
+describe('runDailyProspecting: territory reconciliation poll (defect fix 2026-09-12)', () => {
+    /**
+     * Reproduces the production defect this fix targets: Xcraper never pushes a finished scrape
+     * to Xphere on its own -- only `GET /scrape/:id` triggers that push. Before this fix,
+     * runDailyProspecting never called that endpoint, so a territory could stay 'running'
+     * forever even after Xcraper finished. These tests drive the reconciliation poll this fix
+     * added and pin its four outcomes (completed / failed / still_running / stalled), plus the
+     * invariant that a paid scrape is never re-fired for a territory this step examines.
+     */
+
+    function runningTerritoryRow(overrides: Partial<{ id: string; lastExternalRunId: string; lastAttemptedAt: string }> = {}) {
+        return {
+            id: 'territory-running-1',
+            lastExternalRunId: 'search-b301ddcc',
+            lastAttemptedAt: new Date(NOW.getTime() - 5 * 60 * 1000).toISOString(), // 5 minutes ago
+            ...overrides,
+        }
+    }
+
+    it('polls a running territory\'s status, logs the xphere push result, and leaves it running -- it does NOT flip status itself', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
+            .mockResolvedValueOnce([]) // reconcile (join) -- nothing flipped yet, prospecting_runs row not there yet
+            .mockResolvedValueOnce([runningTerritoryRow()]) // fetchRunningTerritoriesToPoll
+            .mockResolvedValueOnce([{ amountMicros: '2000000' }]) // spend already at budget -- stop here, keeps the test focused
+
+        vi.mocked(fetch).mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ status: 'completed', xphere: { pushed: true, alreadyPushed: false } }),
+        } as unknown as Response)
+
+        const summaries = await runDailyProspecting(NOW)
+
+        expect(fetch).toHaveBeenCalledTimes(1)
+        expect(fetch).toHaveBeenCalledWith(
+            'https://xcraper.skale.club/api/service/scrape/search-b301ddcc',
+            expect.objectContaining({ method: 'GET', headers: expect.objectContaining({ 'X-Service-Key': 'xsk_test' }) }),
+        )
+        // No status-changing UPDATE fired for the polled territory -- only org list, reconcile,
+        // the poll's own SELECT, and the spend read.
+        expect(queryClientMock).toHaveBeenCalledTimes(4)
+        expect(summaries[0]).toMatchObject({ decision: { action: 'skip', reason: 'budget_exhausted' } })
+    })
+
+    it('marks the territory paused with a reason when Xcraper reports the scrape failed', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
+            .mockResolvedValueOnce([]) // reconcile
+            .mockResolvedValueOnce([runningTerritoryRow({ lastExternalRunId: 'search-failed-1' })]) // fetchRunningTerritoriesToPoll
+            .mockResolvedValueOnce([]) // markTerritoryFailed UPDATE
+            .mockResolvedValueOnce([{ amountMicros: '2000000' }]) // spend already at budget
+
+        vi.mocked(fetch).mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ status: 'failed' }),
+        } as unknown as Response)
+
+        await runDailyProspecting(NOW)
+
+        expect(queryClientMock).toHaveBeenCalledTimes(5)
+        // The 4th call is the markTerritoryFailed UPDATE -- confirm it actually writes 'paused'
+        // (migration 065's status CHECK has no 'failed' value) with the territory id interpolated.
+        const [strings, reason, territoryId] = queryClientMock.mock.calls[3] as [string[], string, string]
+        expect(strings.join('')).toContain("status = 'paused'")
+        expect(reason).toMatch(/failed/i)
+        expect(territoryId).toBe('territory-running-1')
+    })
+
+    it('leaves an in-progress, not-yet-stalled scrape running without writing anything', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
+            .mockResolvedValueOnce([]) // reconcile
+            .mockResolvedValueOnce([runningTerritoryRow()]) // fetchRunningTerritoriesToPoll
+            .mockResolvedValueOnce([{ amountMicros: '2000000' }]) // spend
+
+        vi.mocked(fetch).mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ status: 'processing' }),
+        } as unknown as Response)
+
+        await runDailyProspecting(NOW)
+
+        expect(queryClientMock).toHaveBeenCalledTimes(4) // no extra UPDATE
+    })
+
+    it('skips a territory stalled past the 48h threshold WITHOUT re-firing a scrape for it, while a different queued territory can still legitimately fire', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
+            .mockResolvedValueOnce([]) // reconcile
+            .mockResolvedValueOnce([runningTerritoryRow({
+                id: 'territory-stalled',
+                lastExternalRunId: 'search-stalled',
+                lastAttemptedAt: new Date(NOW.getTime() - 49 * 60 * 60 * 1000).toISOString(), // 49h ago > 48h threshold
+            })]) // fetchRunningTerritoriesToPoll
+            .mockResolvedValueOnce([{ amountMicros: '0' }]) // spend = $0, full budget available
+            .mockResolvedValueOnce([territoryRow({ id: 'territory-new', maxResults: 40 })]) // a DIFFERENT queued territory
+            .mockResolvedValueOnce([]) // no completed-run history
+            .mockResolvedValueOnce([{ id: 'territory-new' }]) // markTerritoryRunning UPDATE for the NEW territory
+
+        vi.mocked(fetch)
+            .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'processing' }) } as unknown as Response) // GET poll
+            .mockResolvedValueOnce({ ok: true, json: async () => ({ searchId: 'search-new' }) } as unknown as Response) // POST scrape
+
+        const summaries = await runDailyProspecting(NOW)
+
+        expect(fetch).toHaveBeenCalledTimes(2)
+        // First call: the reconciliation GET for the stalled territory's EXISTING searchId --
+        // never a POST, i.e. never a re-fire of that already-paid-for scrape.
+        expect(fetch).toHaveBeenNthCalledWith(
+            1,
+            'https://xcraper.skale.club/api/service/scrape/search-stalled',
+            expect.objectContaining({ method: 'GET' }),
+        )
+        // Second call: a legitimate NEW POST for the unrelated queued territory.
+        expect(fetch).toHaveBeenNthCalledWith(
+            2,
+            'https://xcraper.skale.club/api/service/scrape',
+            expect.objectContaining({ method: 'POST' }),
+        )
+        // No UPDATE ever targeted 'territory-stalled' -- only the poll SELECT read it.
+        for (const call of queryClientMock.mock.calls) {
+            const sql = (call[0] as string[]).join('')
+            if (sql.includes('UPDATE')) {
+                expect(call).not.toContain('territory-stalled')
+            }
+        }
+        expect(summaries[0]).toMatchObject({ searchId: 'search-new' })
+    })
+
+    it('never queries the database for a second organization\'s reconciliation once the shared per-tick budget is exhausted by the first', async () => {
+        const org1RunningTerritories = Array.from({ length: 10 }, (_, i) => runningTerritoryRow({
+            id: `territory-${i}`,
+            lastExternalRunId: `search-${i}`,
+        }))
+
+        queryClientMock
+            .mockResolvedValueOnce([{ organizationId: 'org-a' }, { organizationId: 'org-b' }]) // org list
+            .mockResolvedValueOnce([]) // org-a reconcile
+            .mockResolvedValueOnce(org1RunningTerritories) // org-a fetchRunningTerritoriesToPoll -- exactly MAX_TERRITORIES_TO_RECONCILE_PER_TICK
+            .mockResolvedValueOnce([{ amountMicros: '2000000' }]) // org-a spend -- stop here
+            .mockResolvedValueOnce([]) // org-b reconcile
+            // NOTE: no mock queued here for org-b's fetchRunningTerritoriesToPoll -- the shared
+            // budget is 0 by now, so that query must never fire (see the guard at the top of
+            // reconcilePollRunningTerritories). If the guard regresses, this test fails loudly
+            // with "no mockResolvedValueOnce left" instead of silently passing.
+            .mockResolvedValueOnce([{ amountMicros: '2000000' }]) // org-b spend
+
+        vi.mocked(fetch).mockImplementation(async () => ({
+            ok: true,
+            json: async () => ({ status: 'still_running' }),
+        } as unknown as Response))
+
+        const summaries = await runDailyProspecting(NOW)
+
+        expect(fetch).toHaveBeenCalledTimes(10) // exactly the shared cap, not 10 + more for org-b
+        expect(queryClientMock).toHaveBeenCalledTimes(6)
+        expect(summaries).toHaveLength(2)
     })
 })

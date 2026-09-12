@@ -140,8 +140,18 @@ export const JOB_TIMEOUT_BUDGETS_MS = {
     // decoupled — see runDailyProspecting.ts's module doc). That POST already carries its own
     // explicit 15s `AbortSignal.timeout`, so 90s gives comfortable headroom for that timeout
     // plus DB bookkeeping across more than one organization before this budget would ever fire.
-    // Revisit with the 5x rule once this job has run in production long enough to measure.
-    runDailyProspecting: 90_000,
+    //
+    // 2026-09-12 REVISION — raised from 90_000 to 200_000. The daily tick now also polls
+    // Xcraper's `GET /scrape/:id` for every territory stuck 'running' (the reconciliation fix
+    // for the "scrape completes but nothing ever registers it" defect -- see
+    // runDailyProspecting.ts's module doc and territory-reconciliation.ts). That poll step is
+    // bounded by its own two constants in runDailyProspecting.ts:
+    // `XCRAPER_STATUS_FETCH_TIMEOUT_MS` (10s per request) x `MAX_TERRITORIES_TO_RECONCILE_PER_TICK`
+    // (10, shared across the whole tick) = 100s worst case, added to the previous 90s budgeted
+    // for the rest of the tick's queries and its one Xcraper POST = 190s, rounded up to 200s.
+    // Revisit with the 5x rule once this job (and its reconciliation poll) has run in production
+    // long enough to measure real latency; also re-derive if either of those two constants change.
+    runDailyProspecting: 200_000,
 } as const
 
 /** Distinguishes "the timer won the race" from any value `fn()` could legitimately resolve with. */
