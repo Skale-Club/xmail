@@ -19,6 +19,7 @@ import { runAmortizeSubscriptionCostsWithLock } from './amortizeSubscriptionCost
 import { runMeasureProspectingOutcomesWithLock } from './measureProspectingOutcomes'
 import { runDailyProspectingWithLock } from './runDailyProspecting'
 import { runAlertWatchdog } from './alertWatchdog'
+import { runDmarcReportsProcessorWithLock } from './processDmarcReports'
 import { runWithLock } from '../lib/cron-lock'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
@@ -314,9 +315,23 @@ export function startJobs(): void {
         })
     }, { timezone: 'UTC' })
 
+    // Fase 1 (docs/outbound-authentication-audit.md) — DMARC aggregate report ingestion. Reports
+    // arrive roughly daily per reporting org (see DMARC_REPORT_GAP_HOURS in outreach-silence.ts,
+    // 48h), so 15 minutes — the same cadence as processReplies, another mailbox-reading job —
+    // gives a fresh report a short latency to being queryable without polling the mailbox hard.
+    cron.schedule('*/15 * * * *', () => {
+        runDmarcReportsProcessorWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.dmarcReports_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'DMARC report ingest failed')
+        })
+    })
+
     log.info({
         action: 'outreach.jobs.scheduler_ready',
-        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am, amortizeSubscriptionCosts=monthly-1st-04:00-UTC, measureProspectingOutcomes=every-6h-UTC, runDailyProspecting=daily-10:00-UTC, alertWatchdog=5min',
+        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am, amortizeSubscriptionCosts=monthly-1st-04:00-UTC, measureProspectingOutcomes=every-6h-UTC, runDailyProspecting=daily-10:00-UTC, alertWatchdog=5min, dmarcReports=15min',
     }, 'scheduler ready')
 
     // Phase 23 (AI-03): log the GLOBAL autonomous-automation kill-control posture once at startup

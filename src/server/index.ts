@@ -39,6 +39,7 @@ import templateRoutes from './routes/templates'
 import outreachRoutes from './routes/outreach'
 import agentOutreachRoutes from './routes/agent-outreach'
 import outreachHealthRoutes from './routes/admin/outreach-health'
+import dmarcRoutes from './routes/admin/dmarc'
 import integrationsRoutes from './routes/integrations'
 import healthEmailRoutes from './routes/health-email'
 import unsubscribeRoutes from './routes/outreach/unsubscribe'
@@ -342,6 +343,9 @@ app.use('/api/agent/outreach', agentOutreachRoutes)
 // JWT auth is applied by the /api middleware above; the route handler additionally
 // gates on isPlatformAdmin so non-admin users get 403 instead of 200.
 app.use('/api/admin/outreach', outreachHealthRoutes)
+// Fase 1 (docs/outbound-authentication-audit.md) — GET /api/admin/dmarc/rates. Same
+// platform-admin gate as outreachHealthRoutes above.
+app.use('/api/admin/dmarc', dmarcRoutes)
 app.use('/api/admin/integrations', integrationsRoutes)
 // Platform-admin email-subsystem health (GET /api/health/email).
 // JWT auth applied by the /api middleware; handler gates on isPlatformAdmin.

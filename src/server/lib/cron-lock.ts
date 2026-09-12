@@ -56,6 +56,7 @@ export const KNOWN_LOCK_NAMES: readonly string[] = [
     'warmup-mesh-processor',
     'reconcileOutreachEvents',
     'runDailyProspecting',
+    'dmarc-reports-processor',
 ]
 
 /**
@@ -152,6 +153,16 @@ export const JOB_TIMEOUT_BUDGETS_MS = {
     // Revisit with the 5x rule once this job (and its reconciliation poll) has run in production
     // long enough to measure real latency; also re-derive if either of those two constants change.
     runDailyProspecting: 200_000,
+    // Fase 1 (docs/outbound-authentication-audit.md) — new job, no production measurement yet,
+    // same "size from what the body actually is" reasoning as runDailyProspecting above. Per
+    // tick: one bounded SELECT (MAX_MESSAGES_PER_TICK=100 in dmarc-ingest.ts), then per message
+    // a handful of small attachment downloads (network, R2/Supabase Storage) each followed by
+    // in-memory decompression + parsing (capped at MAX_DECOMPRESSED_XML_BYTES=25MB, milliseconds
+    // even at that ceiling) and a couple of small inserts. 100 messages x ~500ms worst-case
+    // download+parse+write each = 50s; 60s rounds that up with headroom without being close to
+    // the 100-message cap actually being reached in practice (reports arrive roughly daily —
+    // see DMARC_REPORT_GAP_HOURS in outreach-silence.ts — so a real tick processes a handful).
+    dmarcReportsProcessor: 60_000,
 } as const
 
 /** Distinguishes "the timer won the race" from any value `fn()` could legitimately resolve with. */

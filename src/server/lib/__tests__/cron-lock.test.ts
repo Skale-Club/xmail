@@ -706,18 +706,24 @@ describe('JOB_TIMEOUT_BUDGETS_MS — budgets retuned to measured production late
         // timeout plus DB bookkeeping headroom, PLUS (2026-09-12) the reconciliation poll's own
         // bound: 10 x 10s = 100s. See cron-lock.ts's own comment on this entry.
         expect(JOB_TIMEOUT_BUDGETS_MS.runDailyProspecting).toBe(200_000)
+        // Fase 1 (docs/outbound-authentication-audit.md) — same "no production measurement yet"
+        // shape as runDailyProspecting above; see cron-lock.ts's own comment for the component
+        // costs (bounded message count x download+decompress+parse+write) this was sized from.
+        expect(JOB_TIMEOUT_BUDGETS_MS.dmarcReportsProcessor).toBe(60_000)
     })
 
     it('every configured budget stays comfortably above its own job\'s measured normal latency', () => {
         // "Comfortably above" per the stated rule: at least the 30s floor, or the 5x multiple —
-        // whichever the rule actually produced for that job. `runDailyProspecting` and
-        // `outreachBouncesProcessor` are deliberately excluded here: the former has no measured
-        // normal latency (see the previous test), and the latter's budget is NOT sized against
-        // its own latency at all (1.6s, only observed when it loses the shared ingest lock race)
-        // — it is sized against the shared `outreach-inbound-ingest` work it inherits when it
-        // wins that race instead. See the dedicated describe block below for that invariant.
+        // whichever the rule actually produced for that job. `runDailyProspecting`,
+        // `outreachBouncesProcessor` and `dmarcReportsProcessor` are deliberately excluded here:
+        // the first and third have no measured normal latency yet (brand-new jobs — see the
+        // previous test and dmarcReportsProcessor's own comment in cron-lock.ts), and the second's
+        // budget is NOT sized against its own latency at all (1.6s, only observed when it loses
+        // the shared ingest lock race) — it is sized against the shared `outreach-inbound-ingest`
+        // work it inherits when it wins that race instead. See the dedicated describe block below
+        // for that invariant.
         const normalLatencyMs: Record<
-            Exclude<keyof typeof JOB_TIMEOUT_BUDGETS_MS, 'runDailyProspecting' | 'outreachBouncesProcessor'>,
+            Exclude<keyof typeof JOB_TIMEOUT_BUDGETS_MS, 'runDailyProspecting' | 'outreachBouncesProcessor' | 'dmarcReportsProcessor'>,
             number
         > = {
             warmupMeshProcessor: 75_000,
