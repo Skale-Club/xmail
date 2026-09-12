@@ -209,9 +209,36 @@ O `Needs work` do DMARC é leitura velha do painel (`Last updated Jun 13`): os n
 têm `v=DMARC1; p=none` publicado e resolvendo hoje. Vale reconferir quando o painel
 atualizar — se continuar vermelho com o registro no ar, aí é achado, não defasagem.
 
+### Em produção desde 2026-09-12 16:19 UTC
+
+A migração `067_dmarc_aggregate_reports.sql` foi aplicada **antes** da promoção (ledger em
+067), a caixa `dmarc@skale.club` existe como usuário nativo com as seis pastas padrão e sem
+linha em `email_accounts`, e o código subiu em seguida. Nesta ordem, sempre: deploy não
+aplica migração.
+
+A 067 subiu com um conserto: ela criava as duas tabelas **sem RLS**, fora da convenção que a
+065 segue. Sem RLS as duas ficam legíveis por qualquer sessão autenticada do Supabase via
+PostgREST, e um relatório DMARC nomeia IPs de origem e domínios remetentes.
+
+O que produção já mostrou, nos primeiros vinte minutos:
+
+- `dmarcReports=15min` no `scheduler_ready` — a ingestão está no cron.
+- `[Send:Relay] DKIM verified: d=skale.club s=skaleclub — pass` — **a fase 2 está viva**. Este
+  log é a diferença entre afirmar e medir: o antigo `DKIM enabled` era intenção, este é a
+  assinatura conferida contra si mesma antes de entregar.
+- `silence check found 7 finding(s)`, entre elas `warmup_spam_rate_rising` — a regra nova da
+  fase 5 fala.
+- Zero erros.
+
+`dmarc_report_gap` está deliberadamente calada até o primeiro relatório chegar: senão ela
+gritaria durante toda a janela de propagação de DNS, que é precisamente ruído.
+
 ### O que falta na fase 1
 
-- Aplicar `067_dmarc_aggregate_reports.sql` em produção e rodar
-  `scripts/seed-dmarc-mailbox.ts` para criar `dmarc@skale.club`. Os relatórios começam a
-  chegar ~24h depois da mudança de DNS.
+- Esperar os relatórios. Chegam ~24h depois da mudança de DNS; o primeiro que entrar liga a
+  regra `dmarc_report_gap`.
 - Assento de captura crua em Gmail/Outlook/Yahoo (item 3 da fase 1), ainda não feito.
+- Detalhe conhecido e deixado de propósito: o `rua` dos oito domínios também nomeia
+  `dmarc@<próprio-domínio>`, que não tem caixa. O MX é nosso, então esses relatórios são
+  recusados na entrega e se perdem — inofensivo, já que `dmarc@skale.club` agora está
+  autorizado para os oito, e mantém a porta aberta para criar essas caixas depois.
