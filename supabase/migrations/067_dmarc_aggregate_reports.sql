@@ -85,3 +85,32 @@ CREATE INDEX IF NOT EXISTS idx_dmarc_report_records_report_id
 -- report_id, filter on header_from for the domain being asked about.
 CREATE INDEX IF NOT EXISTS idx_dmarc_report_records_header_from
     ON dmarc_report_records (header_from);
+
+-- RLS is defense-in-depth only (CLAUDE.md Authentication Flow) — the app's DATABASE_URL role
+-- bypasses it, and the real authorization check for /api/admin/dmarc lives in access.ts. The
+-- reason it is not optional: with RLS off, these tables are readable by ANY authenticated
+-- Supabase session through PostgREST, and a DMARC report names source IPs and sending domains.
+-- Same SELECT-only shape as migration 065: writes only ever come from the app role.
+ALTER TABLE public.dmarc_reports ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS dmarc_reports_select ON public.dmarc_reports;
+CREATE POLICY dmarc_reports_select ON public.dmarc_reports FOR SELECT TO authenticated
+    USING (
+        public.is_platform_admin()
+        -- organization_id is nullable (an unattributed report about a domain we do not host).
+        -- An unattributed row belongs to no tenant, so only a platform admin may read it.
+        OR (organization_id IS NOT NULL AND public.is_org_member(organization_id))
+    );
+
+ALTER TABLE public.dmarc_report_records ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS dmarc_report_records_select ON public.dmarc_report_records;
+CREATE POLICY dmarc_report_records_select ON public.dmarc_report_records FOR SELECT TO authenticated
+    USING (
+        EXISTS (
+            SELECT 1 FROM public.dmarc_reports r
+            WHERE r.id = dmarc_report_records.report_id
+              AND (
+                  public.is_platform_admin()
+                  OR (r.organization_id IS NOT NULL AND public.is_org_member(r.organization_id))
+              )
+        )
+    );
