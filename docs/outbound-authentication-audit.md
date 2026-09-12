@@ -140,3 +140,78 @@ decisão de operação, não de código. A 5 fecha.
 Não mandar campanha antes da fase 1. Se o warm-up — conteúdo manso, entre contas conhecidas,
 sem link e sem imagem — está caindo 11,4% no Gmail, cold email para desconhecido cai mais. E
 sem instrumento, a campanha vira o experimento, com a lista real como custo.
+
+---
+
+## Fase 1 — o que já está feito (2026-09-12)
+
+### `rua` apontando para nós, nos 9 domínios
+
+Cada `_dmarc.<domínio>` ganhou `mailto:dmarc@skale.club` como **primeiro** destino do
+`rua`. A política ficou intocada em `p=none` e nenhum destino anterior foi removido — os
+três terceiros do `skale.club` (`dmarc.mailgun.org`, `inbox.ondmarc.com`,
+`dmarc.brevo.com`) continuam lá.
+
+### O defeito que quase repetiu o padrão: autorização de destino externo
+
+Publicar `rua=mailto:dmarc@skale.club` no `_dmarc` de `xphere.app` **não basta**. A RFC
+7489 §7.1 exige que o domínio de destino autorize explicitamente receber relatórios de
+outro domínio, publicando
+
+```
+<domínio-remetente>._report._dmarc.skale.club   TXT   "v=DMARC1"
+```
+
+na zona do destinatário. Sem esse registro, Google, Yahoo e Microsoft **não enviam nada** —
+e não avisam. Os oito registros estavam ausentes:
+
+```
+xphere.app._report._dmarc.skale.club       AUSENTE
+xtimator.com._report._dmarc.skale.club     AUSENTE
+xareable.com._report._dmarc.skale.club     AUSENTE
+xkedule.com._report._dmarc.skale.club      AUSENTE
+stuscle.com._report._dmarc.skale.club      AUSENTE
+endenemy.com._report._dmarc.skale.club     AUSENTE
+fluenverse.com._report._dmarc.skale.club   AUSENTE
+skleanings.com._report._dmarc.skale.club   AUSENTE
+```
+
+Os oito foram publicados na zona `skale.club` e resolvem em `8.8.8.8`. `skale.club` não
+precisa do seu: o destino é o próprio domínio.
+
+**Este era o mesmo defeito que o plano existe para consertar.** O `rua` afirmaria que os
+relatórios vêm para nós; oito dos nove nunca chegariam; e o job da fase 1 leria uma caixa
+vazia e reportaria zero — que é um valor válido, e por isso a ausência se disfarçaria de
+operação normal. Quem procurasse a causa três semanas depois começaria pela hipótese
+errada, como já aconteceu três vezes nesta auditoria. A regra `dmarc_report_gap` da fase 5
+teria falado; mas só depois de 48h de cegueira, e só se alguém tivesse publicado o
+`_report._dmarc` primeiro.
+
+### Google Postmaster Tools — 12 domínios verificados
+
+Todos os 12 estão `Verified`. Os quatro últimos (`xareable.com`, `xkedule.com`,
+`xphere.app`, `xtimator.com`) carregavam o token de **outro** domínio: eu tinha assumido
+que o token de verificação era por conta, e ele é **por domínio**. Cada um teve o TXT
+errado removido e o próprio publicado antes de verificar.
+
+Primeiro dado real que o instrumento devolveu, em `xphere.app` → Compliance status:
+
+| Requisito | Status |
+|---|---|
+| SPF and DKIM authentication | Compliant |
+| From: header alignment | Compliant |
+| DMARC authentication | **Needs work** |
+| Encryption | Compliant |
+| User-reported spam rate | Compliant |
+| DNS records | Compliant |
+
+O `Needs work` do DMARC é leitura velha do painel (`Last updated Jun 13`): os nove domínios
+têm `v=DMARC1; p=none` publicado e resolvendo hoje. Vale reconferir quando o painel
+atualizar — se continuar vermelho com o registro no ar, aí é achado, não defasagem.
+
+### O que falta na fase 1
+
+- Aplicar `067_dmarc_aggregate_reports.sql` em produção e rodar
+  `scripts/seed-dmarc-mailbox.ts` para criar `dmarc@skale.club`. Os relatórios começam a
+  chegar ~24h depois da mudança de DNS.
+- Assento de captura crua em Gmail/Outlook/Yahoo (item 3 da fase 1), ainda não feito.
