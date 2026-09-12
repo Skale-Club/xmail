@@ -23,6 +23,7 @@ import { allocateNextUid, recomputeFolderCounts } from './lib/folder-counts'
 import { getDkimConfigForEmail, toNodemailerDkim } from './lib/dkim'
 import { shouldSkipOwnDkimForRelay } from './lib/relay-dkim-policy'
 import { describeOutbound, describeSendFailure, isRelayConfigured, sendOutbound } from './lib/outbound-transport'
+import { signAndSelfVerify } from './lib/dkim-self-verify'
 import { jsonbParam } from './lib/jsonb'
 import { sanitizeAttachmentFilename } from './lib/inbox-attachments'
 import { createObjectStorage } from './lib/object-storage'
@@ -147,18 +148,34 @@ async function relayMessage(
     const dkim = dkimConfig ? toNodemailerDkim(dkimConfig) : undefined
     if (skipOwnDkim) {
         console.log(`[SMTP:Relay] Own DKIM skipped: relay ${process.env.SMTP_HOST} rewrites the body and signs on its own (NATIVE_DKIM_SIGN=always to override)`)
-    } else if (dkim) {
-        console.log(`[SMTP:Relay] DKIM enabled: selector=${dkim.keySelector} domain=${dkim.domainName}`)
-    } else {
+    } else if (!dkim) {
         console.warn(`[SMTP:Relay] ⚠️  No DKIM key for ${fromAddress} — message will be unsigned`)
+    }
+
+    // Fase 2 (docs/outbound-authentication-audit.md): this used to log "DKIM enabled:
+    // selector=... domain=..." as soon as a key was found — before the message was signed,
+    // let alone verified. That line recorded INTENT, and production showed it for all 11
+    // domains while 11.4% of native mail to Gmail still landed in spam. signAndSelfVerify
+    // signs with the same Nodemailer DKIM signer the transport would otherwise use, then
+    // verifies the exact result with mailauth's dkimVerify — mirrors native-send.ts's
+    // relayMessage, the other half of this same DKIM-signing duplication.
+    const selfCheck = await signAndSelfVerify(rawEmail, dkim)
+    if (!selfCheck.verified) {
+        console.error(`[SMTP:Relay] DKIM self-verification FAILED for ${fromAddress} (domain=${dkim?.domainName} selector=${dkim?.keySelector}): ${selfCheck.reason}`)
+        throw new Error(`DKIM self-verification failed for ${fromAddress}: ${selfCheck.reason}`)
+    }
+    if (dkim) {
+        console.log(`[SMTP:Relay] DKIM verified: d=${dkim.domainName} s=${dkim.keySelector} — ${selfCheck.reason}`)
     }
 
     console.log(`[SMTP:Relay] Using ${describeOutbound()} from=${fromAddress} to=[${toAddresses.join(', ')}]`)
     try {
+        // dkim is intentionally NOT passed to sendOutbound: selfCheck.raw already carries our
+        // signature (or is unsigned-by-design when dkim was undefined) — passing dkim again
+        // would sign it a second time.
         const result = await sendOutbound(
-            { envelope: { from: fromAddress, to: toAddresses }, raw: rawEmail },
+            { envelope: { from: fromAddress, to: toAddresses }, raw: selfCheck.raw },
             toAddresses,
-            dkim,
         )
         console.log(`[SMTP:Relay] SUCCESS via ${result.via}:`, result.response)
     } catch (sendErr) {

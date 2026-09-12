@@ -21,6 +21,7 @@ import { allocateUidForNewMessage } from './move-messages'
 import { getDkimConfigForEmail, toNodemailerDkim } from './dkim'
 import { shouldSkipOwnDkimForRelay } from './relay-dkim-policy'
 import { describeOutbound, describeSendFailure, isRelayConfigured, sendOutbound } from './outbound-transport'
+import { signAndSelfVerify, type SignAndSelfVerifyOptions } from './dkim-self-verify'
 import { jsonbParam } from './jsonb'
 
 export interface StoreMessageData {
@@ -47,7 +48,13 @@ export interface StoreMessageData {
 export async function relayMessage(
     fromAddress: string,
     toAddresses: string[],
-    rawEmail: Buffer
+    rawEmail: Buffer,
+    /**
+     * Forwarded to `signAndSelfVerify`'s mailauth call. Production callers omit this (real
+     * DNS). Tests inject a fake resolver so the self-verification this function performs can
+     * be exercised against a throwaway keypair without a network — see native-send.test.ts.
+     */
+    dkimVerifyOptions?: SignAndSelfVerifyOptions
 ): Promise<void> {
     const usingRelay = isRelayConfigured()
     const skipOwnDkim = usingRelay && shouldSkipOwnDkimForRelay(process.env.SMTP_HOST)
@@ -55,19 +62,36 @@ export async function relayMessage(
     const dkim = dkimConfig ? toNodemailerDkim(dkimConfig) : undefined
     if (skipOwnDkim) {
         console.log(`[Send:Relay] Own DKIM skipped: relay ${process.env.SMTP_HOST} rewrites the body and signs on its own (NATIVE_DKIM_SIGN=always to override)`)
-    } else if (dkim) {
-        console.log(`[Send:Relay] DKIM enabled: selector=${dkim.keySelector} domain=${dkim.domainName}`)
-    } else {
+    } else if (!dkim) {
         console.warn(`[Send:Relay] ⚠️  No DKIM key for ${fromAddress} — message will be unsigned`)
+    }
+
+    // Fase 2 (docs/outbound-authentication-audit.md): the line this replaces —
+    // "DKIM enabled: selector=... domain=..." — logged unconditionally as soon as a key was
+    // found, before the message was ever signed. That is exactly the gap the audit measured:
+    // it recorded that we INTENDED to sign, never whether the signature actually verifies.
+    // signAndSelfVerify signs with the same Nodemailer DKIM signer the transport would have
+    // used, then checks the result with mailauth's dkimVerify — the bytes handed to
+    // sendOutbound below are the ones that were actually measured, not just requested. A
+    // message that fails its own verification will not pass Gmail's, so it is never sent.
+    const selfCheck = await signAndSelfVerify(rawEmail, dkim, dkimVerifyOptions)
+    if (!selfCheck.verified) {
+        console.error(`[Send:Relay] DKIM self-verification FAILED for ${fromAddress} (domain=${dkim?.domainName} selector=${dkim?.keySelector}): ${selfCheck.reason}`)
+        throw new Error(`DKIM self-verification failed for ${fromAddress}: ${selfCheck.reason}`)
+    }
+    if (dkim) {
+        console.log(`[Send:Relay] DKIM verified: d=${dkim.domainName} s=${dkim.keySelector} — ${selfCheck.reason}`)
     }
 
     console.log(`[Send:Relay] Using ${describeOutbound()}`)
     console.log(`[Send:Relay] Envelope: from=${fromAddress} to=[${toAddresses.join(', ')}]`)
     try {
+        // dkim is intentionally NOT passed to sendOutbound here: selfCheck.raw already
+        // carries our signature (or is unsigned-by-design when dkim was undefined). Passing
+        // dkim again would make the transport sign it a second time.
         const result = await sendOutbound(
-            { envelope: { from: fromAddress, to: toAddresses }, raw: rawEmail },
+            { envelope: { from: fromAddress, to: toAddresses }, raw: selfCheck.raw },
             toAddresses,
-            dkim,
         )
         console.log(`[Send:Relay] SUCCESS via ${result.via}:`, result.response)
     } catch (sendErr) {
