@@ -8,10 +8,13 @@ import { describe, expect, it } from 'vitest'
 import {
     ANALYZER_STALLED_EVENT_WINDOW_HOURS,
     buildSilenceAlerts,
+    DMARC_REPORT_GAP_HOURS,
     ENGINE_IDLE_CHECK_AFTER_UTC_HOUR,
     ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS,
+    MIN_EXTERNAL_WARMUP_SAMPLE_FOR_SPAM_CHECK,
     MIN_TERRITORIES_FOR_QUEUE_CHECK,
     VERIFICATION_MISSING_RUN_AGE_HOURS,
+    WARMUP_SPAM_RATE_THRESHOLD,
     type SilenceMetrics,
 } from '../outreach-silence'
 
@@ -49,6 +52,13 @@ function metrics(overrides: Partial<SilenceMetrics> = {}): SilenceMetrics {
         totalTerritories: 5,
         activeTerritories: 2,
         analyzerStalledEvents24h: 0,
+        // Fase 5 -- "healthy" baseline: plenty of external-warmup sample, none in spam; a
+        // report was ingested moments ago; the dormant DKIM-unverified signal is silent.
+        externalWarmupMessagesWithFolder24h: 100,
+        externalWarmupSpamMessages24h: 0,
+        totalDmarcReportsEver: 5,
+        lastDmarcReportProcessedAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+        outboundDkimUnverified24h: 0,
         ...overrides,
     }
 }
@@ -454,6 +464,81 @@ describe('analisador de sites travado (analyzer_stalled, Fase 40 -- dormant)', (
         expect(alerts[0]).toMatchObject({ severity: 'warning', kind: 'analyzer_stalled' })
         expect(alerts[0].message).toContain('3 stalled Website Analyzer run(s)')
         expect(alerts[0].message).toContain(`${ANALYZER_STALLED_EVENT_WINDOW_HOURS}h`)
+    })
+})
+
+describe('taxa de spam do mesh subindo (warmup_spam_rate_rising, Fase 5)', () => {
+    it('fica calado na linha de base medida (0% dez dias, pico isolado de 1%)', () => {
+        // O pico isolado de 06/09 (1,0%) não pode disparar -- treinaria o operador a ignorar.
+        expect(kinds(metrics({ externalWarmupMessagesWithFolder24h: 100, externalWarmupSpamMessages24h: 1 }))).toEqual([])
+    })
+
+    it('dispara no limiar medido que teria pego o incidente no mesmo dia (09/09, 9,5%)', () => {
+        const alerts = buildSilenceAlerts(metrics({
+            externalWarmupMessagesWithFolder24h: 100,
+            externalWarmupSpamMessages24h: 10, // 10% -- acima do limiar de 3%, abaixo do pico real de 9,5%
+        }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'critical', kind: 'warmup_spam_rate_rising' })
+        expect(alerts[0].message).toContain('10 of 100')
+        expect(alerts[0].message).toContain(`${Math.round(WARMUP_SPAM_RATE_THRESHOLD * 100)}%`)
+    })
+
+    it('fica calado abaixo da amostra mínima, mesmo com taxa alta', () => {
+        expect(kinds(metrics({
+            externalWarmupMessagesWithFolder24h: MIN_EXTERNAL_WARMUP_SAMPLE_FOR_SPAM_CHECK - 1,
+            externalWarmupSpamMessages24h: MIN_EXTERNAL_WARMUP_SAMPLE_FOR_SPAM_CHECK - 1,
+        }))).toEqual([])
+    })
+
+    it('mensagens internas (nosso próprio servidor julgando) nunca entram nesta contagem — só o chamador garante isso, mas o limiar em si não distingue direção', () => {
+        // Nota de design: a distinção "só externo" é aplicada em outreach-silence-query.ts (o
+        // JOIN com email_accounts.provider != 'native'), não aqui — buildSilenceAlerts é pura e
+        // só vê os números já filtrados. Este teste documenta a expectativa do CONTRATO.
+        expect(kinds(metrics({ externalWarmupMessagesWithFolder24h: 0, externalWarmupSpamMessages24h: 0 }))).toEqual([])
+    })
+})
+
+describe('lacuna de relatórios DMARC (dmarc_report_gap, Fase 5)', () => {
+    it('fica calado enquanto um relatório recente existe', () => {
+        expect(kinds(metrics({ totalDmarcReportsEver: 5, lastDmarcReportProcessedAt: new Date(NOW.getTime() - 60 * 60 * 1000) }))).toEqual([])
+    })
+
+    it(`dispara passado ${DMARC_REPORT_GAP_HOURS}h sem nenhum relatório processado`, () => {
+        const alerts = buildSilenceAlerts(metrics({
+            totalDmarcReportsEver: 5,
+            lastDmarcReportProcessedAt: new Date(NOW.getTime() - (DMARC_REPORT_GAP_HOURS + 1) * 60 * 60 * 1000),
+        }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'critical', kind: 'dmarc_report_gap' })
+        expect(alerts[0].message).toContain(`${DMARC_REPORT_GAP_HOURS}h`)
+    })
+
+    it('fica calado numa instalação nova -- nenhum relatório jamais chegou (propagação de DNS)', () => {
+        // Guarda contra o falso alarme das primeiras ~24h depois de dmarc@skale.club existir,
+        // antes do primeiro relatório do Gmail chegar -- ver o comentário do bloco em
+        // outreach-silence.ts.
+        expect(kinds(metrics({ totalDmarcReportsEver: 0, lastDmarcReportProcessedAt: null }))).toEqual([])
+    })
+
+    it('dispara mesmo sem nenhuma data (never) uma vez que existam relatórios históricos e o mais recente já não seja rastreável', () => {
+        const alerts = buildSilenceAlerts(metrics({ totalDmarcReportsEver: 5, lastDmarcReportProcessedAt: null }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ kind: 'dmarc_report_gap' })
+        expect(alerts[0].message).toContain('never')
+    })
+})
+
+describe('DKIM de saída não verificado (outbound_dkim_unverified, Fase 5 -- dormant até a Fase 2 do outro agente)', () => {
+    it('fica calado hoje -- nada nesta árvore ainda escreve o marcador de autoverificação', () => {
+        expect(kinds(metrics({ outboundDkimUnverified24h: 0 }))).toEqual([])
+    })
+
+    it('dispara no dia em que a autoverificação (Fase 2) passar a recusar e logar', () => {
+        const alerts = buildSilenceAlerts(metrics({ outboundDkimUnverified24h: 4 }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'critical', kind: 'outbound_dkim_unverified' })
+        expect(alerts[0].message).toContain('4 outbound message(s)')
     })
 })
 

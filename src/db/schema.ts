@@ -2895,3 +2895,65 @@ export const warmupMessagesRelations = relations(warmupMessages, ({ one }) => ({
 
 export type WarmupMessage = typeof warmupMessages.$inferSelect
 export type NewWarmupMessage = typeof warmupMessages.$inferInsert
+
+// ============================================================================
+// DMARC aggregate report ingestion (migration 067, Fase 1 — see
+// docs/outbound-authentication-audit.md and src/server/lib/dmarc-parser.ts). One row per
+// ingested <feedback> document (dmarcReports) plus one row per <record> block inside it
+// (dmarcReportRecords) — see the migration's own comments for why these are split and why
+// dedup lives on (reportingOrg, reportId, domain) rather than on record content.
+// ============================================================================
+
+export const dmarcReports = pgTable('dmarc_reports', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }),
+    domain: text('domain').notNull(),
+    reportingOrg: text('reporting_org').notNull(),
+    reportId: text('report_id').notNull(),
+    dateRangeBegin: timestamp('date_range_begin').notNull(),
+    dateRangeEnd: timestamp('date_range_end').notNull(),
+    sourceMessageId: uuid('source_message_id'),
+    recordCount: integer('record_count').default(0).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+    orgReportDomainUnique: uniqueIndex('dmarc_reports_org_report_domain_unique').on(table.reportingOrg, table.reportId, table.domain),
+    idxDomainRange: index('idx_dmarc_reports_domain_range').on(table.domain, table.dateRangeBegin),
+    idxCreatedAt: index('idx_dmarc_reports_created_at').on(table.createdAt),
+}))
+
+export const dmarcReportRecords = pgTable('dmarc_report_records', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    reportId: uuid('report_id').references(() => dmarcReports.id, { onDelete: 'cascade' }).notNull(),
+    sourceIp: text('source_ip'),
+    messageCount: integer('message_count').default(1).notNull(),
+    disposition: text('disposition'),
+    /** auth_results/dkim — RAW (pre-alignment) result and signing domain. */
+    dkimResult: text('dkim_result'),
+    dkimDomain: text('dkim_domain'),
+    /** auth_results/spf — RAW (pre-alignment) result and checked domain. */
+    spfResult: text('spf_result'),
+    spfDomain: text('spf_domain'),
+    headerFrom: text('header_from'),
+    /** policy_evaluated/dkim and /spf — the ALIGNED verdict, distinct from dkimResult/spfResult
+     *  above. See the migration's comment: this is the DKIM-passed vs DMARC-passed distinction. */
+    policyDkimAligned: text('policy_dkim_aligned'),
+    policySpfAligned: text('policy_spf_aligned'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+    idxReportId: index('idx_dmarc_report_records_report_id').on(table.reportId),
+    idxHeaderFrom: index('idx_dmarc_report_records_header_from').on(table.headerFrom),
+}))
+
+export const dmarcReportsRelations = relations(dmarcReports, ({ one, many }) => ({
+    organization: one(organizations, { fields: [dmarcReports.organizationId], references: [organizations.id] }),
+    records: many(dmarcReportRecords),
+}))
+
+export const dmarcReportRecordsRelations = relations(dmarcReportRecords, ({ one }) => ({
+    report: one(dmarcReports, { fields: [dmarcReportRecords.reportId], references: [dmarcReports.id] }),
+}))
+
+export type DmarcReport = typeof dmarcReports.$inferSelect
+export type NewDmarcReport = typeof dmarcReports.$inferInsert
+export type DmarcReportRecord = typeof dmarcReportRecords.$inferSelect
+export type NewDmarcReportRecord = typeof dmarcReportRecords.$inferInsert

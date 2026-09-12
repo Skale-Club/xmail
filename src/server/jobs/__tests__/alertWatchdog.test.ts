@@ -73,6 +73,12 @@ function healthySilenceMetrics(overrides: Partial<SilenceMetrics> = {}): Silence
         totalTerritories: 5,
         activeTerritories: 2,
         analyzerStalledEvents24h: 0,
+        // Fase 5 -- healthy baseline, mirrors outreach-silence.test.ts's own fixture.
+        externalWarmupMessagesWithFolder24h: 100,
+        externalWarmupSpamMessages24h: 0,
+        totalDmarcReportsEver: 5,
+        lastDmarcReportProcessedAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+        outboundDkimUnverified24h: 0,
         ...overrides,
     }
 }

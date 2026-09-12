@@ -11,6 +11,7 @@ import { resolveDailyBudgetUsd } from './prospecting/daily-territory-budget'
 import {
     ANALYZER_STALLED_EVENT_WINDOW_HOURS,
     ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS,
+    OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER,
     VERIFICATION_MISSING_RUN_AGE_HOURS,
     type SilenceMetrics,
 } from './outreach-silence'
@@ -160,7 +161,36 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
             -- doc comment in outreach-silence.ts. 'analyze.stalled' is not a code anything in
             -- Xmail ever writes today; this always reads 0 until Xphere starts sending it.
             (SELECT count(*) FROM prospecting_run_events
-                WHERE code = 'analyze.stalled' AND occurred_at >= ${analyzerStalledCutoff}) AS analyzer_stalled_events_24h
+                WHERE code = 'analyze.stalled' AND occurred_at >= ${analyzerStalledCutoff}) AS analyzer_stalled_events_24h,
+            -- Fase 5 (kind: warmup_spam_rate_rising) -- see WARMUP_SPAM_RATE_THRESHOLD in
+            -- outreach-silence.ts. EXTERNAL destination only (email_accounts.provider != 'native'
+            -- means a real mailbox monitored over IMAP, not our own mx-server): a native-to-native
+            -- or Gmail-to-native send always reads 0% and always will, because our own server
+            -- judges its own inbound mail.
+            (SELECT count(*) FROM warmup_messages wm
+                JOIN email_accounts ea ON ea.id = wm.to_account_id
+                WHERE wm.sent_at >= ${cutoff24h}
+                  AND wm.detected_folder IS NOT NULL
+                  AND ea.provider != 'native') AS external_warmup_messages_with_folder_24h,
+            (SELECT count(*) FROM warmup_messages wm
+                JOIN email_accounts ea ON ea.id = wm.to_account_id
+                WHERE wm.sent_at >= ${cutoff24h}
+                  AND wm.detected_folder = 'spam'
+                  AND ea.provider != 'native') AS external_warmup_spam_messages_24h,
+            -- Fase 5 (kind: dmarc_report_gap) -- see DMARC_REPORT_GAP_HOURS in outreach-silence.ts.
+            (SELECT count(*) FROM dmarc_reports) AS total_dmarc_reports_ever,
+            (SELECT max(created_at) FROM dmarc_reports) AS last_dmarc_report_processed_at,
+            -- Fase 5 (kind: outbound_dkim_unverified) -- DORMANT, see
+            -- OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER in outreach-silence.ts. Checked against both
+            -- tables an outbound self-verify step in native-send.ts could plausibly report
+            -- through (it is shared by warm-up AND outreach sends, per CLAUDE.md) -- always 0
+            -- until that marker exists anywhere.
+            (SELECT count(*) FROM warmup_messages
+                WHERE updated_at >= ${cutoff24h}
+                  AND last_error ILIKE ${'%' + OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER + '%'}) AS outbound_dkim_unverified_warmup_24h,
+            (SELECT count(*) FROM outreach_emails
+                WHERE updated_at >= ${cutoff24h}
+                  AND last_error_code ILIKE ${'%' + OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER + '%'}) AS outbound_dkim_unverified_outreach_24h
     `)
 
     const rows = (Array.isArray(raw) ? raw : (raw as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>
@@ -216,5 +246,14 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
         totalTerritories: n('total_territories'),
         activeTerritories: n('active_territories'),
         analyzerStalledEvents24h: n('analyzer_stalled_events_24h'),
+        // Fase 5.
+        externalWarmupMessagesWithFolder24h: n('external_warmup_messages_with_folder_24h'),
+        externalWarmupSpamMessages24h: n('external_warmup_spam_messages_24h'),
+        totalDmarcReportsEver: n('total_dmarc_reports_ever'),
+        lastDmarcReportProcessedAt: row['last_dmarc_report_processed_at']
+            ? new Date(row['last_dmarc_report_processed_at'] as string)
+            : null,
+        // DORMANT until Fase 2 lands -- see OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER.
+        outboundDkimUnverified24h: n('outbound_dkim_unverified_warmup_24h') + n('outbound_dkim_unverified_outreach_24h'),
     }
 }
