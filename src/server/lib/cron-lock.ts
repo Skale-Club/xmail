@@ -89,13 +89,27 @@ const DEFAULT_JOB_TIMEOUT_MS = 10 * 60 * 1000
 //   job                          | normal latency | cadence | rule result | ratio to cadence
 //   warmup-mesh-processor        | 75s            | 600s    | 375s (5x)   | 62.5%
 //   outreach-replies-processor   | 55-61s         | 900s    | 305s (5x61) | 33.9%
-//   outreach-bounces-processor   | 1.6s           | 1800s   | 30s (floor) | 1.7%
+//   outreach-bounces-processor   | see below — NOT sized by this job's own latency, see 2026-09-12 note
 //   outreach-inbox-commands      | 1.3-2s         | 60s     | 30s (floor) | 50%
 //   deliverOutreachEventsToXphere| 0.4s           | 60s     | 30s (floor) | 50%
 //
 // `outreach-inbound-ingest` (src/server/lib/outreach-inbound-sources.ts, measured at ~55s normal /
 // 600s current budget — same rule would give ~305s) is deliberately NOT retuned here: that file is
 // owned by a parallel change, so it keeps its current default budget until that agent retunes it.
+//
+// 2026-09-12 CORRECTION — outreach-bounces-processor: the 30s floor above was wrong. It was
+// derived from THIS job's own latency (1.6s) on ticks where `outreach-replies-processor` wins the
+// shared `outreach-inbound-ingest` advisory lock first and bounces skips straight to consuming
+// (see `ingestOutreachInboundExclusive`, outreach-inbound-sources.ts — that lock SKIPS when held,
+// it does not wait). But on ticks where BOUNCES wins that lock instead, it performs the entire
+// ingest itself, and that is the actual cost driver, not its own fast path. Measured over 48h
+// production (n=176, the runs where bounces won the lock and did the ingest work): min 44405ms,
+// p50 49932ms, p90 60663ms, max 72133ms. With the 30s floor this could not possibly finish —
+// confirmed at 53 timeouts out of 96 runs in the same window. Budget is now 5x the slow end of
+// that measured range (max 72133ms x 5 = 360665ms, rounded up to 361000ms), the same derivation
+// outreach-replies-processor's 305s got from its own 55-61s range. Whoever changes the cost of
+// `outreach-inbound-ingest` (outreach-inbound-sources.ts) changes what this budget needs to be —
+// re-measure both `outreach-replies-processor` and `outreach-bounces-processor` at that point.
 //
 // Jobs with no measurement from this incident (amortizeSubscriptionCosts, expireOutreachApprovals,
 // materializeUnifiedInbox/backfillUnifiedInbox, measureProspectingOutcomes, reconcileOutreachEvents,
@@ -110,7 +124,11 @@ const DEFAULT_JOB_TIMEOUT_MS = 10 * 60 * 1000
 export const JOB_TIMEOUT_BUDGETS_MS = {
     warmupMeshProcessor: 375_000, // 5 x 75s observed normal latency
     outreachRepliesProcessor: 305_000, // 5 x 61s (slow end of the observed 55-61s range)
-    outreachBouncesProcessor: 30_000, // 30s floor (5 x 1.6s would be ~8s — too tight)
+    // NOT 5x this job's own latency (1.6s) -- see the 2026-09-12 CORRECTION note above. This
+    // job's cost is dominated by the shared `outreach-inbound-ingest` work it performs whenever
+    // it wins that advisory lock (processBounces.ts), not by its own fast path. 5 x the measured
+    // max (72133ms) of that ingest work over 176 production runs, rounded up to a clean number.
+    outreachBouncesProcessor: 361_000,
     outreachInboxCommands: 30_000, // 30s floor (5 x 1.3-2s would be single-digit seconds)
     deliverOutreachEventsToXphere: 30_000, // 30s floor (5 x 0.4s would be ~2s)
     // Fase 36 (docs/prospecting-engine-plan.md) — new job, no production measurement yet, so

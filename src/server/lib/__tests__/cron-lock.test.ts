@@ -697,30 +697,61 @@ describe('JOB_TIMEOUT_BUDGETS_MS — budgets retuned to measured production late
     it('applies the stated rule (5x observed normal latency, 30s floor) per job', () => {
         expect(JOB_TIMEOUT_BUDGETS_MS.warmupMeshProcessor).toBe(375_000) // 5 x 75s
         expect(JOB_TIMEOUT_BUDGETS_MS.outreachRepliesProcessor).toBe(305_000) // 5 x 61s (slow end of 55-61s)
-        expect(JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor).toBe(30_000) // floor (5 x 1.6s ~= 8s)
+        // NOT this job's own latency -- see the dedicated describe block below (2026-09-12).
+        expect(JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor).toBe(361_000)
         expect(JOB_TIMEOUT_BUDGETS_MS.outreachInboxCommands).toBe(30_000) // floor (5 x 1.3-2s is single digits)
         expect(JOB_TIMEOUT_BUDGETS_MS.deliverOutreachEventsToXphere).toBe(30_000) // floor (5 x 0.4s ~= 2s)
         // Fase 36 — NOT sized by the 5x-measured-latency rule (no production measurement yet
         // for a brand-new job); bounded instead by its own explicit 15s fetch AbortSignal
-        // timeout plus DB bookkeeping headroom. See cron-lock.ts's own comment on this entry.
-        expect(JOB_TIMEOUT_BUDGETS_MS.runDailyProspecting).toBe(90_000)
+        // timeout plus DB bookkeeping headroom, PLUS (2026-09-12) the reconciliation poll's own
+        // bound: 10 x 10s = 100s. See cron-lock.ts's own comment on this entry.
+        expect(JOB_TIMEOUT_BUDGETS_MS.runDailyProspecting).toBe(200_000)
     })
 
     it('every configured budget stays comfortably above its own job\'s measured normal latency', () => {
         // "Comfortably above" per the stated rule: at least the 30s floor, or the 5x multiple —
-        // whichever the rule actually produced for that job. `runDailyProspecting` is
-        // deliberately excluded here — it has no measured normal latency (see the previous
-        // test) so the 5x invariant does not apply to it.
-        const normalLatencyMs: Record<Exclude<keyof typeof JOB_TIMEOUT_BUDGETS_MS, 'runDailyProspecting'>, number> = {
+        // whichever the rule actually produced for that job. `runDailyProspecting` and
+        // `outreachBouncesProcessor` are deliberately excluded here: the former has no measured
+        // normal latency (see the previous test), and the latter's budget is NOT sized against
+        // its own latency at all (1.6s, only observed when it loses the shared ingest lock race)
+        // — it is sized against the shared `outreach-inbound-ingest` work it inherits when it
+        // wins that race instead. See the dedicated describe block below for that invariant.
+        const normalLatencyMs: Record<
+            Exclude<keyof typeof JOB_TIMEOUT_BUDGETS_MS, 'runDailyProspecting' | 'outreachBouncesProcessor'>,
+            number
+        > = {
             warmupMeshProcessor: 75_000,
             outreachRepliesProcessor: 61_000,
-            outreachBouncesProcessor: 1_600,
             outreachInboxCommands: 2_000,
             deliverOutreachEventsToXphere: 400,
         }
         for (const job of Object.keys(normalLatencyMs) as (keyof typeof normalLatencyMs)[]) {
             expect(JOB_TIMEOUT_BUDGETS_MS[job]).toBeGreaterThanOrEqual(normalLatencyMs[job] * 5)
         }
+    })
+
+    describe('outreachBouncesProcessor — sized against the shared outreach-inbound-ingest cost it may inherit (2026-09-12)', () => {
+        // Measured 48h production distribution of the outreach-inbound-ingest work this job
+        // performs whenever it wins the shared 'outreach-inbound-ingest' advisory lock ahead of
+        // outreach-replies-processor (n=176 runs where it won that race): min 44405ms,
+        // p50 49932ms, p90 60663ms, max 72133ms. Under the old 30_000ms budget (derived only from
+        // this job's OWN ~1.6s latency on the runs where it lost that race) it timed out 53/96
+        // production runs. This pins the fix so a future edit cannot quietly shrink the budget
+        // back below what the ingest work actually costs.
+        const INGEST_P90_MS = 60_663
+        const INGEST_MAX_MS = 72_133
+
+        it('covers the measured ingest p90 with margin', () => {
+            expect(JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor).toBeGreaterThanOrEqual(INGEST_P90_MS * 5)
+        })
+
+        it('stays above the measured ingest max, not just its p90', () => {
+            expect(JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor).toBeGreaterThan(INGEST_MAX_MS)
+        })
+
+        it('does not regress toward this job\'s own fast-path latency (1.6s) or the old, undersized 30s floor', () => {
+            expect(JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor).toBeGreaterThan(30_000)
+        })
     })
 
     it('is threaded through to an actual runWithLock timeout at the exact configured value', async () => {

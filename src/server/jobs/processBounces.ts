@@ -530,10 +530,17 @@ async function markAsSoftBounced(
 const BOUNCE_PROCESSOR_LOCK_NAME = 'outreach-bounces-processor'
 
 export async function runBouncesProcessorWithLock(): Promise<void> {
-    // jobs/index.ts schedules this every 30 minutes. 2026-09-04 (Fase 1 TASK 2): previously ran on
-    // cron-lock's 10-minute default; retuned to the 30s floor — the 1.6s normal latency measured in
-    // production is so far below any reasonable budget that 5x it would be too tight (see
-    // JOB_TIMEOUT_BUDGETS_MS in cron-lock.ts for the rule and the full table).
+    // jobs/index.ts schedules this every 30 minutes. 2026-09-04 (Fase 1 TASK 2) originally retuned
+    // this to a 30s floor from this job's OWN 1.6s normal latency — but that latency is only what
+    // this job costs when `outreach-replies-processor` wins the shared `outreach-inbound-ingest`
+    // advisory lock first and this job skips straight to consuming. On ticks where BOUNCES wins
+    // that lock instead, it performs the whole ingest itself (see `ingestOutreachInboundExclusive`
+    // below), and that dominates its cost. 2026-09-12 CORRECTION: measured over 48h production,
+    // this job timed out 53/96 runs under the 30s budget; the ingest work it was actually doing on
+    // those runs measured min 44405ms / p50 49932ms / p90 60663ms / max 72133ms (n=176) — an order
+    // of magnitude above the floor. Budget is now JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor
+    // (361_000ms, 5x that measured max) — see cron-lock.ts's own note for the full derivation and
+    // the warning that changing outreach-inbound-ingest's cost changes this budget too.
     await runWithLock(BOUNCE_PROCESSOR_LOCK_NAME, async () => {
         await processBounces()
     }, { timeoutMs: JOB_TIMEOUT_BUDGETS_MS.outreachBouncesProcessor })
