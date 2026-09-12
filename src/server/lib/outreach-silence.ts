@@ -239,6 +239,28 @@ export const DMARC_REPORT_GAP_HOURS = 48
  */
 export const OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER = 'own DKIM verification failed'
 
+/**
+ * Age threshold (kind: xphere_events_undelivered) for a row still sitting in
+ * `outreach_event_outbox` with no `xphere_delivered_at`, in minutes.
+ *
+ * Derived from this same job's own retry schedule (deliverOutreachEvents.ts `retryAt`:
+ * `delayMinutes = min(360, 2^(attempt-1))`, `MAX_ATTEMPTS = 10`). Assuming every attempt fails,
+ * the delays after attempts 1..N sum to `2^N - 1` minutes, so attempt N+1 fires at that mark:
+ * attempt 8 at +127min (~2.1h), attempt 9 at +255min (~4.25h), attempt 10 at +511min (~8.5h) —
+ * and once that tenth attempt fails the row is abandoned for good, because `xphereAttempts`
+ * reaches `MAX_ATTEMPTS` and `buildDeliverableOutreachEventsQuery` stops selecting it.
+ *
+ * 180 minutes (3h) sits between the 8th attempt (+2.1h) and the 9th (+4.25h), comfortably before
+ * the ~8.5h a genuinely flaky-but-working endpoint would take to exhaust every retry: by 3h a row
+ * still being retried on schedule has already had 8 real attempts, so ordinary transient failures
+ * have had every reasonable chance to clear. This also covers the scenario this rule exists for —
+ * `XPHERE_EVENTS_URL`/`XPHERE_EVENTS_API_KEY` missing entirely, where `deliverOutreachEventsToXphere`
+ * returns before ever touching a row, so `xphereAttempts` stays 0 and age is purely wall-clock
+ * time since insertion — that case is already well past this threshold within the first hour of
+ * the misconfiguration, not just by the three-hour mark.
+ */
+export const XPHERE_EVENT_STUCK_AGE_MINUTES = 180
+
 export interface SilenceMetrics {
     /** Caixas elegíveis ao mesh: `warmup_source='internal'` e verificadas. */
     warmupEligibleInboxes: number
@@ -348,6 +370,17 @@ export interface SilenceMetrics {
      *  last 24h. Always 0 until Fase 2's self-verify-before-deliver step exists and writes that
      *  marker — see the constant's own doc comment. */
     outboundDkimUnverified24h: number
+
+    /**
+     * `outreach_event_outbox` rows with `xphere_delivery_enabled = true` and
+     * `xphere_delivered_at IS NULL`, org-wide. See XPHERE_EVENT_STUCK_AGE_MINUTES above.
+     */
+    pendingXphereEvents: number
+    /** Oldest `occurred_at` age (in minutes) among the rows counted above — null when
+     *  `pendingXphereEvents` is 0, so an empty (healthy, draining) outbox never evaluates the
+     *  threshold at all, the same shape as `lastDmarcReportProcessedAt` guarded by
+     *  `totalDmarcReportsEver` above. */
+    oldestPendingXphereEventAgeMinutes: number | null
 }
 
 /**
@@ -677,6 +710,32 @@ export function buildSilenceAlerts(metrics: SilenceMetrics, now: Date = new Date
             kind: 'analyzer_stalled',
             message: `Xphere reported ${metrics.analyzerStalledEvents24h} stalled Website Analyzer run(s) `
                 + `in the last ${ANALYZER_STALLED_EVENT_WINDOW_HOURS}h via the analyze.stalled Journey event.`,
+            since,
+        })
+    }
+
+    // Crítico: ver XPHERE_EVENT_STUCK_AGE_MINUTES acima. Cobre as duas causas com a mesma leitura
+    // — "config ausente" (zero tentativas feitas, idade = tempo desde a criação) e "endpoint do
+    // Xphere fora do ar" (tentativas de fato aconteceram e continuam falhando) — porque das duas
+    // perspectivas de fora o outbox é a mesma coisa: linhas paradas sem entrega há tempo demais.
+    // Guardado contra a fila vazia (o caso saudável e comum) pelo mesmo formato de
+    // oldestPendingXphereEventAgeMinutes ser null quando não há nenhuma linha pendente.
+    if (
+        metrics.oldestPendingXphereEventAgeMinutes !== null
+        && metrics.oldestPendingXphereEventAgeMinutes > XPHERE_EVENT_STUCK_AGE_MINUTES
+    ) {
+        const ageMinutes = metrics.oldestPendingXphereEventAgeMinutes
+        const ageLabel = ageMinutes >= 60
+            ? `${Math.round((ageMinutes / 60) * 10) / 10}h`
+            : `${ageMinutes}min`
+        alerts.push({
+            severity: 'critical',
+            kind: 'xphere_events_undelivered',
+            message: `${metrics.pendingXphereEvents} outreach_event_outbox row(s) are undelivered to `
+                + `Xphere, oldest ${ageLabel} old (threshold ${XPHERE_EVENT_STUCK_AGE_MINUTES}min). `
+                + 'Either XPHERE_EVENTS_URL/XPHERE_EVENTS_API_KEY is missing or misconfigured '
+                + '(deliverOutreachEventsToXphere returns before making any attempt), or the Xphere '
+                + 'endpoint itself has been failing this whole time.',
             since,
         })
     }
