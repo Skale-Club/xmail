@@ -205,9 +205,25 @@ Primeiro dado real que o instrumento devolveu, em `xphere.app` → Compliance st
 | User-reported spam rate | Compliant |
 | DNS records | Compliant |
 
-O `Needs work` do DMARC é leitura velha do painel (`Last updated Jun 13`): os nove domínios
-têm `v=DMARC1; p=none` publicado e resolvendo hoje. Vale reconferir quando o painel
-atualizar — se continuar vermelho com o registro no ar, aí é achado, não defasagem.
+O `Needs work` do DMARC **não é defeito de DNS, e não vai se corrigir sozinho.** Medido:
+
+- `_dmarc.xphere.app` responde `v=DMARC1; p=none; rua=...` em `8.8.8.8`, `1.1.1.1` e
+  `9.9.9.9`, registro único (dois registros no `_dmarc` fariam o domínio contar como **sem**
+  DMARC, RFC 7489 §6.6.3 — não é o caso).
+- O veredito do painel é de **13/06**. O registro atual em `_dmarc.xphere.app` foi criado em
+  **16/08**. O julgamento é dois meses mais velho que a coisa julgada.
+- A aba **Authentication** de `xphere.app` vem **vazia**: o Postmaster exige um volume
+  diário mínimo para o Gmail antes de reportar qualquer coisa, e `xphere.app` não chega lá.
+  Sem volume, o Google não reavalia, e o veredito de 13/06 fica congelado indefinidamente.
+
+Comparação que fecha o raciocínio: `skale.club` foi avaliado em **18/08** e dá DMARC
+*Compliant*; `skleanings.com`, em **07/06**, também *Compliant*; `endenemy.com` responde
+"No data was found for this domain". Ou seja, a data do veredito é por domínio e depende de
+tráfego — não de o registro existir.
+
+**Consequência para o plano:** a fase 4 (reequilibrar o mesh) deixa de ser só decisão de
+operação. Enquanto esses domínios não mandarem volume para o Gmail, o Postmaster continua
+cego neles, e o único instrumento que sobra são os relatórios DMARC agregados da fase 1.
 
 ### Em produção desde 2026-09-12 16:19 UTC
 
