@@ -37,16 +37,16 @@ interface CreateCredentialResponse {
 // server's `availableScopes`, so a scope added on the backend shows up here (with its raw
 // name) without a frontend change.
 const SCOPE_DESCRIPTIONS: Record<string, string> = {
-    'outreach:read': 'Ler campanhas e estatísticas',
-    'prospects:search': 'Descobrir/buscar prospects',
-    'prospects:enrich': 'Enriquecer dados de prospects (consome créditos, com aprovação humana)',
-    'prospects:assess': 'Avaliar e pontuar prospects',
-    'prospects:write': 'Importar/criar/atualizar prospects',
-    'campaigns:draft': 'Criar campanhas em rascunho',
-    'campaigns:request_activation': 'Solicitar ativação (um humano aprova)',
-    'campaigns:pause': 'Pausar campanhas',
-    'approvals:read': 'Ver aprovações pendentes',
-    'events:read': 'Ler eventos/auditoria do agente',
+    'outreach:read': 'Read campaigns and stats',
+    'prospects:search': 'Discover and search prospects',
+    'prospects:enrich': 'Enrich prospect data (spends credits, requires human approval)',
+    'prospects:assess': 'Assess and score prospects',
+    'prospects:write': 'Import, create and update prospects',
+    'campaigns:draft': 'Create draft campaigns',
+    'campaigns:request_activation': 'Request activation (a human approves)',
+    'campaigns:pause': 'Pause campaigns',
+    'approvals:read': 'View pending approvals',
+    'events:read': 'Read agent events and audit trail',
 }
 
 const MAX_VISIBLE_SCOPES = 4
@@ -60,9 +60,9 @@ function credentialStatus(credential: AgentCredential): CredentialStatus {
 }
 
 const statusBadge: Record<CredentialStatus, { label: string; className: string }> = {
-    active: { label: 'Ativa', className: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-700 dark:text-emerald-300' },
-    revoked: { label: 'Revogada', className: 'border-border bg-muted/40 text-muted-foreground' },
-    expired: { label: 'Expirada', className: 'border-amber-400/30 bg-amber-400/10 text-amber-700 dark:text-amber-300' },
+    active: { label: 'Active', className: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-700 dark:text-emerald-300' },
+    revoked: { label: 'Revoked', className: 'border-border bg-muted/40 text-muted-foreground' },
+    expired: { label: 'Expired', className: 'border-amber-400/30 bg-amber-400/10 text-amber-700 dark:text-amber-300' },
 }
 
 function formatDate(value: string | null, empty: string) {
@@ -76,15 +76,15 @@ function todayInputValue() {
 }
 
 function describeError(error: unknown, fallback: string) {
-    if (error instanceof ApiClientError && error.status === 403) return 'Acesso de administrador necessário.'
+    if (error instanceof ApiClientError && error.status === 403) return 'Organization admin access required.'
     return error instanceof Error ? error.message : fallback
 }
 
 function TokenRevealBox({ token }: { token: string }) {
     function copy() {
         navigator.clipboard.writeText(token).then(
-            () => toast({ title: 'Token copiado para a área de transferência', variant: 'success' }),
-            () => toast({ title: 'Falha ao copiar o token', variant: 'destructive' })
+            () => toast({ title: 'Token copied to clipboard', variant: 'success' }),
+            () => toast({ title: 'Failed to copy token', variant: 'destructive' })
         )
     }
 
@@ -94,11 +94,11 @@ function TokenRevealBox({ token }: { token: string }) {
                 <code className="flex-1 break-all rounded bg-muted px-2 py-1 font-mono text-xs">{token}</code>
                 <Button variant="outline" size="sm" onClick={copy}>
                     <Copy className="mr-2 h-4 w-4" />
-                    Copiar
+                    Copy
                 </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-                Guarde agora. O Xmail armazena apenas o hash e não exibirá este token novamente.
+                Store this now. Xmail keeps only its hash and will not show this token again.
             </p>
         </div>
     )
@@ -137,7 +137,7 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
             setRevealedToken(data.token)
             void queryClient.invalidateQueries({ queryKey })
         },
-        onError: (error) => setFormError(describeError(error, 'Não foi possível criar a credencial.')),
+        onError: (error) => setFormError(describeError(error, 'Could not create the credential.')),
     })
 
     const revokeMutation = useMutation({
@@ -147,13 +147,13 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
                 { method: 'POST' },
             ),
         onSuccess: (_data, credential) => {
-            toast({ title: `Credencial "${credential.name}" revogada`, variant: 'success' })
+            toast({ title: `Credential "${credential.name}" revoked`, variant: 'success' })
             setRevokeTarget(null)
             void queryClient.invalidateQueries({ queryKey })
         },
         onError: (error) => toast({
-            title: 'Falha ao revogar a credencial',
-            description: describeError(error, 'Tente novamente.'),
+            title: 'Failed to revoke credential',
+            description: describeError(error, 'Please try again.'),
             variant: 'destructive',
         }),
     })
@@ -188,9 +188,9 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
 
     function submitCreate() {
         const name = form.name.trim()
-        if (!name) return setFormError('Informe um nome.')
-        if (name.length > 100) return setFormError('O nome deve ter no máximo 100 caracteres.')
-        if (form.scopes.length === 0) return setFormError('Selecione pelo menos um escopo.')
+        if (!name) return setFormError('Enter a name.')
+        if (name.length > 100) return setFormError('Name must be at most 100 characters.')
+        if (form.scopes.length === 0) return setFormError('Select at least one scope.')
         // A date-only input means "valid through that day": expire at the end of it, local time.
         const expiresAt = form.expiresOn ? new Date(`${form.expiresOn}T23:59:59.999`).toISOString() : undefined
         setFormError(null)
@@ -201,28 +201,28 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
         <section className="overflow-hidden rounded-2xl border border-border/70 bg-card/80 shadow-sm backdrop-blur">
             <div className="flex flex-col gap-3 border-b border-border/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                    <h2 className="font-semibold text-foreground">Credenciais de agente</h2>
+                    <h2 className="font-semibold text-foreground">Agent credentials</h2>
                     <p className="text-xs text-muted-foreground">
-                        Chaves de API para agentes no gateway <span className="font-mono">/api/agent/outreach</span>. Gasto de créditos e ativação de campanha continuam exigindo aprovação humana.
+                        API keys for agents on the <span className="font-mono">/api/agent/outreach</span> gateway. Credit spend and campaign activation still require human approval.
                     </p>
                 </div>
                 <Button size="sm" onClick={openCreate} disabled={credentialsQuery.isLoading || !!credentialsQuery.error}>
                     <Plus className="mr-1.5 h-4 w-4" />
-                    Nova credencial
+                    New credential
                 </Button>
             </div>
 
             {credentialsQuery.isLoading ? (
-                <div className="p-6 text-sm text-muted-foreground">Carregando credenciais…</div>
+                <div className="p-6 text-sm text-muted-foreground">Loading credentials…</div>
             ) : credentialsQuery.error ? (
                 <div role="alert" className="p-6 text-sm text-red-700 dark:text-red-300">
-                    {describeError(credentialsQuery.error, 'Não foi possível carregar as credenciais.')}
+                    {describeError(credentialsQuery.error, 'Could not load credentials.')}
                 </div>
             ) : credentials.length === 0 ? (
                 <div className="p-10 text-center">
                     <KeyRound className="mx-auto h-8 w-8 text-muted-foreground" />
                     <p className="mt-3 text-sm text-muted-foreground">
-                        Nenhuma credencial de agente ainda. Crie a primeira para dar acesso de API a um agente.
+                        No agent credentials yet. Create one to give an agent API access.
                     </p>
                 </div>
             ) : (
@@ -230,14 +230,14 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
                     <table className="w-full min-w-[960px] text-left text-sm">
                         <thead className="bg-muted/35 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
                             <tr>
-                                <th className="px-5 py-3 font-medium">Nome</th>
+                                <th className="px-5 py-3 font-medium">Name</th>
                                 <th className="px-4 py-3 font-medium">Status</th>
-                                <th className="px-4 py-3 font-medium">Chave</th>
-                                <th className="px-4 py-3 font-medium">Escopos</th>
-                                <th className="px-4 py-3 font-medium">Criada em</th>
-                                <th className="px-4 py-3 font-medium">Expira em</th>
-                                <th className="px-4 py-3 font-medium">Último uso</th>
-                                <th className="px-5 py-3 text-right font-medium">Ações</th>
+                                <th className="px-4 py-3 font-medium">Key</th>
+                                <th className="px-4 py-3 font-medium">Scopes</th>
+                                <th className="px-4 py-3 font-medium">Created</th>
+                                <th className="px-4 py-3 font-medium">Expires</th>
+                                <th className="px-4 py-3 font-medium">Last used</th>
+                                <th className="px-5 py-3 text-right font-medium">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-border/60">
@@ -264,7 +264,7 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
                                         </td>
                                         <td className="whitespace-nowrap px-4 py-4 text-xs text-muted-foreground">{formatDate(credential.createdAt, '—')}</td>
                                         <td className="whitespace-nowrap px-4 py-4 text-xs text-muted-foreground">{formatDate(credential.expiresAt, '—')}</td>
-                                        <td className="whitespace-nowrap px-4 py-4 text-xs text-muted-foreground">{formatDate(credential.lastUsedAt, 'Nunca')}</td>
+                                        <td className="whitespace-nowrap px-4 py-4 text-xs text-muted-foreground">{formatDate(credential.lastUsedAt, 'Never')}</td>
                                         <td className="px-5 py-4 text-right">
                                             <Button
                                                 size="sm"
@@ -272,7 +272,7 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
                                                 onClick={() => setRevokeTarget(credential)}
                                                 disabled={status !== 'active' || revokeMutation.isPending}
                                             >
-                                                Revogar
+                                                Revoke
                                             </Button>
                                         </td>
                                     </tr>
@@ -288,26 +288,26 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
                     {revealedToken ? (
                         <>
                             <DialogHeader>
-                                <DialogTitle>Token criado — exibido uma única vez</DialogTitle>
-                                <DialogDescription>Use-o no header <span className="font-mono">x-agent-key</span> das chamadas ao gateway do agente.</DialogDescription>
+                                <DialogTitle>Token created — shown only once</DialogTitle>
+                                <DialogDescription>Send it in the <span className="font-mono">x-agent-key</span> header when calling the agent gateway.</DialogDescription>
                             </DialogHeader>
                             <TokenRevealBox token={revealedToken} />
                             <DialogFooter>
-                                <Button onClick={closeCreate}>Concluir</Button>
+                                <Button onClick={closeCreate}>Done</Button>
                             </DialogFooter>
                         </>
                     ) : (
                         <>
                             <DialogHeader>
-                                <DialogTitle>Nova credencial de agente</DialogTitle>
-                                <DialogDescription>O token é exibido uma única vez após a criação.</DialogDescription>
+                                <DialogTitle>New agent credential</DialogTitle>
+                                <DialogDescription>The token is shown only once, right after creation.</DialogDescription>
                             </DialogHeader>
                             <div className="space-y-4">
                                 <div>
-                                    <Label htmlFor="agentCredentialName">Nome</Label>
+                                    <Label htmlFor="agentCredentialName">Name</Label>
                                     <Input
                                         id="agentCredentialName"
-                                        placeholder="Kai, n8n-prospecção…"
+                                        placeholder="e.g. Kai, n8n-prospecting"
                                         maxLength={100}
                                         value={form.name}
                                         onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
@@ -315,13 +315,13 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
                                 </div>
                                 <div>
                                     <div className="flex items-center justify-between">
-                                        <Label>Escopos</Label>
+                                        <Label>Scopes</Label>
                                         <button
                                             type="button"
                                             className="text-xs font-medium text-primary hover:underline"
                                             onClick={() => setForm((current) => ({ ...current, scopes: allSelected ? [] : [...availableScopes] }))}
                                         >
-                                            {allSelected ? 'Limpar seleção' : 'Selecionar todos'}
+                                            {allSelected ? 'Clear all' : 'Select all'}
                                         </button>
                                     </div>
                                     <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1">
@@ -343,7 +343,7 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
                                     </div>
                                 </div>
                                 <div>
-                                    <Label htmlFor="agentCredentialExpires">Expira em (opcional)</Label>
+                                    <Label htmlFor="agentCredentialExpires">Expires on (optional)</Label>
                                     <Input
                                         id="agentCredentialExpires"
                                         type="date"
@@ -351,16 +351,16 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
                                         value={form.expiresOn}
                                         onChange={(event) => setForm((current) => ({ ...current, expiresOn: event.target.value }))}
                                     />
-                                    <p className="mt-1 text-xs text-muted-foreground">Vazio = sem expiração. A chave vale até o fim do dia escolhido.</p>
+                                    <p className="mt-1 text-xs text-muted-foreground">Leave empty for no expiry. The key stays valid through the end of the chosen day.</p>
                                 </div>
                                 {formError && (
                                     <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300">{formError}</div>
                                 )}
                             </div>
                             <DialogFooter>
-                                <Button variant="outline" onClick={closeCreate} disabled={createMutation.isPending}>Cancelar</Button>
+                                <Button variant="outline" onClick={closeCreate} disabled={createMutation.isPending}>Cancel</Button>
                                 <Button onClick={submitCreate} disabled={createMutation.isPending || !form.name.trim() || form.scopes.length === 0}>
-                                    {createMutation.isPending ? 'Criando…' : 'Criar credencial'}
+                                    {createMutation.isPending ? 'Creating…' : 'Create credential'}
                                 </Button>
                             </DialogFooter>
                         </>
@@ -371,9 +371,9 @@ export function AgentCredentialsPanel({ organizationId }: { organizationId: stri
             <ConfirmDialog
                 open={!!revokeTarget}
                 onOpenChange={(open) => { if (!open && !revokeMutation.isPending) setRevokeTarget(null) }}
-                title={`Revogar a credencial "${revokeTarget?.name ?? ''}"?`}
-                description="Integrações usando esta chave param de funcionar imediatamente. Esta ação não pode ser desfeita."
-                confirmLabel="Revogar"
+                title={`Revoke credential "${revokeTarget?.name ?? ''}"?`}
+                description="Integrations using this key stop working immediately. This cannot be undone."
+                confirmLabel="Revoke"
                 variant="danger"
                 loading={revokeMutation.isPending}
                 onConfirm={() => { if (revokeTarget) revokeMutation.mutate(revokeTarget) }}
