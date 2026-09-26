@@ -13,6 +13,7 @@ import {
     Sparkles,
     X,
 } from 'lucide-react'
+import { AgentCredentialsPanel } from '../../components/outreach/AgentCredentialsPanel'
 import { CampaignActivationPreviewCard, type CampaignActivationPreview } from '../../components/outreach/CampaignActivationPreview'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/button'
@@ -313,6 +314,9 @@ export default function AgentOpsPage() {
                             )}
                         </section>
                     )}
+
+                    {/* Admin-only: the backend answers 403 to anyone else, so don't render a panel that can only fail. */}
+                    {isAdmin && organizationId && <AgentCredentialsPanel organizationId={organizationId} />}
 
                     {queryError && (
                         <div className="text-xs text-muted-foreground">Some signals are unavailable: {queryError instanceof Error ? queryError.message : 'refresh to retry'}</div>
