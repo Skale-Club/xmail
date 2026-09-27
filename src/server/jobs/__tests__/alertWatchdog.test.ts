@@ -79,6 +79,9 @@ function healthySilenceMetrics(overrides: Partial<SilenceMetrics> = {}): Silence
         totalDmarcReportsEver: 5,
         lastDmarcReportProcessedAt: new Date(NOW.getTime() - 60 * 60 * 1000),
         outboundDkimUnverified24h: 0,
+        // healthy baseline -- outbox drained, mirrors outreach-silence.test.ts's own fixture.
+        pendingXphereEvents: 0,
+        oldestPendingXphereEventAgeMinutes: null,
         ...overrides,
     }
 }

@@ -15,6 +15,7 @@ import {
     MIN_TERRITORIES_FOR_QUEUE_CHECK,
     VERIFICATION_MISSING_RUN_AGE_HOURS,
     WARMUP_SPAM_RATE_THRESHOLD,
+    XPHERE_EVENT_STUCK_AGE_MINUTES,
     type SilenceMetrics,
 } from '../outreach-silence'
 
@@ -59,6 +60,10 @@ function metrics(overrides: Partial<SilenceMetrics> = {}): SilenceMetrics {
         totalDmarcReportsEver: 5,
         lastDmarcReportProcessedAt: new Date(NOW.getTime() - 60 * 60 * 1000),
         outboundDkimUnverified24h: 0,
+        // "healthy" baseline: outbox drained, nothing pending -- see the guard on
+        // oldestPendingXphereEventAgeMinutes being null in outreach-silence-query.ts.
+        pendingXphereEvents: 0,
+        oldestPendingXphereEventAgeMinutes: null,
         ...overrides,
     }
 }
@@ -539,6 +544,37 @@ describe('DKIM de saída não verificado (outbound_dkim_unverified, Fase 5 -- do
         expect(alerts).toHaveLength(1)
         expect(alerts[0]).toMatchObject({ severity: 'critical', kind: 'outbound_dkim_unverified' })
         expect(alerts[0].message).toContain('4 outbound message(s)')
+    })
+})
+
+describe('eventos do Xphere parados no outbox (xphere_events_undelivered)', () => {
+    it('fica calado com o outbox vazio', () => {
+        expect(kinds(metrics({ pendingXphereEvents: 0, oldestPendingXphereEventAgeMinutes: null }))).toEqual([])
+    })
+
+    it('fica calado com linhas pendentes ainda dentro do limiar (ainda em retry normal)', () => {
+        expect(kinds(metrics({
+            pendingXphereEvents: 3,
+            oldestPendingXphereEventAgeMinutes: XPHERE_EVENT_STUCK_AGE_MINUTES - 1,
+        }))).toEqual([])
+    })
+
+    it(`dispara passado ${XPHERE_EVENT_STUCK_AGE_MINUTES}min sem entrega -- config ausente (zero tentativas) ou endpoint fora do ar`, () => {
+        const alerts = buildSilenceAlerts(metrics({
+            pendingXphereEvents: 12,
+            oldestPendingXphereEventAgeMinutes: XPHERE_EVENT_STUCK_AGE_MINUTES + 1,
+        }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'critical', kind: 'xphere_events_undelivered' })
+        expect(alerts[0].message).toContain('12 outreach_event_outbox row(s)')
+    })
+
+    it('formata a idade em horas quando passa de 60 minutos', () => {
+        const alerts = buildSilenceAlerts(metrics({
+            pendingXphereEvents: 1,
+            oldestPendingXphereEventAgeMinutes: 240,
+        }), NOW)
+        expect(alerts[0].message).toContain('4h')
     })
 })
 

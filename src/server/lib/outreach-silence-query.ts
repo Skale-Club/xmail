@@ -190,7 +190,16 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
                   AND last_error ILIKE ${'%' + OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER + '%'}) AS outbound_dkim_unverified_warmup_24h,
             (SELECT count(*) FROM outreach_emails
                 WHERE updated_at >= ${cutoff24h}
-                  AND last_error_code ILIKE ${'%' + OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER + '%'}) AS outbound_dkim_unverified_outreach_24h
+                  AND last_error_code ILIKE ${'%' + OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER + '%'}) AS outbound_dkim_unverified_outreach_24h,
+            -- kind: xphere_events_undelivered -- see XPHERE_EVENT_STUCK_AGE_MINUTES in
+            -- outreach-silence.ts. oldest_pending_xphere_event_minutes is only meaningful when
+            -- pending_xphere_events > 0 (coalesced to 0 otherwise); the JS layer below turns that
+            -- into null so an empty, healthy outbox never evaluates the threshold at all.
+            (SELECT count(*) FROM outreach_event_outbox
+                WHERE xphere_delivery_enabled = true AND xphere_delivered_at IS NULL) AS pending_xphere_events,
+            (SELECT coalesce(max(extract(epoch from (${now.toISOString()}::timestamptz - occurred_at)) / 60), 0)::int
+                FROM outreach_event_outbox
+                WHERE xphere_delivery_enabled = true AND xphere_delivered_at IS NULL) AS oldest_pending_xphere_event_minutes
     `)
 
     const rows = (Array.isArray(raw) ? raw : (raw as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>
@@ -255,5 +264,10 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
             : null,
         // DORMANT until Fase 2 lands -- see OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER.
         outboundDkimUnverified24h: n('outbound_dkim_unverified_warmup_24h') + n('outbound_dkim_unverified_outreach_24h'),
+        // kind: xphere_events_undelivered -- see XPHERE_EVENT_STUCK_AGE_MINUTES.
+        pendingXphereEvents: n('pending_xphere_events'),
+        oldestPendingXphereEventAgeMinutes: n('pending_xphere_events') > 0
+            ? n('oldest_pending_xphere_event_minutes')
+            : null,
     }
 }
