@@ -392,10 +392,12 @@ linkava os produtos; travessão e "technology" herdados. Tudo corrigido e confer
 Seeds aplicados em produção na ordem produtos → barbearias → traduções (dry-run antes de cada
 um). O de traduções alterou UMA linha global já existente ("TikTok Ads" → "anúncios no TikTok").
 
-**Vercel:** o projeto `skaleclub` ainda existe na Vercel, conectado ao GitHub, e fez build de
-produção de todo push na `main` até 29/09 (ninguém servido por ele; `skale.club` → Hetzner). A
-integração não tem permissão para pausar/apagar (403). Fica com o Vanildo: desconectar e apagar
-o projeto na Vercel, e restringir o app da Vercel no GitHub a só os repositórios que rodam lá.
+**Vercel — resolvido em 2026-09-30, pelo navegador do Vanildo:** o projeto `skaleclub` (que
+ainda existia, conectado ao GitHub, construindo todo push na `main` até 29/09; ninguém servido por
+ele, `skale.club` → Hetzner) foi **apagado** (sem domínio próprio preso a ele). No GitHub, o app da
+Vercel passou de "All repositories" para **"Only select repositories"**: xcraper, xpot, xtrenght,
+xpend, xpeed, fluenverse, fluenverse2.0, paperpair — confirmado pela API
+(`repository_selection=selected`). O `skaleclub` deixou de existir para a Vercel.
 No código, os resquícios já tinham sido removidos no wind-down; sobrou `.gitignore` e uma
 linha do `SETUP.md`, limpos em `bb1444f`.
 
@@ -414,12 +416,10 @@ skale.club/barbershops) / (508) 801-8190 / unsubscribe", em texto e em HTML mín
 descadastro em 10%/20 (voltar a 2%/50 depois do piloto); Postmaster do tryskaleclub.com
 verificado; Hermes reconectado com vigia; verificação automática no Xphere pronta e DESLIGADA.
 
-**Só o Vanildo pode fazer:** (1) assinar Apify Starter antes de ~07/10; (2) desconectar e apagar
-o projeto `skaleclub` na Vercel e restringir o app da Vercel no GitHub; (3) ligar para o
-(224) 551-6131 e confirmar que a demo atende bem — todo e-mail aponta para lá; (4) recarregar o
-MillionVerifier (169 créditos); (5) escolher a frase do rodapé/hero do site (opções 1-3 dadas);
-(6) fotos reais da placa NFC; (7) dizer "vai" para ativar o piloto (melhor às 9:30 ET de um dia
-útil).
+**Só o Vanildo pode fazer:** (1) assinar Apify Starter antes de ~07/10; (2) ~~Vercel~~ feito;
+(3) demo (224) 551-6131: ele já ligou algumas vezes, ok; (4) recarregar o MillionVerifier (169
+créditos); (5) escolher a frase do rodapé/hero do site (opções 1-3 dadas); (6) fotos reais da
+placa NFC; (7) dizer "vai" para ativar o piloto (melhor às 9:30 ET de um dia útil).
 
 **Depois do "vai":** ativar (`status='active'`), acompanhar a primeira hora (`outreach_emails.sent_at`,
 `outreach_event_outbox` entregando ao Xphere, `DKIM verified` no relay), e as condições de parada
