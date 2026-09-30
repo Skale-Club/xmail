@@ -22,6 +22,13 @@
 
 “Complete” means implemented and locally validated. Production verification is tracked separately.
 
+**Next: phases 41–46, turning the campaign on.** Planned in
+[`campaign-activation-plan.md`](campaign-activation-plan.md) on 2026-09-30 from a full
+re-measurement after 18 days: the Hermes↔Xphere MCP link dead since 2026-08-30, 48% of
+outbound failing SPF over IPv6 (DMARC aggregate reports, 1697 messages), 1044 prospects of
+which 121 with e-mail never verified because verification has no automatic trigger, and the
+warm-up spam rate back to 0.0% since 2026-09-18.
+
 Phases 33–40 are the daily prospecting engine, planned in
 [`prospecting-engine-plan.md`](prospecting-engine-plan.md) on 2026-09-08 from three real runs
 (Framingham, Worcester, Boston: 455 businesses, US$ 2.83, 80 sendable emails, nothing sent) and

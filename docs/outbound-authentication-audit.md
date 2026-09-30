@@ -157,6 +157,42 @@ o mundo, metade foi para spam. Sete das nove `info@` estão no **dia 0** de 14 (
 todas com teto de **50/dia**. Disparar campanha daí é apostar a lista real num endereço sem
 histórico e com o pouco histórico que tem sendo ruim.
 
+## O que o instrumento respondeu — 2026-09-30
+
+Dezoito dias depois de o `rua` apontar para nós: **142 relatórios agregados do Google**,
+12/09 → 29/09, 298 registros, 1697 mensagens. A pergunta da fase 1 era "passou DKIM no
+destinatário?" e a resposta é **sim, 100%** — 1696 de 1697 com `policy_dkim_aligned = pass`,
+em todos os nove domínios. As três hipóteses de 12/09 caíram por serem sobre DKIM; o DKIM
+nunca foi o problema.
+
+O que o instrumento achou em vez disso, por IP de origem:
+
+| IP de origem | Mensagens | DKIM alinhado | SPF alinhado |
+|---|---|---|---|
+| `49.13.197.250` (IPv4) | 867 | 867 | 866 |
+| `2a01:4f8:c2c:c870::1` (IPv6) | 815 | 814 | **0** |
+
+**48% da saída falha SPF** (`softfail`), porque o SPF dos nove domínios é `v=spf1 mx
+include:spf.brevo.com ~all`, `mx.skale.club` não tem AAAA, e `outbound-transport.ts:101`
+não fixa endereço local — o sistema operacional sai por IPv6 sempre que o MX de destino
+tem AAAA. O PTR do IPv6 é `skaleclub-mail.`, inválido. Conserto, medição e regra de
+silêncio estão na fase 42 de [`campaign-activation-plan.md`](campaign-activation-plan.md).
+
+**Isso não explica o pico de 09/09.** O tráfego IPv6 existe antes, durante e depois do
+incidente, e a taxa voltou a zero com ele presente:
+
+| Período | Spam para o Google |
+|---|---|
+| 09–11/09 | 19% · 29% · 24% |
+| 12/09 | 7% |
+| 13–17/09 | 3% · 3% · 1% · 2% · 1% |
+| 18/09 → 30/09 | **0,0%** em 12 de 13 dias (um dia a 4%, 19/09) |
+
+A causa do pico continua **não atribuída**. O que mudou: agora há um instrumento que
+distingue "DKIM quebrou" de "SPF quebrou" de "reputação caiu", e ele diz que os dois
+primeiros não aconteceram. O `warmup_spam_rate_rising` se calou sozinho quando a taxa caiu
+— o detector funciona nos dois sentidos.
+
 ## Fase 5 — Detectar esta classe de falha sozinho
 
 O detector de silêncio já existe e já roda a cada 5 minutos. Regras novas:
