@@ -75,3 +75,145 @@ describe('extractCity — CEP sozinho é ambíguo', () => {
         expect(extractCity('75 Main St, Hudson, 01749')).toBe('Hudson')
     })
 })
+
+// Fase 45 — campanha "Barbershops - AI Receptionist - Pilot 01", passo 1 (sequence_steps em
+// produção). {{websiteInsight}} fica sozinho em seu próprio parágrafo/<p>, e entre 50% e 80%
+// dos leads da base não têm `websiteInsights` — sem o colapso em `collapseEmptyParagraphs`
+// (template-variables.ts), a maioria dos e-mails saía com um buraco de linhas em branco no
+// meio do corpo. Estes testes afirmam sobre a string final renderizada, exatamente como
+// `outreach-sender.ts` (envio) e `outreach-approval-preview.ts` (preview de aprovação) a
+// produzem — ambos chamam apenas `interpolateTemplate`.
+describe('corpo renderizado — passo 1 da campanha piloto de barbearias (Fase 45)', () => {
+    const PLAIN_BODY = `Hi,
+
+I came across {{companyName}} while looking at independent barbershops around {{city}}.
+
+{{websiteInsight}}
+
+We help barbershops avoid missed calls with an AI receptionist that answers 24/7, handles common questions, and books or reschedules appointments using the calendar they already have.
+
+Would you be open to a quick 10-minute conversation to see if this could help {{companyName}}?
+
+Vanildo de Souza Jr
+Skale Club LLC
+skale.club
+
+This is a business outreach from Skale Club.
+To stop receiving these emails: {{unsubscribeUrl}}`
+
+    // HTML equivalente do mesmo corpo (um <p> por parágrafo) — o formato real do html_body da
+    // campanha não foi lido em produção (fora de escopo: seria SELECT no banco de prod), mas o
+    // comportamento exigido — <p> vazio some por completo — é o mesmo independente do markup
+    // exato, e este é a estrutura padrão de um corpo de outreach convertido para HTML.
+    const HTML_BODY = `<p>Hi,</p>
+<p>I came across {{companyName}} while looking at independent barbershops around {{city}}.</p>
+<p>{{websiteInsight}}</p>
+<p>We help barbershops avoid missed calls with an AI receptionist that answers 24/7, handles common questions, and books or reschedules appointments using the calendar they already have.</p>
+<p>Would you be open to a quick 10-minute conversation to see if this could help {{companyName}}?</p>
+<p>Vanildo de Souza Jr<br>Skale Club LLC<br>skale.club</p>
+<p>This is a business outreach from Skale Club.<br>To stop receiving these emails: {{unsubscribeUrl}}</p>`
+
+    function barbershopLead(customFields: Record<string, unknown>): LeadForTemplate {
+        return {
+            email: 'owner@hudsonbarbershop.test',
+            firstName: null,
+            lastName: null,
+            companyName: 'Hudson Barbershop',
+            companySize: null,
+            industry: null,
+            title: null,
+            website: null,
+            linkedinUrl: null,
+            phone: null,
+            location: 'Hudson, MA',
+            customFields,
+        }
+    }
+
+    const context = { unsubscribeUrl: 'https://mail.skale.club/o/u/tok123', contentLanguage: 'en' }
+
+    it('texto puro — com insight, o parágrafo do insight aparece com espaçamento normal', () => {
+        const rendered = interpolateTemplate(
+            PLAIN_BODY,
+            barbershopLead({ websiteInsights: { en: 'I noticed your booking page loads slowly on mobile.' } }),
+            context,
+        )
+
+        expect(rendered).toBe(`Hi,
+
+I came across Hudson Barbershop while looking at independent barbershops around Hudson.
+
+I noticed your booking page loads slowly on mobile.
+
+We help barbershops avoid missed calls with an AI receptionist that answers 24/7, handles common questions, and books or reschedules appointments using the calendar they already have.
+
+Would you be open to a quick 10-minute conversation to see if this could help Hudson Barbershop?
+
+Vanildo de Souza Jr
+Skale Club LLC
+skale.club
+
+This is a business outreach from Skale Club.
+To stop receiving these emails: https://mail.skale.club/o/u/tok123`)
+    })
+
+    it('texto puro — sem insight, o parágrafo some e sobra só UMA linha em branco', () => {
+        const rendered = interpolateTemplate(PLAIN_BODY, barbershopLead({}), context)
+
+        // O ponto central do bug: "...around Hudson.\n\nWe help..." com uma única linha em
+        // branco — nunca "\n\n\n\n" (o buraco) nem "\n" (parágrafos colados sem separador).
+        expect(rendered).toContain('around Hudson.\n\nWe help barbershops')
+        expect(rendered).not.toMatch(/\n{3,}/)
+
+        expect(rendered).toBe(`Hi,
+
+I came across Hudson Barbershop while looking at independent barbershops around Hudson.
+
+We help barbershops avoid missed calls with an AI receptionist that answers 24/7, handles common questions, and books or reschedules appointments using the calendar they already have.
+
+Would you be open to a quick 10-minute conversation to see if this could help Hudson Barbershop?
+
+Vanildo de Souza Jr
+Skale Club LLC
+skale.club
+
+This is a business outreach from Skale Club.
+To stop receiving these emails: https://mail.skale.club/o/u/tok123`)
+    })
+
+    it('HTML — com insight, o <p> do insight aparece normalmente', () => {
+        const rendered = interpolateTemplate(
+            HTML_BODY,
+            barbershopLead({ websiteInsights: { en: 'I noticed your booking page loads slowly on mobile.' } }),
+            context,
+            { escapeHtml: true },
+        )
+
+        expect(rendered).toContain('<p>I noticed your booking page loads slowly on mobile.</p>')
+    })
+
+    it('HTML — sem insight, o <p> vazio some por completo (sem linha/parágrafo fantasma)', () => {
+        const rendered = interpolateTemplate(HTML_BODY, barbershopLead({}), context, { escapeHtml: true })
+
+        expect(rendered).not.toContain('<p></p>')
+        expect(rendered).not.toMatch(/<p>\s*<\/p>/)
+        expect(rendered).toBe(`<p>Hi,</p>
+<p>I came across Hudson Barbershop while looking at independent barbershops around Hudson.</p>
+<p>We help barbershops avoid missed calls with an AI receptionist that answers 24/7, handles common questions, and books or reschedules appointments using the calendar they already have.</p>
+<p>Would you be open to a quick 10-minute conversation to see if this could help Hudson Barbershop?</p>
+<p>Vanildo de Souza Jr<br>Skale Club LLC<br>skale.club</p>
+<p>This is a business outreach from Skale Club.<br>To stop receiving these emails: https://mail.skale.club/o/u/tok123</p>`)
+    })
+
+    it('não mexe em variável no meio de frase: {{city}} vazio (sem endereço decifrável) fica vazio, não colapsa a linha', () => {
+        const rendered = interpolateTemplate(
+            PLAIN_BODY,
+            { ...barbershopLead({}), location: 'not-a-decipherable-address' },
+            context,
+        )
+
+        // {{city}} está no meio da frase — vazio ali é vazio (a regra explícita da Fase 45),
+        // a linha inteira não deve ser removida.
+        expect(rendered).toContain('independent barbershops around .')
+    })
+})

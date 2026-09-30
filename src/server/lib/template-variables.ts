@@ -116,6 +116,39 @@ const BUILTIN_VARIABLES: Record<string, (lead: LeadForTemplate) => string> = {
 const VARIABLE_REGEX = /\{\{([a-zA-Z0-9_]+)\}\}/g
 
 /**
+ * Fase 45 / campanha "Barbershops - AI Receptionist - Pilot 01": entre 50% e 80% dos leads não
+ * têm `websiteInsights`, e o passo 1 dessa campanha tem `{{websiteInsight}}` sozinho em seu
+ * próprio parágrafo. `interpolateTemplate` resolve isso para `''`, o que — sem este passo —
+ * deixa um buraco de linhas em branco exatamente no meio do e-mail, um sinal de automação tanto
+ * para quem lê quanto para filtros de spam.
+ *
+ * Aplicado SEMPRE, no final de `interpolateTemplate` (nunca nos call sites), para que o corpo
+ * enviado (`outreach-sender.ts`) e o preview de aprovação (`outreach-approval-preview.ts`) —
+ * que chamam a mesma função — produzam exatamente a mesma string. Nunca toca uma variável que
+ * está no meio de uma frase: só remove uma linha (texto puro) ou elemento de bloco (HTML) que
+ * ficou inteiramente vazio.
+ */
+function collapseEmptyParagraphs(text: string): string {
+    if (!text) return text
+
+    return text
+        // HTML: um <p>/<div> (com ou sem atributos) cujo conteúdo interpolado ficou vazio —
+        // só espaços e/ou <br> — some por completo. Consome também UMA quebra de linha
+        // adjacente (a de trás, se existir) para não deixar uma linha vazia sobrando entre os
+        // parágrafos vizinhos, mas preserva a quebra que já separava esses vizinhos.
+        .replace(/<(p|div)(\s[^>]*)?>(?:\s|<br\s*\/?>)*<\/\1>\n?/gi, '')
+        // Texto puro: uma variável que ocupava uma linha inteira e virou '' deixa uma linha em
+        // branco "extra" ao lado da linha em branco que já separava os parágrafos — dois
+        // separadores ficam adjacentes. Normaliza qualquer linha só-de-espaços para vazia e
+        // depois colapsa qualquer sequência de 2+ linhas em branco (3+ '\n' consecutivos) para
+        // exatamente UMA linha em branco — o separador de parágrafo normal, nunca zero.
+        .split('\n')
+        .map((line) => (line.trim() === '' ? '' : line))
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+}
+
+/**
  * Interpolate template variables with lead data
  * 
  * @param template - The template string containing {{variable}} placeholders
@@ -143,7 +176,7 @@ export function interpolateTemplate(
     // substitution patterns and corrupted output, and (b) re-scanned already-substituted
     // values, so a lead field containing `{{var}}` was itself expanded (template injection).
     // One functional-replacer pass fixes both, and escapes lead-derived values when asked.
-    return template.replace(VARIABLE_REGEX, (_match, variableName: string) => {
+    return collapseEmptyParagraphs(template.replace(VARIABLE_REGEX, (_match, variableName: string) => {
         // Context-provided values (internally generated, e.g. the unsubscribe URL) — not escaped.
         if (variableName === 'unsubscribeUrl') return context.unsubscribeUrl ?? ''
 
@@ -180,7 +213,7 @@ export function interpolateTemplate(
 
         // Unknown variable — empty string is safer than leaking the raw placeholder.
         return ''
-    })
+    }))
 }
 
 /**
