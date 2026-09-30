@@ -21,7 +21,7 @@
 | "O Xphere MCP está desconectado" | **Verdade.** Caiu em **30/08 02:50 UTC**, tentou reconectar 5 vezes em 24 segundos, desistiu e nunca mais tentou. O token que ele manda (`xph_…`) **funciona** — `initialize` responde HTTP 200 hoje. A conexão está morta por decisão do cliente, não por credencial. |
 | "Temos 397 prospects" | **1044** em `prospect_rows`. 219 com e-mail, 98 verificados (69 ok, 9 catch-all, 18 inválidos, 2 desconhecidos), **121 com e-mail nunca verificados**, 5 já contatados, 1 descadastrado. |
 | "O endereço postal do CAN-SPAM já foi incluído" | **Falso.** Os três passos assinam `Vanildo de Souza Jr / Skale Club LLC / skale.club` — sem endereço, exatamente como você decidiu em 12/09. `{{unsubscribeUrl}}` está nos três, que é o único portão duro de ativação. |
-| "Monitor automático de créditos pausado" | É um cron do Hermes (`0 9 * * *`) **desabilitado e com prompt vazio**. Não é monitor; é uma linha morta. |
+| "Monitor automático de créditos pausado" | **Verdade — eu errei ao contestar.** É o job `email-verification-credits` (`0a7d26ed4d30`): não tem prompt porque roda um script (`verification-credits.py`), não o agente. Rodou 16 vezes sem erro e foi pausado em 21/08 sem motivo registrado. Religado em 30/09. Saldo lido na hora: **MillionVerifier 169, NeverBounce 0** — abaixo do limiar de 500, então ele vai avisar todo dia às 9h ET até recarregar. |
 | "Precisamos de uma conta verificada, validar SPF/DKIM/DMARC" | As caixas de envio são as **5 contas Google da Icemail** (`tryskaleclub.com`): verificadas, **dia 14 de 14** de warm-up, 15/dia cada, envio por `smtp.gmail.com`. `tryskaleclub.com` tem SPF do Google, DKIM `google._domainkey` e DMARC `p=quarantine`. Os relatórios DMARC da fase 1 medem as caixas **nativas** (warm-up), não estas — ver fase 42. |
 
 O que o Hermes não sabia, porque não tinha como saber:
@@ -57,9 +57,10 @@ pé desde 14/08 sem reiniciar. O token em `/opt/data/config.yaml` responde 200 n
    regra no system prompt dele: *se a chamada de ferramenta falhou, diga que falhou e não
    estime; nunca reporte contagem, status ou conteúdo que não veio de uma ferramenta nesta
    mesma resposta.* É a mesma doença de "afirmação sem medição", agora no agente.
-4. Apagar o cron morto `0a7d26ed4d30` (prompt vazio) e o `f7c84063a699` desabilitado, ou
-   documentar o que eram. Uma linha desabilitada com prompt vazio não é monitor pausado, é
-   lixo que vira frase enganosa.
+4. ~~Apagar o cron morto `0a7d26ed4d30`~~ — **não era morto.** É o vigia de créditos de
+   verificação (script, por isso sem prompt), pausado em 21/08. Religado em 30/09. O
+   `f7c84063a699` (`weekly-health-check`, Notion) está pausado desde 10/08 e não tem relação
+   com a campanha; ficou como estava.
 
 **Critério de pronto.** `mcp_xphere_prospects_list` responde via Hermes com **1044**, e um
 `docker kill` simulado do Xphere seguido de volta reconecta sozinho em menos de 5 minutos.
@@ -263,3 +264,61 @@ acompanha a 45.
   `territory_queue_empty` do watchdog vai avisar, mas só depois de parar.
 - As 842 linhas de OAuth que estavam soltas no Xphere em 12/09 **foram integradas** (o
   `OAuthFailureCode` está na `main`). Pendência encerrada.
+
+---
+
+## Execução — 2026-09-30
+
+O que já foi feito, com a prova de cada item. O que ficou de fora está no fim, com o motivo.
+
+**Fase 41**
+- `docker compose restart hermes` às 12:54 UTC. `hermes mcp test xphere` e `skaleclub` listam as
+  ferramentas (`prospects_list`, `prospects_verify`, `prospects_enroll_in_campaign`…).
+- Por que tinha morrido: `_MAX_RECONNECT_RETRIES = 5` está fixo em
+  `/opt/hermes/tools/mcp_tool.py`, sem configuração. O `skaleclub` morreu do mesmo jeito em 12/09.
+- Vigia no host, fora do vigiado: `hermes-mcp-watchdog.service` (systemd, mesmo formato do
+  `provider-switch-notifier`), segue o `errors.log` do Hermes, reconhece as duas mensagens de
+  desistência (`failed after N reconnection attempts, giving up` e `failed initial connection
+  after N attempts, giving up`), reinicia o container e avisa no Telegram. Intervalo mínimo de
+  30 min entre reinícios. Auto-teste do reconhecedor com as linhas reais do log: ok. Provado que
+  o `docker` responde de dentro do sandbox do systemd (`ProtectSystem=strict`).
+- `SOUL.md` do Hermes (estava vazio): regra "número só vem de ferramenta nesta resposta" e as
+  três caixas. Backup em `SOUL.md.bak-20260930`. É relido a cada mensagem.
+
+**Fase 42**
+- `ip6:2a01:4f8:c2c:c870::1` no SPF de `skale.club` (o token de API da Cloudflare local só
+  alcança essa zona). Os outros oito domínios ficam para o conserto de código (saída em IPv4),
+  que resolve a causa em todos de uma vez.
+
+**Fase 44**
+- `OUTREACH_PROTECTED_DOMAINS` com os oito domínios da operação no `run_app_container`
+  (`build-deploy.yml`) e no workflow legado. Só vale depois do deploy.
+- `tryskaleclub.com._report._dmarc.skale.club TXT "v=DMARC1"` criado e público: o lado de quem
+  recebe os relatórios está pronto. Falta o `rua` em `_dmarc.tryskaleclub.com`, que está numa
+  conta Cloudflare fora do alcance do token.
+
+**Fase 45 — o que tentar importar revelou**
+- O import dos 69 `ok` do Xphere para o Xmail falhou com 500:
+  `duplicate key value violates unique constraint "lead_org_email_unique"`. O
+  `POST /leads/bulk-import` não deduplica dentro do próprio lote.
+- E o motivo das duplicatas é pior que o 500: **`help.us@booksy.com` está gravado como e-mail
+  de 11 barbearias** — é o suporte do Booksy, tirado da página da barbearia na plataforma.
+  Passa na verificação porque a caixa existe. Dos 69 "ok", só 55 e-mails são distintos. Sem o
+  500, o piloto teria mandado cold e-mail para o suporte do Booksy. Franquias têm o mesmo
+  problema em escala menor (`contact.us@sportclips.com` é a sede da rede, não a unidade).
+- Consertos em andamento: Xmail barra e-mail de plataforma na importação e na matrícula;
+  Xcraper deixa de gravá-lo na origem.
+
+**Fase 46**
+- Guarda de descadastro não acordaria no piloto: exigia 50 envios em 24h. Ajustado para
+  amostra 20 / limiar 10% (pausa no 3º descadastro em 25). **Valores anteriores: 2% / 50 —
+  voltar a eles quando a campanha passar de ~50 envios/dia.** Bounce continua 5% / 20.
+- Leitura de respostas: as 5 caixas Icemail sincronizaram IMAP há 5 min, sem erro. Os timeouts
+  de ontem foram transitórios.
+
+**Ficou de fora, e por quê**
+- `rua` do `tryskaleclub.com`, Postmaster do `tryskaleclub.com`, `ip6:` no SPF dos oito
+  domínios: exigem a Cloudflare da outra conta e o Postmaster, via navegador — e a extensão do
+  Chrome estava desconectada.
+- PTR do IPv6: só pelo console da Hetzner, sem API local. Com a saída em IPv4 é higiene.
+- Verificar os 106 nunca verificados: gasta crédito, e o MillionVerifier tem 169.
