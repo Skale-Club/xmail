@@ -9,8 +9,11 @@ import {
     ANALYZER_STALLED_EVENT_WINDOW_HOURS,
     buildSilenceAlerts,
     DMARC_REPORT_GAP_HOURS,
+    DMARC_SPF_ALIGNMENT_THRESHOLD,
+    DMARC_SPF_ALIGNMENT_WINDOW_DAYS,
     ENGINE_IDLE_CHECK_AFTER_UTC_HOUR,
     ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS,
+    MIN_DMARC_MESSAGES_FOR_SPF_ALIGNMENT_CHECK,
     MIN_EXTERNAL_WARMUP_SAMPLE_FOR_SPAM_CHECK,
     MIN_TERRITORIES_FOR_QUEUE_CHECK,
     VERIFICATION_MISSING_RUN_AGE_HOURS,
@@ -59,6 +62,10 @@ function metrics(overrides: Partial<SilenceMetrics> = {}): SilenceMetrics {
         externalWarmupSpamMessages24h: 0,
         totalDmarcReportsEver: 5,
         lastDmarcReportProcessedAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+        // Fase 42 -- "healthy" baseline: plenty of sample, 99.86% aligned (comfortably above the
+        // 97% threshold, matching the measured IPv4-only rate of 99.9%).
+        dmarcSpfAlignmentWindowMessages: 700,
+        dmarcSpfAlignmentWindowAlignedMessages: 699,
         outboundDkimUnverified24h: 0,
         // "healthy" baseline: outbox drained, nothing pending -- see the guard on
         // oldestPendingXphereEventAgeMinutes being null in outreach-silence-query.ts.
@@ -531,6 +538,62 @@ describe('lacuna de relatórios DMARC (dmarc_report_gap, Fase 5)', () => {
         expect(alerts).toHaveLength(1)
         expect(alerts[0]).toMatchObject({ kind: 'dmarc_report_gap' })
         expect(alerts[0].message).toContain('never')
+    })
+})
+
+describe('alinhamento de SPF baixo (dmarc_spf_alignment_low, Fase 42)', () => {
+    it('fica calado na linha de base medida — 99,9% (só IPv4), bem acima do limiar', () => {
+        expect(kinds(metrics({
+            dmarcSpfAlignmentWindowMessages: 867,
+            dmarcSpfAlignmentWindowAlignedMessages: 866,
+        }))).toEqual([])
+    })
+
+    it('fica calado abaixo da amostra mínima, mesmo com 0% alinhado', () => {
+        // Semana magra / instalação nova: poucas mensagens ainda não podem ler como defeito.
+        expect(kinds(metrics({
+            dmarcSpfAlignmentWindowMessages: MIN_DMARC_MESSAGES_FOR_SPF_ALIGNMENT_CHECK - 1,
+            dmarcSpfAlignmentWindowAlignedMessages: 0,
+        }))).toEqual([])
+    })
+
+    it('fica calado numa instalação nova -- nenhum relatório jamais chegou', () => {
+        // Zero relatórios produz zero mensagens na janela, abaixo do piso -- mesmo efeito da
+        // guarda totalDmarcReportsEver > 0 que dmarc_report_gap usa explicitamente.
+        expect(kinds(metrics({ dmarcSpfAlignmentWindowMessages: 0, dmarcSpfAlignmentWindowAlignedMessages: 0 }))).toEqual([])
+    })
+
+    it(`dispara abaixo de ${Math.round(DMARC_SPF_ALIGNMENT_THRESHOLD * 100)}% -- a mistura IPv4/IPv6 medida (51,0%)`, () => {
+        // Reproduz a medição real: 866 de 1697 mensagens alinhadas (51,0%) enquanto a saída
+        // dividia entre IPv4 (alinha) e IPv6 (nunca alinha, PTR inválido).
+        const alerts = buildSilenceAlerts(metrics({
+            dmarcSpfAlignmentWindowMessages: 1697,
+            dmarcSpfAlignmentWindowAlignedMessages: 866,
+        }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'critical', kind: 'dmarc_spf_alignment_low' })
+        expect(alerts[0].message).toContain('51% of 1697')
+        expect(alerts[0].message).toContain(`${DMARC_SPF_ALIGNMENT_WINDOW_DAYS} days`)
+        expect(alerts[0].message).toContain(`${Math.round(DMARC_SPF_ALIGNMENT_THRESHOLD * 100)}%`)
+    })
+
+    it('dispara numa fuga parcial para IPv6 (~85% alinhado), bem antes do colapso total', () => {
+        // Não é um gate de "espere o colapso total": um vazamento parcial já deve disparar.
+        const alerts = buildSilenceAlerts(metrics({
+            dmarcSpfAlignmentWindowMessages: 1000,
+            dmarcSpfAlignmentWindowAlignedMessages: 850,
+        }), NOW)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({ severity: 'critical', kind: 'dmarc_spf_alignment_low' })
+    })
+
+    it('fica calado exatamente no limiar (>= threshold não dispara, só < dispara)', () => {
+        const total = 10_000
+        const aligned = Math.round(total * DMARC_SPF_ALIGNMENT_THRESHOLD)
+        expect(kinds(metrics({
+            dmarcSpfAlignmentWindowMessages: total,
+            dmarcSpfAlignmentWindowAlignedMessages: aligned,
+        }))).toEqual([])
     })
 })
 

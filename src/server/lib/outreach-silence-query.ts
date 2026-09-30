@@ -10,6 +10,7 @@ import { computeLockKey, getInFlightJobs, getRecentJobTimeouts, KNOWN_LOCK_NAMES
 import { resolveDailyBudgetUsd } from './prospecting/daily-territory-budget'
 import {
     ANALYZER_STALLED_EVENT_WINDOW_HOURS,
+    DMARC_SPF_ALIGNMENT_WINDOW_DAYS,
     ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS,
     OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER,
     VERIFICATION_MISSING_RUN_AGE_HOURS,
@@ -53,6 +54,11 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
     const startOfTodayIso = startOfTodayUtc(now).toISOString()
     const enrichedZeroEmailsCutoff = new Date(now.getTime() - ENRICHED_ZERO_EMAILS_LOOKBACK_DAYS * ONE_DAY_MS).toISOString()
     const analyzerStalledCutoff = new Date(now.getTime() - ANALYZER_STALLED_EVENT_WINDOW_HOURS * ONE_HOUR_MS).toISOString()
+    // Fase 42 (kind: dmarc_spf_alignment_low) -- see DMARC_SPF_ALIGNMENT_THRESHOLD in
+    // outreach-silence.ts. Keyed on dmarc_reports.date_range_end (when the mail was SENT), not
+    // on ingestion time -- a distinct constant from SEVEN_DAYS_MS above even though both are 7
+    // days today, so the two windows can diverge independently later.
+    const dmarcSpfAlignmentCutoff = new Date(now.getTime() - DMARC_SPF_ALIGNMENT_WINDOW_DAYS * ONE_DAY_MS).toISOString()
     const dailyBudgetUsd = resolveDailyBudgetUsd()
 
     const raw = await db.execute(sql`
@@ -180,6 +186,19 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
             -- Fase 5 (kind: dmarc_report_gap) -- see DMARC_REPORT_GAP_HOURS in outreach-silence.ts.
             (SELECT count(*) FROM dmarc_reports) AS total_dmarc_reports_ever,
             (SELECT max(created_at) FROM dmarc_reports) AS last_dmarc_report_processed_at,
+            -- Fase 42 (kind: dmarc_spf_alignment_low) -- see DMARC_SPF_ALIGNMENT_THRESHOLD in
+            -- outreach-silence.ts. Weighted by message_count (one record row can represent many
+            -- messages from the same source IP), and windowed on the REPORT's date_range_end --
+            -- when the underlying mail was sent -- not when we ingested it.
+            (SELECT coalesce(sum(r.message_count), 0)::bigint
+                FROM dmarc_report_records r
+                JOIN dmarc_reports rep ON rep.id = r.report_id
+                WHERE rep.date_range_end >= ${dmarcSpfAlignmentCutoff}) AS dmarc_spf_alignment_window_messages,
+            (SELECT coalesce(sum(r.message_count), 0)::bigint
+                FROM dmarc_report_records r
+                JOIN dmarc_reports rep ON rep.id = r.report_id
+                WHERE rep.date_range_end >= ${dmarcSpfAlignmentCutoff}
+                  AND r.policy_spf_aligned = 'pass') AS dmarc_spf_alignment_window_aligned_messages,
             -- Fase 5 (kind: outbound_dkim_unverified) -- DORMANT, see
             -- OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER in outreach-silence.ts. Checked against both
             -- tables an outbound self-verify step in native-send.ts could plausibly report
@@ -262,6 +281,9 @@ export async function computeSilenceMetrics(now: Date = new Date()): Promise<Sil
         lastDmarcReportProcessedAt: row['last_dmarc_report_processed_at']
             ? new Date(row['last_dmarc_report_processed_at'] as string)
             : null,
+        // Fase 42 (kind: dmarc_spf_alignment_low).
+        dmarcSpfAlignmentWindowMessages: n('dmarc_spf_alignment_window_messages'),
+        dmarcSpfAlignmentWindowAlignedMessages: n('dmarc_spf_alignment_window_aligned_messages'),
         // DORMANT until Fase 2 lands -- see OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER.
         outboundDkimUnverified24h: n('outbound_dkim_unverified_warmup_24h') + n('outbound_dkim_unverified_outreach_24h'),
         // kind: xphere_events_undelivered -- see XPHERE_EVENT_STUCK_AGE_MINUTES.
