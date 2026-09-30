@@ -353,3 +353,24 @@ campanha — os outros 12 cadastrados são do lado nativo.
 
 **Falta só:** a aprovação do Vanildo para ativar.
 
+### Pendências de código levantadas pelo plano — fechadas em 2026-09-30
+
+Todas em produção (xmail `0415632`, xphere `f4c5a4ad`+):
+1. **Import automático dos verificados** — o tick de verificação importa os `ok` pelo mesmo
+   caminho do `prospects_import_to_xmail`; mesmo interruptor desligado (`PROSPECTING_AUTO_VERIFY`).
+2. **Caixa de envio na matrícula** — o Xmail diz em cada conta se é `campaignSenderEligible`
+   (mesma função da trava); o Xphere só escolhe entre as elegíveis e falha fechado sem o campo.
+   Medido em produção: as 5 elegíveis são exatamente as 5 Icemail.
+3. **E-mail compartilhado e franquia** — retidos para decisão humana, sempre reportados. No
+   primeiro dry-run em produção: 43 `shared_email` (incluindo **`filler@godaddy.com`**, e-mail de
+   preenchimento de template do GoDaddy em várias barbearias, que o filtro de placeholder não
+   conhecia) e 2 `franchise` (Sport Clips, Floyd's 99).
+4. **Contabilidade do import** — só recebe `xmail_imported_at` o que o Xmail aceitou.
+5. **`city`** — derivada do endereço na ingestão; backfill rodado: 1014 corrigidos, 1028 de 1044
+   com cidade (16 sem endereço). O script paginava por deslocamento sobre o próprio filtro e
+   teria pulado 17 linhas no modo real; trocado por paginação por id antes de rodar.
+
+O primeiro deploy do Xphere falhou num erro de tipo que só o `next build` pega
+(`const cf = customFields ?? {}`); a produção não caiu, o build parou antes. Corrigido com tipo
+explícito, provado compilando o arquivo isolado em `--strict`.
+
