@@ -27,6 +27,7 @@ import { jsonbParam } from '../lib/jsonb'
 import { withSourceRunId } from '../lib/prospecting/source-run-id'
 import { checkProtectedSendingDomains } from './outreach/campaigns'
 import { capVerificationStatusForAgentImport } from '../lib/email-verification-mapping'
+import { isPlatformEmail } from '../lib/platform-emails'
 
 const router = Router()
 
@@ -168,7 +169,20 @@ router.post('/prospects/import', async (req, res) => {
         }
 
         const uniqueByEmail = new Map(input.prospects.map((prospect) => [prospect.email, prospect]))
-        const uniqueProspects = [...uniqueByEmail.values()]
+        const allUniqueProspects = [...uniqueByEmail.values()]
+
+        // Defeito 2 (2026-09-30): never import a scheduling/marketplace platform's own address
+        // (Booksy support etc — see platform-emails.ts) as a prospect. Reported separately
+        // (`skippedPlatformEmails`), never silently — same guard as leads.ts's bulk-import.
+        const skippedPlatformEmails: string[] = []
+        const uniqueProspects = allUniqueProspects.filter((prospect) => {
+            if (isPlatformEmail(prospect.email)) {
+                skippedPlatformEmails.push(prospect.email)
+                return false
+            }
+            return true
+        })
+
         // Contract mapping (verification-gates step 1): map customFields verification signals
         // onto the existing verification columns, falling back to the free MX pre-filter (step 4)
         // only when no email_status was supplied. Duplicates are skipped via onConflictDoNothing
@@ -198,13 +212,13 @@ router.post('/prospects/import', async (req, res) => {
             leadListId: input.leadListId,
             ...verification,
         }))).onConflictDoNothing().returning()
-        const resolved = await db.query.leads.findMany({
+        const resolved = uniqueProspects.length > 0 ? await db.query.leads.findMany({
             where: and(
                 eq(leads.organizationId, principal.organizationId),
-                inArray(leads.email, [...uniqueByEmail.keys()]),
+                inArray(leads.email, uniqueProspects.map((prospect) => prospect.email)),
             ),
             columns: { id: true, email: true, status: true, createdAt: true },
-        })
+        }) : []
         if (input.leadListId && inserted.length > 0) {
             await db.update(leadLists)
                 .set({ leadCount: sql`${leadLists.leadCount} + ${inserted.length}`, updatedAt: new Date() })
@@ -215,7 +229,12 @@ router.post('/prospects/import', async (req, res) => {
             request: req,
             action: 'agent.prospects.imported',
             resourceType: 'lead',
-            metadata: { submitted: input.prospects.length, unique: uniqueProspects.length, imported: inserted.length },
+            metadata: {
+                submitted: input.prospects.length,
+                unique: uniqueProspects.length,
+                imported: inserted.length,
+                skippedPlatformEmails: skippedPlatformEmails.length,
+            },
         })
         await publishOutreachEvent({
             organizationId: principal.organizationId,
@@ -230,7 +249,8 @@ router.post('/prospects/import', async (req, res) => {
         res.status(inserted.length > 0 ? 201 : 200).json({
             submitted: input.prospects.length,
             imported: inserted.length,
-            duplicates: input.prospects.length - inserted.length,
+            duplicates: uniqueProspects.length - inserted.length,
+            skippedPlatformEmails,
             prospects: resolved,
         })
     } catch (error) {
@@ -411,17 +431,21 @@ router.post('/campaigns/:id/enroll-draft', async (req, res) => {
             if (listLeads.length > 100) return res.status(422).json({ error: 'Agent enrollment is limited to 100 leads per request' })
             requestedLeadIds = listLeads.map((lead) => lead.id)
         }
-        const eligibleLeads = await db.query.leads.findMany({
+        const eligibleLeadsRaw = await db.query.leads.findMany({
             where: and(
                 eq(leads.organizationId, principal.organizationId),
                 inArray(leads.id, requestedLeadIds),
                 inArray(leads.emailVerificationStatus, ['verified', 'likely']),
                 sql`${leads.unsubscribedAt} IS NULL`,
             ),
-            columns: { id: true },
+            columns: { id: true, email: true },
         })
+        // Defeito 2 (2026-09-30) defense in depth: reject scheduling/marketplace platform
+        // emails (Booksy support etc — see platform-emails.ts) here too, in case a lead with
+        // one slipped into the table before this guard existed at import time.
+        const eligibleLeads = eligibleLeadsRaw.filter((lead) => !isPlatformEmail(lead.email))
         if (eligibleLeads.length !== requestedLeadIds.length) {
-            return res.status(422).json({ error: 'Every agent-enrolled lead must belong to the organization, have a verified/likely email and not be unsubscribed' })
+            return res.status(422).json({ error: 'Every agent-enrolled lead must belong to the organization, have a verified/likely email, not be a scheduling/marketplace platform address, and not be unsubscribed' })
         }
         const sequence = await db.query.sequences.findFirst({
             where: eq(sequences.campaignId, campaign.id),

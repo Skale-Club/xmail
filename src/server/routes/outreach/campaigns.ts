@@ -20,6 +20,7 @@ import {
     type SequenceStepInput,
 } from '../../lib/outreach-sequences'
 import { buildCampaignActivationPreview } from '../../lib/outreach-approval-preview'
+import { isPlatformEmail } from '../../lib/platform-emails'
 
 const router = Router()
 
@@ -1712,8 +1713,18 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
             leadsList.filter((lead) => lead.emailVerificationStatus === 'invalid').map((lead) => lead.id),
         )
 
-        // Filter out existing + invalid leads
-        const newLeadIds = requestedLeadIds.filter(id => !existingLeadIds.has(id) && !invalidLeadIds.has(id))
+        // Defeito 2 (2026-09-30) defense in depth: a lead whose email belongs to a scheduling/
+        // marketplace platform (Booksy support etc — see platform-emails.ts) may already be
+        // sitting in the leads table from before this guard existed at import time. Never let
+        // it onto a campaign either.
+        const platformLeadIds = new Set(
+            leadsList.filter((lead) => isPlatformEmail(lead.email)).map((lead) => lead.id),
+        )
+
+        // Filter out existing + invalid + platform-email leads
+        const newLeadIds = requestedLeadIds.filter(id => (
+            !existingLeadIds.has(id) && !invalidLeadIds.has(id) && !platformLeadIds.has(id)
+        ))
 
         // Diagnostic breakdown: how many of the requested (non-invalid) leads don't have a
         // confirmed-good email yet. Informational only — 'unknown'/'likely' are still enrolled.
@@ -1727,12 +1738,20 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
             let added = 0
             let existing = 0
             let skippedInvalid = 0
+            let skippedPlatformEmail = 0
             for (const id of requestedLeadIds) {
                 if (insertedLeadIds.has(id)) added++
                 else if (invalidLeadIds.has(id)) skippedInvalid++
+                else if (platformLeadIds.has(id)) skippedPlatformEmail++
                 else existing++
             }
-            return { added, existing, skipped_invalid: skippedInvalid, unverified_count: unverifiedCount }
+            return {
+                added,
+                existing,
+                skipped_invalid: skippedInvalid,
+                skipped_platform_email: skippedPlatformEmail,
+                unverified_count: unverifiedCount,
+            }
         }
 
         if (newLeadIds.length === 0) {
