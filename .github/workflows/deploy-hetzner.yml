@@ -212,6 +212,7 @@ jobs:
               -e ENCRYPTION_KEY="${{ secrets.ENCRYPTION_KEY }}" \
               -e OUTLOOK_TOKEN_ENCRYPTION_KEY="${{ secrets.OUTLOOK_TOKEN_ENCRYPTION_KEY }}" \
               -e MAIL_DOMAIN="${{ secrets.MAIL_DOMAIN }}" \
+              -e OUTREACH_PROTECTED_DOMAINS="xkedule.com,xphere.app,endenemy.com,xareable.com,stuscle.com,xtimator.com,skleanings.com,fluenverse.com" \
               -e MAIL_HOST="mx.skale.club" \
               -e MAIL_TLS_CERT_PATH="/etc/letsencrypt/live/mx.skale.club/fullchain.pem" \
               -e MAIL_TLS_KEY_PATH="/etc/letsencrypt/live/mx.skale.club/privkey.pem" \
@@ -389,6 +390,7 @@ jobs:
                   -e ENCRYPTION_KEY="${{ secrets.ENCRYPTION_KEY }}" \
                   -e OUTLOOK_TOKEN_ENCRYPTION_KEY="${{ secrets.OUTLOOK_TOKEN_ENCRYPTION_KEY }}" \
                   -e MAIL_DOMAIN="${{ secrets.MAIL_DOMAIN }}" \
+                  -e OUTREACH_PROTECTED_DOMAINS="xkedule.com,xphere.app,endenemy.com,xareable.com,stuscle.com,xtimator.com,skleanings.com,fluenverse.com" \
                   -e MAIL_HOST="mx.skale.club" \
                   -e MAIL_TLS_CERT_PATH="/etc/letsencrypt/live/mx.skale.club/fullchain.pem" \
                   -e MAIL_TLS_KEY_PATH="/etc/letsencrypt/live/mx.skale.club/privkey.pem" \
