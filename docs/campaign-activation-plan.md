@@ -1,5 +1,12 @@
 # Ligar a campanha — plano de 2026-09-30
 
+> **Corrigido no mesmo dia.** A primeira versão deste plano assumiu que a campanha sairia das
+> `info@` e montou a fase 44 inteira sobre isso. Está errado: a campanha sai **somente** das
+> contas Google da Icemail (`tryskaleclub.com`), as `info@` são caixas de trabalho que não
+> participam nem do warm-up nem da campanha, e o warm-up roda em caixas inúteis criadas para
+> isso. As regras estão no `CLAUDE.md`, seção *Regras do processo de prospecção*. As fases 42,
+> 44 e 45 abaixo já foram reescritas com a premissa certa.
+
 > Escrito depois de o Hermes mandar uma lista de nove pendências para ativar a campanha. A
 > lista está certa na forma e errada em três fatos, porque o Hermes está sem acesso ao Xphere
 > desde 30/08 e respondeu de memória. Este plano parte do que foi **medido** em 30/09, não do
@@ -15,7 +22,7 @@
 | "Temos 397 prospects" | **1044** em `prospect_rows`. 219 com e-mail, 98 verificados (69 ok, 9 catch-all, 18 inválidos, 2 desconhecidos), **121 com e-mail nunca verificados**, 5 já contatados, 1 descadastrado. |
 | "O endereço postal do CAN-SPAM já foi incluído" | **Falso.** Os três passos assinam `Vanildo de Souza Jr / Skale Club LLC / skale.club` — sem endereço, exatamente como você decidiu em 12/09. `{{unsubscribeUrl}}` está nos três, que é o único portão duro de ativação. |
 | "Monitor automático de créditos pausado" | É um cron do Hermes (`0 9 * * *`) **desabilitado e com prompt vazio**. Não é monitor; é uma linha morta. |
-| "Precisamos de uma conta verificada, validar SPF/DKIM/DMARC" | Já medido pelo instrumento da fase 1: 142 relatórios DMARC do Google, 1697 mensagens. **DKIM alinhado: 100%.** **SPF alinhado: 50%** — ver fase 42, é o achado deste plano. |
+| "Precisamos de uma conta verificada, validar SPF/DKIM/DMARC" | As caixas de envio são as **5 contas Google da Icemail** (`tryskaleclub.com`): verificadas, **dia 14 de 14** de warm-up, 15/dia cada, envio por `smtp.gmail.com`. `tryskaleclub.com` tem SPF do Google, DKIM `google._domainkey` e DMARC `p=quarantine`. Os relatórios DMARC da fase 1 medem as caixas **nativas** (warm-up), não estas — ver fase 42. |
 
 O que o Hermes não sabia, porque não tinha como saber:
 
@@ -75,8 +82,11 @@ avalia SPF do IP separadamente, e para IPv6 exige PTR válido. O PTR do IPv6 é
 `skaleclub-mail.` — um nome sem domínio, inválido. O IPv4 tem `mx.skale.club`, correto.
 
 Isso não é a causa do pico de 09/09: o tráfego IPv6 existe antes, durante e depois, e o
-spam voltou a zero com ele presente. É um defeito **persistente** que reduz a margem, e a
-campanha vai testar essa margem com desconhecidos.
+spam voltou a zero com ele presente. É um defeito **persistente do caminho nativo** — ou
+seja, do warm-up das caixas `contato@`/`agenda@`. **Não afeta a campanha**, que sai pelas
+contas Google da Icemail via `smtp.gmail.com` e nunca passa pelo relay do Hetzner. Continua
+valendo consertar (warm-up caindo no spam das caixas Icemail é o sinal errado para o Google
+sobre elas), mas não bloqueia o piloto.
 
 **O que fazer.**
 
@@ -131,32 +141,44 @@ formato de gente, em sequência.**
 ganham `email_status`, `verified_ok_count` deixa de ser NULL na run daquele dia, e a regra
 `verification_missing` do watchdog **se cala sozinha**.
 
-## Fase 44 — A caixa que vai enviar
+## Fase 44 — As caixas de envio já existem: conferir e travar a regra
 
-**Evidência.** `info@` (9 caixas): dia 0 de 14 em sete, dia 2 em duas; 0 mensagens em 30
-dias; teto de 50/dia; as únicas 8 mensagens que já mandaram (antes de setembro) tiveram 4
-em spam. Sementes `contato@`/`agenda@` (20 caixas): dia 14 de 14, ~5/dia cada, 2,9% de spam
-em 30 dias e **0,0% para o Google nos últimos 12 dias**. A campanha tem `from_name =
-"Vanildo | Skale Club"`, `reply_to_email = null`, janela 09:30–16:30 ET, sem fim de
-semana, sem rastreio de abertura/clique.
+**Não há decisão aqui.** A primeira versão desta fase perguntava de qual caixa sair — `info@` ou
+uma semente de warm-up. As duas respostas eram erradas: nenhuma delas manda campanha. A
+campanha sai das **contas Google compradas na Icemail**, que já estão cadastradas como inbox de
+outreach e já estão prontas:
 
-**A decisão é sua, e são duas opções, não três:**
+| Caixa | Provider | Warm-up | Limite/dia | Status |
+|---|---|---|---|---|
+| `v.souza@tryskaleclub.com` | smtp · smtp.gmail.com | dia 14/14 | 15 | verified |
+| `vanildo.jr@tryskaleclub.com` | smtp · smtp.gmail.com | dia 14/14 | 15 | verified |
+| `vanildo.skale@tryskaleclub.com` | smtp · smtp.gmail.com | dia 14/14 | 15 | verified |
+| `vanildo.souza@tryskaleclub.com` | smtp · smtp.gmail.com | dia 14/14 | 15 | verified |
+| `vanildo@tryskaleclub.com` | smtp · smtp.gmail.com | dia 14/14 | 15 | verified |
 
-- **(A) Enviar de uma semente aquecida** (`contato@skale.club` ou `contato@xkedule.com` —
-  `xkedule.com` é o domínio com mais volume medido nos relatórios, 302 mensagens, 100% DKIM,
-  e "No issues" no Postmaster). Piloto sai **esta semana**. `info@` fica para resposta
-  humana. Custo: a assinatura diz `skale.club` e o remetente é `contato@`, coerente.
-- **(B) Aquecer `info@` antes.** Reduzir `daily_send_limit` de 50 para **15**, ligar no
-  mesh, 14 dias subindo. Piloto sai em **duas semanas**, de uma caixa cujo primeiro
-  histórico será bom em vez de 4-em-8.
+Capacidade: **75 envios/dia** somando as cinco. Os 2 leads que já estão na campanha piloto
+estão atribuídos a `vanildo.jr@tryskaleclub.com` — correto.
 
-Recomendação: **(A)** para o piloto, **(B)** em paralelo para a campanha de verdade. O
-piloto de 25 não precisa da `info@`; a `info@` precisa de 14 dias que o piloto não tem por
-que esperar. E independente da escolha: **baixar o teto das `info@` para 15 hoje.** 50/dia
-num endereço de dia zero é o número que a fase 4 já chamou de errado.
+**O que fazer.**
 
-**Critério de pronto.** Caixa escolhida, `reply_to_email` preenchido com uma caixa que
-alguém lê, e teto das `info@` em 15.
+1. **Travar a regra no código.** Hoje ela vale por acidente: as `info@` têm `warmup_only=false`
+   e passam no filtro de remetente; o bloqueio por domínio (`checkProtectedSendingDomains`) só
+   protege `skale.club` (`MAIL_DOMAIN`). Colocar os outros oito domínios da operação em
+   `OUTREACH_PROTECTED_DOMAINS` faz com que **nenhum endereço de domínio da empresa** possa ser
+   matriculado ou ativado como remetente de campanha — só sobra o domínio da Icemail. Sem
+   código novo: é o mecanismo P009 que já existe, e precisa entrar no `run_app_container` do
+   `build-deploy.yml`, porque hoje a variável não chega ao container.
+2. **DMARC do `tryskaleclub.com`** manda os relatórios (`rua`) para `vanildo.souza@tryskaleclub.com`
+   — uma caixa de envio. Relatório automático caindo numa caixa de outreach polui a caixa e
+   ninguém lê. Acrescentar `mailto:dmarc@skale.club` ao `rua` (com o registro de autorização
+   `tryskaleclub.com._report._dmarc.skale.club`) põe o domínio que **de fato** manda a campanha
+   sob o mesmo instrumento que hoje só mede o warm-up.
+3. **Postmaster Tools para `tryskaleclub.com`.** É o domínio que o Gmail vai julgar na campanha
+   e ele não está cadastrado. Os 12 cadastrados são todos do lado nativo.
+
+**Critério de pronto.** Uma tentativa de matricular `info@xkedule.com` como remetente devolve
+`protected_sending_domain`; relatórios DMARC de `tryskaleclub.com` aparecendo em
+`dmarc_reports`; `tryskaleclub.com` verificado no Postmaster.
 
 ## Fase 45 — O piloto: 25 barbearias, um dry-run, uma aprovação
 
@@ -175,7 +197,9 @@ confirmam). Mais os que a fase 43 verificar dos 121. A campanha tem 3 passos, `m
    barbearias não tem site (50–80% medido nas três runs), então a maioria dos e-mails sai
    com o buraco. Consertar: colapsar o parágrafo quando a variável resolve vazia, com teste
    sobre o corpo renderizado.
-3. **`reply_to_email`** para a caixa da fase 44. Hoje é `null`.
+3. **`reply_to_email`**: hoje é `null`, então a resposta volta para a própria caixa Icemail que
+   enviou — que é o comportamento certo, desde que a caixa unificada esteja lendo as cinco.
+   Conferir antes de ativar; não trocar por `info@`.
 4. **Dry-run** pelo `campaignPreview` da fase 37 (`GET /api/outreach/approvals`): quantos
    matriculados, quantos verificados, quantos bloqueados, sequência renderizada com um lead
    real, caixa e limite do dia. Nada é enviado.
@@ -211,15 +235,16 @@ Nada novo aqui; é ligar o que foi construído para isto.
 
 ## Ordem
 
-41 primeiro e sozinha — é um restart e destrava todo o resto. 42 e 43 em paralelo, na
-`dev`, sem deploy até você mandar. 44 é a sua decisão, e pode ser tomada hoje. 45 depende
-de 41 (Hermes vendo o Xphere), 42 (metade da saída autenticando inteira) e 44. 46 acompanha
-a 45.
+41 primeiro e sozinha — é um restart e destrava todo o resto. 43 e 44 em paralelo, na `dev`,
+sem deploy até você mandar. 45 depende de 41 (Hermes vendo o Xphere) e de 44 (a regra das
+caixas travada no código). 42 corre por fora: melhora o warm-up, não bloqueia o piloto. 46
+acompanha a 45.
 
 ## O que não fazer
 
-- Não ativar antes da 42. Mandar cold e-mail para desconhecidos com metade do tráfego
-  falhando SPF é gastar a lista para testar uma hipótese que os relatórios já respondem.
+- Não ativar antes da 44. Enquanto a regra das caixas não estiver travada no código, uma
+  matrícula errada põe uma `info@` para disparar cold e-mail.
+- Nunca usar `info@` nem caixa de warm-up como remetente, nem "só para o piloto".
 - Não deixar a 43 ligada por padrão. Gasta dinheiro; você liga.
 - Não confiar em número que o Hermes disser até a 41 fechar. Ele respondeu "397" com a
   ferramenta devolvendo erro.

@@ -109,7 +109,12 @@ o juiz é o nosso próprio servidor. A outra metade mede, e é a que revelou o p
 
 - Reequilibrar o mesh para que a maioria das mensagens vá para caixas em provedores
   externos, que são quem julga de verdade.
-- **As caixas que vão enviar campanha não estão sendo aquecidas.** As nove `info@` somam 8
+- ~~**As caixas que vão enviar campanha não estão sendo aquecidas.**~~ **Premissa errada,
+  corrigida em 2026-09-30:** a campanha nunca sai das `info@`. Ela sai das contas Google da
+  Icemail (`tryskaleclub.com`), que estão no dia 14/14 e com 0% de spam em 30 dias; as `info@`
+  são caixas de trabalho, fora do warm-up **e** da campanha. Regras no `CLAUDE.md`, seção
+  *Regras do processo de prospecção*. O texto original fica abaixo como registro do erro.
+  As nove `info@` somam 8
   mensagens em 30 dias e estão no dia 0 de 14; as sementes (`contato@`, `agenda@`) estão no
   dia 14 mandando 57/dia. A decisão de manter `info@` fora do mesh foi deliberada — é caixa
   que gente lê — mas o efeito é que a caixa que vai disparar a campanha nunca enviou nada.
@@ -143,7 +148,10 @@ documento.**
 conserto:** a maior parte das mensagens do dia saiu antes de o `DKIM verified` (16:17 UTC) e
 do `rua` novo (15:21 UTC) estarem no ar. É observação, não causa.
 
-**E o achado que muda a prioridade da fase 4:**
+**E o achado que eu disse que mudava a prioridade da fase 4** — e que não muda, porque as
+`info@` não enviam campanha (correção de 2026-09-30; ver o `CLAUDE.md`). As 8 mensagens delas
+são de antes de 16/08, quando ainda estavam no mesh por engano; desde então estão fora dele,
+como deveriam:
 
 | Grupo remetente | Mensagens em 30 dias | Spam | Taxa |
 |---|---|---|---|

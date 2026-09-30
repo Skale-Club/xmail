@@ -204,6 +204,40 @@ index `mail_message_folder_uid_unique` enforces the uniqueness half.
   one-to-one transactional email from a verified native outreach inbox — not campaign traffic, no
   warmup/sending-limit bookkeeping and no open/click tracking injection.
 
+### Regras do processo de prospecção — as três caixas (NÃO NEGOCIÁVEL)
+
+Definidas pelo Vanildo e registradas em 2026-09-30, depois de um plano de ativação ter sido
+escrito em cima da premissa errada (que a campanha sairia das `info@`). **Se qualquer análise,
+plano ou código contradisser isto, quem está errado é a análise.** Toda a estrutura de
+prospecção depende destas três regras:
+
+| Papel | Quais caixas | Warm-up | Campanha fria |
+|---|---|---|---|
+| **Caixa útil da empresa** | `info@` de cada domínio da operação | **NUNCA** | **NUNCA** |
+| **Caixa de warm-up** | endereços criados só para isso, sem uso real (hoje `contato@`, `agenda@`, e `parcerias@`/`suporte@` em skale.club/xkedule) | sim — é a única função delas | **NUNCA** |
+| **Caixa de envio (outreach)** | as contas **Google compradas na Icemail**, cadastradas como inbox de outreach (hoje as 5 de `tryskaleclub.com`, `provider='smtp'`, `smtp.gmail.com`) | sim, com as caixas de warm-up | **SIM — só elas** |
+
+1. **`info@` é caixa de trabalho: gente lê.** Não entra no mesh de warm-up (tráfego sintético numa
+   caixa de trabalho é lixo para quem lê) e não dispara campanha. No banco: `warmup_source='none'`.
+2. **Warm-up acontece entre caixas inúteis, criadas para isso.** Caixa nova de warm-up se cria com
+   `scripts/warmup-seed-native.ts` (sem `--no-mesh`), que grava `warmup_source='internal'` +
+   `warmup_only=true`. `warmup_only=true` é o que impede a caixa de ser matriculada como remetente.
+3. **Cold e-mail para prospect sai somente pelas contas Google da Icemail.** O tráfego de campanha,
+   portanto, sai pela infraestrutura do Google (`smtp.gmail.com`), autentica pelo SPF/DKIM/DMARC de
+   `tryskaleclub.com` e **não** passa pelo relay direto do Hetzner. Problemas de entrega do caminho
+   nativo (ex.: o SPF falhando no IPv6, fase 42 de `docs/campaign-activation-plan.md`) afetam o
+   warm-up das caixas nativas, **não** a campanha.
+
+**O que garante isto no código, e o que não garante (medido em 2026-09-30):**
+- Regra 2/3 para as caixas de warm-up: garantida — `warmup_only=true` é filtrado em
+  `agent-outreach.ts` (matrícula pelo agente) e em `campaigns.ts` (ativação).
+- Regra 1/3 para as `info@`: **não garantida.** Elas têm `warmup_only=false`, então passam no
+  filtro acima. O único bloqueio de domínio é `checkProtectedSendingDomains` (`campaigns.ts`), que
+  lê `MAIL_DOMAIN` + `OUTREACH_PROTECTED_DOMAINS`; em produção só `skale.club` está protegido.
+  Uma `info@xkedule.com` poderia ser matriculada como remetente, e hoje só não chega a enviar
+  porque o portão `sending_inbox_not_warmed` a barra por acidente (ela está no dia 0). Fechar
+  isso é colocar os domínios da operação em `OUTREACH_PROTECTED_DOMAINS`.
+
 ### Hermes Prospecting Gateway
 The LLM agent (Hermes) drives prospecting through `/api/agent/outreach/*` only — a
 capability-scoped, org-bound credential with no send and no activation capability.
