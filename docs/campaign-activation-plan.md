@@ -374,3 +374,33 @@ O primeiro deploy do Xphere falhou num erro de tipo que só o `next build` pega
 (`const cf = customFields ?? {}`); a produção não caiu, o build parou antes. Corrigido com tipo
 explícito, provado compilando o arquivo isolado em `--strict`.
 
+### Landing e Products no ar — 2026-09-30, noite
+
+Site (`skaleclub` `e598bc4`, Coolify): `/barbershops` reescrita e `/products`,
+`/products/nfc-review-plaque`, `/products/nfc-keychains` (+ versões `/br/`) novas, tudo como
+**dados** no mecanismo de landings gerenciadas, só com seções que já existiam. Extensões de
+código mínimas: `tel:` no hero, `href` por card, rota `/products/:slug` no cliente E no servidor,
+mapa explícito URL→slug com `Object.hasOwn` (a primeira versão aceitava `constructor`).
+
+Revisão em duas rodadas (Opus, só leitura) reprovou a primeira entrega por quatro bloqueios
+reais: `/products/*` dava 404 no servidor enquanto o sitemap anunciava as URLs;
+`/products/nfc-keychains` mostrava a landing de anúncio antiga com preço; o bloco NFC não
+linkava os produtos; travessão e "technology" herdados. Tudo corrigido e conferido ao vivo:
+200 + canonical nas páginas novas, 404 noindex para slug inválido, 301 do slug sem prefixo,
+`/nfc-keychains` antiga intocada.
+
+Seeds aplicados em produção na ordem produtos → barbearias → traduções (dry-run antes de cada
+um). O de traduções alterou UMA linha global já existente ("TikTok Ads" → "anúncios no TikTok").
+
+**Vercel:** o projeto `skaleclub` ainda existe na Vercel, conectado ao GitHub, e fez build de
+produção de todo push na `main` até 29/09 (ninguém servido por ele; `skale.club` → Hetzner). A
+integração não tem permissão para pausar/apagar (403). Fica com o Vanildo: desconectar e apagar
+o projeto na Vercel, e restringir o app da Vercel no GitHub a só os repositórios que rodam lá.
+No código, os resquícios já tinham sido removidos no wind-down; sobrou `.gitignore` e uma
+linha do `SETUP.md`, limpos em `bb1444f`.
+
+**E-mails do piloto:** terceira versão aplicada no rascunho, aprovada pelo Vanildo para avançar
+("tá melhor que antes e dá pra gente avançar"). Abertura por lead via `custom_fields.openerNote`
+(plataforma de agendamento real de cada barbearia; 2 sem linha). Assinatura aponta para
+`skale.club/barbershops`. A/B desligado. **Ativação ainda depende do "vai" dele.**
+
