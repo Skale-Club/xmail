@@ -157,4 +157,68 @@ describe('renderCampaignPreviewSequence', () => {
         expect(rendered).toHaveLength(1)
         expect(rendered[0].stepOrder).toBe(2)
     })
+
+    // Fase 45 — o card de aprovação (buildCampaignActivationPreview → renderCampaignPreviewSequence)
+    // e o envio real (outreach-sender.ts::sendOutreachEmail) chamam a mesma `interpolateTemplate`,
+    // então o corpo sem `{{websiteInsight}}` (maioria dos leads da campanha piloto de barbearias,
+    // sem website) precisa aparecer aqui EXATAMENTE como sairia no e-mail: sem o buraco de linhas
+    // em branco que existia antes do colapso em template-variables.ts.
+    it('mostra o corpo do passo 1 da campanha piloto de barbearias sem o buraco de linhas em branco quando falta o insight', () => {
+        const plainBody = `Hi,
+
+I came across {{companyName}} while looking at independent barbershops around {{city}}.
+
+{{websiteInsight}}
+
+We help barbershops avoid missed calls with an AI receptionist that answers 24/7, handles common questions, and books or reschedules appointments using the calendar they already have.
+
+Would you be open to a quick 10-minute conversation to see if this could help {{companyName}}?
+
+Vanildo de Souza Jr
+Skale Club LLC
+skale.club
+
+This is a business outreach from Skale Club.
+To stop receiving these emails: {{unsubscribeUrl}}`
+
+        const steps = [{
+            stepOrder: 1,
+            type: 'email',
+            delayHours: 0,
+            subject: 'Quick question about {{companyName}}',
+            plainBody,
+            htmlBody: null,
+            subjectB: null,
+            plainBodyB: null,
+            htmlBodyB: null,
+            abTestEnabled: false,
+        }]
+
+        const noWebsiteLead = lead({
+            companyName: 'Hudson Barbershop',
+            location: 'Hudson, MA',
+            customFields: {}, // sem websiteInsights — o caso comum (50–80% da base)
+        })
+
+        const [rendered] = renderCampaignPreviewSequence(steps, noWebsiteLead, {
+            unsubscribeUrl: 'https://mail.skale.club/o/u/tok123',
+            contentLanguage: 'en',
+        })
+
+        expect(rendered.variantA.bodyPlain).not.toMatch(/\n{3,}/)
+        expect(rendered.variantA.bodyPlain).toBe(`Hi,
+
+I came across Hudson Barbershop while looking at independent barbershops around Hudson.
+
+We help barbershops avoid missed calls with an AI receptionist that answers 24/7, handles common questions, and books or reschedules appointments using the calendar they already have.
+
+Would you be open to a quick 10-minute conversation to see if this could help Hudson Barbershop?
+
+Vanildo de Souza Jr
+Skale Club LLC
+skale.club
+
+This is a business outreach from Skale Club.
+To stop receiving these emails: https://mail.skale.club/o/u/tok123`)
+    })
 })
