@@ -355,7 +355,7 @@ campanha — os outros 12 cadastrados são do lado nativo.
 
 ### Pendências de código levantadas pelo plano — fechadas em 2026-09-30
 
-Todas em produção (xmail `0415632`, xphere `f4c5a4ad`+):
+Todas em produção (xmail `0415632`, xphere `3604d782`):
 1. **Import automático dos verificados** — o tick de verificação importa os `ok` pelo mesmo
    caminho do `prospects_import_to_xmail`; mesmo interruptor desligado (`PROSPECTING_AUTO_VERIFY`).
 2. **Caixa de envio na matrícula** — o Xmail diz em cada conta se é `campaignSenderEligible`
