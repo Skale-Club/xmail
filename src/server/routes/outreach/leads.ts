@@ -8,6 +8,7 @@ import { paginate, paginationQuerySchema } from '../../lib/pagination'
 import { mapEmailVerificationCustomFields, resolveLeadVerificationFields } from '../../lib/email-verification-mapping'
 import { jsonbParam } from '../../lib/jsonb'
 import { withSourceRunId } from '../../lib/prospecting/source-run-id'
+import { isPlatformEmail } from '../../lib/platform-emails'
 
 const router = Router()
 
@@ -444,6 +445,16 @@ router.post('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Lead list not found or access denied' })
         }
 
+        // Defeito 2 (2026-09-30): never let a scheduling/marketplace platform's own support
+        // address (e.g. Booksy's help.us@booksy.com, scraped off a business's booking page) in
+        // as a "company email" — see platform-emails.ts for the evidence and the domain list.
+        if (isPlatformEmail(validatedData.email)) {
+            return res.status(422).json({
+                error: 'Email address belongs to a scheduling/marketplace platform, not the company itself',
+                code: 'platform_email_rejected',
+            })
+        }
+
         // Check for duplicate email
         const existing = await db.query.leads.findFirst({
             where: and(
@@ -516,9 +527,43 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
         if (!membership) return
 
         const validatedData = bulkImportSchema.parse(req.body)
+
+        // Defeito 2 (2026-09-30): strip scheduling/marketplace platform emails (Booksy support
+        // etc — see platform-emails.ts) before anything else. Reported back separately
+        // (`skippedPlatformEmails`) so the caller sees exactly which submitted addresses were
+        // dropped and why, never silently.
+        const skippedPlatformEmails: string[] = []
+        const nonPlatformLeads = validatedData.leads.filter((lead) => {
+            if (isPlatformEmail(lead.email)) {
+                skippedPlatformEmails.push(lead.email)
+                return false
+            }
+            return true
+        })
+
+        // Defeito 1 (2026-09-30): dedupe WITHIN the submitted batch itself. createLeadSchema
+        // already normalizes email to lowercase (so 'A@x.com' / 'a@x.com' collapse to the same
+        // string here too), but nothing previously stopped two entries for the SAME email
+        // reaching one INSERT statement — Postgres threw `duplicate key value violates unique
+        // constraint "lead_org_email_unique"` and the WHOLE batch 500'd, importing zero of 69
+        // submitted (only 55 distinct emails; mariashairfashion@gmail.com and
+        // skipsbarbershopboston@gmail.com each appeared twice). Keep the first occurrence per
+        // email, count the rest as in-payload duplicates and report them (`duplicatesInPayload`).
+        const seenInPayload = new Set<string>()
+        const dedupedLeads: typeof nonPlatformLeads = []
+        let duplicatesInPayload = 0
+        for (const lead of nonPlatformLeads) {
+            if (seenInPayload.has(lead.email)) {
+                duplicatesInPayload++
+                continue
+            }
+            seenInPayload.add(lead.email)
+            dedupedLeads.push(lead)
+        }
+
         const leadListIds = [...new Set([
             validatedData.leadListId,
-            ...validatedData.leads.map(lead => lead.leadListId),
+            ...dedupedLeads.map(lead => lead.leadListId),
         ].filter((id): id is string => Boolean(id)))]
         if (leadListIds.length > 0) {
             const accessibleLists = await db.query.leadLists.findMany({
@@ -533,11 +578,24 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
             }
         }
 
+        if (dedupedLeads.length === 0) {
+            // Every submitted lead was either a platform email or a same-batch duplicate.
+            // Not an error — report the breakdown, import nothing.
+            return res.status(200).json({
+                imported: 0,
+                duplicates: 0,
+                duplicatesInPayload,
+                skippedPlatformEmails,
+                leads: [],
+                leadIds: [],
+            })
+        }
+
         // Get existing emails
         const existingLeads = await db.query.leads.findMany({
             where: and(
                 eq(leads.organizationId, organizationId),
-                inArray(leads.email, validatedData.leads.map(l => l.email))
+                inArray(leads.email, dedupedLeads.map(l => l.email))
             ),
             columns: { id: true, email: true },
         })
@@ -546,8 +604,8 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
         const existingLeadIds = existingLeads.map(l => l.id)
 
         // Filter out duplicates
-        const newLeads = validatedData.leads.filter(l => !existingEmails.has(l.email))
-        const duplicateLeads = validatedData.leads.filter(l => existingEmails.has(l.email))
+        const newLeads = dedupedLeads.filter(l => !existingEmails.has(l.email))
+        const duplicateLeads = dedupedLeads.filter(l => existingEmails.has(l.email))
 
         // Update-if-exists: orchestration re-imports are enrichment syncs, not no-ops. Merge new
         // custom fields (for example Xphere's multilingual websiteInsights) and refresh any
@@ -596,11 +654,13 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
 
         if (newLeads.length === 0) {
             // Not an error for orchestration callers (e.g. Xphere enrolling prospects):
-            // every submitted lead already exists, so return their ids so the caller
-            // can still enroll them in a campaign. Idempotent re-imports must succeed.
+            // every submitted (post-filter) lead already exists, so return their ids so the
+            // caller can still enroll them in a campaign. Idempotent re-imports must succeed.
             return res.status(200).json({
                 imported: 0,
-                duplicates: validatedData.leads.length,
+                duplicates: dedupedLeads.length,
+                duplicatesInPayload,
+                skippedPlatformEmails,
                 leads: [],
                 leadIds: existingLeadIds,
             })
@@ -634,7 +694,28 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
                 leadListId: validatedData.leadListId || lead.leadListId,
                 ...verification,
             }))
-        ).returning()
+        // Defeito 1 (2026-09-30): the existence check above (`existingEmails`) closes the race
+        // against data already in the table at request time, but a SECOND concurrent import of
+        // the same org+email between that SELECT and this INSERT can still collide — this is
+        // exactly the "insert não pode falhar por uma corrida" requirement. onConflictDoNothing
+        // on the unique index (lead_org_email_unique) turns that collision into a silent skip
+        // instead of a 500; the follow-up query below resolves the loser's id so it isn't lost.
+        ).onConflictDoNothing({ target: [leads.organizationId, leads.email] }).returning()
+
+        let raceLeadIds: string[] = []
+        if (insertedLeads.length < newLeads.length) {
+            const insertedEmails = new Set(insertedLeads.map(l => l.email))
+            const missingEmails = newLeads
+                .map(l => l.email)
+                .filter(email => !insertedEmails.has(email))
+            if (missingEmails.length > 0) {
+                const racedLeads = await db.query.leads.findMany({
+                    where: and(eq(leads.organizationId, organizationId), inArray(leads.email, missingEmails)),
+                    columns: { id: true },
+                })
+                raceLeadIds = racedLeads.map(l => l.id)
+            }
+        }
 
         // Update lead list count
         if (validatedData.leadListId) {
@@ -647,11 +728,14 @@ router.post('/bulk-import', async (req: Request, res: Response) => {
 
         res.status(201).json({
             imported: insertedLeads.length,
-            duplicates: validatedData.leads.length - insertedLeads.length,
+            duplicates: dedupedLeads.length - insertedLeads.length,
+            duplicatesInPayload,
+            skippedPlatformEmails,
             leads: insertedLeads,
-            // All resolved lead ids (newly inserted + pre-existing) for the submitted
-            // emails, so an orchestrator can enroll the full set in a campaign.
-            leadIds: [...insertedLeads.map(l => l.id), ...existingLeadIds],
+            // All resolved lead ids (newly inserted + pre-existing + any race losers resolved
+            // above) for the submitted, post-filter emails, so an orchestrator can enroll the
+            // full set in a campaign.
+            leadIds: [...insertedLeads.map(l => l.id), ...existingLeadIds, ...raceLeadIds],
         })
     } catch (error) {
         if (error instanceof z.ZodError) {
