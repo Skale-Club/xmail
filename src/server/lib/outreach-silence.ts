@@ -285,21 +285,21 @@ export const XPHERE_EVENT_STUCK_AGE_MINUTES = 180
  * IPv6 path already blends the rate under 97% (0.85×99.9% + 0.15×0% ≈ 85%), well past the line.
  * This is not a "wait for total collapse" gate.
  *
- * Window: 7 days — the same cadence FUNNEL_STALLED_RUN_AGE_DAYS uses elsewhere in this file.
- * Reporters send roughly one aggregate report per domain per day, so 7 days comfortably covers a
- * full week from all nine domains even when a couple of days arrive late or thin.
+ * Window: 3 days. At the measured ~94 messages/day that is ~280 messages — well above
+ * MIN_DMARC_MESSAGES_FOR_SPF_ALIGNMENT_CHECK — and it still tolerates a reporter being a day late.
  *
- * Post-deploy tail: because the window keys on `date_range_end` (when the mail was SENT, not
- * when we ingested the report), every report covering mail sent BEFORE the IPv4 fix ships still
- * falls inside the 7-day window for up to 7 days afterwards — this alert can keep firing for as
- * long as 7 days after the fix deploys, purely reporting on already-sent, already-IPv6 history
- * that nothing can retroactively fix. That is the same "transient, expected, self-resolving"
- * shape UNPRICED_COST_SHARE_THRESHOLD's own comment documents for the native pricing rows: do
- * NOT shorten the window or backdate anything to silence it early — a shorter window would also
- * blind the check to a genuine same-day regression once the old reports have rolled out and it
- * needs to notice one.
+ * Why 3 and not 7 (a 7-day window was the first draft; changed on review, 2026-09-30). A SHORTER
+ * window detects a regression FASTER, because fewer healthy days dilute the bad one:
+ *   - full regression (back to the measured 51%): 3-day → (2×99.9 + 51)/3 ≈ 84%, fires on day 1;
+ *     7-day → (6×99.9 + 51)/7 ≈ 93%, also day 1.
+ *   - partial leak (15% of traffic back on IPv6, ≈85% that day): 3-day → (2×99.9 + 85)/3 ≈ 95%,
+ *     fires on day 1; 7-day → (6×99.9 + 85)/7 ≈ 97.8%, silent until day 2.
+ * And the post-deploy tail shrinks with it: the window keys on `date_range_end` (when the mail
+ * was SENT), so reports covering mail sent before the IPv4 fix keep the share low until they roll
+ * out — up to 3 days after the deploy instead of 7. A week of an alert everyone already knows is
+ * stale is exactly how people learn to ignore the ops channel.
  */
-export const DMARC_SPF_ALIGNMENT_WINDOW_DAYS = 7
+export const DMARC_SPF_ALIGNMENT_WINDOW_DAYS = 3
 export const DMARC_SPF_ALIGNMENT_THRESHOLD = 0.97
 
 /** Below this many aggregated messages in the window, a percentage is noise, not signal — same
