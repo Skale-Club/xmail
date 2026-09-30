@@ -346,6 +346,10 @@ Import real: 69 `ok` → 55 e-mails distintos → menos 2 de plataforma → meno
 51 novos. Seleção: só barbearias (fora salões, franquia e administradora de shopping), com insight
 do site, 18 fora do centro de Boston e 5 no centro.
 
-**Falta só:** a aprovação do Vanildo para ativar, e o Postmaster do `tryskaleclub.com` (o
-formulário recusa preenchimento por automação; ele cadastra, eu publico o TXT e verifico).
+**Postmaster do `tryskaleclub.com`: verificado** (30/09). O Vanildo cadastrou (o formulário recusa
+preenchimento por automação); o TXT de verificação foi publicado ao lado do
+`google-site-verification` que já existia, sem removê-lo. É o domínio que o Gmail julga na
+campanha — os outros 12 cadastrados são do lado nativo.
+
+**Falta só:** a aprovação do Vanildo para ativar.
 
