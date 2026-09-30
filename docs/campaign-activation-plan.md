@@ -404,3 +404,25 @@ linha do `SETUP.md`, limpos em `bb1444f`.
 (plataforma de agendamento real de cada barbearia; 2 sem linha). Assinatura aponta para
 `skale.club/barbershops`. A/B desligado. **Ativação ainda depende do "vai" dele.**
 
+### Estado ao fim de 2026-09-30 (para retomar de onde parou)
+
+**Pronto e conferido em produção:** landing `/barbershops` + seção `/products` no ar; e-mails do
+piloto na v3 no rascunho (abertura por lead via `custom_fields.openerNote`, sem "tech", sem
+travessão, A/B desligado), assinatura "Thanks, / Vanildo de Souza Jr / Skale Club (link para
+skale.club/barbershops) / (508) 801-8190 / unsubscribe", em texto e em HTML mínimo;
+`validateCampaignReadyForActivation` = OK; 25 leads, 5 por caixa Icemail; guarda de
+descadastro em 10%/20 (voltar a 2%/50 depois do piloto); Postmaster do tryskaleclub.com
+verificado; Hermes reconectado com vigia; verificação automática no Xphere pronta e DESLIGADA.
+
+**Só o Vanildo pode fazer:** (1) assinar Apify Starter antes de ~07/10; (2) desconectar e apagar
+o projeto `skaleclub` na Vercel e restringir o app da Vercel no GitHub; (3) ligar para o
+(224) 551-6131 e confirmar que a demo atende bem — todo e-mail aponta para lá; (4) recarregar o
+MillionVerifier (169 créditos); (5) escolher a frase do rodapé/hero do site (opções 1-3 dadas);
+(6) fotos reais da placa NFC; (7) dizer "vai" para ativar o piloto (melhor às 9:30 ET de um dia
+útil).
+
+**Depois do "vai":** ativar (`status='active'`), acompanhar a primeira hora (`outreach_emails.sent_at`,
+`outreach_event_outbox` entregando ao Xphere, `DKIM verified` no relay), e as condições de parada
+da fase 46. Em seguida: nova leva de territórios (fila acaba 12/10; decidir MA só ou NH/RI/CT),
+ligar `PROSPECTING_AUTO_VERIFY=1` + cron no skale-cron da VPS, e a landing simples da linha NFC.
+
