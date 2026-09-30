@@ -20,6 +20,7 @@ import {
 import { createDrizzleInboundEventStore } from '../../lib/outreach-inbound'
 import { syncOutlookInboundOnce } from '../../lib/outreach-inbound-sources'
 import { createLogger } from '../../lib/logger'
+import { checkProtectedSendingDomains } from './campaigns'
 
 const log = createLogger('outreach.email-accounts')
 
@@ -273,6 +274,23 @@ const updateEmailAccountSchema = z.object({
 // NOTE: getDecryptedCredentials helper previously defined here was removed (Phase 12 COR-07 lint
 // cleanup); routes inline `decryptSecret` calls. Re-add helper if needed by future routes.
 
+// Xphere enrolls leads without knowing which inbox to use and falls back to "the first
+// account this listing returns" (see xmailListEmailAccounts in the xphere repo). Xmail is the
+// only place that knows the three eligibility rules (verified, not a warm-up-only seed, not on
+// a protected company domain — see CLAUDE.md "Regras do processo de prospecção"), so this
+// listing states the verdict directly instead of making the caller re-derive it and risk
+// drifting from validateCampaignReadyForActivation's checks. Deliberately reuses
+// checkProtectedSendingDomains rather than re-implementing the domain check — one source of
+// truth. Warm-up-*incompleteness* (sending_inbox_not_warmed) is NOT folded in here: that is a
+// separate, overridable activation gate (OUTREACH_ALLOW_UNWARMED_ACTIVATION), not a permanent
+// unsuitability of the inbox.
+function isCampaignSenderEligible(account: { email: string; status: string; warmupOnly: boolean | null }): boolean {
+    if (account.status !== 'verified') return false
+    if (account.warmupOnly) return false
+    if (checkProtectedSendingDomains([{ email: account.email }])) return false
+    return true
+}
+
 // List email accounts for organization
 router.get('/', async (req: Request, res: Response) => {
     try {
@@ -312,6 +330,7 @@ router.get('/', async (req: Request, res: Response) => {
             warmupProgress: account.warmupEnabled
                 ? Math.min(100, Math.round((account.warmupCurrentDay / Math.max(1, account.warmupDays)) * 100))
                 : 100,
+            campaignSenderEligible: isCampaignSenderEligible(account),
             smtpPassword: undefined,
             imapPassword: undefined,
         }))
