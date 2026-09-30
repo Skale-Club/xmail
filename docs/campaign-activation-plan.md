@@ -322,3 +322,30 @@ O que já foi feito, com a prova de cada item. O que ficou de fora está no fim,
   Chrome estava desconectada.
 - PTR do IPv6: só pelo console da Hetzner, sem API local. Com a saída em IPv4 é higiene.
 - Verificar os 106 nunca verificados: gasta crédito, e o MillionVerifier tem 169.
+
+### Fechamento — 2026-09-30, fim do dia
+
+Tudo em produção nos três repos (`main` = `dev`):
+- **xmail `c357356`** — regra das três caixas travada no deploy; saída nativa em IPv4 (a causa
+  era o nodemailer **sortear** entre A e AAAA a cada conexão — `concat` + `Math.random`, provado
+  no código instalado); regra `dmarc_spf_alignment_low` com janela de 3 dias (hoje em 51,6%: vai
+  falar até ~3 dias depois do deploy e se calar — essa é a prova do conserto); parágrafo vazio do
+  `{{websiteInsight}}`; import em massa sem 500 por duplicata; e-mail de plataforma recusado.
+- **xcraper `e6e392f`** — e-mail de plataforma descartado na origem.
+- **xphere `6acc96a2`** — verificação automática, **desligada** (`PROSPECTING_AUTO_VERIFY`); o
+  agendamento fica no `skale-cron` da VPS, com o mesmo heartbeat dos outros jobs, quando ligar.
+- DNS: `ip6:` no SPF dos 9 domínios nativos; `_dmarc.tryskaleclub.com` com `dmarc@skale.club`
+  à frente do `rua` (destino antigo mantido); autorização
+  `tryskaleclub.com._report._dmarc.skale.club` publicada.
+
+**O piloto está montado e passaria na ativação.** `validateCampaignReadyForActivation` rodado em
+produção, só leitura: nenhum problema. 25 leads, 25 verificados, 5 por caixa Icemail (0 de 15
+usados hoje em cada), 3 passos (0h, +72h, +96h), `{{unsubscribeUrl}}` em todos. O "blocker" de
+endereço postal que o preview mostra é informativo — decisão do Vanildo; a ativação não o exige.
+Import real: 69 `ok` → 55 e-mails distintos → menos 2 de plataforma → menos 2 já existentes =
+51 novos. Seleção: só barbearias (fora salões, franquia e administradora de shopping), com insight
+do site, 18 fora do centro de Boston e 5 no centro.
+
+**Falta só:** a aprovação do Vanildo para ativar, e o Postmaster do `tryskaleclub.com` (o
+formulário recusa preenchimento por automação; ele cadastra, eu publico o TXT e verifico).
+
