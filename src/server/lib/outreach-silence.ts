@@ -261,6 +261,54 @@ export const OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER = 'own DKIM verification fail
  */
 export const XPHERE_EVENT_STUCK_AGE_MINUTES = 180
 
+/**
+ * Threshold and window for kind: dmarc_spf_alignment_low (Fase 42,
+ * docs/campaign-activation-plan.md "Fase 42 — Metade da saída autentica pela metade (SPF no
+ * IPv6)"). Measures the fraction of `dmarc_report_records.message_count` with
+ * `policy_spf_aligned = 'pass'` over a window keyed on `dmarc_reports.date_range_end` — the
+ * period the mail was actually SENT in, not when we ingested the report.
+ *
+ * MEASURED, not guessed — same discipline as WARMUP_SPAM_RATE_THRESHOLD above. Aggregate DMARC
+ * reports 12/09→29/09 (1697 messages, ~94/day): the IPv4 source (49.13.197.250, 867 msgs)
+ * aligned SPF on 866 of them (99.9%); the IPv6 source (2a01:4f8:c2c:c870::1, 815 msgs) aligned on
+ * ZERO (softfail — its PTR, `skaleclub-mail.`, is a bare name with no domain) — combined that is
+ * 866/1697 = 51.0% overall, exactly the mixed-source defect Fase 42 fixes by forcing direct
+ * delivery onto the resolved IPv4 literal (see outbound-transport.ts's
+ * `resolveDirectConnectHost`). Only one record in the whole 1697-message sample was a
+ * `temperror` — an isolated, unrelated DNS hiccup on the evaluator's side — and that is the
+ * noise floor this threshold must never trip on.
+ *
+ * 97% sits strictly between that noise floor (one temperror in 1697 is ~0.06%, invisible here)
+ * and the measured IPv4-only healthy rate (99.9%), while sitting far above the pre-fix blended
+ * rate (51.0%) so ANY amount of traffic slipping back onto IPv6 — not just a full regression —
+ * moves the aggregate enough to cross it: even ~15% of traffic leaking back onto the unaligned
+ * IPv6 path already blends the rate under 97% (0.85×99.9% + 0.15×0% ≈ 85%), well past the line.
+ * This is not a "wait for total collapse" gate.
+ *
+ * Window: 7 days — the same cadence FUNNEL_STALLED_RUN_AGE_DAYS uses elsewhere in this file.
+ * Reporters send roughly one aggregate report per domain per day, so 7 days comfortably covers a
+ * full week from all nine domains even when a couple of days arrive late or thin.
+ *
+ * Post-deploy tail: because the window keys on `date_range_end` (when the mail was SENT, not
+ * when we ingested the report), every report covering mail sent BEFORE the IPv4 fix ships still
+ * falls inside the 7-day window for up to 7 days afterwards — this alert can keep firing for as
+ * long as 7 days after the fix deploys, purely reporting on already-sent, already-IPv6 history
+ * that nothing can retroactively fix. That is the same "transient, expected, self-resolving"
+ * shape UNPRICED_COST_SHARE_THRESHOLD's own comment documents for the native pricing rows: do
+ * NOT shorten the window or backdate anything to silence it early — a shorter window would also
+ * blind the check to a genuine same-day regression once the old reports have rolled out and it
+ * needs to notice one.
+ */
+export const DMARC_SPF_ALIGNMENT_WINDOW_DAYS = 7
+export const DMARC_SPF_ALIGNMENT_THRESHOLD = 0.97
+
+/** Below this many aggregated messages in the window, a percentage is noise, not signal — same
+ *  shape as MIN_EXTERNAL_WARMUP_SAMPLE_FOR_SPAM_CHECK above. The measured baseline is ~94
+ *  messages/day; 50 sits comfortably below a single healthy day, so a thin first week of
+ *  reporting (not all nine domains reporting yet) never reads as "alignment failed" purely for
+ *  lack of data. */
+export const MIN_DMARC_MESSAGES_FOR_SPF_ALIGNMENT_CHECK = 50
+
 export interface SilenceMetrics {
     /** Caixas elegíveis ao mesh: `warmup_source='internal'` e verificadas. */
     warmupEligibleInboxes: number
@@ -365,6 +413,15 @@ export interface SilenceMetrics {
      *  the initial DNS-propagation window before the first report has ever arrived, same shape
      *  as MIN_TERRITORIES_FOR_QUEUE_CHECK's fresh-install guard above. */
     totalDmarcReportsEver: number
+    /**
+     * Sum of `dmarc_report_records.message_count` whose parent `dmarc_reports.date_range_end`
+     * falls within DMARC_SPF_ALIGNMENT_WINDOW_DAYS, org-wide. See DMARC_SPF_ALIGNMENT_THRESHOLD
+     * above for why the window keys on date_range_end (when the mail was sent) rather than
+     * ingestion time.
+     */
+    dmarcSpfAlignmentWindowMessages: number
+    /** Of those, the sum with `policy_spf_aligned = 'pass'`. */
+    dmarcSpfAlignmentWindowAlignedMessages: number
     /** DORMANT (kind: outbound_dkim_unverified) — count of `warmup_messages.last_error` /
      *  `outreach_emails.last_error_code` containing OUTBOUND_DKIM_UNVERIFIED_ERROR_MARKER in the
      *  last 24h. Always 0 until Fase 2's self-verify-before-deliver step exists and writes that
@@ -679,6 +736,29 @@ export function buildSilenceAlerts(metrics: SilenceMetrics, now: Date = new Date
                     + `(last one: ${lastLabel}). Reporters send roughly daily -- this means the Fase 1 `
                     + 'instrument itself has stopped (mailbox full, ingest job broken, DNS rua changed back) '
                     + 'and we are flying blind on outbound authentication again.',
+                since,
+            })
+        }
+    }
+
+    // Crítico: ver DMARC_SPF_ALIGNMENT_THRESHOLD acima — diferente de dmarc_report_gap (o
+    // instrumento parou de FALAR), este mede o CONTEÚDO do que ele diz: a fração de mensagens
+    // que de fato alinham SPF. Guardado por amostra mínima, mesmo formato de guarda que
+    // dmarc_report_gap usa contra a instalação nova (ali via totalDmarcReportsEver > 0; aqui a
+    // amostra mínima já cobre o mesmo caso, porque zero relatórios produz zero mensagens na
+    // janela, abaixo do piso).
+    if (metrics.dmarcSpfAlignmentWindowMessages >= MIN_DMARC_MESSAGES_FOR_SPF_ALIGNMENT_CHECK) {
+        const share = metrics.dmarcSpfAlignmentWindowAlignedMessages / metrics.dmarcSpfAlignmentWindowMessages
+        if (share < DMARC_SPF_ALIGNMENT_THRESHOLD) {
+            alerts.push({
+                severity: 'critical',
+                kind: 'dmarc_spf_alignment_low',
+                message: `Only ${Math.round(share * 100)}% of ${metrics.dmarcSpfAlignmentWindowMessages} `
+                    + `DMARC-reported message(s) in the last ${DMARC_SPF_ALIGNMENT_WINDOW_DAYS} days aligned SPF `
+                    + `(threshold ${Math.round(DMARC_SPF_ALIGNMENT_THRESHOLD * 100)}%). Fase 42's own incident: `
+                    + 'outbound direct delivery leaking onto IPv6 (no aligned PTR there) blends the rate down '
+                    + 'even when IPv4 delivery itself is healthy — check outbound-transport.ts\'s '
+                    + 'resolveDirectConnectHost and whether it is still forcing IPv4 for outgoing MX connections.',
                 since,
             })
         }

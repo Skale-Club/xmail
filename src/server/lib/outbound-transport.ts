@@ -22,6 +22,7 @@
  */
 
 import { promises as dns } from 'node:dns'
+import net from 'node:net'
 import nodemailer from 'nodemailer'
 // nodemailer 10 ships its own declarations and exports these as named types; the
 // `nodemailer.Transporter` namespace form only existed in the @types/nodemailer stub.
@@ -92,20 +93,69 @@ function relayTransport(dkim: OutboundDkim | undefined, env: NodeJS.ProcessEnv):
 }
 
 /**
- * Conexão com UM servidor MX. TLS é oportunista com `rejectUnauthorized: false` de propósito:
- * entre MTAs, certificado auto-assinado ou com nome divergente é comum, e recusar a conexão
- * significaria não entregar — o padrão da internet aqui é criptografar quando dá e seguir em
- * texto claro quando não dá, nunca falhar a entrega por causa do certificado.
+ * Endereço de conexão para um MX, forçado a IPv4 quando possível (Fase 42,
+ * docs/campaign-activation-plan.md). Medido em relatórios DMARC agregados 12/09→29/09: 815 das
+ * 1697 mensagens (48%) saíram por `2a01:4f8:c2c:c870::1` (IPv6) e NENHUMA alinhou SPF
+ * (`softfail`) — o PTR do IPv6 é `skaleclub-mail.`, um nome sem domínio, inválido; o do IPv4
+ * (`49.13.197.250`) é `mx.skale.club`, correto, e 866 de 867 mensagens por ele alinharam.
+ *
+ * Por que isso acontecia, verificado no código instalado (nodemailer 10.0.1,
+ * node_modules/nodemailer/dist/cjs/shared/index.js, função `resolveHostname`): quando `host` é
+ * um nome (não um literal IP), o nodemailer chama `dns.resolve4` E `dns.resolve6`, concatena os
+ * dois resultados (`ipv4Addresses.concat(ipv6Addresses)`) e `formatDNSValue` escolhe um índice
+ * AO ACASO desse array combinado (`addresses[Math.floor(Math.random() * addresses.length)]`) —
+ * não é "prefere IPv4 e cai para IPv6", é sorteio entre os dois a cada conexão. Com o MX do
+ * Gmail anunciando A e AAAA, isso divide o tráfego quase 50/50, batendo com os 48% medidos.
+ * `smtp-connection/index.js` confirma o curto-circuito do outro lado: se `host` já é um literal
+ * IP (`net.isIP(host)` verdadeiro), `resolveHostname` devolve esse endereço direto, sem consultar
+ * DNS e sem sorteio (linhas 123-132 do arquivo).
+ *
+ * A correção então é resolver o MX para IPv4 nós mesmos (`resolveDirectConnectHost` abaixo) e
+ * passar o literal como `host` — não `localAddress`. `localAddress` amarraria o socket de saída a
+ * UM IP local específico; o container de produção roda em rede Docker bridge (`--network
+ * coolify`), não é dono de `49.13.197.250` (esse IP é do host Hetzner, mapeado por NAT/publish),
+ * então `localAddress: '49.13.197.250'` daria `EADDRNOTAVAIL` e derrubaria TODA a entrega direta,
+ * não só a fração IPv6. Forçar o destino (não a origem) evita esse problema por completo.
+ *
+ * TLS continua oportunista com `rejectUnauthorized: false` de propósito: entre MTAs, certificado
+ * auto-assinado ou com nome divergente é comum, e recusar a conexão significaria não entregar —
+ * o padrão da internet aqui é criptografar quando dá e seguir em texto claro quando não dá, nunca
+ * falhar a entrega por causa do certificado. Mas com `host` como IP literal, o construtor do
+ * smtp-connection (`this.servername = ... !net.isIP(this.host) ? this.host : false`) zera o SNI
+ * por padrão — por isso `tls.servername` é passado explicitamente como o NOME do MX: ele entra em
+ * `opts` antes da checagem "ensure servername for SNI" em `_upgradeConnection`, então o servidor
+ * ainda recebe o SNI correto no STARTTLS mesmo conectando por IP.
  */
-function directTransport(mxHost: string, dkim: OutboundDkim | undefined, env: NodeJS.ProcessEnv): Transporter {
+async function resolveDirectConnectHost(mxHost: string): Promise<string> {
+    // Já é um literal (IPv4 ou IPv6): nada a resolver, nodemailer trataria do mesmo jeito.
+    if (net.isIP(mxHost)) return mxHost
+    try {
+        const addresses = await dns.resolve4(mxHost)
+        if (addresses.length > 0) return addresses[0]
+    } catch {
+        // ENODATA/ENOTFOUND: o MX não tem registro A, só AAAA. Não derruba a entrega — cai no
+        // comportamento de hoje (nodemailer resolve e sorteia, ver o comentário acima). Fixar em
+        // IPv6 aqui produziria o MESMO problema de alinhamento que esta fase corrige, e recusar
+        // a entrega por completo seria pior que o sorteio atual.
+    }
+    return mxHost
+}
+
+/**
+ * Conexão com UM servidor MX. `connectHost` é o endereço efetivamente discado — um literal IPv4
+ * quando `resolveDirectConnectHost` achou um, senão o próprio nome do MX (ver o comentário
+ * acima). `mxHost` continua sendo o nome usado no SNI/TLS (`tls.servername`), porque o
+ * certificado do destino é emitido para o nome, não para o IP.
+ */
+function directTransport(mxHost: string, connectHost: string, dkim: OutboundDkim | undefined, env: NodeJS.ProcessEnv): Transporter {
     return nodemailer.createTransport({
-        host: mxHost,
+        host: connectHost,
         port: 25,
         secure: false,
         ignoreTLS: false,
         requireTLS: false,
         name: heloName(env),
-        tls: { rejectUnauthorized: false },
+        tls: { rejectUnauthorized: false, servername: mxHost },
         connectionTimeout: 30_000,
         greetingTimeout: 30_000,
         socketTimeout: 60_000,
@@ -243,8 +293,9 @@ export async function sendOutbound(
         let lastError: Error | null = null
         for (const mxHost of mxHosts) {
             try {
+                const connectHost = await resolveDirectConnectHost(mxHost)
                 const envelope = { from: (mail.envelope?.from ?? mail.from) as string, to: groupRecipients }
-                const info = await directTransport(mxHost, dkim, env).sendMail({ ...mail, envelope })
+                const info = await directTransport(mxHost, connectHost, dkim, env).sendMail({ ...mail, envelope })
                 last = { response: info.response || info.messageId || 'accepted', via: mxHost }
                 delivered = true
                 break

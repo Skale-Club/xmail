@@ -78,6 +78,9 @@ function healthySilenceMetrics(overrides: Partial<SilenceMetrics> = {}): Silence
         externalWarmupSpamMessages24h: 0,
         totalDmarcReportsEver: 5,
         lastDmarcReportProcessedAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+        // Fase 42 -- healthy baseline, mirrors outreach-silence.test.ts's own fixture.
+        dmarcSpfAlignmentWindowMessages: 700,
+        dmarcSpfAlignmentWindowAlignedMessages: 699,
         outboundDkimUnverified24h: 0,
         // healthy baseline -- outbox drained, mirrors outreach-silence.test.ts's own fixture.
         pendingXphereEvents: 0,
