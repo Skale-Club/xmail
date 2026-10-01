@@ -426,3 +426,38 @@ placa NFC; (7) dizer "vai" para ativar o piloto (melhor às 9:30 ET de um dia ú
 da fase 46. Em seguida: nova leva de territórios (fila acaba 12/10; decidir MA só ou NH/RI/CT),
 ligar `PROSPECTING_AUTO_VERIFY=1` + cron no skale-cron da VPS, e a landing simples da linha NFC.
 
+
+### Teste de envio e opener v4 — 2026-09-30, noite
+
+Vanildo pediu, antes de ativar: rever os três e-mails, **rodar um teste de envio** (Apify fica no Free
+até o teste passar; Starter só depois) e duas mudanças de texto:
+
+1. **Saudação com o nome curto da loja em todo e-mail** ("Hi Boston Blendz," e não "Hi,"), como se
+   estivesse falando com a barbearia. Nome curto é editorial: gravado lead a lead em
+   `custom_fields.shortName` (26 leads, revisados à mão: "Danny's", "Boston Barber Co.",
+   "Gentleman Barbershop", "The Barbery"…). `{{shortName}}` virou variável nativa em
+   `template-variables.ts`: usa o campo gravado; sem ele, `shortenCompanyName()` tira o descritor do
+   fim ("Barbershop", "Barber Studio", "& Beauty Supply"…) e, se o corte comer o nome, devolve o nome
+   inteiro; sem nome nenhum, "there". Testes em `__tests__/template-variables.test.ts`.
+2. **Opener do e-mail 1 (v4):** "This is Vanildo, owner of Skale Club. We're a local company here in the
+   Boston area and we specialize in marketing for barbershops." e logo abaixo "Simply put, our goal is
+   to help you make more money and have more free time." A frase de valor vem ANTES da observação do
+   site (`{{openerNote}}`), que ficou como secundária. "Local / região de Boston" voltou a ser desejado
+   (reverte a regra de 2026-09-30 de manhã); "tech" e Framingham continuam fora.
+
+**Mecanismo do teste (criado, em rascunho, nada disparado):** campanha separada
+`d537358f-79f5-40ad-9354-a5acf77ecbf0` "TESTE DE ENVIO (nao e a campanha) - Pilot 01", cópia do piloto
+com janela 00:00-23:59 + fim de semana e os três delays zerados; um único lead de teste
+(`skale.club@gmail.com`, "Skale Test Barbershop", Framingham, opener Squire), remetente
+`vanildo.jr@tryskaleclub.com` (Icemail). Com 15 min mínimos entre envios e o processador a cada 5 min,
+os três chegam em ~45 min, gastando 3 dos 15 envios diários da conta. O piloto real
+(`c5573673…`) segue `draft`, 25 leads intocados; readiness das duas = OK. Backup dos corpos
+anteriores em `scratchpad/pilot-steps-backup-2026-09-30-v5.json`.
+
+**Observação para depois do teste:** os follow-ups de campanha saem SEM `In-Reply-To` (o processador
+não passa threading em `dispatchOutreachMessage`), então o e-mail 2 chega como mensagem nova
+"slow Tuesdays", não como "Re: booking at …". Ferramenta de cold e-mail costuma encadear. Decidir
+depois de ver na caixa.
+
+**Dispara com "vai o teste".** Depois: conferir inbox/spam no Gmail, remetente e nome exibidos,
+assinatura, link de descadastro, ordem dos três; arquivar a campanha de teste; aí sim o "vai" do piloto.

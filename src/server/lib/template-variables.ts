@@ -90,6 +90,32 @@ export function extractCity(location: string | null | undefined): string {
     return /^\d+$/.test(last) ? '' : last
 }
 
+
+/**
+ * Campanha de barbearias (2026-09-30): Vanildo quer a saudação com o nome curto da loja
+ * ("Hi Boston Blendz," e não "Hi Boston Blendz Barbershop,"), em todos os e-mails, como se
+ * estivesse falando com a barbearia. O nome curto certo é editorial e mora em
+ * `custom_fields.shortName` (gravado lead a lead). Esta função é só o fallback para lead que
+ * chegou sem ele: tira o descritor do fim do nome ("Barbershop", "Barber Shop", "Barber
+ * Studio", "& Beauty Supply", "LLC"…) enquanto sobrar um nome que se sustente sozinho; se
+ * não sobrar, devolve o nome inteiro. Nunca devolve string vazia para um nome preenchido.
+ */
+const SHORT_NAME_TRAILERS = /\s*(?:[-–|,]\s*)?(?:barber\s*shop|barbershop|barber\s+(?:studio|lab|spa|lounge|club)|barbers|and\s+hair\s+styling|&\s*beauty\s+supply|hair\s+salon|grooming|llc\.?|inc\.?)\s*$/i
+
+export function shortenCompanyName(name: string | null | undefined): string {
+    const full = (name ?? '').trim()
+    if (!full) return ''
+    let short = full
+    for (let i = 0; i < 3; i++) {
+        const next = short.replace(SHORT_NAME_TRAILERS, '').trim()
+        if (next === short) break
+        short = next
+    }
+    // "Barbershop Deluxe" fica inteiro (o descritor não está no fim); "The Barbery" idem.
+    // Se sobrou pouco ("The", "A", "Los") o corte comeu o nome: volta o original.
+    if (short.length < 3 || /^(the|a|an|los|las|el|la)$/i.test(short)) return full
+    return short
+}
 // Built-in variable handlers
 const BUILTIN_VARIABLES: Record<string, (lead: LeadForTemplate) => string> = {
     '{{firstName}}': (lead) => lead.firstName || DEFAULT_VALUES.firstName,
@@ -106,6 +132,11 @@ const BUILTIN_VARIABLES: Record<string, (lead: LeadForTemplate) => string> = {
     '{{phone}}': (lead) => lead.phone || DEFAULT_VALUES.phone,
     '{{location}}': (lead) => lead.location || DEFAULT_VALUES.location,
     '{{city}}': (lead) => extractCity(lead.location),
+    '{{shortName}}': (lead) => {
+        const explicit = lead.customFields?.shortName
+        if (explicit != null && String(explicit).trim() !== '') return String(explicit).trim()
+        return shortenCompanyName(lead.companyName) || DEFAULT_VALUES.firstName
+    },
     '{{fullName}}': (lead) => {
         const parts = [lead.firstName, lead.lastName].filter(Boolean)
         return parts.length > 0 ? parts.join(' ') : 'there'

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractCity, interpolateTemplate, type LeadForTemplate } from '../template-variables'
+import { extractCity, interpolateTemplate, shortenCompanyName, type LeadForTemplate } from '../template-variables'
 
 function lead(customFields: Record<string, unknown>): LeadForTemplate {
     return {
@@ -215,5 +215,43 @@ To stop receiving these emails: https://mail.skale.club/o/u/tok123`)
         // {{city}} está no meio da frase — vazio ali é vazio (a regra explícita da Fase 45),
         // a linha inteira não deve ser removida.
         expect(rendered).toContain('independent barbershops around .')
+    })
+})
+
+describe('shortenCompanyName — nome curto da loja para a saudação', () => {
+    it('tira o descritor do fim quando sobra um nome que se sustenta sozinho', () => {
+        expect(shortenCompanyName('Boston Blendz Barbershop')).toBe('Boston Blendz')
+        expect(shortenCompanyName("Danny's Barber Shop")).toBe("Danny's")
+        expect(shortenCompanyName('Always Faded Barber Studio')).toBe('Always Faded')
+        expect(shortenCompanyName('Los Magicos Barber Shop & Beauty Supply')).toBe('Los Magicos')
+        expect(shortenCompanyName("Collotta's Barber Shop and Hair Styling")).toBe("Collotta's")
+    })
+
+    it('devolve o nome inteiro quando o descritor não está no fim ou o corte comeria o nome', () => {
+        expect(shortenCompanyName('Barbershop Deluxe')).toBe('Barbershop Deluxe')
+        expect(shortenCompanyName('The Barbery')).toBe('The Barbery')
+        expect(shortenCompanyName('The Barbershop')).toBe('The Barbershop')
+        expect(shortenCompanyName('Barbershop')).toBe('Barbershop')
+    })
+
+    it('nunca devolve vazio para nome preenchido e devolve vazio para nome ausente', () => {
+        expect(shortenCompanyName(null)).toBe('')
+        expect(shortenCompanyName('  ')).toBe('')
+    })
+})
+
+describe('{{shortName}} — custom_fields.shortName manda; fallback é o nome encurtado', () => {
+    it('usa o shortName editorial quando gravado no lead', () => {
+        expect(interpolateTemplate('Hi {{shortName}},', lead({ shortName: 'Boston Blendz' }))).toBe('Hi Boston Blendz,')
+    })
+
+    it('encurta companyName quando o lead não tem shortName', () => {
+        const l = { ...lead({}), companyName: 'Boston Blendz Barbershop' }
+        expect(interpolateTemplate('Hi {{shortName}},', l)).toBe('Hi Boston Blendz,')
+    })
+
+    it('cai para "there" quando não há nome nenhum', () => {
+        const l = { ...lead({ shortName: '' }), companyName: null }
+        expect(interpolateTemplate('Hi {{shortName}},', l)).toBe('Hi there,')
     })
 })
