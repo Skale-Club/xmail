@@ -48,6 +48,7 @@ coverage
 
 # Drizzle ORM
 drizzle/archive/meta
+drizzle/meta/
 
 # Docker
 .serverless/
