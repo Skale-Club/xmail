@@ -25,6 +25,7 @@ import {
     Smartphone,
     Server,
     ExternalLink,
+    ImageOff,
 } from 'lucide-react'
 import { Switch } from '../../components/ui/switch'
 import { PageHeader } from '../../components/ui/page-header'
@@ -32,8 +33,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { apiFetch } from '../../lib/api-client'
 import { ConnectMailboxDialog } from '../../components/mail/ConnectMailboxDialog'
 import { useAuth } from '../../hooks/useAuth'
+import { TrustedImageDomainsCard } from '../../components/mail/TrustedImageDomainsCard'
 
-type TabId = 'profile' | 'notifications' | 'security' | 'appearance' | 'accounts' | 'filters' | 'signatures'
+type TabId = 'profile' | 'notifications' | 'security' | 'privacy' | 'appearance' | 'accounts' | 'filters' | 'signatures'
 
 interface Tab {
     id: TabId
@@ -45,6 +47,7 @@ const tabs: Tab[] = [
     { id: 'profile', label: 'Profile', icon: <User className="w-5 h-5" /> },
     { id: 'notifications', label: 'Notifications', icon: <Bell className="w-5 h-5" /> },
     { id: 'security', label: 'Security', icon: <Shield className="w-5 h-5" /> },
+    { id: 'privacy', label: 'Privacy', icon: <ImageOff className="w-5 h-5" /> },
     { id: 'appearance', label: 'Appearance', icon: <Palette className="w-5 h-5" /> },
     { id: 'accounts', label: 'Accounts', icon: <Mail className="w-5 h-5" /> },
     { id: 'signatures', label: 'Signatures', icon: <PenTool className="w-5 h-5" /> },
@@ -899,7 +902,13 @@ export default function MailSettingsPage() {
                                 </div>
                             )}
 
-                            {activeTab !== 'accounts' && activeTab !== 'filters' && activeTab !== 'signatures' && (
+                            {activeTab === 'privacy' && (
+                                <div className="space-y-6">
+                                    <TrustedImageDomainsCard />
+                                </div>
+                            )}
+
+                            {activeTab !== 'accounts' && activeTab !== 'filters' && activeTab !== 'signatures' && activeTab !== 'privacy' && (
                                 <div className="space-y-6">
                                     <Card>
                                         <CardHeader>

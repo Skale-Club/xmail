@@ -43,6 +43,20 @@ vi.mock('@/lib/api', () => ({
     isTimeoutError: () => false,
 }))
 
+// EmailHtmlViewer reads the per-user trusted image domains through react-query; several suites
+// here render a thread without a QueryClientProvider, so the hook is stubbed (it has its own tests).
+vi.mock('@/hooks/useTrustedImageDomains', () => ({
+    useTrustedImageDomains: () => ({
+        domains: new Set<string>(),
+        list: [],
+        isLoading: false,
+        isError: false,
+        add: vi.fn().mockResolvedValue(undefined),
+        remove: vi.fn().mockResolvedValue(undefined),
+        removingDomain: undefined,
+    }),
+}))
+
 // EmailHtmlViewer renders email bodies into a sandboxed iframe and schedules resize
 // setTimeouts on iframe `load`. Under jsdom those can fire after teardown ("window is
 // not defined"). Any describe that renders a thread guards this by faking the timer

@@ -3,6 +3,9 @@ import { Maximize2, ImageOff } from 'lucide-react'
 import { Dialog, DialogContent } from '../ui/Dialog'
 import { parseMailtoUrl, type MailtoTarget } from '../../lib/mailto'
 import { processEmailHtml, QUOTE_ATTRIBUTE } from './email-html'
+import { senderRegistrableDomain } from '../../lib/sender-domain'
+import { useTrustedImageDomains } from '../../hooks/useTrustedImageDomains'
+import { toast } from '../ui/toaster'
 
 interface EmailHtmlViewerProps {
     html?: string | null
@@ -10,32 +13,12 @@ interface EmailHtmlViewerProps {
     emailDarkMode?: boolean
     expandable?: boolean
     isLoading?: boolean
-    /** Sender address, used to remember a "always show images" choice per sender
-     *  in localStorage. Without it the "Show images" choice is session-only. */
+    /** Sender address. Its registrable domain drives the per-user "always show images from this
+     *  domain" choice (stored on the server). Without it "Show images" is session-only. */
     senderEmail?: string | null
     /** Called instead of opening a new tab when a `mailto:` link is clicked. Optional so other
      *  surfaces (the outreach thread) keep the default behavior. */
     onMailto?: (target: MailtoTarget) => void
-}
-
-const STORAGE_PREFIX = 'xmail:show-images:'
-
-function rememberSenderChoice(senderEmail: string | null | undefined) {
-    if (!senderEmail) return
-    try {
-        window.localStorage.setItem(`${STORAGE_PREFIX}${senderEmail.toLowerCase()}`, '1')
-    } catch {
-        // Storage unavailable (private mode, quota, etc.) — the choice just won't persist.
-    }
-}
-
-function senderAlwaysShowsImages(senderEmail: string | null | undefined): boolean {
-    if (!senderEmail) return false
-    try {
-        return window.localStorage.getItem(`${STORAGE_PREFIX}${senderEmail.toLowerCase()}`) === '1'
-    } catch {
-        return false
-    }
 }
 
 function buildEmailDoc(html: string, showQuoted: boolean) {
@@ -84,12 +67,17 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
     const [height, setHeight] = useState(200)
     const [isExpanded, setIsExpanded] = useState(false)
     const [srcdoc, setSrcdoc] = useState<string | undefined>(undefined)
-    const [allowImages, setAllowImages] = useState(() => senderAlwaysShowsImages(senderEmail))
+    const senderDomain = useMemo(() => senderRegistrableDomain(senderEmail), [senderEmail])
+    const trusted = useTrustedImageDomains()
+    const isTrustedDomain = senderDomain !== null && trusted.domains.has(senderDomain)
+    // "Show once": images for this message only (never persisted).
+    const [showOnce, setShowOnce] = useState(false)
+    const allowImages = showOnce || isTrustedDomain
 
-    // A new message from a different sender starts from that sender's remembered
-    // choice again, rather than carrying over whatever the previous message used.
+    // A message from a different sender starts blocked again, rather than carrying over
+    // whatever the previous message used.
     useEffect(() => {
-        setAllowImages(senderAlwaysShowsImages(senderEmail))
+        setShowOnce(false)
     }, [senderEmail])
 
     const [showQuoted, setShowQuoted] = useState(false)
@@ -111,10 +99,23 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
         setSrcdoc(buildEmailDoc(processed.html, showQuoted))
     }, [processed, showQuoted])
 
-    const handleShowImages = () => {
-        setAllowImages(true)
-        rememberSenderChoice(senderEmail)
+    const handleShowOnce = () => setShowOnce(true)
+
+    const handleAlwaysShow = () => {
+        if (!senderDomain) return
+        // Show right away; the domain is added optimistically and persisted in the background.
+        setShowOnce(true)
+        trusted.add(senderDomain).catch(() => {
+            toast({
+                title: `Could not save the images preference for ${senderDomain}`,
+                description: 'Images are shown for this message only.',
+                variant: 'destructive',
+            })
+        })
     }
+
+    // Do not flash the "blocked" banner while the saved list is still loading.
+    const showBanner = hasRemoteImages && !allowImages && !(senderDomain && trusted.isLoading)
 
     useEffect(() => {
         const iframe = iframeRef.current
@@ -210,19 +211,40 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
 
     return (
         <>
-            {hasRemoteImages && !allowImages && (
-                <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            {showBanner && (
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                     <span className="flex items-center gap-2">
                         <ImageOff className="h-3.5 w-3.5 flex-shrink-0" />
                         Images in this message have been blocked to protect your privacy.
                     </span>
-                    <button
-                        type="button"
-                        onClick={handleShowImages}
-                        className="flex-shrink-0 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                    >
-                        Show images
-                    </button>
+                    <span className="flex flex-shrink-0 items-center gap-2">
+                        {senderDomain ? (
+                            <>
+                                <button
+                                    type="button"
+                                    onClick={handleShowOnce}
+                                    className="rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+                                >
+                                    Show once
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleAlwaysShow}
+                                    className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                                >
+                                    Always show images from {senderDomain}
+                                </button>
+                            </>
+                        ) : (
+                            <button
+                                type="button"
+                                onClick={handleShowOnce}
+                                className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                            >
+                                Show images
+                            </button>
+                        )}
+                    </span>
                 </div>
             )}
             <div className="relative group">

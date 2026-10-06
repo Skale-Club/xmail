@@ -12,6 +12,7 @@ import {
     uniqueIndex,
     index,
     check,
+    primaryKey,
 } from 'drizzle-orm/pg-core'
 import { relations, sql } from 'drizzle-orm'
 import { createInsertSchema, createSelectSchema } from 'drizzle-zod'
@@ -1417,6 +1418,15 @@ export const signatures = pgTable('signatures', {
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
     idxSignaturesMailboxId: index('idx_signatures_mailbox_id').on(table.mailboxId),
+}))
+
+// Remote-image trust, per user: the sender registrable domains whose images load automatically.
+export const userTrustedImageDomains = pgTable('user_trusted_image_domains', {
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    domain: text('domain').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.domain] }),
 }))
 
 // Mailbox Relations

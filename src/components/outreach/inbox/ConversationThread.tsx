@@ -108,7 +108,7 @@ function MessageCard({ message, initiallyExpanded }: { message: InboxMessage; in
                         )}
                     </div>
 
-                    <EmailHtmlViewer html={message.htmlBody} plainText={message.plainBody} />
+                    <EmailHtmlViewer html={message.htmlBody} plainText={message.plainBody} senderEmail={message.fromAddress} />
 
                     {message.attachments.length > 0 && (
                         <ul className="mt-3 space-y-1.5">

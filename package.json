@@ -87,6 +87,7 @@
         "smtp-server": "^3.18.2",
         "tailwind-merge": "^2.2.2",
         "tailwindcss-animate": "^1.0.7",
+        "tldts": "^7.4.16",
         "uuid": "^14.0.2",
         "wouter": "^3.0.0",
         "zod": "^3.22.4"
