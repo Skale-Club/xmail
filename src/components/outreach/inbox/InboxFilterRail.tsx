@@ -1,8 +1,15 @@
 import React from 'react'
 import { Archive, BellRing, Hourglass, Inbox as InboxIcon, Mail, PanelLeftClose, PanelLeftOpen, Plus, Reply, Tag, X } from 'lucide-react'
-import { activeFilterCount, type InboxUrlState } from '../../../lib/unified-inbox-url'
+import {
+    activeFilterCount,
+    activeQuickView,
+    quickViewPatch,
+    type InboxQuickView,
+    type InboxUrlState,
+} from '../../../lib/unified-inbox-url'
 import type {
     InboxAccountOption,
+    InboxCounts,
     InboxCampaignOption,
     InboxLabel,
     InboxSyncStatusItem,
@@ -10,14 +17,6 @@ import type {
 import { cn } from '../../../lib/utils'
 import { InboxSyncStatus } from './InboxSyncStatus'
 import type { InboxRealtimeStatus } from '../../../hooks/useUnifiedInboxEvents'
-// TODO(contract): swap the shim for the real url-lib / hook exports at merge (see contract-shim.ts).
-import {
-    railActiveQuickView,
-    railQuickViewPatch,
-    type InboxCounts,
-    type RailQuickView,
-} from './contract-shim'
-
 interface InboxFilterRailProps {
     state: InboxUrlState
     onPatch: (patch: Partial<InboxUrlState>) => void
@@ -52,7 +51,7 @@ interface InboxFilterRailProps {
 }
 
 interface QuickView {
-    key: RailQuickView
+    key: InboxQuickView
     label: string
     icon: React.ReactNode
     /** Which count feeds the badge, and how the badge is announced. */
@@ -94,7 +93,7 @@ export function InboxFilterRail({
     toolbar,
     collapsedToolbar,
 }: InboxFilterRailProps) {
-    const currentView = railActiveQuickView(state)
+    const currentView = activeQuickView(state)
     const filterCount = activeFilterCount(state)
     const [newLabel, setNewLabel] = React.useState('')
 
@@ -172,7 +171,7 @@ export function InboxFilterRail({
                             <li key={view.key}>
                                 <button
                                     type="button"
-                                    onClick={() => onPatch(railQuickViewPatch(view.key))}
+                                    onClick={() => onPatch(quickViewPatch(view.key))}
                                     aria-current={active ? 'true' : undefined}
                                     className={cn(
                                         'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',

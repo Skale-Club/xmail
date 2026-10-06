@@ -17,8 +17,6 @@ import { AiAutomationChip } from '../../components/outreach/inbox/AiAutomationCh
 import { ShortcutsHelp } from '../../components/outreach/inbox/ShortcutsHelp'
 import { useInboxShortcuts } from '../../components/outreach/inbox/useInboxShortcuts'
 import { useOrgAiAutomation } from '../../components/outreach/inbox/useOrgAiAutomation'
-// TODO(contract): `useInboxCounts` moves to '../../hooks/useUnifiedInbox' once the backend lands it.
-import { useInboxCounts } from '../../components/outreach/inbox/contract-shim'
 import { Button } from '../../components/ui/button'
 import { useOrganization } from '../../hooks/useOrganization'
 import {
@@ -33,6 +31,7 @@ import {
     useInboxConversation,
     useInboxConversationReminders,
     useInboxConversations,
+    useInboxCounts,
     useInboxLabelAttach,
     useInboxLabelDetach,
     useInboxLabels,
@@ -48,6 +47,7 @@ import { useInboxRealtimeStatus } from '../../hooks/useUnifiedInboxEvents'
 import { INBOX_BULK_LIMIT, type InboxLabel } from '../../lib/unified-inbox-api'
 import {
     activeFilterCount,
+    activeQuickView,
     buildInboxSearch,
     hasAnyFilter,
     mergeInboxState,
@@ -219,7 +219,9 @@ export function UnifiedInboxPage() {
         if (!conversation || !conversation.unread) return
         if (autoReadMarkedRef.current.has(conversation.id)) return
         autoReadMarkedRef.current.add(conversation.id)
-        readState.mutate({ conversationId: conversation.id, read: true })
+        // `upTo` is the last message the operator actually rendered: a message that lands between
+        // the fetch and this call must stay unread.
+        readState.mutate({ conversationId: conversation.id, read: true, upTo: conversation.lastMessageAt })
     }, [detailQuery.data, readState])
 
     // --- AI draft assistant (human-in-the-loop; never sends — locked #6) ---
@@ -512,7 +514,7 @@ export function UnifiedInboxPage() {
     )
     const helpButton = <ShortcutsHelp open={helpOpen} onOpenChange={setHelpOpen} />
 
-    const filterBadgeCount = activeFilterCount(state) + (state.status || state.unread || state.reminder || state.archived ? 1 : 0)
+    const filterBadgeCount = activeFilterCount(state) + (state.view || state.status ? 1 : 0)
 
     return (
             <div className="-m-4 flex h-[calc(100dvh-4rem)] flex-col lg:-m-6">
@@ -607,7 +609,7 @@ export function UnifiedInboxPage() {
                             accountEmailById={accountEmailById}
                             campaignNameById={campaignNameById}
                             cursorId={cursorId}
-                            remindersView={state.reminder === 'active'}
+                            remindersView={activeQuickView(state) === 'reminders'}
                             onToggleArchive={rowToggleArchive}
                             onToggleRead={rowToggleRead}
                             bulkMode={bulkMode}

@@ -131,17 +131,16 @@ describe('unified-inbox-url: parse + serialize round-trip', () => {
         const state: InboxUrlState = {
             conversation: CONV_1,
             q: 'hello world',
-            unread: true,
-            status: 'open',
+            view: 'awaiting',
+            status: 'closed',
             campaign: CAMPAIGN_1,
             account: ACCOUNT_1,
             labels: [LABEL_1, LABEL_2],
-            reminder: 'active',
-            archived: true,
             cursor: 'opaque-cursor-token',
         }
         const parsed = parseInboxUrl(buildInboxSearch(state))
-        expect(parsed).toEqual(state)
+        // Legacy fields are always undefined after normalization; everything else round-trips.
+        expect(parsed).toEqual({ ...state, unread: undefined, reminder: undefined, archived: undefined })
     })
 
     it('omits default/empty values from the serialized query', () => {
@@ -173,22 +172,26 @@ describe('unified-inbox-url: validation + bounding', () => {
         expect(parsed.labels).toEqual([LABEL_1, LABEL_2])
     })
 
-    it('only treats unread/archived=true as meaningful', () => {
-        expect(parseInboxUrl('unread=false').unread).toBeUndefined()
-        expect(parseInboxUrl('archived=false').archived).toBeUndefined()
-        expect(parseInboxUrl('unread=true').unread).toBe(true)
-        expect(parseInboxUrl('archived=true').archived).toBe(true)
+    it('only treats unread/archived=true as meaningful, folding them into the view', () => {
+        expect(parseInboxUrl('unread=false').view).toBeUndefined()
+        expect(parseInboxUrl('archived=false').view).toBeUndefined()
+        expect(parseInboxUrl('unread=true').view).toBe('unread')
+        expect(parseInboxUrl('archived=true').view).toBe('archived')
+        // The legacy fields themselves never survive normalization.
+        expect(parseInboxUrl('unread=true').unread).toBeUndefined()
+        expect(parseInboxUrl('view=bogus').view).toBeUndefined()
+        expect(parseInboxUrl('view=awaiting').view).toBe('awaiting')
     })
 })
 
 describe('unified-inbox-url: cursor reset semantics', () => {
-    const base: InboxUrlState = { labels: [], cursor: 'page-2', status: 'open' }
+    const base: InboxUrlState = { labels: [], cursor: 'page-2', view: 'needs_reply' }
 
     it('drops the cursor when a filter field changes', () => {
         expect(mergeInboxState(base, { status: 'closed' }).cursor).toBeUndefined()
         expect(mergeInboxState(base, { q: 'term' }).cursor).toBeUndefined()
         expect(mergeInboxState(base, { labels: [LABEL_1] }).cursor).toBeUndefined()
-        expect(mergeInboxState(base, { unread: true }).cursor).toBeUndefined()
+        expect(mergeInboxState(base, { view: 'unread' }).cursor).toBeUndefined()
     })
 
     it('keeps the cursor when only the selected conversation changes', () => {
@@ -203,25 +206,28 @@ describe('unified-inbox-url: cursor reset semantics', () => {
         const cleared = mergeInboxState(base, { conversation: undefined, cursor: undefined })
         expect(cleared.conversation).toBeUndefined()
         expect(cleared.cursor).toBeUndefined()
-        // filters preserved
-        expect(cleared.status).toBe('open')
+        // filters (and the active view) preserved
+        expect(cleared.view).toBe('needs_reply')
     })
 })
 
 describe('unified-inbox-url: quick views + active filter count', () => {
-    it('derives the active quick view from orthogonal params', () => {
+    it('derives the active quick view from the view param (and folds legacy params)', () => {
         expect(activeQuickView(DEFAULT_INBOX_STATE)).toBe('inbox')
+        for (const view of ['needs_reply', 'awaiting', 'unread', 'reminders', 'archived'] as const) {
+            expect(activeQuickView({ labels: [], view })).toBe(view)
+        }
         expect(activeQuickView({ labels: [], unread: true })).toBe('unread')
         expect(activeQuickView({ labels: [], reminder: 'active' })).toBe('reminders')
         expect(activeQuickView({ labels: [], archived: true })).toBe('archived')
         expect(activeQuickView({ labels: [], status: 'open' })).toBe('needs_reply')
     })
 
-    it('quickViewPatch clears sibling view params', () => {
-        const patched = mergeInboxState({ labels: [], unread: true, cursor: 'c' }, quickViewPatch('archived'))
-        expect(patched.archived).toBe(true)
-        expect(patched.unread).toBeUndefined()
+    it('quickViewPatch replaces the previous view and resets the cursor', () => {
+        const patched = mergeInboxState({ labels: [], view: 'unread', cursor: 'c' }, quickViewPatch('awaiting'))
+        expect(patched.view).toBe('awaiting')
         expect(patched.cursor).toBeUndefined()
+        expect(mergeInboxState(patched, quickViewPatch('inbox')).view).toBeUndefined()
     })
 
     it('counts only active, non-view filters (search, campaign, account, labels)', () => {
@@ -251,33 +257,34 @@ describe('unified-inbox-api: server query mapping', () => {
         const state: InboxUrlState = {
             labels: [LABEL_1, LABEL_2],
             q: 'reply',
-            unread: true,
+            view: 'awaiting',
             status: 'open',
             campaign: CAMPAIGN_1,
             account: ACCOUNT_1,
-            reminder: 'due',
-            archived: true,
             cursor: 'page-2',
         }
         const qs = new URLSearchParams(toListQueryString(ORG_A, state, 25))
         expect(qs.get('organizationId')).toBe(ORG_A)
         expect(qs.get('limit')).toBe('25')
         expect(qs.get('search')).toBe('reply')
-        expect(qs.get('unread')).toBe('true')
+        expect(qs.get('view')).toBe('awaiting')
         expect(qs.get('status')).toBe('open')
         expect(qs.get('campaignId')).toBe(CAMPAIGN_1)
         expect(qs.get('emailAccountId')).toBe(ACCOUNT_1)
-        expect(qs.get('reminderState')).toBe('due')
-        expect(qs.get('archived')).toBe('true')
+        // The deprecated composed params are never sent any more.
+        expect(qs.get('unread')).toBeNull()
+        expect(qs.get('reminderState')).toBeNull()
+        expect(qs.get('archived')).toBeNull()
         expect(qs.get('cursor')).toBe('page-2')
         // Server currently filters by a single label; the first selected label is sent.
         expect(qs.get('labelId')).toBe(LABEL_1)
     })
 
-    it('hides archived conversations by default and omits inactive filters', () => {
+    it('defaults to the inbox view and omits inactive filters', () => {
         const qs = new URLSearchParams(toListQueryString(ORG_A, DEFAULT_INBOX_STATE, 25))
         expect(qs.get('organizationId')).toBe(ORG_A)
-        expect(qs.get('archived')).toBe('false')
+        expect(qs.get('view')).toBe('inbox')
+        expect(qs.get('archived')).toBeNull()
         expect(qs.get('unread')).toBeNull()
         expect(qs.get('status')).toBeNull()
         expect(qs.get('labelId')).toBeNull()
@@ -802,6 +809,7 @@ vi.mock('@/hooks/useUnifiedInbox', () => ({
     useInboxCampaignOptions: () => ({ data: [] }),
     useInboxAccountOptions: () => hooks.state.accounts,
     useInboxUnreadCount: () => ({ data: 0 }),
+    useInboxCounts: () => ({ data: undefined }),
     // Operator mutations are stubbed for the page/wiring tests; the REAL implementations are
     // exercised against a fake network in the "operator mutations" describe via importActual.
     useInboxReadState: () => ({ ...stubMutation(), mutate: hooks.state.readStateMutate }),
@@ -855,7 +863,7 @@ describe('UnifiedInboxPage: tenant isolation + selection', () => {
         hooks.state.search = `conversation=${CONV_1}`
         hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
         render(<UnifiedInboxPage />)
-        expect(hooks.state.readStateMutate).toHaveBeenCalledWith({ conversationId: CONV_1, read: true })
+        expect(hooks.state.readStateMutate).toHaveBeenCalledWith({ conversationId: CONV_1, read: true, upTo: '2026-07-16T10:00:00.000Z' })
         expect(hooks.state.readStateMutate).toHaveBeenCalledTimes(1)
     })
 
@@ -2447,7 +2455,7 @@ describe('InboxFilterRail: six quick views with counts', () => {
         const onToggleCollapsed = vi.fn()
         renderRail({ onPatch, onToggleCollapsed })
         fireEvent.click(screen.getByRole('button', { name: /^Archived/ }))
-        expect(onPatch).toHaveBeenCalledWith(expect.objectContaining({ archived: true }))
+        expect(onPatch).toHaveBeenCalledWith(expect.objectContaining({ view: 'archived' }))
         fireEvent.click(screen.getByRole('button', { name: 'Hide filters' }))
         expect(onToggleCollapsed).toHaveBeenCalledOnce()
     })
