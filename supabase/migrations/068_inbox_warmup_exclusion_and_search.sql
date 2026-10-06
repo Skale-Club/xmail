@@ -7,9 +7,10 @@
 --    o operador, nem 'materialized', que exige uma mensagem). A linha continua existindo como
 --    registro de dedupe da mensagem do provedor.
 --
---    ORDEM DE DEPLOY: aplicar esta migration ANTES de subir o código. Sem ela, o materializador
---    tenta gravar 'skipped', o CHECK rejeita, e o evento de warm-up cai em 'failed' depois de 5
---    tentativas (sem perda de dados reais, mas com ruído no log).
+--    ORDEM DE DEPLOY: preferível aplicar esta migration ANTES de subir o código, mas não é
+--    obrigatório: o materializador detecta se o CHECK já aceita 'skipped' (supportsSkippedStatus) e,
+--    enquanto não aceita, mantém o comportamento anterior (materializa normalmente) em vez de falhar
+--    o evento. A exclusão liga sozinha em até 1 minuto depois que a migration entra.
 --
 -- 2. Extensão pg_trgm, base dos índices GIN de busca por ILIKE '%termo%' (a busca do Unified Inbox
 --    varre assunto, prévia e participantes). Os índices em si são CREATE INDEX CONCURRENTLY e
@@ -20,8 +21,12 @@
 
 ALTER TABLE public.outreach_provider_events
     DROP CONSTRAINT IF EXISTS outreach_provider_events_materialization_status_check;
+-- NOT VALID + VALIDATE: o ADD toma só um lock curto e não varre a tabela; a varredura de validação
+-- roda depois com lock que não bloqueia escrita. Idempotente (o DROP antecede o ADD).
 ALTER TABLE public.outreach_provider_events
     ADD CONSTRAINT outreach_provider_events_materialization_status_check
-    CHECK (materialization_status IN ('pending', 'processing', 'materialized', 'failed', 'skipped'));
+    CHECK (materialization_status IN ('pending', 'processing', 'materialized', 'failed', 'skipped')) NOT VALID;
+ALTER TABLE public.outreach_provider_events
+    VALIDATE CONSTRAINT outreach_provider_events_materialization_status_check;
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;

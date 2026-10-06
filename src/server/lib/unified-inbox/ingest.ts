@@ -24,7 +24,14 @@ import type {
 import { attributeConversation, type MatchConfidence } from './attribute'
 import type { OutreachMessageMatchStrategy } from './types'
 import { sqlTimestampValue } from '../sql-timestamp'
-import { isWarmupTraffic, loadMeshAddresses, warmupMessageIdTokens, type MeshAddressSet } from './warmup-traffic'
+import {
+    isMeshAccount,
+    isWarmupTraffic,
+    loadMeshAddresses,
+    supportsSkippedStatus,
+    warmupMessageIdTokens,
+    type MeshAddressSet,
+} from './warmup-traffic'
 import {
     bodyPreview,
     buildSourceKey,
@@ -92,6 +99,8 @@ export interface MaterializeProviderEventDeps {
     lookbackDays?: number
     /** Test seam: the mesh address set. Defaults to a fresh read of `email_accounts`. */
     meshAddresses?: MeshAddressSet
+    /** Test seam: whether the DB accepts materialization_status='skipped' (migration 068). */
+    skippedStatusSupported?: boolean
 }
 
 interface ProviderEventRow {
@@ -214,8 +223,8 @@ export async function materializeProviderEvent(
         }
 
         // Validate the account still belongs to the event's organization before any lookup.
-        const accountRows = await tx<{ organization_id: string; warmup_only: boolean }>`
-            SELECT organization_id, warmup_only FROM email_accounts WHERE id = ${event.email_account_id}
+        const accountRows = await tx<{ organization_id: string; warmup_only: boolean; warmup_source: string }>`
+            SELECT organization_id, warmup_only, warmup_source FROM email_accounts WHERE id = ${event.email_account_id}
         `
         if (!accountRows[0] || accountRows[0].organization_id !== event.organization_id) {
             throw new Error('provider event account does not belong to its organization')
@@ -226,9 +235,21 @@ export async function materializeProviderEvent(
         // existed and any path that stages without it. The event is closed as `skipped` (not
         // `failed`, which would page the operator, and not `materialized`, which requires a
         // message) and its row stays as the dedupe record for the provider message.
-        const meshAddresses = deps.meshAddresses ?? (await loadMeshAddresses(tx))
-        if (isWarmupTraffic({
+        //
+        // Only a MESH mailbox can hold warm-up mail: an info@ (warmup_source 'none') is a working
+        // mailbox, so a message from a mesh address or a forwarded prospect reply stays real.
+        const accountInMesh = isMeshAccount({
+            warmupSource: accountRows[0].warmup_source,
+            warmupOnly: accountRows[0].warmup_only,
+        })
+        const meshAddresses = deps.meshAddresses ?? (accountInMesh ? await loadMeshAddresses(tx) : new Set<string>())
+        // The deploy may land before migration 068: until the CHECK accepts 'skipped', fall back to
+        // the pre-068 behavior (materialize normally) instead of failing the event.
+        const canSkip = accountInMesh
+            && (deps.skippedStatusSupported ?? await supportsSkippedStatus(tx))
+        if (canSkip && isWarmupTraffic({
             accountWarmupOnly: accountRows[0].warmup_only === true,
+            accountInMesh,
             counterpartAddresses: [event.from_address],
             messageIds: warmupMessageIdTokens({
                 messageId: event.message_id,
@@ -369,13 +390,13 @@ export async function materializeProviderEvent(
                 `
             }
 
-            // A genuinely NEW inbound message resurfaces an archived or closed conversation
-            // (Gmail-like) so a reply can never sit invisible behind an old archive. Only a message
-            // that is newer than anything we already hold from them counts as new, so a late-staged
-            // older message or a backfill replay cannot resurrect a thread the operator already
-            // dealt with. Bounces and auto-replies are excluded: an out-of-office or a DSN is not a
-            // person asking for attention, and must not undo an archive.
-            const resurfaces = event.classification !== 'bounce' && event.classification !== 'auto_reply'
+            // A genuinely NEW inbound REPLY resurfaces an archived or closed conversation (Gmail-like)
+            // so a reply can never sit invisible behind an old archive. Only a message that is newer
+            // than anything we already hold from them counts as new, so a late-staged older message
+            // or a backfill replay cannot resurrect a thread the operator already dealt with. Only
+            // classification 'reply' qualifies: a bounce, an out-of-office or a newsletter ('other')
+            // is not a person asking for attention and must not undo an archive.
+            const resurfaces = event.classification === 'reply'
 
             // Summary from the message's own timestamp (subquery avoids re-binding a Date).
             await tx`

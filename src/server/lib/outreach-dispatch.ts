@@ -24,10 +24,12 @@ async function defaultOutboundMaterializeHook(outreachEmailId: string): Promise<
     const { materializeOutboundEmail } = await import('./unified-inbox/outbound')
     const outcome = await materializeOutboundEmail(outreachEmailId)
     // Post-commit fanout so an open Unified Inbox shows the sent message (and the reordered
-    // conversation) without a manual refresh. Signal only, never content; best-effort — the
+    // conversation) without a manual refresh. Signal only, never content; best-effort - the
     // client's polling fallback covers a missed signal and a failure here must not surface as a
-    // materialization failure.
-    if (outcome.inserted && outcome.organizationId) {
+    // materialization failure. Only when the conversation has an inbound message: a campaign send
+    // nobody has answered is in no operator view, and every campaign step would otherwise make
+    // every open inbox refetch for nothing.
+    if (outcome.inserted && outcome.organizationId && outcome.hasInbound) {
         try {
             const { publishInboxEvent } = await import('./inbox-events')
             const at = new Date()

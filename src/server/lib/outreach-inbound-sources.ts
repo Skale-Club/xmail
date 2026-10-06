@@ -31,7 +31,7 @@ import { fetchOutlookInboxDelta } from './outlook'
 import { nativeEventFromMailRow } from './unified-inbox/providers/native'
 import { imapEventFromParsedMail } from './unified-inbox/providers/imap'
 import { outlookEventFromGraphMessage } from './unified-inbox/providers/outlook'
-import { createWarmupExclusion } from './unified-inbox/warmup-traffic'
+import { createWarmupExclusion, isMeshAccount } from './unified-inbox/warmup-traffic'
 import {
     INGEST_FAILURE_BACKOFF_MINUTES,
     ingestInboundPage,
@@ -593,15 +593,16 @@ export async function loadIngestableAccounts(now = new Date()) {
 }
 
 /**
- * Every mesh address (any account with `warmup_source <> 'none'` or `warmup_only`). Read once per
- * tick, not per message. Global across organizations: the mesh is the operator's own mailboxes.
+ * Every mesh address (`warmup_source = 'internal'` or `warmup_only`; 'vendor'/'provider' accounts
+ * are not in the mesh). Read once per tick, not per message. Global across organizations: the
+ * mesh is the operator's own mailboxes and crosses tenants by design (see warmup-traffic.ts).
  */
 export async function loadMeshAddressSet(): Promise<Set<string>> {
     const rows = await db
         .select({ email: emailAccounts.email })
         .from(emailAccounts)
         .where(or(
-            sql`${emailAccounts.warmupSource} <> 'none'`,
+            eq(emailAccounts.warmupSource, 'internal'),
             eq(emailAccounts.warmupOnly, true),
         ))
     return new Set(rows.map((row) => row.email.trim().toLowerCase()))
@@ -615,7 +616,7 @@ export async function ingestOutreachInbound(deps: {
     const result = { accounts: 0, recorded: 0, duplicates: 0, errors: 0 }
 
     const accounts = await loadIngestableAccounts(deps.now?.() ?? new Date())
-    const isExcluded = createWarmupExclusion(await loadMeshAddressSet())
+    const meshExclusion = createWarmupExclusion(await loadMeshAddressSet())
 
     for (const account of accounts) {
         try {
@@ -645,7 +646,9 @@ export async function ingestOutreachInbound(deps: {
                 account: { id: account.id, organizationId: account.organizationId },
                 pageSize: deps.pageSize,
                 isKnownCorrespondent: createKnownCorrespondentLookup(account.id),
-                isExcluded,
+                // Only a mesh mailbox can hold warm-up mail. An info@ (warmup_source 'none') is a
+                // working mailbox: mail from a mesh address or a forwarded prospect reply is real.
+                isExcluded: isMeshAccount(account) ? meshExclusion : undefined,
             })
 
             result.accounts++

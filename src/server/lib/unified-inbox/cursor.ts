@@ -136,6 +136,34 @@ export function fingerprintConversationFilters(filters: ConversationCursorFilter
     return createHash('sha256').update(canonical).digest('base64url').slice(0, 22)
 }
 
+/**
+ * Before quick views existed the client composed the equivalent flags itself (always sending
+ * `archived=false` outside the Archived view) and the cursor fingerprint covered THOSE. A "load
+ * more" that was already in flight when this shipped carries such a cursor, and the keyset
+ * position inside it (last_message_at, id) is still valid because ordering did not change, so
+ * rejecting it would only surface a one-off 400 to a user who did nothing wrong. This returns the
+ * pre-view filter shape(s) that each view replaced, so the old fingerprint is accepted too. Views
+ * with no legacy equivalent (`awaiting`) return null. Acceptance is slightly wider, never looser
+ * across organizations: organizationId is in every shape.
+ */
+function legacyFilterShape(filters: ConversationCursorFilters): ConversationCursorFilters[] | null {
+    const base = { ...filters, view: null }
+    switch (filters.view) {
+        case 'inbox':
+            return [{ ...base, archived: false }]
+        case 'archived':
+            return [{ ...base, archived: true }]
+        case 'unread':
+            return [{ ...base, unread: true, archived: false }]
+        case 'reminders':
+            return [{ ...base, reminderState: 'active', archived: false }]
+        case 'needs_reply':
+            return [{ ...base, status: 'open', archived: false }]
+        default:
+            return null
+    }
+}
+
 export function encodeConversationCursor(
     position: ConversationCursorPosition,
     filters: ConversationCursorFilters,
@@ -192,7 +220,8 @@ export function decodeConversationCursor(
     if (!uuidSchema.safeParse(envelope.i).success) {
         throw new ConversationCursorError('Invalid cursor id')
     }
-    if (envelope.f !== fingerprintConversationFilters(filters)) {
+    if (envelope.f !== fingerprintConversationFilters(filters)
+        && !(legacyFilterShape(filters) ?? []).some((legacy) => envelope.f === fingerprintConversationFilters(legacy))) {
         throw new ConversationCursorError('Cursor does not match the current filter set')
     }
     return { lastMessageAt: envelope.t, id: envelope.i }

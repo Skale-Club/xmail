@@ -19,12 +19,18 @@ import React from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { apiRequest } from '../lib/api-client'
 import { inboxKeys } from '../lib/unified-inbox-api'
-import { refreshInboxListsFirstPage } from '../lib/unified-inbox-cache'
+import { createRefreshCoalescer, refreshInboxLists, type PendingRefresh } from '../lib/unified-inbox-cache'
 
 const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 30_000
 /** Bounded fallback cadence while disconnected — invalidates ONLY the aggregates, never per-thread. */
 const POLL_FALLBACK_MS = 30_000
+/**
+ * Coalescing window for signal-driven refreshes. The first signal refreshes immediately (so a lone
+ * new message still appears at once); signals arriving inside the window - a burst of inbound mail,
+ * a materializer tick publishing one event per message - are merged into ONE trailing refresh.
+ */
+export const REFRESH_COALESCE_MS = 2_000
 
 export type InboxRealtimeStatus = 'idle' | 'connecting' | 'live' | 'reconnecting'
 
@@ -53,15 +59,22 @@ function isDetailKey(queryKey: readonly unknown[], organizationId: string | unde
     return queryKey[0] === 'outreach-inbox' && queryKey[1] === organizationId && queryKey[2] === 'detail'
 }
 
-function invalidateAggregates(queryClient: QueryClient, organizationId: string): void {
-    // Unread badge + rail counters + the conversation list only. The list re-filters
-    // membership/ordering on the server; this is the bounded work the polling fallback repeats - it
-    // NEVER enumerates threads. Lists are trimmed to their first page before the refetch: a new
-    // message lands at the top, so page one is the only page that can have changed, and refetching
-    // every loaded page of every cached filter set on each signal was the dominant request cost.
+function refreshAggregates(queryClient: QueryClient, organizationId: string, pending: PendingRefresh): void {
+    // Unread badge + rail counters + the conversation lists. The list re-filters membership and
+    // ordering on the server; this is the bounded work the polling fallback repeats - it NEVER
+    // enumerates threads. refreshInboxLists keeps the page the operator scrolled to (see its doc).
     void queryClient.invalidateQueries({ queryKey: inboxKeys.unread(organizationId) })
     void queryClient.invalidateQueries({ queryKey: inboxKeys.counts(organizationId) })
-    refreshInboxListsFirstPage(queryClient, organizationId)
+    refreshInboxLists(queryClient, organizationId)
+    // Only the currently-open thread has an active observer, so only IT refetches. When the signal
+    // names conversations, only those threads are invalidated; an org-wide signal covers all.
+    if (pending.anyThread) {
+        void queryClient.invalidateQueries({ predicate: (q) => isDetailKey(q.queryKey, organizationId) })
+    } else {
+        for (const id of pending.conversationIds) {
+            void queryClient.invalidateQueries({ queryKey: inboxKeys.detail(organizationId, id) })
+        }
+    }
 }
 
 /**
@@ -90,11 +103,17 @@ export function useUnifiedInboxEvents(organizationId: string | undefined): Inbox
         // churn the cache. (Invalidation reads server truth, so this is a de-dupe, not a merge.)
         const versions = new Map<string, number>()
 
+        const coalescer = createRefreshCoalescer(
+            (pending) => refreshAggregates(queryClient, organizationId, pending),
+            REFRESH_COALESCE_MS,
+        )
+
         const startPolling = () => {
             if (pollTimer) return
             pollTimer = setInterval(() => {
                 if (disposed) return
-                invalidateAggregates(queryClient, organizationId)
+                // Aggregates only: the fallback never refetches threads.
+                coalescer.push(null, false)
             }, POLL_FALLBACK_MS)
         }
         const stopPolling = () => {
@@ -111,13 +130,8 @@ export function useUnifiedInboxEvents(organizationId: string | undefined): Inbox
                 versions.set(event.conversationId, event.version)
             }
             setLastEventAt(new Date())
-            invalidateAggregates(queryClient, organizationId)
-            if (event.kind === 'conversation.updated' || event.kind === 'conversation.created') {
-                // Invalidate the detail NAMESPACE, not a specific id: only the currently-open
-                // thread has an active observer, so only IT refetches. This is why we never need
-                // to poll every thread — the open one converges, the rest stay untouched.
-                void queryClient.invalidateQueries({ predicate: (q) => isDetailKey(q.queryKey, organizationId) })
-            }
+            const touchesThread = event.kind === 'conversation.updated' || event.kind === 'conversation.created'
+            coalescer.push(event.conversationId ?? null, touchesThread)
         }
 
         const parseFrame = (raw: string) => {
@@ -190,6 +204,7 @@ export function useUnifiedInboxEvents(organizationId: string | undefined): Inbox
             controller?.abort()
             if (reconnectTimer) clearTimeout(reconnectTimer)
             stopPolling()
+            coalescer.dispose()
         }
     }, [organizationId, queryClient])
 

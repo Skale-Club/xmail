@@ -89,7 +89,17 @@ export interface InboxCounts {
     needsReply: number
     awaiting: number
     unread: number
-    /** Conversations with an active reminder whose time has come (remind_at <= now). */
+    /**
+     * Conversations with an ACTIVE reminder: exactly the rows the `reminders` view lists (scheduled
+     * or notified, future ones included). Use THIS one for the Reminders rail entry so the number
+     * and the list always agree.
+     */
+    remindersActive: number
+    /**
+     * Conversations that want attention now: a reminder that is scheduled and past due, or notified
+     * and not yet dismissed (same predicate as the per-item `reminderDue` flag). A subset of
+     * `remindersActive`.
+     */
     remindersDue: number
 }
 
@@ -131,6 +141,13 @@ export interface ConversationListItemDto {
     lastOutboundAt: Date | null
     archived: boolean
     unread: boolean
+    /** Classification of the MOST RECENT inbound message (null when there is none). */
+    lastInboundClassification: OutreachProviderEventClassification | null
+    /**
+     * The calling user has a reminder here that wants attention now: scheduled and past due, or
+     * already notified and not yet done/cancelled. Same predicate as the `remindersDue` counter.
+     */
+    reminderDue: boolean
     participants: ConversationParticipantDto[]
     labels: ConversationLabelDto[]
 }
@@ -178,6 +195,8 @@ export interface ConversationSummaryDto {
     lastOutboundAt: Date | null
     archived: boolean
     unread: boolean
+    lastInboundClassification: OutreachProviderEventClassification | null
+    reminderDue: boolean
     labels: ConversationLabelDto[]
 }
 
@@ -241,23 +260,44 @@ function labelPredicate(labelId: string): SQL {
 }
 
 /**
- * The calling user has an ACTIVE reminder on the conversation. Active is `scheduled` OR
- * `notified`: processInboxCommands flips a reminder to `notified` the moment it fires, and a
- * notified reminder is exactly the one the operator still has to act on, so filtering on
- * `scheduled` alone made the Reminders view empty itself at the instant it mattered. Only `done`
- * and `cancelled` are finished. `due` additionally requires remind_at <= now().
+ * The calling user has a reminder on the conversation in the given state.
+ *
+ * `active` = scheduled OR notified (finished ones are `done` / `cancelled`). processInboxCommands
+ * flips a reminder to `notified` the moment it fires, and a notified reminder is exactly the one
+ * the operator still has to act on, so filtering on `scheduled` alone made the Reminders view
+ * empty itself at the instant it mattered.
+ *
+ * `due` = wants attention now: scheduled with remind_at <= now(), or notified (it already fired
+ * and nobody dismissed it). This is the predicate behind the `remindersDue` counter and the
+ * per-item `reminderDue` flag.
  */
-function reminderPredicate(userId: string, state: 'active' | 'due'): SQL {
-    const dueClause = state === 'due' ? sql`AND r.remind_at <= now()` : sql``
+/** @internal exported for the SQL-shape tests */
+export function reminderPredicate(userId: string, state: 'active' | 'due'): SQL {
+    const stateClause = state === 'due'
+        ? sql`AND (r.status = 'notified' OR (r.status = 'scheduled' AND r.remind_at <= now()))`
+        : sql`AND r.status IN ('scheduled', 'notified')`
     return sql`EXISTS (
         SELECT 1 FROM inbox_reminders r
         WHERE r.organization_id = outreach_conversations.organization_id
           AND r.conversation_id = outreach_conversations.id
           AND r.user_id = ${userId}::uuid
-          AND r.status IN ('scheduled', 'notified')
-          ${dueClause}
+          ${stateClause}
     )`
 }
+
+/**
+ * Classification of the latest inbound message, as a correlated scalar subquery so the list stays
+ * ONE query (no N+1). Ordered like the thread (effective timestamp, then id).
+ */
+/** @internal exported for the SQL-shape tests */
+export const LAST_INBOUND_CLASSIFICATION: SQL = sql`(
+    SELECT m.classification FROM outreach_conversation_messages m
+    WHERE m.organization_id = outreach_conversations.organization_id
+      AND m.conversation_id = outreach_conversations.id
+      AND m.direction = 'inbound'
+    ORDER BY COALESCE(m.received_at, m.sent_at, m.created_at) DESC, m.id DESC
+    LIMIT 1
+)`
 
 const NOT_ARCHIVED: SQL = sql`outreach_conversations.archived_at IS NULL`
 const HAS_INBOUND: SQL = sql`outreach_conversations.last_inbound_at IS NOT NULL`
@@ -453,6 +493,8 @@ export async function listConversations(params: ListConversationsParams): Promis
             archivedAt: outreachConversations.archivedAt,
             cursorTs: sql<string | null>`(${ACTIVITY_AT})::text`,
             unread: sql<boolean>`(${unreadPredicate(userId)})`,
+            lastInboundClassification: sql<OutreachProviderEventClassification | null>`${LAST_INBOUND_CLASSIFICATION}`,
+            reminderDue: sql<boolean>`(${reminderPredicate(userId, 'due')})`,
         })
         .from(outreachConversations)
         .where(and(...conditions))
@@ -482,6 +524,8 @@ export async function listConversations(params: ListConversationsParams): Promis
         lastOutboundAt: row.lastOutboundAt,
         archived: row.archivedAt != null,
         unread: Boolean(row.unread),
+        lastInboundClassification: row.lastInboundClassification ?? null,
+        reminderDue: Boolean(row.reminderDue),
         participants: participantMap.get(row.id) ?? [],
         labels: labelMap.get(row.id) ?? [],
     }))
@@ -523,6 +567,8 @@ export async function getConversationDetail(params: {
             lastOutboundAt: outreachConversations.lastOutboundAt,
             archivedAt: outreachConversations.archivedAt,
             unread: sql<boolean>`(${unreadPredicate(userId)})`,
+            lastInboundClassification: sql<OutreachProviderEventClassification | null>`${LAST_INBOUND_CLASSIFICATION}`,
+            reminderDue: sql<boolean>`(${reminderPredicate(userId, 'due')})`,
         })
         .from(outreachConversations)
         .where(and(
@@ -588,6 +634,8 @@ export async function getConversationDetail(params: {
             lastOutboundAt: summary.lastOutboundAt,
             archived: summary.archivedAt != null,
             unread: Boolean(summary.unread),
+            lastInboundClassification: summary.lastInboundClassification ?? null,
+            reminderDue: Boolean(summary.reminderDue),
             labels: labelMap.get(conversationId) ?? [],
         },
         participants: participantMap.get(conversationId) ?? [],
@@ -634,6 +682,7 @@ export async function getInboxCounts(params: { organizationId: string; userId: s
             needsReply: sql<string>`count(*) FILTER (WHERE ${NEEDS_REPLY})`,
             awaiting: sql<string>`count(*) FILTER (WHERE ${AWAITING})`,
             unread: sql<string>`count(*) FILTER (WHERE ${NOT_ARCHIVED} AND (${unreadPredicate(params.userId)}))`,
+            remindersActive: sql<string>`count(*) FILTER (WHERE ${reminderPredicate(params.userId, 'active')})`,
             remindersDue: sql<string>`count(*) FILTER (WHERE ${reminderPredicate(params.userId, 'due')})`,
         })
         .from(outreachConversations)
@@ -643,6 +692,7 @@ export async function getInboxCounts(params: { organizationId: string; userId: s
         needsReply: Number(row?.needsReply ?? 0),
         awaiting: Number(row?.awaiting ?? 0),
         unread: Number(row?.unread ?? 0),
+        remindersActive: Number(row?.remindersActive ?? 0),
         remindersDue: Number(row?.remindersDue ?? 0),
     }
 }

@@ -75,7 +75,7 @@ import {
     type InboxSnippet,
     type SuppressionScope,
 } from '../lib/unified-inbox-api'
-import { refreshInboxListsFirstPage } from '../lib/unified-inbox-cache'
+import { refreshInboxLists } from '../lib/unified-inbox-cache'
 import { listFilterSignature, type InboxUrlState } from '../lib/unified-inbox-url'
 
 const LIST_PAGE_SIZE = 25
@@ -252,7 +252,7 @@ interface OptimisticContext {
  * Shared engine for a single-conversation optimistic mutation. It snapshots every affected
  * list + the detail, patches the target conversation in place, rolls back on error (and tells the
  * operator, so a vanished change is never silent), reconciles from the server response on success,
- * and on settle refreshes the aggregates. Lists are refetched (first page only) only when the
+ * and on settle refreshes the aggregates. Lists are refetched only when the
  * mutation can change view MEMBERSHIP (`affectsMembership`: archive/status); for the rest the
  * reconciled patch is already the truth, so they are merely marked stale.
  */
@@ -294,7 +294,7 @@ function useOptimisticConversationMutation<TVars extends { conversationId: strin
         },
         onSettled: () => {
             refreshInboxAggregates(queryClient, organizationId)
-            if (options.affectsMembership) refreshInboxListsFirstPage(queryClient, organizationId)
+            if (options.affectsMembership) refreshInboxLists(queryClient, organizationId)
             else markInboxListsStale(queryClient, organizationId)
         },
     })
@@ -450,8 +450,8 @@ export function useInboxBulkAction(organizationId: string | undefined) {
         onSettled: (_data, _error, vars) => {
             refreshInboxAggregates(queryClient, organizationId)
             // Bulk results are only matched/updated/skipped counts (no per-row truth to reconcile
-            // from), and most bulk actions move rows between views, so the first page is refetched.
-            refreshInboxListsFirstPage(queryClient, organizationId)
+            // from), and most bulk actions move rows between views, so the active list is refetched.
+            refreshInboxLists(queryClient, organizationId)
             // Invalidate each affected detail so the open thread reconciles to server truth on settle.
             for (const id of vars.conversationIds) {
                 queryClient.invalidateQueries({ queryKey: inboxKeys.detail(organizationId, id) })
@@ -531,9 +531,8 @@ export function useInboxReminderMutations(organizationId: string | undefined, co
         if (conversationId) {
             queryClient.invalidateQueries({ queryKey: inboxKeys.reminders(organizationId, conversationId) })
         }
-        // A reminder changes membership of the Reminders view and the remindersDue counter, not the
-        // loaded rows themselves: mark lists stale and refetch just the first page of the active one.
-        refreshInboxListsFirstPage(queryClient, organizationId)
+        // A reminder changes membership of the Reminders view and the reminder counters.
+        refreshInboxLists(queryClient, organizationId)
         refreshInboxAggregates(queryClient, organizationId)
     }
 
@@ -606,7 +605,7 @@ export function useInboxComposer(organizationId: string | undefined, conversatio
     useEffect(() => {
         if (settledStatus === 'sent') {
             if (conversationId) queryClient.invalidateQueries({ queryKey: inboxKeys.detail(organizationId, conversationId) })
-            refreshInboxListsFirstPage(queryClient, organizationId)
+            refreshInboxLists(queryClient, organizationId)
             refreshInboxAggregates(queryClient, organizationId)
         }
     }, [settledStatus, organizationId, conversationId, queryClient])
@@ -656,7 +655,7 @@ export function useInboxSuppression(organizationId: string | undefined) {
         mutationFn: ({ email, scope }: { email: string; scope: SuppressionScope }) =>
             applyInboxSuppression(organizationId as string, email, scope),
         onSuccess: () => {
-            refreshInboxListsFirstPage(queryClient, organizationId)
+            refreshInboxLists(queryClient, organizationId)
             refreshInboxAggregates(queryClient, organizationId)
         },
     })

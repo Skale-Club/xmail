@@ -1,9 +1,9 @@
 // ============================================================
-// Unified Inbox â€” validated, shareable URL filter state (Phase 22 UIX-02)
+// Unified Inbox — validated, shareable URL filter state (Phase 22 UIX-02)
 // ============================================================
 // The SERVER owns query semantics (locked decision #3). Every filter/search/cursor
 // value the operator picks is serialized into the query string and sent verbatim to
-// the Phase 21 list API â€” the client never downloads an organization mailbox and
+// the Phase 21 list API — the client never downloads an organization mailbox and
 // filters it in memory. This module is the single, schema-validated boundary that
 // turns a raw `?a=b&c=d` string into a bounded `InboxUrlState` and back.
 //
@@ -11,7 +11,7 @@
 // search terms are DROPPED (never forwarded to a query that could 400 or poison the
 // cursor). Serialization omits defaults and is deterministic so a shared link is stable.
 //
-// `organizationId` is deliberately NOT part of this state â€” it is never trusted from
+// `organizationId` is deliberately NOT part of this state — it is never trusted from
 // the URL. It always comes from `useOrganization` and is injected at request time.
 
 import { z } from 'zod'
@@ -19,7 +19,7 @@ import { z } from 'zod'
 export interface InboxUrlState {
     /** Selected conversation id (drives the thread pane + mobile stage). Not a filter. */
     conversation?: string
-    /** Bounded, trimmed keyword search (1â€“200 chars). */
+    /** Bounded, trimmed keyword search (1–200 chars). */
     q?: string
     /**
      * The active quick view. Absent means the default `inbox`. The SERVER owns what each view
@@ -78,7 +78,7 @@ function pickUuid(value: string | null | undefined): string | undefined {
 }
 
 // ------------------------------------------------------------
-// Normalization â€” the single source of truth for "what a valid state looks like".
+// Normalization — the single source of truth for "what a valid state looks like".
 // parse() and mergeInboxState() both funnel through this so an invalid value can
 // never survive, regardless of whether it came from the URL or a component patch.
 // ------------------------------------------------------------
@@ -194,7 +194,7 @@ export function listFilterSignature(state: InboxUrlState): string {
 
 /**
  * Merge a patch onto the current state. If the patch changes any FILTER field, the
- * cursor is reset to the first page â€” a keyset cursor is only valid for the exact
+ * cursor is reset to the first page — a keyset cursor is only valid for the exact
  * filter set it was minted under, so carrying it across a filter change would 400.
  * An explicit `cursor` in the patch (load-more) is always honored.
  */
@@ -231,7 +231,7 @@ export function quickViewPatch(view: InboxQuickView): Partial<InboxUrlState> {
     }
 }
 
-/** Count of active refinement filters (search/campaign/account/labels) â€” NOT views. */
+/** Count of active refinement filters (search/campaign/account/labels) — NOT views. */
 export function activeFilterCount(state: InboxUrlState): number {
     const normalized = normalizeState(state)
     let count = 0

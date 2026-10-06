@@ -71,6 +71,10 @@ export interface InboxConversationListItem {
     lastOutboundAt: string | null
     archived: boolean
     unread: boolean
+    /** Classification of the most recent inbound message (null when there is none). */
+    lastInboundClassification: InboxMessageClassification | null
+    /** Scheduled-and-past-due or notified-and-not-dismissed reminder for the current user. */
+    reminderDue: boolean
     participants: InboxParticipant[]
     labels: InboxLabel[]
 }
@@ -104,6 +108,8 @@ export interface InboxConversationSummary {
     lastOutboundAt: string | null
     archived: boolean
     unread: boolean
+    lastInboundClassification: InboxMessageClassification | null
+    reminderDue: boolean
     labels: InboxLabel[]
 }
 
@@ -142,7 +148,9 @@ export interface InboxCounts {
     needsReply: number
     awaiting: number
     unread: number
-    /** Conversations with an active reminder whose time has come. */
+    /** Conversations with an ACTIVE reminder: exactly what the Reminders view lists. Use for the rail. */
+    remindersActive: number
+    /** Conversations that want attention now (past-due scheduled or notified reminder); subset of remindersActive. */
     remindersDue: number
 }
 
@@ -345,6 +353,7 @@ export async function getInboxCounts(organizationId: string): Promise<InboxCount
         needsReply: data.needsReply ?? 0,
         awaiting: data.awaiting ?? 0,
         unread: data.unread ?? 0,
+        remindersActive: data.remindersActive ?? 0,
         remindersDue: data.remindersDue ?? 0,
     }
 }
