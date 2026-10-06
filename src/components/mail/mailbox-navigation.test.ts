@@ -3,11 +3,12 @@ import type { Mailbox } from '../../hooks/useMailbox'
 import {
     buildMailboxSections,
     formatUnreadBadge,
-    groupMailboxes,
     mailboxDomain,
     mailboxLocalPart,
+    mailboxRole,
     parseStoredIds,
     togglePinned,
+    warmupExpandedStorageKey,
 } from './mailbox-navigation'
 
 function mailbox(email: string, displayName: string | null = null): Mailbox {
@@ -24,34 +25,6 @@ function mailbox(email: string, displayName: string | null = null): Mailbox {
 }
 
 describe('mailbox navigation', () => {
-    it('groups mailboxes by domain and sorts groups and labels', () => {
-        const groups = groupMailboxes([
-            mailbox('zeta@skale.club'),
-            mailbox('agenda@stuscle.com'),
-            mailbox('alpha@skale.club'),
-        ], '')
-
-        expect(groups.map(group => group.domain)).toEqual(['skale.club', 'stuscle.com'])
-        expect(groups[0].mailboxes.map(item => item.email)).toEqual([
-            'alpha@skale.club',
-            'zeta@skale.club',
-        ])
-    })
-
-    it('searches display names, local parts, and domains without empty groups', () => {
-        const mailboxes = [
-            mailbox('info@skale.club', 'Main Inbox'),
-            mailbox('agenda@stuscle.com'),
-            mailbox('contato@stuscle.com'),
-        ]
-
-        expect(groupMailboxes(mailboxes, 'main').flatMap(group => group.mailboxes).map(item => item.email))
-            .toEqual(['info@skale.club'])
-        expect(groupMailboxes(mailboxes, 'stuscle').flatMap(group => group.mailboxes).map(item => item.email))
-            .toEqual(['agenda@stuscle.com', 'contato@stuscle.com'])
-        expect(groupMailboxes(mailboxes, 'missing')).toEqual([])
-    })
-
     it('extracts stable labels from malformed or ordinary addresses', () => {
         expect(mailboxLocalPart('info@skale.club')).toBe('info')
         expect(mailboxDomain('info@skale.club')).toBe('skale.club')
@@ -60,56 +33,79 @@ describe('mailbox navigation', () => {
 })
 
 describe('buildMailboxSections', () => {
-    const operation = [
-        mailbox('info@skale.club'),
-        mailbox('contato@xkedule.com'),
+    const emails = (list: Mailbox[]) => list.map(item => item.email)
+    const mixed: Mailbox[] = [
+        { ...mailbox('info@skale.club'), role: 'work', unreadCount: 12 },
+        { ...mailbox('info@xkedule.com'), role: 'work', unreadCount: 1 },
+        { ...mailbox('info@skleanings.com'), role: 'work', unreadCount: 40 },
+        { ...mailbox('dmarc@skale.club'), role: 'work' },
+        { ...mailbox('contato@skale.club'), role: 'warmup', unreadCount: 99 },
+        { ...mailbox('agenda@skale.club'), role: 'warmup', unreadCount: 99 },
+        { ...mailbox('gustavo@gruporodobens.com.br'), role: 'other', isOperationMailbox: false, organizationName: 'Grupo Rodobens' },
     ]
-    const clients = [
-        { ...mailbox('gustavo@gruporodobens.com.br'), isOperationMailbox: false, organizationName: 'Grupo Rodobens' },
-        { ...mailbox('juliana@gruporodobens.com.br'), isOperationMailbox: false, organizationName: 'Grupo Rodobens' },
-        { ...mailbox('eduardo@montecarlopostos.com.br'), isOperationMailbox: false, organizationName: 'Monte Carlo Postos' },
-        { ...mailbox('lone@unknown.io'), isOperationMailbox: false, organizationName: null },
-    ]
-    const all = [...operation, ...clients]
-    const base = { query: '', pinnedIds: new Set<string>(), selectedId: null, showOthers: false }
+    const base = { query: '', pinnedIds: new Set<string>(), showWarmup: false, showOthers: false }
 
-    it('hides other-organization mailboxes by default and counts them', () => {
-        const sections = buildMailboxSections(all, base)
-        expect(sections.operationGroups.flatMap(g => g.mailboxes).map(m => m.email))
-            .toEqual(['info@skale.club', 'contato@xkedule.com'])
-        expect(sections.otherGroups).toEqual([])
-        expect(sections.hiddenOtherCount).toBe(4)
-        expect(sections.otherCount).toBe(4)
+    it('splits mailboxes into work, warm-up and other by the server role', () => {
+        const sections = buildMailboxSections(mixed, base)
+        expect(emails(sections.work)).toEqual(['info@skleanings.com', 'info@skale.club', 'info@xkedule.com', 'dmarc@skale.club'])
+        expect(emails(sections.warmup)).toEqual(['agenda@skale.club', 'contato@skale.club'])
+        expect(emails(sections.other)).toEqual(['gustavo@gruporodobens.com.br'])
+        expect(sections.pinned).toEqual([])
     })
 
-    it('groups revealed mailboxes by organization name, falling back to the email domain', () => {
-        const sections = buildMailboxSections(all, { ...base, showOthers: true })
-        expect(sections.otherGroups.map(g => g.domain)).toEqual(['Grupo Rodobens', 'Monte Carlo Postos', 'unknown.io'])
-        expect(sections.otherGroups[0].mailboxes.map(m => m.email))
-            .toEqual(['gustavo@gruporodobens.com.br', 'juliana@gruporodobens.com.br'])
-        expect(sections.hiddenOtherCount).toBe(0)
+    it('sorts each section by unread count desc, then by name', () => {
+        const sections = buildMailboxSections(mixed, base)
+        // warm-up boxes tie on 99 unread: the name decides.
+        expect(emails(sections.warmup)).toEqual(['agenda@skale.club', 'contato@skale.club'])
+        // work: 40, 12, 1, then the one without unread.
+        expect(emails(sections.work)[0]).toBe('info@skleanings.com')
+        expect(emails(sections.work).at(-1)).toBe('dmarc@skale.club')
     })
 
-    it('keeps the selected mailbox visible even when it belongs to another organization', () => {
-        const sections = buildMailboxSections(all, { ...base, selectedId: 'eduardo@montecarlopostos.com.br' })
-        expect(sections.otherGroups.map(g => g.domain)).toEqual(['Monte Carlo Postos'])
-        expect(sections.hiddenOtherCount).toBe(3)
+    it('keeps warm-up and other-organization sections collapsed by default and counts them', () => {
+        const sections = buildMailboxSections(mixed, base)
+        expect(sections.warmupOpen).toBe(false)
+        expect(sections.otherOpen).toBe(false)
+        expect(sections.warmupCount).toBe(2)
+        expect(sections.otherCount).toBe(1)
     })
 
-    it('lets a search find hidden mailboxes without flipping the toggle', () => {
-        const sections = buildMailboxSections(all, { ...base, query: 'rodobens' })
-        expect(sections.otherGroups.flatMap(g => g.mailboxes)).toHaveLength(2)
-        expect(sections.operationGroups).toEqual([])
+    it('opens the sections the user expanded', () => {
+        const sections = buildMailboxSections(mixed, { ...base, showWarmup: true, showOthers: true })
+        expect(sections.warmupOpen).toBe(true)
+        expect(sections.otherOpen).toBe(true)
     })
 
-    it('floats pinned mailboxes to the top and removes them from their group', () => {
-        const sections = buildMailboxSections(all, { ...base, pinnedIds: new Set(['info@skale.club']) })
-        expect(sections.pinned.map(m => m.email)).toEqual(['info@skale.club'])
-        expect(sections.operationGroups.flatMap(g => g.mailboxes).map(m => m.email)).toEqual(['contato@xkedule.com'])
+    it('searches across every section and auto-expands the collapsed ones', () => {
+        const sections = buildMailboxSections(mixed, { ...base, query: 'agenda' })
+        expect(sections.warmupOpen).toBe(true)
+        expect(emails(sections.warmup)).toEqual(['agenda@skale.club'])
+        expect(sections.work).toEqual([])
+
+        const org = buildMailboxSections(mixed, { ...base, query: 'rodobens' })
+        expect(org.otherOpen).toBe(true)
+        expect(emails(org.other)).toEqual(['gustavo@gruporodobens.com.br'])
     })
 
-    it('treats mailboxes from an API without the flag as operation mailboxes', () => {
-        expect(buildMailboxSections(operation, base).hiddenOtherCount).toBe(0)
+    it('floats pinned mailboxes of any role to the top and removes them from their section', () => {
+        const sections = buildMailboxSections(mixed, {
+            ...base,
+            pinnedIds: new Set(['info@xkedule.com', 'contato@skale.club']),
+        })
+        expect(emails(sections.pinned)).toEqual(['contato@skale.club', 'info@xkedule.com'])
+        expect(emails(sections.work)).not.toContain('info@xkedule.com')
+        expect(emails(sections.warmup)).toEqual(['agenda@skale.club'])
+    })
+
+    it('falls back to the operation flag when the API sends no role', () => {
+        const legacy = [
+            mailbox('info@skale.club'),
+            { ...mailbox('gustavo@gruporodobens.com.br'), isOperationMailbox: false },
+        ]
+        const sections = buildMailboxSections(legacy, base)
+        expect(emails(sections.work)).toEqual(['info@skale.club'])
+        expect(emails(sections.other)).toEqual(['gustavo@gruporodobens.com.br'])
+        expect(mailboxRole(legacy[0])).toBe('work')
     })
 })
 
@@ -126,6 +122,11 @@ describe('mailbox preferences', () => {
         expect([...togglePinned(start, 'b')]).toEqual(['a', 'b'])
         expect([...togglePinned(start, 'a')]).toEqual([])
         expect(start.size).toBe(1)
+    })
+
+    it('keys every preference per user', () => {
+        expect(warmupExpandedStorageKey('u1')).not.toBe(warmupExpandedStorageKey('u2'))
+        expect(warmupExpandedStorageKey(null)).toBe(warmupExpandedStorageKey(undefined))
     })
 
     it('formats unread badges', () => {

@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { eq, and, desc, inArray, sql } from 'drizzle-orm'
 import { db } from '../../../db'
-import { mailboxes, mailFolders, users, organizationUsers, organizations } from '../../../db/schema'
+import { mailboxes, mailFolders, users, organizationUsers, organizations, emailAccounts } from '../../../db/schema'
 import { classifyMailboxes } from './mailbox-organizations'
 import { getOperationDomains } from '../../lib/operation-domains'
 import { encryptSecret } from '../../lib/crypto'
@@ -130,7 +130,9 @@ router.get('/', async (req: Request, res: Response) => {
         const mailboxIds = userMailboxes.map(mb => mb.id)
         const ownerIds = [...new Set(userMailboxes.map(mb => mb.userId))]
 
-        const [unreadRows, membershipRows] = await Promise.all([
+        const mailboxEmails = [...new Set(userMailboxes.map(mb => mb.email.toLowerCase()))]
+
+        const [unreadRows, membershipRows, warmupRows] = await Promise.all([
             // mail_folders.unread_count is maintained by recomputeFolderCounts(), so the INBOX
             // badge is a cheap read of the folder rows instead of a scan of mail_messages.
             mailboxIds.length === 0
@@ -154,6 +156,17 @@ router.get('/', async (req: Request, res: Response) => {
                 .from(organizationUsers)
                 .innerJoin(organizations, eq(organizations.id, organizationUsers.organizationId))
                 .where(inArray(organizationUsers.userId, ownerIds)),
+            // Warm-up mailboxes: an email_accounts row with the same address and warmup_only = true.
+            // One query for the whole list, matched in memory (no N+1).
+            mailboxEmails.length === 0
+                ? Promise.resolve([] as Array<{ email: string }>)
+                : db
+                    .selectDistinct({ email: sql<string>`lower(${emailAccounts.email})` })
+                    .from(emailAccounts)
+                    .where(and(
+                        eq(emailAccounts.warmupOnly, true),
+                        inArray(sql`lower(${emailAccounts.email})`, mailboxEmails),
+                    )),
         ])
 
         const unreadByMailbox = new Map(unreadRows.map(row => [row.mailboxId, row.unread]))
@@ -162,6 +175,7 @@ router.get('/', async (req: Request, res: Response) => {
             mailboxes: userMailboxes.map(mb => ({ id: mb.id, userId: mb.userId, email: mb.email })),
             memberships: membershipRows,
             operationDomains: getOperationDomains(),
+            warmupOnlyEmails: new Set(warmupRows.map(row => row.email)),
         })
 
         const safeMailboxes = userMailboxes.map(mb => ({
@@ -171,6 +185,8 @@ router.get('/', async (req: Request, res: Response) => {
             // isOperationMailbox: operation domain (MAIL_DOMAIN + OUTREACH_PROTECTED_DOMAINS) or own mailbox.
             organizationName: classification.get(mb.id)?.organizationName ?? null,
             isOperationMailbox: classification.get(mb.id)?.isOperationMailbox ?? true,
+            // role: 'warmup' (warmup_only email account), 'other' (client organization) or 'work'.
+            role: classification.get(mb.id)?.role ?? 'work',
         }))
 
         res.json({ mailboxes: safeMailboxes })

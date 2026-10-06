@@ -35,12 +35,12 @@ describe('classifyMailboxes', () => {
     })
 
     it('treats the requester own mailbox as operation even on a foreign domain and without organization', () => {
-        expect(result.get('own')).toEqual({ organizationName: null, isOperationMailbox: true })
+        expect(result.get('own')).toEqual({ organizationName: null, isOperationMailbox: true, role: 'work' })
     })
 
     it('puts client organization mailboxes under their organization name', () => {
-        expect(result.get('rodobens')).toEqual({ organizationName: 'Grupo Rodobens', isOperationMailbox: false })
-        expect(result.get('monte')).toEqual({ organizationName: 'Monte Carlo Postos', isOperationMailbox: false })
+        expect(result.get('rodobens')).toEqual({ organizationName: 'Grupo Rodobens', isOperationMailbox: false, role: 'other' })
+        expect(result.get('monte')).toEqual({ organizationName: 'Monte Carlo Postos', isOperationMailbox: false, role: 'other' })
     })
 
     it('uses the first organization alphabetically for owners in several organizations', () => {
@@ -48,7 +48,7 @@ describe('classifyMailboxes', () => {
     })
 
     it('leaves organizationName null when the owner has no organization (client falls back to the domain)', () => {
-        expect(result.get('noorg')).toEqual({ organizationName: null, isOperationMailbox: false })
+        expect(result.get('noorg')).toEqual({ organizationName: null, isOperationMailbox: false, role: 'other' })
     })
 
     it('hides everything but own mailboxes when the env lists no operation domains', () => {
@@ -61,6 +61,42 @@ describe('classifyMailboxes', () => {
         expect(noEnv.get('own')?.isOperationMailbox).toBe(true)
         expect(noEnv.get('info')?.isOperationMailbox).toBe(false)
     })
+})
+
+describe('classifyMailboxes role', () => {
+    const withWarmup = classifyMailboxes({
+        requesterId: 'admin',
+        mailboxes: [
+            ...mailboxes,
+            { id: 'warm', userId: 'u4', email: 'Agenda@skale.club' },
+            { id: 'warm-client', userId: 'gustavo', email: 'seed@gruporodobens.com.br' },
+        ],
+        memberships,
+        operationDomains,
+        warmupOnlyEmails: new Set(['agenda@skale.club', 'seed@gruporodobens.com.br']),
+    })
+
+    it('marks operation mailboxes as work', () => {
+        expect(withWarmup.get('info')?.role).toBe('work')
+        expect(withWarmup.get('own')?.role).toBe('work')
+    })
+
+    it('marks a mailbox whose address has a warmup_only account as warmup, ignoring case', () => {
+        expect(withWarmup.get('warm')?.role).toBe('warmup')
+    })
+
+    it('lets warmup win over other, and marks client mailboxes as other', () => {
+        expect(withWarmup.get('warm-client')?.role).toBe('warmup')
+        expect(withWarmup.get('rodobens')?.role).toBe('other')
+    })
+
+    it('treats every operation mailbox as work when no warmup set is given', () => {
+        expect(result(mailboxes).get('main')?.role).toBe('work')
+    })
+
+    function result(list: typeof mailboxes) {
+        return classifyMailboxes({ requesterId: 'admin', mailboxes: list, memberships, operationDomains })
+    }
 })
 
 describe('getOperationDomains', () => {

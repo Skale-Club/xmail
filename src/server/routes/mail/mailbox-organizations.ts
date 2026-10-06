@@ -25,9 +25,19 @@ export interface MembershipRow {
     organizationName: string
 }
 
+/**
+ * Where a mailbox belongs in the webmail switcher:
+ *  - `warmup`: an email_accounts row with the same address has warmup_only = true (a mailbox that
+ *    exists only to be warmed; nobody reads it, so the switcher keeps it collapsed);
+ *  - `other`: not an operation mailbox (client organization);
+ *  - `work`: everything else (the info@ boxes, dmarc@, the requester's own mailbox).
+ */
+export type MailboxRole = 'work' | 'warmup' | 'other'
+
 export interface MailboxClassification {
     organizationName: string | null
     isOperationMailbox: boolean
+    role: MailboxRole
 }
 
 export function classifyMailboxes(input: {
@@ -35,6 +45,8 @@ export function classifyMailboxes(input: {
     mailboxes: MailboxOwnerRow[]
     memberships: MembershipRow[]
     operationDomains: Set<string>
+    /** Lower-cased addresses that have a warmup_only email_accounts row. */
+    warmupOnlyEmails?: ReadonlySet<string>
 }): Map<string, MailboxClassification> {
     const orgNamesByUser = new Map<string, string[]>()
     for (const row of input.memberships) {
@@ -48,11 +60,14 @@ export function classifyMailboxes(input: {
         const names = [...(orgNamesByUser.get(mailbox.userId) ?? [])]
             .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
         const domain = emailDomain(mailbox.email)
+        const isOperationMailbox =
+            mailbox.userId === input.requesterId ||
+            (domain !== '' && input.operationDomains.has(domain))
+        const isWarmupOnly = input.warmupOnlyEmails?.has(mailbox.email.toLowerCase()) ?? false
         result.set(mailbox.id, {
             organizationName: names[0] ?? null,
-            isOperationMailbox:
-                mailbox.userId === input.requesterId ||
-                (domain !== '' && input.operationDomains.has(domain)),
+            isOperationMailbox,
+            role: isWarmupOnly ? 'warmup' : isOperationMailbox ? 'work' : 'other',
         })
     }
     return result

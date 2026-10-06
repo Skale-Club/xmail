@@ -19,7 +19,8 @@ export const SHORTCUTS: KeyboardShortcut[] = [
     { key: 'g', then: 'i', description: 'Go to Inbox', category: 'navigation' },
     { key: 'g', then: 's', description: 'Go to Sent', category: 'navigation' },
     { key: 'g', then: 'd', description: 'Go to Drafts', category: 'navigation' },
-    { key: 'g', then: 'm', description: 'Switch mailbox (focus mailbox search)', category: 'navigation' },
+    { key: 'g', then: 'm', description: 'Switch mailbox (open the mailbox picker)', category: 'navigation' },
+    { key: 'k', ctrl: true, description: 'Switch mailbox (Ctrl+K)', category: 'navigation' },
     { key: 'Escape', description: 'Go back / Close modal', category: 'navigation' },
 
     // Actions

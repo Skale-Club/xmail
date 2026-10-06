@@ -3,6 +3,7 @@ import { useAuth } from '../../hooks/useAuth'
 import {
     pinnedMailboxesStorageKey,
     showOtherOrgsStorageKey,
+    warmupExpandedStorageKey,
     parseStoredIds,
     togglePinned,
 } from './mailbox-navigation'
@@ -23,12 +24,13 @@ function writeStorage(key: string, value: string) {
     }
 }
 
-/** Per-browser switcher preferences: pinned mailboxes and the "other organizations" toggle. */
+/** Per-browser switcher preferences: pinned mailboxes and the warm-up / "other organizations" toggles. */
 export function useMailboxPreferences() {
     const { user } = useAuth()
     const userId = user?.id
     const pinnedKey = pinnedMailboxesStorageKey(userId)
     const showOthersKey = showOtherOrgsStorageKey(userId)
+    const warmupKey = warmupExpandedStorageKey(userId)
 
     const [pinnedIds, setPinnedIds] = React.useState<Set<string>>(
         () => parseStoredIds(readStorage(pinnedKey)),
@@ -36,12 +38,16 @@ export function useMailboxPreferences() {
     const [showOthers, setShowOthersState] = React.useState<boolean>(
         () => readStorage(showOthersKey) === '1',
     )
+    const [showWarmup, setShowWarmupState] = React.useState<boolean>(
+        () => readStorage(warmupKey) === '1',
+    )
 
     // Signing in as another user (multi-session) loads that user's preferences.
     React.useEffect(() => {
         setPinnedIds(parseStoredIds(readStorage(pinnedKey)))
         setShowOthersState(readStorage(showOthersKey) === '1')
-    }, [pinnedKey, showOthersKey])
+        setShowWarmupState(readStorage(warmupKey) === '1')
+    }, [pinnedKey, showOthersKey, warmupKey])
 
     const togglePin = React.useCallback((mailboxId: string) => {
         setPinnedIds(previous => {
@@ -56,5 +62,10 @@ export function useMailboxPreferences() {
         writeStorage(showOthersKey, value ? '1' : '0')
     }, [showOthersKey])
 
-    return { pinnedIds, togglePin, showOthers, setShowOthers }
+    const setShowWarmup = React.useCallback((value: boolean) => {
+        setShowWarmupState(value)
+        writeStorage(warmupKey, value ? '1' : '0')
+    }, [warmupKey])
+
+    return { pinnedIds, togglePin, showOthers, setShowOthers, showWarmup, setShowWarmup }
 }

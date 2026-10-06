@@ -20,6 +20,8 @@ export interface Mailbox {
     organizationName?: string | null
     /** Operation domain or own mailbox. Undefined (older API) = treat as operation. */
     isOperationMailbox?: boolean
+    /** Switcher section: 'warmup' = warm-up-only account, 'other' = client org, 'work' = the rest. Undefined (older API) = derive from isOperationMailbox. */
+    role?: 'work' | 'warmup' | 'other'
 }
 
 interface MailboxContextType {

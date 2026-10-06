@@ -9,9 +9,8 @@ import { AppLogo } from '../AppLogo'
 import { ModeToggle } from '../mode-toggle'
 import { DeployFooter } from '../DeployFooter'
 import { supabase } from '../../lib/supabase'
-import { MailboxSidebarSwitcher } from './MailboxSidebarSwitcher'
+import { MailboxSwitcherButton } from './MailboxSwitcherButton'
 import { UserAccountMenu } from './UserAccountMenu'
-import { CommandPalette } from '../ui/command-palette'
 import { KeyboardShortcutsHelp, KeyboardShortcutsButton } from './KeyboardShortcutsHelp'
 import { useAuth } from '../../hooks/useAuth'
 import {
@@ -128,7 +127,7 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
             )}
         </div>
 
-        <MailboxSidebarSwitcher
+        <MailboxSwitcherButton
             collapsed={isCollapsed && !isMobile}
             isMobile={isMobile}
             onNavigate={closeSidebar}
@@ -440,7 +439,6 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
             {isMobile && <MobileBottomNav location={location} onOpenSidebar={openSidebar} openCompose={openCompose} />}
 
             <KeyboardShortcutsHelp isOpen={shortcutsOpen} onClose={closeShortcuts} />
-            <CommandPalette area="mail" isAdmin={!!isAdmin} />
         </div>
     )
 }
