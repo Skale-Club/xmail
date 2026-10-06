@@ -44,12 +44,11 @@ export default defineConfig(({ mode }) => {
     const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || ''
     const appName = env.VITE_APP_NAME || 'Xmail'
 
-    const storageBase = `${supabaseUrl}/storage/v1/object/public/branding-assets`
-    const faviconUrl     = `${storageBase}/favicon.svg`
-    const appleTouchIcon = `${storageBase}/apple-touch-icon.png`
-    const pwaIcon192     = `${storageBase}/pwa-icon-192.png`
-    const pwaIcon512     = `${storageBase}/pwa-icon-512.png`
-    const pwaIconMask    = `${storageBase}/pwa-icon-maskable.png`
+    // Built-in icons are bundled with every release. Custom runtime branding may
+    // still come from R2, but the install metadata must not depend on a remote
+    // storage bucket being provisioned correctly.
+    const faviconUrl = '/favicon.svg'
+    const appleTouchIcon = '/brand-mark.svg'
 
     return {
         plugins: [
@@ -57,7 +56,7 @@ export default defineConfig(({ mode }) => {
             appConfigPlugin({ supabaseUrl, supabaseAnonKey, appName, faviconUrl, appleTouchIconUrl: appleTouchIcon }),
             VitePWA({
                 registerType: 'autoUpdate',
-                includeAssets: [],
+                includeAssets: ['brand-mark.svg', 'favicon.svg'],
                 manifest: {
                     name: appName,
                     short_name: 'Mail',
@@ -70,22 +69,10 @@ export default defineConfig(({ mode }) => {
                     start_url: '/',
                     icons: [
                         {
-                            src: pwaIcon192,
-                            sizes: '192x192',
-                            type: 'image/png',
-                            purpose: 'any',
-                        },
-                        {
-                            src: pwaIcon512,
-                            sizes: '512x512',
-                            type: 'image/png',
-                            purpose: 'any',
-                        },
-                        {
-                            src: pwaIconMask,
-                            sizes: '512x512',
-                            type: 'image/png',
-                            purpose: 'maskable',
+                            src: '/brand-mark.svg',
+                            sizes: 'any',
+                            type: 'image/svg+xml',
+                            purpose: 'any maskable',
                         },
                     ],
                 },

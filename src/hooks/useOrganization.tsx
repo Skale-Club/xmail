@@ -30,7 +30,7 @@ export function OrganizationProvider({ children }: { children: ReactNode }) {
     const [currentOrganization, setCurrentOrganizationState] = useState<Organization | null>(null)
     const [isLoading, setIsLoading] = useState(true)
 
-    // Re-fetch whenever the active account changes (AccountSwitcher / multi-session)
+    // Re-fetch whenever the active signed-in user changes (UserAccountMenu / multi-session)
     // — otherwise switching accounts kept showing the previous user's organizations
     // and outreach-access decision until an unrelated remount happened to refire this.
     useEffect(() => {

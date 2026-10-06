@@ -9,14 +9,17 @@ export interface BrandingSettings {
     mailHost: string
 }
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string
-const defaultLogoUrl = `${supabaseUrl}/storage/v1/object/public/branding-assets/brand-mark.svg`
+// The built-in identity must always ship with the application. Custom branding can
+// still live in R2, but a missing bucket/object must never make the login screen,
+// sidebar, favicon, or installed PWA lose its icon.
+const defaultLogoUrl = '/brand-mark.svg'
+const defaultFaviconUrl = '/favicon.svg'
 
 export const defaultBranding: BrandingSettings = {
     companyName: '',
     applicationName: 'Xmail',
     logoUrl: defaultLogoUrl,
-    faviconUrl: defaultLogoUrl,
+    faviconUrl: defaultFaviconUrl,
     mailHost: 'mx.skaleclub.com',
 }
 

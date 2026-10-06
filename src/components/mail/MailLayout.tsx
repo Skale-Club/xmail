@@ -7,7 +7,8 @@ import { AppLogo } from '../AppLogo'
 import { ModeToggle } from '../mode-toggle'
 import { DeployFooter } from '../DeployFooter'
 import { supabase } from '../../lib/supabase'
-import { AccountSwitcher } from './AccountSwitcher'
+import { MailboxSidebarSwitcher } from './MailboxSidebarSwitcher'
+import { UserAccountMenu } from './UserAccountMenu'
 import { CommandPalette } from '../ui/command-palette'
 import { KeyboardShortcutsHelp, KeyboardShortcutsButton } from './KeyboardShortcutsHelp'
 import { useAuth } from '../../hooks/useAuth'
@@ -105,6 +106,12 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
                 </button>
             )}
         </div>
+
+        <MailboxSidebarSwitcher
+            collapsed={isCollapsed && !isMobile}
+            isMobile={isMobile}
+            onNavigate={closeSidebar}
+        />
 
         <div className={`p-4 ${isCollapsed && !isMobile ? 'px-3' : ''}`}>
             <button
@@ -371,7 +378,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                             <KeyboardShortcutsButton onClick={openShortcuts} />
                             <ModeToggle />
 
-                            <AccountSwitcher showSignOut onSignOut={handleSignOut} />
+                            <UserAccountMenu onSignOut={handleSignOut} />
                         </div>
                     </header>
 
