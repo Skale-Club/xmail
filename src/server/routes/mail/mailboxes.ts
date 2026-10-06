@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import { eq, and, desc } from 'drizzle-orm'
+import { eq, and, desc, inArray, sql } from 'drizzle-orm'
 import { db } from '../../../db'
-import { mailboxes, mailFolders, users } from '../../../db/schema'
+import { mailboxes, mailFolders, mailMessages, users, organizationUsers, organizations } from '../../../db/schema'
+import { computeMailboxOrganizationInfo } from './mailbox-organizations'
 import { encryptSecret } from '../../lib/crypto'
 import { authenticateNativeUser, createUserMailbox, deleteMailboxById } from '../../lib/native-mail'
 import { isPrivateHostWithDns } from '../../lib/network-guard'
@@ -123,7 +124,52 @@ router.get('/', async (req: Request, res: Response) => {
             ))
         }
 
-        const safeMailboxes = userMailboxes.map(toMailboxResponse)
+        // Per-mailbox INBOX unread count and organization info, each in ONE grouped
+        // query for the whole list (no N+1 — admins have dozens of mailboxes).
+        const mailboxIds = userMailboxes.map(mb => mb.id)
+        const ownerIds = [...new Set([userId, ...userMailboxes.map(mb => mb.userId)])]
+
+        const [unreadRows, membershipRows] = await Promise.all([
+            mailboxIds.length === 0
+                ? Promise.resolve([] as Array<{ mailboxId: string; unread: number }>)
+                : db
+                    .select({
+                        mailboxId: mailMessages.mailboxId,
+                        unread: sql<number>`count(*)::int`,
+                    })
+                    .from(mailMessages)
+                    .innerJoin(mailFolders, eq(mailFolders.id, mailMessages.folderId))
+                    .where(and(
+                        inArray(mailMessages.mailboxId, mailboxIds),
+                        eq(mailFolders.type, 'inbox'),
+                        eq(mailMessages.isRead, false),
+                        eq(mailMessages.isDeleted, false),
+                    ))
+                    .groupBy(mailMessages.mailboxId),
+            db
+                .select({
+                    userId: organizationUsers.userId,
+                    organizationId: organizations.id,
+                    organizationName: organizations.name,
+                })
+                .from(organizationUsers)
+                .innerJoin(organizations, eq(organizations.id, organizationUsers.organizationId))
+                .where(inArray(organizationUsers.userId, ownerIds)),
+        ])
+
+        const unreadByMailbox = new Map(unreadRows.map(row => [row.mailboxId, row.unread]))
+        const orgInfo = computeMailboxOrganizationInfo({
+            requesterId: userId,
+            mailboxes: userMailboxes.map(mb => ({ id: mb.id, userId: mb.userId })),
+            memberships: membershipRows,
+        })
+
+        const safeMailboxes = userMailboxes.map(mb => ({
+            ...toMailboxResponse(mb),
+            unreadCount: unreadByMailbox.get(mb.id) ?? 0,
+            organizations: orgInfo.get(mb.id)?.organizations ?? [],
+            inMyOrganizations: orgInfo.get(mb.id)?.inMyOrganizations ?? true,
+        }))
 
         res.json({ mailboxes: safeMailboxes })
     } catch (error) {

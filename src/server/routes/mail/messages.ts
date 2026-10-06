@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import { eq, and, desc, inArray, sql, ilike, or, not } from 'drizzle-orm'
+import { eq, and, desc, inArray, sql, not } from 'drizzle-orm'
 import Imap from 'imap'
 import { db } from '../../../db'
 import { mailMessages, mailFolders, INBOX_ATTACHMENTS_BUCKET } from '../../../db/schema'
@@ -11,6 +11,8 @@ import { decryptSecret } from '../../lib/crypto'
 import { deleteMessagesPermanently, moveMessagesToFolder } from '../../lib/move-messages'
 import { recomputeFolderCounts } from '../../lib/folder-counts'
 import { createObjectStorage } from '../../lib/object-storage'
+import { hasSearchCriteria, parseMailSearchQuery } from '../../lib/mail-search-query'
+import { buildMailSearchConditions } from './search-conditions'
 
 const router = Router()
 
@@ -303,15 +305,16 @@ router.get('/:mailboxId/messages', async (req: Request, res: Response) => {
             conditions.push(eq(mailMessages.hasAttachments, true))
         }
         if (q && q.length >= 2) {
-            // Same substring match as GET /:mailboxId/search, reused here so a folder's
-            // in-place search box and page size stay consistent with the folder list.
-            const textMatch = or(
-                ilike(mailMessages.subject, `%${q}%`),
-                ilike(mailMessages.fromName, `%${q}%`),
-                ilike(mailMessages.fromAddress, `%${q}%`),
-                ilike(mailMessages.plainBody, `%${q}%`),
-            )
-            if (textMatch) conditions.push(textMatch)
+            // Same operator-aware match as GET /:mailboxId/search (from:, subject:, has:attachment,
+            // ...), minus the folder operators: this list is already scoped to one folder.
+            const parsedQuery = parseMailSearchQuery(q)
+            if (hasSearchCriteria(parsedQuery)) {
+                conditions.push(...buildMailSearchConditions(parsedQuery, {
+                    mailboxId,
+                    allowFolderOperator: false,
+                    includeBase: false,
+                }))
+            }
         }
 
         const [messages, countResult] = await Promise.all([
@@ -1033,22 +1036,16 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
     }
 })
 
-router.get('/:mailboxId/search', async (req: Request, res: Response) => {
+// Empties Trash or Spam on the server so the count reported to the user is the real one
+// (the client only ever holds the first pages of the folder). Deleting rows is fine under the
+// UID rules; nothing here changes a folder_id.
+router.post('/:mailboxId/empty-folder', async (req: Request, res: Response) => {
     try {
         const userId = req.headers['x-user-id'] as string
         const mailboxId = req.params.mailboxId
-        const q = req.query.q as string | undefined
-        const folderId = req.query.folderId as string | undefined
-        const page = parseInt(req.query.page as string) || 1
-        const limit = Math.min(parseInt(req.query.limit as string) || 50, 100)
-        const offset = (page - 1) * limit
 
         if (!userId) {
             return res.status(401).json({ error: 'Unauthorized' })
-        }
-
-        if (!q || q.trim().length < 2) {
-            return res.json({ messages: [], pagination: { page, limit, total: 0, totalPages: 0 } })
         }
 
         const mailbox = await checkUserMailboxAccess(userId, mailboxId)
@@ -1056,20 +1053,85 @@ router.get('/:mailboxId/search', async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Mailbox not found' })
         }
 
-        const conditions = [
-            eq(mailMessages.mailboxId, mailboxId),
-            eq(mailMessages.isDeleted, false),
-            or(
-                ilike(mailMessages.subject, `%${q}%`),
-                ilike(mailMessages.fromName, `%${q}%`),
-                ilike(mailMessages.fromAddress, `%${q}%`),
-                ilike(mailMessages.plainBody, `%${q}%`),
-            ),
-        ]
+        const data = z.object({ folderType: z.enum(['trash', 'spam']) }).parse(req.body)
 
-        if (folderId) {
-            conditions.push(eq(mailMessages.folderId, folderId))
+        const folder = data.folderType === 'trash'
+            ? await resolveTrashFolder(mailboxId, false)
+            : await resolveSpamFolder(mailboxId, false)
+        if (!folder) {
+            return res.json({ success: true, deleted: 0 })
         }
+
+        const BATCH_SIZE = 500
+        let deleted = 0
+        // Bounded so a pathological folder can never loop forever.
+        for (let round = 0; round < 1000; round += 1) {
+            const rows = await db.query.mailMessages.findMany({
+                where: and(eq(mailMessages.mailboxId, mailboxId), eq(mailMessages.folderId, folder.id)),
+                columns: { id: true },
+                limit: BATCH_SIZE,
+            })
+            if (rows.length === 0) break
+            const removed = await deleteMessagesPermanently(rows.map(row => row.id), mailboxId)
+            deleted += removed
+            if (removed === 0) break
+        }
+
+        res.json({ success: true, deleted })
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            return res.status(400).json({ error: error.errors })
+        }
+        console.error('Error emptying folder:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+router.get('/:mailboxId/search', async (req: Request, res: Response) => {
+    try {
+        const userId = req.headers['x-user-id'] as string
+        const mailboxId = req.params.mailboxId
+        const q = typeof req.query.q === 'string' ? req.query.q : undefined
+        const folderId = req.query.folderId as string | undefined
+        const page = Math.max(parseInt(req.query.page as string) || 1, 1)
+        const limit = Math.min(parseInt(req.query.limit as string) || 50, 100)
+        const offset = (page - 1) * limit
+
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+
+        const emptyResult = { messages: [], pagination: { page, limit, total: 0, totalPages: 0 } }
+        const parsedQuery = parseMailSearchQuery(q ?? '')
+        // Operators alone (is:unread, has:attachment, ...) are valid searches; a lone
+        // one-character free-text term is not.
+        const onlyShortTerm = parsedQuery.terms.length > 0 && parsedQuery.terms.every(term => term.length < 2)
+            && !hasSearchCriteria({ ...parsedQuery, terms: [] })
+        if (!hasSearchCriteria(parsedQuery) || onlyShortTerm) {
+            return res.json(emptyResult)
+        }
+
+        const mailbox = await checkUserMailboxAccess(userId, mailboxId)
+        if (!mailbox) {
+            return res.status(404).json({ error: 'Mailbox not found' })
+        }
+
+        // A folderId from the query must belong to this mailbox, same rule as the batch route.
+        if (folderId) {
+            const folder = await db.query.mailFolders.findFirst({
+                where: and(eq(mailFolders.id, folderId), eq(mailFolders.mailboxId, mailboxId)),
+                columns: { id: true },
+            })
+            if (!folder) {
+                return res.json(emptyResult)
+            }
+        }
+
+        const conditions = buildMailSearchConditions(parsedQuery, {
+            mailboxId,
+            folderId,
+            excludeTrashSpamByDefault: true,
+        })
 
         const [messages, countResult] = await Promise.all([
             db.query.mailMessages.findMany({

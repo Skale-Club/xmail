@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { syncMailbox, syncAllMailboxes } from '../../lib/mail-sync'
 import { checkUserMailboxAccess } from './mailboxes'
+import { db } from '../../../db'
+import { users } from '../../../db/schema'
+import { eq } from 'drizzle-orm'
 
 const router = Router()
 
@@ -32,8 +35,22 @@ router.post('/:mailboxId/sync', async (req: Request, res: Response) => {
     }
 })
 
-router.post('/sync-all', async (_req: Request, res: Response) => {
+router.post('/sync-all', async (req: Request, res: Response) => {
     try {
+        // Syncing every mailbox in the system is a platform-wide operation:
+        // only platform admins may trigger it.
+        const userId = req.headers['x-user-id'] as string
+        if (!userId) {
+            return res.status(401).json({ error: 'Unauthorized' })
+        }
+        const requester = await db.query.users.findFirst({
+            where: eq(users.id, userId),
+            columns: { id: true, isAdmin: true },
+        })
+        if (!requester?.isAdmin) {
+            return res.status(403).json({ error: 'Admin access required' })
+        }
+
         const results = await syncAllMailboxes()
 
         const totalNew = results.reduce((sum, r) => sum + r.newMessages, 0)
