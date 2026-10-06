@@ -47,15 +47,17 @@ export function UserAccountMenu({ onSignOut }: UserAccountMenuProps) {
             <DropdownMenuTrigger asChild>
                 <button
                     type="button"
-                    className="flex min-w-0 items-center gap-2 rounded-xl px-2 py-2 transition-colors hover:bg-accent sm:px-3"
+                    className="flex shrink-0 items-center gap-2 rounded-xl px-2 py-2 transition-colors hover:bg-accent xl:px-3"
                     aria-label="Open user account menu"
                 >
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-sm font-semibold text-primary-foreground">
                         {initial}
                     </span>
-                    <span className="hidden min-w-0 flex-col items-start sm:flex">
-                        <span className="max-w-40 truncate text-sm font-medium text-foreground">{name}</span>
-                        <span className="max-w-40 truncate text-xs text-muted-foreground">{email}</span>
+                    {/* Name and address only where there is room (xl). The column has a fixed
+                        max width and clips its children, so `truncate` really applies. */}
+                    <span className="hidden w-40 min-w-0 flex-col items-stretch overflow-hidden text-left xl:flex">
+                        <span className="truncate text-sm font-medium text-foreground">{name}</span>
+                        <span className="truncate text-xs text-muted-foreground">{email}</span>
                     </span>
                 </button>
             </DropdownMenuTrigger>
