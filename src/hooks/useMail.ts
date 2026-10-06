@@ -4,6 +4,28 @@ import { mailApi, Message, SendEmailPayload, SaveDraftPayload, MessageListRespon
 import { useMailbox } from './useMailbox'
 import { useAuth } from './useAuth'
 
+// The API is rate limited per IP (500 requests / 15 min), so polling is deliberately cheap:
+//  - the open folder asks for ONLY its first page every 30s and refetches the loaded pages
+//    only when that first page actually changed;
+//  - folder counters refresh every 90s from a single observer (the sidebar);
+//  - focus/visibility checks are throttled so alt-tabbing cannot cause a request storm.
+export const MAIL_POLL_INTERVAL_MS = 30_000
+export const FOLDER_POLL_INTERVAL_MS = 90_000
+const FOCUS_CHECK_MIN_GAP_MS = 20_000
+
+/** Refetch interval that pauses while the tab is hidden, so background tabs stay quiet. */
+const pollFoldersWhileVisible = () => (
+    typeof document === 'undefined' || document.visibilityState === 'visible'
+        ? FOLDER_POLL_INTERVAL_MS
+        : false
+)
+
+/** What the user can see of a page: ids, read/star state and the folder total. */
+export function firstPageSignature(page: MessageListResponse | undefined): string {
+    if (!page) return ''
+    return `${page.total}|${page.messages.map((m) => `${m.id}:${m.read ? 1 : 0}${m.starred ? 1 : 0}`).join(',')}`
+}
+
 type MessageQuerySnapshot = Array<[readonly unknown[], unknown]>
 
 function isMailboxMessagesQuery(queryKey: readonly unknown[], mailboxId: string | undefined) {
@@ -70,7 +92,8 @@ function patchMailboxMessageQueries(
     )
 }
 
-export function useFolders() {
+/** `poll` should be set by exactly one mounted observer (the sidebar), not by every caller. */
+export function useFolders(options: { poll?: boolean } = {}) {
     const { selectedMailbox } = useMailbox()
 
     return useQuery({
@@ -80,6 +103,9 @@ export function useFolders() {
             return mailApi.getFolders(selectedMailbox.id)
         },
         enabled: !!selectedMailbox,
+        staleTime: 30_000,
+        refetchInterval: options.poll ? pollFoldersWhileVisible : false,
+        refetchOnWindowFocus: false,
     })
 }
 
@@ -109,19 +135,24 @@ export function useInfiniteMessages(folderType: string | undefined, limit = 30, 
         return folder?.id
     }, [foldersQuery.data, folderType])
 
+    const queryClient = useQueryClient()
+    const mailboxId = selectedMailbox?.id
+    const queryKey = React.useMemo(
+        () => ['messages', 'infinite', mailboxId, folderType ?? null, folderId, { unread, starred, hasAttachments, search }] as const,
+        [mailboxId, folderType, folderId, unread, starred, hasAttachments, search],
+    )
+
+    const fetchPage = React.useCallback((page: number) => {
+        if (!mailboxId) throw new Error('No mailbox selected')
+        const params = { page, limit, unread, starred, hasAttachments, search }
+        if (!folderType) return mailApi.getMessages(mailboxId, undefined, params)
+        if (folderId) return mailApi.getMessages(mailboxId, folderId, params)
+        return mailApi.getMessages(mailboxId, folderType, { ...params, isType: true })
+    }, [mailboxId, folderType, folderId, limit, unread, starred, hasAttachments, search])
+
     const messagesQuery = useInfiniteQuery({
-        queryKey: ['messages', 'infinite', selectedMailbox?.id, folderType ?? null, folderId, { unread, starred, hasAttachments, search }],
-        queryFn: async ({ pageParam = 1 }) => {
-            if (!selectedMailbox) throw new Error('No mailbox selected')
-            const params = { page: pageParam, limit, unread, starred, hasAttachments, search }
-            if (!folderType) {
-                return mailApi.getMessages(selectedMailbox.id, undefined, params)
-            }
-            if (folderId) {
-                return mailApi.getMessages(selectedMailbox.id, folderId, params)
-            }
-            return mailApi.getMessages(selectedMailbox.id, folderType, { ...params, isType: true })
-        },
+        queryKey,
+        queryFn: ({ pageParam = 1 }) => fetchPage(pageParam),
         getNextPageParam: (lastPage, allPages) => {
             if (!lastPage.hasMore) return undefined
             return allPages.length + 1
@@ -129,7 +160,48 @@ export function useInfiniteMessages(folderType: string | undefined, limit = 30, 
         initialPageParam: 1,
         enabled: !!selectedMailbox,
         staleTime: 30000,
+        // Polling is done by the effect below (first page only); the built-in interval and
+        // focus refetch would reload EVERY loaded page.
+        refetchOnWindowFocus: false,
     })
+
+    // New mail has to show up without a manual refresh (no push channel here).
+    const lastCheckRef = React.useRef(0)
+    const checkingRef = React.useRef(false)
+    const pollEnabled = !!mailboxId && (!folderType || !!folderId)
+    React.useEffect(() => {
+        if (!pollEnabled) return
+
+        const check = async (minGapMs: number) => {
+            if (document.visibilityState !== 'visible' || checkingRef.current) return
+            if (Date.now() - lastCheckRef.current < minGapMs) return
+            const state = queryClient.getQueryState(queryKey)
+            if (!state || state.fetchStatus === 'fetching') return
+            checkingRef.current = true
+            lastCheckRef.current = Date.now()
+            try {
+                const fresh = await fetchPage(1)
+                const cached = queryClient.getQueryData<InfiniteData<MessageListResponse>>(queryKey)
+                if (cached && firstPageSignature(fresh) !== firstPageSignature(cached.pages[0])) {
+                    await queryClient.invalidateQueries({ queryKey, exact: true })
+                }
+            } catch {
+                // A failed poll is silent; the next one (or a manual refresh) tries again.
+            } finally {
+                checkingRef.current = false
+            }
+        }
+
+        const interval = window.setInterval(() => { void check(MAIL_POLL_INTERVAL_MS - 1000) }, MAIL_POLL_INTERVAL_MS)
+        const onWake = () => { void check(FOCUS_CHECK_MIN_GAP_MS) }
+        window.addEventListener('focus', onWake)
+        document.addEventListener('visibilitychange', onWake)
+        return () => {
+            window.clearInterval(interval)
+            window.removeEventListener('focus', onWake)
+            document.removeEventListener('visibilitychange', onWake)
+        }
+    }, [pollEnabled, queryClient, queryKey, fetchPage])
 
     return {
         ...messagesQuery,
@@ -137,30 +209,36 @@ export function useInfiniteMessages(folderType: string | undefined, limit = 30, 
     }
 }
 
-export function useMessage(messageId: string | null) {
+/**
+ * Loads one full message. `mailboxIdOverride` pins the mailbox that owns the message
+ * (compose uses it so reply/forward/draft keep reading from the original mailbox even
+ * after the sidebar selection moves elsewhere); otherwise the selected mailbox is used.
+ */
+export function useMessage(messageId: string | null, mailboxIdOverride?: string | null) {
     const queryClient = useQueryClient()
     const { selectedMailbox } = useMailbox()
+    const mailboxId = mailboxIdOverride ?? selectedMailbox?.id
 
     const query = useQuery({
-        queryKey: ['message', selectedMailbox?.id, messageId],
+        queryKey: ['message', mailboxId, messageId],
         queryFn: () => {
-            if (!selectedMailbox || !messageId) throw new Error('Missing required params')
-            return mailApi.getMessage(selectedMailbox.id, messageId)
+            if (!mailboxId || !messageId) throw new Error('Missing required params')
+            return mailApi.getMessage(mailboxId, messageId)
         },
-        enabled: !!selectedMailbox && !!messageId,
+        enabled: !!mailboxId && !!messageId,
     })
 
     React.useEffect(() => {
         if (!query.data?.message?.id) return
 
-        patchMailboxMessageQueries(queryClient, selectedMailbox?.id, (message) => {
+        patchMailboxMessageQueries(queryClient, mailboxId, (message) => {
             if (message.id !== query.data.message.id) return message
             return {
                 ...message,
                 read: true,
             }
         })
-    }, [query.data?.message?.id, queryClient, selectedMailbox?.id])
+    }, [query.data?.message?.id, queryClient, mailboxId])
 
     return query
 }
@@ -207,6 +285,7 @@ export function useUpdateMessage() {
         },
         onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
+            queryClient.invalidateQueries({ queryKey: ['search'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
     })
@@ -241,6 +320,7 @@ export function useDeleteMessage() {
         },
         onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
+            queryClient.invalidateQueries({ queryKey: ['search'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
     })
@@ -275,6 +355,7 @@ export function useArchiveMessage() {
         },
         onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
+            queryClient.invalidateQueries({ queryKey: ['search'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
     })
@@ -316,6 +397,7 @@ export function useSpamMessage() {
         },
         onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
+            queryClient.invalidateQueries({ queryKey: ['search'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
     })
@@ -350,6 +432,7 @@ export function useRestoreMessage() {
         },
         onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
+            queryClient.invalidateQueries({ queryKey: ['search'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
     })
@@ -390,6 +473,7 @@ export function useMoveMessage() {
         },
         onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
+            queryClient.invalidateQueries({ queryKey: ['search'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
     })
@@ -453,20 +537,23 @@ export function useBatchUpdate() {
         },
         onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
+            queryClient.invalidateQueries({ queryKey: ['search'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
     })
 }
 
+/**
+ * Sends from an EXPLICIT mailbox. The sender is chosen in the compose window and fixed
+ * when it opens; it must never follow whatever mailbox the sidebar has selected at the
+ * moment "Send" is pressed.
+ */
 export function useSendEmail() {
     const queryClient = useQueryClient()
-    const { selectedMailbox } = useMailbox()
 
     return useMutation({
-        mutationFn: (payload: SendEmailPayload) => {
-            if (!selectedMailbox) throw new Error('No mailbox selected')
-            return mailApi.sendEmail(selectedMailbox.id, payload)
-        },
+        mutationFn: ({ mailboxId, payload }: { mailboxId: string; payload: SendEmailPayload }) =>
+            mailApi.sendEmail(mailboxId, payload),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
             queryClient.invalidateQueries({ queryKey: ['folders'] })
@@ -476,15 +563,30 @@ export function useSendEmail() {
 
 export function useSaveDraft() {
     const queryClient = useQueryClient()
+
+    return useMutation({
+        mutationFn: ({ mailboxId, payload }: { mailboxId: string; payload: SaveDraftPayload }) =>
+            mailApi.saveDraft(mailboxId, payload),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['messages'] })
+            queryClient.invalidateQueries({ queryKey: ['folders'] })
+        },
+    })
+}
+
+export function useEmptyFolder() {
+    const queryClient = useQueryClient()
     const { selectedMailbox } = useMailbox()
 
     return useMutation({
-        mutationFn: (payload: SaveDraftPayload) => {
+        mutationFn: (folderType: 'trash' | 'spam') => {
             if (!selectedMailbox) throw new Error('No mailbox selected')
-            return mailApi.saveDraft(selectedMailbox.id, payload)
+            return mailApi.emptyFolder(selectedMailbox.id, folderType)
         },
-        onSuccess: () => {
+        onSettled: () => {
             queryClient.invalidateQueries({ queryKey: ['messages'] })
+            queryClient.invalidateQueries({ queryKey: ['search'] })
+            queryClient.invalidateQueries({ queryKey: ['folders'] })
         },
     })
 }
@@ -505,16 +607,23 @@ export function useSyncMailbox() {
     })
 }
 
-export function useSearchMessages(query: string, folderId?: string) {
+/**
+ * Paged search. The query string may carry operators (from:, to:, subject:, has:attachment,
+ * before:, after:, is:, in:) — they are parsed and applied on the server.
+ */
+export function useInfiniteSearch(query: string, folderId?: string, limit = 30) {
     const { selectedMailbox } = useMailbox()
+    const trimmed = query.trim()
 
-    return useQuery({
-        queryKey: ['search', selectedMailbox?.id, query, folderId],
-        queryFn: () => {
+    return useInfiniteQuery({
+        queryKey: ['search', selectedMailbox?.id, trimmed, folderId ?? null],
+        queryFn: ({ pageParam = 1 }) => {
             if (!selectedMailbox) throw new Error('No mailbox selected')
-            return mailApi.searchMessages(selectedMailbox.id, query, { folderId })
+            return mailApi.searchMessages(selectedMailbox.id, trimmed, { folderId, page: pageParam, limit })
         },
-        enabled: !!selectedMailbox && query.length >= 2,
+        getNextPageParam: (lastPage, allPages) => (lastPage.hasMore ? allPages.length + 1 : undefined),
+        initialPageParam: 1,
+        enabled: !!selectedMailbox && trimmed.length >= 2,
     })
 }
 

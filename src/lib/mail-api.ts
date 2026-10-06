@@ -54,9 +54,24 @@ export interface Mailbox {
     displayName: string | null
     isDefault: boolean
     isActive: boolean
+    isNative?: boolean
     lastSyncAt: string | null
     syncError: string | null
     provider?: 'gmail' | 'outlook' | 'yahoo' | 'icloud' | 'custom'
+    /** Unread messages in this mailbox's INBOX (GET /mailboxes). */
+    unreadCount?: number
+    /** First organization of the mailbox owner, null when none (GET /mailboxes). */
+    organizationName?: string | null
+    /** Operation domain (MAIL_DOMAIN + OUTREACH_PROTECTED_DOMAINS) or the requester's own mailbox. */
+    isOperationMailbox?: boolean
+}
+
+export interface MessageAttachment {
+    id?: string
+    filename: string
+    mimeType?: string
+    contentType?: string
+    size: number
 }
 
 export interface Message {
@@ -80,12 +95,7 @@ export interface Message {
     date: string
     read: boolean
     starred: boolean
-    attachments?: {
-        id: string
-        filename: string
-        mimeType: string
-        size: number
-    }[]
+    attachments?: MessageAttachment[]
     hasAttachments: boolean
     labels?: string[]
     createdAt: string
@@ -165,6 +175,8 @@ export interface SendEmailPayload {
     replyTo?: string
     inReplyTo?: string
     references?: string
+    /** Draft this message was composed from; the server removes it once the mail is sent. */
+    draftId?: string
     attachments?: File[]
 }
 
@@ -291,6 +303,14 @@ export const mailApi = {
         })
     },
 
+    /** Server-side "empty trash / delete all spam". Returns how many rows were really deleted. */
+    emptyFolder(mailboxId: string, folderType: 'trash' | 'spam'): Promise<{ success: boolean; deleted: number }> {
+        return apiFetch(`/api/mail/mailboxes/${mailboxId}/empty-folder`, {
+            method: 'POST',
+            body: JSON.stringify({ folderType }),
+        })
+    },
+
     archiveMessage(mailboxId: string, messageId: string): Promise<void> {
         return apiFetch(`/api/mail/mailboxes/${mailboxId}/messages/${messageId}/archive`, {
             method: 'POST',
@@ -341,6 +361,7 @@ export const mailApi = {
                 htmlBody: payload.bodyHtml,
                 inReplyTo: payload.inReplyTo,
                 references: payload.references,
+                draftId: payload.draftId,
                 attachments: await mapAttachments(payload.attachments),
                 saveToSent: true,
             }),
@@ -365,14 +386,15 @@ export const mailApi = {
 
     // Attachment bytes are not JSON — apiFetch() only knows how to parse JSON/text
     // responses, so this bypasses it and drives fetch() directly, same auth header
-    // included, then hands the browser a blob to save.
-    async downloadAttachment(mailboxId: string, messageId: string, index: number, filename: string): Promise<void> {
+    // included.
+    async fetchAttachmentBlob(mailboxId: string, messageId: string, index: number): Promise<Blob> {
         const token = await getAccessToken()
         if (!token) {
             throw new ApiClientError('Not authenticated', { status: 401, path: 'session', code: 'NOT_AUTHENTICATED' })
         }
 
-        const response = await fetch(`/api/mail/mailboxes/${mailboxId}/messages/${messageId}/attachments/${index}`, {
+        const path = `/api/mail/mailboxes/${mailboxId}/messages/${messageId}/attachments/${index}`
+        const response = await fetch(path, {
             headers: { Authorization: `Bearer ${token}` },
             cache: 'no-store',
         })
@@ -387,10 +409,15 @@ export const mailApi = {
             } catch {
                 // Non-JSON error body — keep the statusText fallback above.
             }
-            throw new ApiClientError(message, { status: response.status, path: `/api/mail/mailboxes/${mailboxId}/messages/${messageId}/attachments/${index}` })
+            throw new ApiClientError(message, { status: response.status, path })
         }
 
-        const blob = await response.blob()
+        return response.blob()
+    },
+
+    // Downloads one stored attachment and hands the browser a blob to save.
+    async downloadAttachment(mailboxId: string, messageId: string, index: number, filename: string): Promise<void> {
+        const blob = await mailApi.fetchAttachmentBlob(mailboxId, messageId, index)
         const url = URL.createObjectURL(blob)
         try {
             const anchor = document.createElement('a')
@@ -402,6 +429,13 @@ export const mailApi = {
         } finally {
             URL.revokeObjectURL(url)
         }
+    },
+
+    // Re-materializes a stored attachment as a File so a draft (or a forward) can carry
+    // it again: save-draft and send both take attachment bytes, not storage references.
+    async fetchAttachmentFile(mailboxId: string, messageId: string, index: number, filename: string, contentType?: string): Promise<File> {
+        const blob = await mailApi.fetchAttachmentBlob(mailboxId, messageId, index)
+        return new File([blob], filename, { type: contentType || blob.type || 'application/octet-stream' })
     },
 
     syncMailbox(mailboxId: string): Promise<void> {

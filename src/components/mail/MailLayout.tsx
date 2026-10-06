@@ -2,7 +2,9 @@ import React from 'react'
 import { Link, useLocation } from 'wouter'
 import { useBranding } from '../../lib/branding'
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { useKeyboardShortcutHelp } from '../../hooks/useKeyboardShortcuts'
+import { useGoToShortcuts, useKeyboardShortcutHelp } from '../../hooks/useKeyboardShortcuts'
+import { FOCUS_MAILBOX_SEARCH_EVENT } from './mailbox-navigation'
+import { findFolderByKind } from './folder-lookup'
 import { AppLogo } from '../AppLogo'
 import { ModeToggle } from '../mode-toggle'
 import { DeployFooter } from '../DeployFooter'
@@ -35,6 +37,24 @@ import { useCompose } from '../../hooks/useCompose'
 
 const MailLayoutContext = React.createContext(false)
 
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'xmail:mail:sidebar-collapsed'
+
+function readSidebarCollapsed(): boolean {
+    try {
+        return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
+    } catch {
+        return false
+    }
+}
+
+function writeSidebarCollapsed(collapsed: boolean) {
+    try {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0')
+    } catch {
+        // Storage blocked: the sidebar just forgets its state on reload.
+    }
+}
+
 interface MailLayoutProps {
     children: React.ReactNode
 }
@@ -58,7 +78,8 @@ interface SidebarContentProps {
 }
 
 function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, branding, closeSidebar, openCompose }: SidebarContentProps) {
-    const { data: foldersData } = useFolders()
+    const { data: foldersData } = useFolders({ poll: true })
+    const inboxUnread = findFolderByKind(foldersData?.folders, 'inbox')?.unread ?? 0
     const spamUnread = foldersData?.folders.find(f => f.type === 'spam')?.unread ?? 0
     const archiveUnread = foldersData?.folders.find(
         f => f.type === 'archive' || f.remoteId === 'Archive'
@@ -67,7 +88,7 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
     const isActiveRoute = (href: string) => location.startsWith(href)
 
     const folders: FolderItem[] = [
-        { id: 'inbox',   label: 'Inbox',   icon: <Inbox className="w-5 h-5" />,   href: '/mail/inbox' },
+        { id: 'inbox',   label: 'Inbox',   icon: <Inbox className="w-5 h-5" />,   href: '/mail/inbox', badge: inboxUnread || undefined },
         { id: 'sent',    label: 'Sent',    icon: <Send className="w-5 h-5" />,    href: '/mail/sent' },
         { id: 'starred', label: 'Starred', icon: <Star className="w-5 h-5" />,    href: '/mail/starred' },
         { id: 'archive', label: 'Archive', icon: <Archive className="w-5 h-5" />, href: '/mail/archive', badge: archiveUnread || undefined },
@@ -138,17 +159,21 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
                         ${isCollapsed && !isMobile ? 'justify-center px-0' : ''}
                     `}
                     title={isCollapsed && !isMobile ? folder.label : undefined}
+                    aria-current={isActiveRoute(folder.href) ? 'page' : undefined}
                     onClick={closeSidebar}
                 >
                     <span className="shrink-0">{folder.icon}</span>
                     {(!isCollapsed || isMobile) && (
                         <>
                             <span className="flex-1">{folder.label}</span>
-                            {folder.badge && (
-                                <span className="px-2 py-0.5 text-xs font-bold bg-primary text-primary-foreground rounded-full">
-                                    {folder.badge}
+                            {folder.badge ? (
+                                <span
+                                    className="px-2 py-0.5 text-xs font-bold bg-primary text-primary-foreground rounded-full"
+                                    aria-label={`${folder.badge} unread`}
+                                >
+                                    {folder.badge > 99 ? '99+' : folder.badge}
                                 </span>
-                            )}
+                            ) : null}
                         </>
                     )}
                 </Link>
@@ -241,7 +266,11 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
     const { isOpen: shortcutsOpen, openHelp: openShortcuts, closeHelp: closeShortcuts } = useKeyboardShortcutHelp()
     const [location, navigate] = useLocation()
     const [sidebarOpen, setSidebarOpen] = React.useState(false)
-    const [isCollapsed, setIsCollapsed] = React.useState(false)
+    const [isCollapsed, setIsCollapsedState] = React.useState(readSidebarCollapsed)
+    const setIsCollapsed = React.useCallback((value: boolean) => {
+        setIsCollapsedState(value)
+        writeSidebarCollapsed(value)
+    }, [])
     const [searchOpen, setSearchOpen] = React.useState(false)
     const [searchQuery, setSearchQuery] = React.useState('')
 
@@ -258,6 +287,16 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
         }
     }
 
+    // "g then i/s/d" jump to a folder, "g then m" jumps to the mailbox switcher.
+    useGoToShortcuts({
+        actions: {
+            i: () => navigate('/mail/inbox'),
+            s: () => navigate('/mail/sent'),
+            d: () => navigate('/mail/drafts'),
+            m: () => window.dispatchEvent(new Event(FOCUS_MAILBOX_SEARCH_EVENT)),
+        },
+    })
+
     const closeSidebar = React.useCallback(() => setSidebarOpen(false), [])
     const openSidebar = React.useCallback(() => setSidebarOpen(true), [])
     const { openCompose } = useCompose()
@@ -273,7 +312,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
 
             <div className="flex h-screen">
                 {!isMobile && (
-                    <aside className={`${isCollapsed ? 'w-[72px]' : 'w-72'} h-full bg-card border-r border-border flex flex-col transition-all duration-300 ease-in-out`}>
+                    <aside className={`${isCollapsed ? 'w-[72px]' : 'w-72'} shrink-0 h-full bg-card border-r border-border flex flex-col transition-all duration-300 ease-in-out`}>
                         <SidebarContent isCollapsed={isCollapsed} setIsCollapsed={setIsCollapsed} isMobile={isMobile} location={location} branding={branding} closeSidebar={closeSidebar} openCompose={openCompose} />
                     </aside>
                 )}
@@ -286,10 +325,10 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
 
                 <div className="flex-1 flex flex-col min-w-0">
                     <header className="h-16 bg-background/80 backdrop-blur-md border-b border-border flex items-center justify-between px-4 sm:px-6 sticky top-0 z-30">
-                        <div className="flex items-center gap-2 sm:gap-4">
+                        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
                             {isMobile && (
                                 <button
-                                    className="p-2 rounded-lg hover:bg-accent hover:text-accent-foreground text-muted-foreground"
+                                    className="p-2 rounded-lg hover:bg-accent hover:text-accent-foreground text-muted-foreground shrink-0"
                                     onClick={() => setSidebarOpen(true)}
                                     aria-label="Open sidebar"
                                 >
@@ -299,13 +338,14 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
 
                             {isMobile ? (
                                 searchOpen ? (
-                                    <form onSubmit={handleSearch} className="flex-1 flex items-center gap-2">
+                                    <form onSubmit={handleSearch} className="flex min-w-0 flex-1 items-center gap-2" role="search">
                                         <input
+                                            aria-label="Search emails"
                                             type="text"
                                             placeholder="Search emails..."
                                             value={searchQuery}
                                             onChange={(e) => setSearchQuery(e.target.value)}
-                                            className="flex-1 px-4 py-2 bg-muted/50 border border-transparent rounded-lg text-sm focus:bg-background focus:border-border focus:ring-4 focus:ring-primary/10 transition-all outline-none"
+                                            className="min-w-0 flex-1 px-4 py-2 bg-muted/50 border border-transparent rounded-lg text-sm focus:bg-background focus:border-border focus:ring-4 focus:ring-primary/10 transition-all outline-none"
                                             autoFocus
                                         />
                                         <button
@@ -321,35 +361,39 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                                         </button>
                                     </form>
                                 ) : (
-                                    <Link href="/mail/inbox" className="flex items-center gap-2">
+                                    <Link href="/mail/inbox" className="flex min-w-0 items-center gap-2">
                                         <AppLogo className="h-8 w-8 shrink-0" />
-                                        <span className="font-bold text-foreground">{branding.applicationName}</span>
+                                        {/* Truncates instead of wrapping; dropped entirely on very narrow phones. */}
+                                        <span className="hidden min-w-0 truncate whitespace-nowrap font-bold text-foreground min-[480px]:inline">{branding.applicationName}</span>
                                     </Link>
                                 )
                             ) : (
-                                <form onSubmit={handleSearch} className="relative">
+                                <form onSubmit={handleSearch} className="relative w-full min-w-0 max-w-sm lg:max-w-md" role="search">
                                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
                                     <input
                                         type="text"
                                         placeholder="Search emails..."
+                                        aria-label="Search emails"
                                         value={searchQuery}
                                         onChange={(e) => setSearchQuery(e.target.value)}
-                                        className="w-64 sm:w-80 lg:w-96 pl-10 pr-4 py-2 bg-muted/50 border border-transparent rounded-lg text-sm focus:bg-background focus:border-border focus:ring-4 focus:ring-primary/10 transition-all outline-none shadow-sm-soft"
+                                        className="w-full pl-10 pr-4 py-2 bg-muted/50 border border-transparent rounded-lg text-sm focus:bg-background focus:border-border focus:ring-4 focus:ring-primary/10 transition-all outline-none shadow-sm-soft"
                                     />
                                 </form>
                             )}
                         </div>
 
-                        <div className="flex items-center gap-1 sm:gap-3">
+                        <div className={`${isMobile && searchOpen ? 'hidden' : 'flex'} shrink-0 items-center gap-1 xl:gap-3`}>
                             {/* Same two "switch area" actions as AdminLayout/OutreachLayout: Admin
                                 only for platform admins, Outreach always, current area omitted. */}
                             {isAdmin && (
                                 <Link
                                     href="/admin"
-                                    className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg border border-border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                                    aria-label="Open Admin"
+                                    title="Open Admin"
+                                    className="hidden shrink-0 items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:flex xl:px-3"
                                 >
                                     <Shield className="w-4 h-4" />
-                                    <span>Open Admin</span>
+                                    <span className="hidden whitespace-nowrap xl:inline">Open Admin</span>
                                 </Link>
                             )}
 
@@ -357,10 +401,12 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                                 decides whether they actually have access. */}
                             <Link
                                 href="/outreach"
-                                className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg border border-border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                                aria-label="Open Outreach"
+                                title="Open Outreach"
+                                className="hidden shrink-0 items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:flex xl:px-3"
                             >
                                 <Target className="w-4 h-4" />
-                                <span>Open Outreach</span>
+                                <span className="hidden whitespace-nowrap xl:inline">Open Outreach</span>
                             </Link>
 
                             {isMobile && !searchOpen && (
@@ -375,7 +421,10 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                             
                             <NotificationBell />
                             
-                            <KeyboardShortcutsButton onClick={openShortcuts} />
+                            {/* Keyboard hint is only useful with a keyboard-sized screen. */}
+                            <div className="hidden lg:block">
+                                <KeyboardShortcutsButton onClick={openShortcuts} />
+                            </div>
                             <ModeToggle />
 
                             <UserAccountMenu onSignOut={handleSignOut} />

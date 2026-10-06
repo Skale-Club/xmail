@@ -27,6 +27,50 @@ export function KeyboardShortcutsHelp({ isOpen, onClose }: KeyboardShortcutsHelp
             )
     }, [])
 
+    const dialogRef = React.useRef<HTMLDivElement>(null)
+    const closeButtonRef = React.useRef<HTMLButtonElement>(null)
+
+    // Modal behavior: move focus in, keep Tab inside, close on Escape, give focus back.
+    React.useEffect(() => {
+        if (!isOpen) return
+        const previouslyFocused = document.activeElement as HTMLElement | null
+        closeButtonRef.current?.focus()
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                event.preventDefault()
+                event.stopPropagation()
+                onClose()
+                return
+            }
+            if (event.key !== 'Tab' || !dialogRef.current) return
+
+            const focusable = Array.from(
+                dialogRef.current.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+            ).filter(element => !element.hasAttribute('disabled'))
+            if (focusable.length === 0) {
+                event.preventDefault()
+                return
+            }
+            const first = focusable[0]
+            const last = focusable[focusable.length - 1]
+            const active = document.activeElement
+            if (event.shiftKey && (active === first || !dialogRef.current.contains(active))) {
+                event.preventDefault()
+                last.focus()
+            } else if (!event.shiftKey && (active === last || !dialogRef.current.contains(active))) {
+                event.preventDefault()
+                first.focus()
+            }
+        }
+
+        document.addEventListener('keydown', handleKeyDown, true)
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown, true)
+            previouslyFocused?.focus?.()
+        }
+    }, [isOpen, onClose])
+
     if (!isOpen) return null
 
     return (
@@ -34,17 +78,26 @@ export function KeyboardShortcutsHelp({ isOpen, onClose }: KeyboardShortcutsHelp
             <div
                 className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
                 onClick={onClose}
+                aria-hidden="true"
             />
-            <div className="fixed inset-4 sm:inset-auto sm:top-1/2 sm:left-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 sm:w-full sm:max-w-lg z-50 bg-popover text-popover-foreground rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[calc(100vh-2rem)]">
+            <div
+                ref={dialogRef}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="keyboard-shortcuts-title"
+                className="fixed inset-4 sm:inset-auto sm:top-1/2 sm:left-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 sm:w-full sm:max-w-lg z-50 bg-popover text-popover-foreground rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[calc(100vh-2rem)]"
+            >
                 <div className="flex items-center justify-between px-6 py-4 border-b border-border">
                     <div className="flex items-center gap-3">
                         <Keyboard className="w-5 h-5 text-muted-foreground" />
-                        <h2 className="text-lg font-semibold text-foreground">
+                        <h2 id="keyboard-shortcuts-title" className="text-lg font-semibold text-foreground">
                             Keyboard Shortcuts
                         </h2>
                     </div>
                     <button
+                        ref={closeButtonRef}
                         onClick={onClose}
+                        aria-label="Close keyboard shortcuts"
                         className="p-2 rounded-lg hover:bg-accent text-muted-foreground transition-colors"
                     >
                         <X className="w-5 h-5" />
@@ -65,7 +118,7 @@ export function KeyboardShortcutsHelp({ isOpen, onClose }: KeyboardShortcutsHelp
                                 <div className="space-y-2">
                                     {shortcuts.map((shortcut, index) => (
                                         <div
-                                            key={`${shortcut.key}-${index}`}
+                                            key={`${shortcut.key}-${shortcut.then ?? ''}-${index}`}
                                             className="flex items-center justify-between py-2"
                                         >
                                             <span className="text-sm text-muted-foreground">
@@ -98,6 +151,7 @@ export function KeyboardShortcutsButton({ onClick }: { onClick: () => void }) {
             onClick={onClick}
             className="p-2 rounded-lg hover:bg-accent text-muted-foreground transition-colors"
             title="Keyboard shortcuts (Shift + ?)"
+            aria-label="Keyboard shortcuts"
         >
             <Keyboard className="w-5 h-5" />
         </button>

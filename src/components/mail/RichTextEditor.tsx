@@ -4,7 +4,8 @@ import 'react-quill-new/dist/quill.snow.css'
 
 interface RichTextEditorProps {
     value: string
-    onChange: (value: string) => void
+    /** `source` is Quill's change source: 'user' for typing, 'api' for programmatic updates. */
+    onChange: (value: string, source?: string) => void
     placeholder?: string
     className?: string
     minHeight?: number
@@ -14,7 +15,7 @@ interface RichTextEditorProps {
 
 const modules = {
     toolbar: [
-        ['bold', 'italic', 'underline', 'strike'],
+        ['bold', 'italic', 'underline', 'strike', 'blockquote'],
         [{ header: [1, 2, 3, false] }],
         [{ list: 'ordered' }, { list: 'bullet' }, { indent: '-1' }, { indent: '+1' }],
         [{ align: [] }],
@@ -26,7 +27,7 @@ const modules = {
 
 const formats = [
     'header',
-    'bold', 'italic', 'underline', 'strike',
+    'bold', 'italic', 'underline', 'strike', 'blockquote',
     'color', 'background',
     'list', 'indent',
     'align',
@@ -50,7 +51,7 @@ export function RichTextEditor({
                 ref={quillRef}
                 theme="snow"
                 value={value}
-                onChange={onChange}
+                onChange={(value, _delta, source) => onChange(value, source)}
                 modules={modules}
                 formats={formats}
                 placeholder={placeholder}

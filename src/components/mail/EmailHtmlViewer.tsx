@@ -1,6 +1,8 @@
 import { useRef, useEffect, useState, useMemo } from 'react'
 import { Maximize2, ImageOff } from 'lucide-react'
 import { Dialog, DialogContent } from '../ui/Dialog'
+import { parseMailtoUrl, type MailtoTarget } from '../../lib/mailto'
+import { processEmailHtml, QUOTE_ATTRIBUTE } from './email-html'
 
 interface EmailHtmlViewerProps {
     html?: string | null
@@ -11,13 +13,11 @@ interface EmailHtmlViewerProps {
     /** Sender address, used to remember a "always show images" choice per sender
      *  in localStorage. Without it the "Show images" choice is session-only. */
     senderEmail?: string | null
+    /** Called instead of opening a new tab when a `mailto:` link is clicked. Optional so other
+     *  surfaces (the outreach thread) keep the default behavior. */
+    onMailto?: (target: MailtoTarget) => void
 }
 
-// 1x1 transparent GIF — stands in for any blocked remote image so the layout
-// doesn't jump when a message is first rendered with images off.
-const BLOCKED_IMAGE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
-const REMOTE_URL_RE = /^https?:\/\//i
-const CSS_URL_RE = /url\(\s*(['"]?)(https?:\/\/[^'")]+)\1\s*\)/gi
 const STORAGE_PREFIX = 'xmail:show-images:'
 
 function rememberSenderChoice(senderEmail: string | null | undefined) {
@@ -38,71 +38,7 @@ function senderAlwaysShowsImages(senderEmail: string | null | undefined): boolea
     }
 }
 
-/**
- * Rewrites every remote (http/https) image reference in `html` — <img src>,
- * <img srcset>, inline style="...url(...)" and <style> block backgrounds — to
- * a same-origin data: placeholder. `cid:` (inline attachment) and `data:`
- * images are left untouched since they never leave the sandbox. Returns
- * whether anything was actually blocked, so the caller can show the
- * "Show images" bar only when there's something to show.
- */
-function blockRemoteImages(html: string): { safeHtml: string; hadRemoteImages: boolean } {
-    if (typeof DOMParser === 'undefined') {
-        return { safeHtml: html, hadRemoteImages: false }
-    }
-
-    let hadRemoteImages = false
-    const doc = new DOMParser().parseFromString(html, 'text/html')
-
-    doc.querySelectorAll('img').forEach((img) => {
-        const src = img.getAttribute('src')
-        if (src && REMOTE_URL_RE.test(src.trim())) {
-            hadRemoteImages = true
-            img.setAttribute('src', BLOCKED_IMAGE_PLACEHOLDER)
-        }
-
-        const srcset = img.getAttribute('srcset')
-        if (srcset) {
-            const rewritten = srcset
-                .split(',')
-                .map((candidate) => {
-                    const [url, descriptor] = candidate.trim().split(/\s+/, 2)
-                    if (url && REMOTE_URL_RE.test(url)) {
-                        hadRemoteImages = true
-                        return [BLOCKED_IMAGE_PLACEHOLDER, descriptor].filter(Boolean).join(' ')
-                    }
-                    return candidate.trim()
-                })
-                .join(', ')
-            img.setAttribute('srcset', rewritten)
-        }
-    })
-
-    // Global regexes carry mutable lastIndex state across calls, which would
-    // desync test()/replace() pairs reused across many elements — so each use
-    // below just replaces and compares strings rather than test()-ing first.
-    doc.querySelectorAll<HTMLElement>('[style]').forEach((el) => {
-        const style = el.getAttribute('style') || ''
-        const rewritten = style.replace(CSS_URL_RE, `url($1${BLOCKED_IMAGE_PLACEHOLDER}$1)`)
-        if (rewritten !== style) {
-            hadRemoteImages = true
-            el.setAttribute('style', rewritten)
-        }
-    })
-
-    doc.querySelectorAll('style').forEach((styleTag) => {
-        const css = styleTag.textContent || ''
-        const rewritten = css.replace(CSS_URL_RE, `url($1${BLOCKED_IMAGE_PLACEHOLDER}$1)`)
-        if (rewritten !== css) {
-            hadRemoteImages = true
-            styleTag.textContent = rewritten
-        }
-    })
-
-    return { safeHtml: doc.body.innerHTML, hadRemoteImages }
-}
-
-function buildEmailDoc(html: string) {
+function buildEmailDoc(html: string, showQuoted: boolean) {
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -131,6 +67,7 @@ function buildEmailDoc(html: string) {
         border-left: 3px solid #d1d5db;
         color: #6b7280;
     }
+    ${showQuoted ? '' : `[${QUOTE_ATTRIBUTE}] { display: none !important; }`}
 </style>
 </head>
 <body>${html}</body>
@@ -142,7 +79,7 @@ function buildEmailDoc(html: string) {
  * Falls back to plain text if no HTML is available.
  * The iframe auto-resizes to fit its content.
  */
-export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = true, isLoading = false, senderEmail }: EmailHtmlViewerProps) {
+export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = true, isLoading = false, senderEmail, onMailto }: EmailHtmlViewerProps) {
     const iframeRef = useRef<HTMLIFrameElement>(null)
     const [height, setHeight] = useState(200)
     const [isExpanded, setIsExpanded] = useState(false)
@@ -155,15 +92,24 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
         setAllowImages(senderAlwaysShowsImages(senderEmail))
     }, [senderEmail])
 
-    const { safeHtml, hadRemoteImages: hasRemoteImages } = useMemo(
-        () => (html ? blockRemoteImages(html) : { safeHtml: '', hadRemoteImages: false }),
-        [html]
+    const [showQuoted, setShowQuoted] = useState(false)
+
+    // Reset the quoted-text toggle for each new message.
+    useEffect(() => {
+        setShowQuoted(false)
+    }, [html])
+
+    const processed = useMemo(
+        () => (html ? processEmailHtml(html, { blockRemote: !allowImages }) : null),
+        [html, allowImages]
     )
+    const hasRemoteImages = processed?.hadRemoteContent ?? false
+    const hasQuotedText = processed?.hasQuotedText ?? false
 
     useEffect(() => {
-        if (!html) return
-        setSrcdoc(buildEmailDoc(allowImages ? html : safeHtml))
-    }, [html, safeHtml, allowImages])
+        if (!processed) return
+        setSrcdoc(buildEmailDoc(processed.html, showQuoted))
+    }, [processed, showQuoted])
 
     const handleShowImages = () => {
         setAllowImages(true)
@@ -213,23 +159,27 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
 
             setTimeout(resize, 100)
 
-            // Open links in new tab
+            // Open links in a new tab; mailto: links open the compose window when the host asks for it.
             doc.addEventListener('click', (e: MouseEvent) => {
                 const target = e.target as HTMLElement
                 const anchor = target.closest('a')
                 if (anchor) {
                     e.preventDefault()
                     const href = anchor.getAttribute('href')
-                    if (href && !href.startsWith('javascript:')) {
-                        window.open(href, '_blank', 'noopener,noreferrer')
+                    if (!href || href.trim().toLowerCase().startsWith('javascript:')) return
+                    const mailto = onMailto ? parseMailtoUrl(href) : null
+                    if (mailto && onMailto) {
+                        onMailto(mailto)
+                        return
                     }
+                    window.open(href, '_blank', 'noopener,noreferrer')
                 }
             })
         }
 
         iframe.addEventListener('load', handleLoad)
         return () => iframe.removeEventListener('load', handleLoad)
-    }, [srcdoc])
+    }, [srcdoc, onMailto])
 
     if (isLoading) {
         return (
@@ -303,6 +253,17 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
                 />
             </div>
 
+            {hasQuotedText && (
+                <button
+                    type="button"
+                    onClick={() => setShowQuoted(value => !value)}
+                    aria-expanded={showQuoted}
+                    className="mt-2 inline-flex items-center rounded-md border border-border bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                    {showQuoted ? 'Hide quoted text' : 'Show quoted text'}
+                </button>
+            )}
+
             {expandable && (
                 <Dialog open={isExpanded} onOpenChange={setIsExpanded}>
                     <DialogContent className="max-w-[95vw] w-[95vw] h-[92vh] flex flex-col p-0 gap-0 overflow-hidden">
@@ -313,6 +274,7 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
                                 emailDarkMode={emailDarkMode}
                                 expandable={false}
                                 senderEmail={senderEmail}
+                                onMailto={onMailto}
                             />
                         </div>
                     </DialogContent>

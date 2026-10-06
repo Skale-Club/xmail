@@ -14,15 +14,32 @@ export interface Mailbox {
     lastSyncAt: string | null
     syncError: string | null
     provider?: 'gmail' | 'outlook' | 'yahoo' | 'icloud' | 'custom'
+    /** INBOX unread count, from GET /api/mail/mailboxes. */
     unreadCount?: number
+    /** First organization of the mailbox owner; null when none. */
+    organizationName?: string | null
+    /** Operation domain or own mailbox. Undefined (older API) = treat as operation. */
+    isOperationMailbox?: boolean
 }
 
 interface MailboxContextType {
     mailboxes: Mailbox[]
     selectedMailbox: Mailbox | null
     setSelectedMailbox: (mailbox: Mailbox | null) => void
+    /** True only for the very first load (nothing to show yet). */
     isLoading: boolean
+    /** True while a later refresh runs in the background; the mailbox list stays on screen. */
+    isRefreshing: boolean
     refreshMailboxes: () => Promise<void>
+}
+
+/** How often unread counts are re-read while the tab is visible. */
+const MAILBOX_POLL_MS = 120_000
+/** Minimum gap between focus-triggered refreshes, so alt-tabbing cannot hammer the API. */
+const MAILBOX_FOCUS_MIN_GAP_MS = 30_000
+
+function sameMailbox(a: Mailbox, b: Mailbox): boolean {
+    return JSON.stringify(a) === JSON.stringify(b)
 }
 
 const MailboxContext = React.createContext<MailboxContextType | undefined>(undefined)
@@ -33,13 +50,19 @@ export function MailboxProvider({ children }: { children: React.ReactNode }) {
     const [mailboxes, setMailboxes] = React.useState<Mailbox[]>([])
     const [selectedMailbox, setSelectedMailbox] = React.useState<Mailbox | null>(null)
     const [isLoading, setIsLoading] = React.useState(true)
+    const [isRefreshing, setIsRefreshing] = React.useState(false)
+    const hasLoadedRef = React.useRef(false)
     const storageKey = React.useMemo(
         () => getSelectedMailboxStorageKey(activeSessionId || user?.id || null),
         [activeSessionId, user?.id]
     )
 
     const refreshMailboxes = React.useCallback(async () => {
-        setIsLoading(true)
+        // The first load shows the skeleton; every later refresh is a background refetch
+        // so the folder and the switcher never blank out.
+        const background = hasLoadedRef.current
+        if (background) setIsRefreshing(true)
+        else setIsLoading(true)
         try {
             const data = await apiFetch<{ mailboxes: Mailbox[] }>('/api/mail/mailboxes')
             const fetchedMailboxes = data.mailboxes || []
@@ -65,14 +88,19 @@ export function MailboxProvider({ children }: { children: React.ReactNode }) {
             }
 
             // Batch state updates together to avoid multiple re-renders
+            hasLoadedRef.current = true
             React.startTransition(() => {
                 setMailboxes(fetchedMailboxes)
-                setSelectedMailbox(selected)
+                // Keep the same object when nothing visible changed so effects keyed on
+                // the selected mailbox do not re-run on every background poll.
+                setSelectedMailbox(prev => (prev && selected && sameMailbox(prev, selected) ? prev : selected))
                 setIsLoading(false)
+                setIsRefreshing(false)
             })
         } catch (error) {
             console.error('Error fetching mailboxes:', error)
             setIsLoading(false)
+            setIsRefreshing(false)
         }
     }, [storageKey])
 
@@ -80,6 +108,7 @@ export function MailboxProvider({ children }: { children: React.ReactNode }) {
         if (authLoading) return
         if (!user) {
             localStorage.removeItem(APP_CONSTANTS.STORAGE.SELECTED_MAILBOX_KEY)
+            hasLoadedRef.current = false
             React.startTransition(() => {
                 setMailboxes([])
                 setSelectedMailbox(null)
@@ -89,6 +118,27 @@ export function MailboxProvider({ children }: { children: React.ReactNode }) {
         }
         refreshMailboxes()
     }, [user, isAdmin, authLoading, activeSessionId, refreshMailboxes])
+
+    // Keep per-mailbox unread counts fresh: poll while the tab is visible and refresh
+    // when the user comes back to it.
+    React.useEffect(() => {
+        if (authLoading || !user) return
+
+        let lastRefresh = Date.now()
+        const refreshIfVisible = (minGapMs: number) => {
+            if (document.visibilityState !== 'visible') return
+            if (Date.now() - lastRefresh < minGapMs) return
+            lastRefresh = Date.now()
+            void refreshMailboxes()
+        }
+        const interval = window.setInterval(() => refreshIfVisible(MAILBOX_POLL_MS - 1000), MAILBOX_POLL_MS)
+        const onFocus = () => refreshIfVisible(MAILBOX_FOCUS_MIN_GAP_MS)
+        window.addEventListener('focus', onFocus)
+        return () => {
+            window.clearInterval(interval)
+            window.removeEventListener('focus', onFocus)
+        }
+    }, [authLoading, user, refreshMailboxes])
 
     const handleSetSelectedMailbox = React.useCallback((mailbox: Mailbox | null) => {
         setSelectedMailbox(mailbox)
@@ -105,8 +155,9 @@ export function MailboxProvider({ children }: { children: React.ReactNode }) {
         selectedMailbox,
         setSelectedMailbox: handleSetSelectedMailbox,
         isLoading,
+        isRefreshing,
         refreshMailboxes
-    }), [mailboxes, selectedMailbox, handleSetSelectedMailbox, isLoading, refreshMailboxes])
+    }), [mailboxes, selectedMailbox, handleSetSelectedMailbox, isLoading, isRefreshing, refreshMailboxes])
 
     return (
         <MailboxContext.Provider value={contextValue}>

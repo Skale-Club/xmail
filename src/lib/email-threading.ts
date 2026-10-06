@@ -23,7 +23,7 @@ export interface ThreadMessage {
     snippet: string
     read: boolean
     starred: boolean
-    attachments?: { name: string; size: string; type: string }[]
+    attachments?: { name: string; size: string; type: string; /** Raw size in bytes, when known. */ sizeBytes?: number }[]
     inReplyTo?: string
     messageId: string
     // Raw inbound headers (when available) — used to derive the sender-authentication

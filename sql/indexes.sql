@@ -365,3 +365,20 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_conversation_participants_a
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_conversation_participants_name_trgm
     ON outreach_conversation_participants USING gin (name gin_trgm_ops);
+
+-- =============================================================================
+-- Webmail search (operators from:/subject:/free text use ILIKE '%term%')
+-- Needs pg_trgm (created by migration 068; repeated here idempotently so this file stands alone).
+-- plain_body is intentionally NOT indexed (index size).
+-- =============================================================================
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mail_messages_subject_trgm
+    ON mail_messages USING gin (subject gin_trgm_ops);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mail_messages_from_address_trgm
+    ON mail_messages USING gin (from_address gin_trgm_ops);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mail_messages_from_name_trgm
+    ON mail_messages USING gin (from_name gin_trgm_ops);

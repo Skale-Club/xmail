@@ -11,7 +11,8 @@ interface UseKeyboardShortcutsOptions {
     onArchive?: () => void
     onDelete?: () => void
     onStar?: () => void
-    onMarkRead?: () => void
+    /** Toggles read/unread for the selection ("m"). */
+    onToggleRead?: () => void
     onRefresh?: () => void
     onCompose?: () => void
     onSelect?: () => void
@@ -19,9 +20,30 @@ interface UseKeyboardShortcutsOptions {
     onDeselectAll?: () => void
     onSend?: () => void
     onSaveDraft?: () => void
-    onGoToInbox?: () => void
-    onGoToSent?: () => void
-    onEscape?: () => void
+    onEscape?: (event: KeyboardEvent) => void
+}
+
+// "g then <key>" sequences and the plain list shortcuts live on the same window. They share
+// this flag so the key that completes a sequence is never also handled as a list shortcut
+// (otherwise "g s" would go to Sent AND star, "g m" would go to the switcher AND toggle read).
+let goPrefixArmed = false
+
+const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]'
+
+/** True when the keystroke happens while typing in a field. */
+export function isTypingTarget(target: EventTarget | null): boolean {
+    const element = target as HTMLElement | null
+    if (!element || typeof element.tagName !== 'string') return false
+    return element.tagName === 'INPUT'
+        || element.tagName === 'TEXTAREA'
+        || element.tagName === 'SELECT'
+        || element.isContentEditable
+}
+
+/** True when focus sits inside an open dialog/menu: list shortcuts must not reach through it. */
+export function isInsideDialog(target: EventTarget | null): boolean {
+    const element = target as HTMLElement | null
+    return !!element && typeof element.closest === 'function' && !!element.closest(DIALOG_SELECTOR)
 }
 
 export function useKeyboardShortcuts({
@@ -34,7 +56,7 @@ export function useKeyboardShortcuts({
     onArchive,
     onDelete,
     onStar,
-    onMarkRead,
+    onToggleRead,
     onRefresh,
     onCompose,
     onSelect,
@@ -42,209 +64,196 @@ export function useKeyboardShortcuts({
     onDeselectAll,
     onSend,
     onSaveDraft,
-    onGoToInbox,
-    onGoToSent,
     onEscape
 }: UseKeyboardShortcutsOptions = {}) {
-    const [lastKey, setLastKey] = React.useState<string>('')
-    const [keyTimeout, setKeyTimeout] = React.useState<ReturnType<typeof setTimeout> | null>(null)
+    // Handlers change on every render of the caller; keeping them in a ref means the window
+    // listener is attached once instead of being torn down and re-added per keystroke.
+    const handlersRef = React.useRef({
+        onNavigate, onReply, onReplyAll, onForward, onArchive, onDelete, onStar, onToggleRead,
+        onRefresh, onCompose, onSelect, onSelectAll, onDeselectAll, onSend, onSaveDraft, onEscape,
+    })
+    handlersRef.current = {
+        onNavigate, onReply, onReplyAll, onForward, onArchive, onDelete, onStar, onToggleRead,
+        onRefresh, onCompose, onSelect, onSelectAll, onDeselectAll, onSend, onSaveDraft, onEscape,
+    }
 
     React.useEffect(() => {
         if (!enabled) return
 
         const handleKeyDown = (event: KeyboardEvent) => {
-            const target = event.target as HTMLElement
-            const isInput = target.tagName === 'INPUT' || 
-                           target.tagName === 'TEXTAREA' || 
-                           target.isContentEditable
+            // Second key of a "g" sequence (or already consumed by someone else): not ours.
+            // Escape is exempt from the sequence rule so it can always back out.
+            if ((goPrefixArmed && event.key !== 'Escape') || (event.defaultPrevented && event.key !== 'Escape')) return
 
-            if (keyTimeout) {
-                clearTimeout(keyTimeout)
-                setKeyTimeout(null)
-            }
+            const handlers = handlersRef.current
+            const target = event.target
+            const typing = isTypingTarget(target)
+            const key = event.key
+            const lower = key.toLowerCase()
 
-            const timeout = setTimeout(() => {
-                setLastKey('')
-            }, 500)
-            setKeyTimeout(timeout)
-
-            const currentKey = event.key.toLowerCase()
-
-            if (event.key === 'Escape') {
-                if (isInput) {
-                    (target as HTMLInputElement).blur()
-                }
-                onEscape?.()
+            if (key === 'Escape') {
+                // A dropdown/popup that already used the key (autocomplete list, select) keeps it.
+                if (event.defaultPrevented) return
+                if (typing) (target as HTMLElement).blur()
+                handlers.onEscape?.(event)
                 return
-            }
-
-            if (isInput && !event.ctrlKey && !event.metaKey) {
-                const allowedInInput = ['c', 'r', 'a', 'f', 'Enter']
-                if (!event.ctrlKey && !allowedInInput.includes(currentKey)) {
-                    return
-                }
             }
 
             if (event.ctrlKey || event.metaKey) {
-                // These two must keep working while focus is in the compose editor
+                // These two keep working while focus is in the compose editor
                 // (subject/body/contentEditable) — they never conflict with native
                 // input behavior, unlike Ctrl+A below.
-                switch (currentKey) {
-                    case 'enter':
-                        event.preventDefault()
-                        onSend?.()
-                        return
-                    case 's':
-                        event.preventDefault()
-                        onSaveDraft?.()
-                        return
+                if (lower === 'enter') {
+                    event.preventDefault()
+                    handlers.onSend?.()
+                    return
                 }
-
-                // Everything else (Ctrl+A select-all-messages, Ctrl+Shift+A deselect-all,
-                // ...) is a list-view shortcut. Inside an input/textarea/contentEditable it
-                // would hijack native editing behavior (e.g. "select all text"), so let the
-                // browser handle it there instead.
-                if (isInput) {
+                if (lower === 's') {
+                    event.preventDefault()
+                    handlers.onSaveDraft?.()
                     return
                 }
 
-                switch (currentKey) {
-                    case 'a':
-                        event.preventDefault()
-                        if (event.shiftKey) {
-                            onDeselectAll?.()
-                        } else {
-                            onSelectAll?.()
-                        }
-                        return
+                // Ctrl+A (select all messages) / Ctrl+Shift+A (deselect) are list shortcuts.
+                // Inside a field or dialog they would hijack native "select all text".
+                if (typing || isInsideDialog(target)) return
+                if (lower === 'a') {
+                    event.preventDefault()
+                    if (event.shiftKey) handlers.onDeselectAll?.()
+                    else handlers.onSelectAll?.()
                 }
                 return
             }
 
-            switch (currentKey) {
+            // Everything below is a plain-key list shortcut: never while typing, and never
+            // through an open dialog or menu.
+            if (typing || isInsideDialog(target) || event.altKey) return
+
+            if (key === '#' || key === 'Delete') {
+                event.preventDefault()
+                handlers.onDelete?.()
+                return
+            }
+
+            // Shift+<letter> is reserved for the browser/OS and for future shortcuts: "S" must
+            // never star a message.
+            if (event.shiftKey) return
+
+            switch (lower) {
                 case 'j':
                 case 'arrowdown':
                     event.preventDefault()
-                    onNavigate?.('down')
+                    handlers.onNavigate?.('down')
                     break
                 case 'k':
                 case 'arrowup':
                     event.preventDefault()
-                    onNavigate?.('up')
+                    handlers.onNavigate?.('up')
                     break
                 case 'r':
-                    if (!isInput) {
-                        event.preventDefault()
-                        onReply?.()
-                    }
+                    event.preventDefault()
+                    handlers.onReply?.()
                     break
                 case 'a':
-                    if (!isInput) {
-                        event.preventDefault()
-                        onReplyAll?.()
-                    }
+                    event.preventDefault()
+                    handlers.onReplyAll?.()
                     break
                 case 'f':
-                    if (!isInput) {
-                        event.preventDefault()
-                        onForward?.()
-                    }
+                    event.preventDefault()
+                    handlers.onForward?.()
                     break
                 case 'e':
                     event.preventDefault()
-                    onArchive?.()
-                    break
-                case '#':
-                case 'delete':
-                case 'backspace':
-                    event.preventDefault()
-                    onDelete?.()
+                    handlers.onArchive?.()
                     break
                 case 's':
-                    if (!isInput) {
-                        event.preventDefault()
-                        onStar?.()
-                    }
+                    event.preventDefault()
+                    handlers.onStar?.()
                     break
                 case 'm':
                     event.preventDefault()
-                    onMarkRead?.()
+                    handlers.onToggleRead?.()
                     break
                 case '.':
                     event.preventDefault()
-                    onRefresh?.()
+                    handlers.onRefresh?.()
                     break
                 case 'c':
-                    if (!isInput) {
-                        event.preventDefault()
-                        onCompose?.()
-                    }
+                    event.preventDefault()
+                    handlers.onCompose?.()
                     break
                 case 'x':
                     event.preventDefault()
-                    onSelect?.()
-                    break
-                case 'g':
-                    if (lastKey === 'g') {
-                        event.preventDefault()
-                        onGoToInbox?.()
-                    }
+                    handlers.onSelect?.()
                     break
             }
+        }
 
-            if (event.shiftKey) {
-                switch (currentKey) {
-                    case 'g':
-                        if (lastKey === 'g') {
-                            event.preventDefault()
-                            onGoToInbox?.()
-                        }
-                        break
-                    case 's':
-                        event.preventDefault()
-                        onGoToSent?.()
-                        break
-                    case '3':
-                    case '#':
-                        event.preventDefault()
-                        onDelete?.()
-                        break
-                }
+        window.addEventListener('keydown', handleKeyDown)
+        return () => window.removeEventListener('keydown', handleKeyDown)
+    }, [enabled])
+
+    return { shortcuts }
+}
+
+/** How long the second key of a "g then <key>" sequence may take. */
+const SEQUENCE_TIMEOUT_MS = 800
+
+interface UseGoToShortcutsOptions {
+    enabled?: boolean
+    /** Maps the key after "g" to an action; unknown keys are ignored. */
+    actions: Record<string, () => void>
+}
+
+/**
+ * "g then <key>" navigation (g i = Inbox, g s = Sent, g d = Drafts, g m = mailbox switcher).
+ * Mounted once, in the mail layout, so it works on every page of /mail.
+ */
+export function useGoToShortcuts({ enabled = true, actions }: UseGoToShortcutsOptions) {
+    const actionsRef = React.useRef(actions)
+    actionsRef.current = actions
+
+    React.useEffect(() => {
+        if (!enabled) return
+
+        let armed = false
+        let timer: ReturnType<typeof setTimeout> | null = null
+        const disarm = () => {
+            armed = false
+            goPrefixArmed = false
+            if (timer) clearTimeout(timer)
+            timer = null
+        }
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.ctrlKey || event.metaKey || event.altKey) return
+            if (isTypingTarget(event.target) || isInsideDialog(event.target)) return
+
+            if (event.key === 'Shift' || event.key === 'Control' || event.key === 'Alt' || event.key === 'Meta') return
+
+            const lower = event.key.toLowerCase()
+            if (armed) {
+                const action = actionsRef.current[lower]
+                disarm()
+                // The key after "g" always belongs to the sequence, even when it maps to nothing.
+                event.preventDefault()
+                if (action && !event.shiftKey) action()
+                return
             }
 
-            setLastKey(currentKey)
+            if (lower === 'g' && !event.shiftKey) {
+                armed = true
+                goPrefixArmed = true
+                timer = setTimeout(disarm, SEQUENCE_TIMEOUT_MS)
+            }
         }
 
         window.addEventListener('keydown', handleKeyDown)
         return () => {
             window.removeEventListener('keydown', handleKeyDown)
-            if (keyTimeout) clearTimeout(keyTimeout)
+            disarm()
         }
-    }, [
-        enabled,
-        lastKey,
-        keyTimeout,
-        onNavigate,
-        onReply,
-        onReplyAll,
-        onForward,
-        onArchive,
-        onDelete,
-        onStar,
-        onMarkRead,
-        onRefresh,
-        onCompose,
-        onSelect,
-        onSelectAll,
-        onDeselectAll,
-        onSend,
-        onSaveDraft,
-        onGoToInbox,
-        onGoToSent,
-        onEscape
-    ])
-
-    return { shortcuts }
+    }, [enabled])
 }
 
 export function useKeyboardShortcutHelp() {
@@ -256,11 +265,7 @@ export function useKeyboardShortcutHelp() {
     React.useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === '?' && event.shiftKey) {
-                const target = event.target as HTMLElement
-                const isInput = target.tagName === 'INPUT' ||
-                               target.tagName === 'TEXTAREA' ||
-                               target.isContentEditable
-                if (isInput) return
+                if (isTypingTarget(event.target)) return
                 event.preventDefault()
                 setIsOpen(prev => !prev)
             }

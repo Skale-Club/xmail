@@ -101,6 +101,8 @@ export function ContactAutocomplete({ value, onChange, placeholder, className, i
                 selectContact(suggestions[highlightedIndex])
             }
         } else if (e.key === 'Escape') {
+            // Esc closes the suggestion list first; it must not also close the compose window.
+            if (isOpen) e.preventDefault()
             setIsOpen(false)
         }
     }

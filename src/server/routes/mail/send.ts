@@ -13,7 +13,7 @@ import { findLocalUser } from '../../lib/native-mail'
 import { processInboundEmail, deliverViaRoutes } from '../../lib/route-matcher'
 import { relayMessage, storeMessage } from '../../lib/native-send'
 import { jsonbParam } from '../../lib/jsonb'
-import { allocateUidForNewMessage } from '../../lib/move-messages'
+import { allocateUidForNewMessage, deleteMessagesPermanently } from '../../lib/move-messages'
 import { sanitizeAttachmentFilename, InboxAttachmentError } from '../../lib/inbox-attachments'
 import { createObjectStorage } from '../../lib/object-storage'
 // nodemailer's own RFC 2047 header-word encoder — used so the manually-built native raw
@@ -505,6 +505,16 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
             console.warn('[Send] Contact sync skipped:', contactSyncError instanceof Error ? contactSyncError.message : contactSyncError)
         }
 
+        // The draft this message was composed from is consumed by the send. Without this the
+        // draft (and every autosaved version of it) would sit in Drafts after the mail left.
+        if (sourceDraft && data.draftId) {
+            try {
+                await deleteMessagesPermanently([data.draftId], mailboxId)
+            } catch (draftCleanupError) {
+                console.warn('[Send] Draft cleanup skipped:', draftCleanupError instanceof Error ? draftCleanupError.message : draftCleanupError)
+            }
+        }
+
         const duration = Date.now() - startTime
         console.log(`[Send] Completed in ${duration}ms — local=${localDelivered} external=${externalRelayed}`)
 
@@ -627,6 +637,13 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
             })
             : null
 
+        // A draft that is no longer in Drafts (discarded to Trash, archived, ...) must not be
+        // revived by a late autosave: writing folder_id here would also import the other
+        // folder's UID into Drafts (see "Mail Message UIDs" in CLAUDE.md). Refuse instead.
+        if (existingDraft && existingDraft.folderId !== draftsFolder.id) {
+            return res.status(409).json({ error: 'Draft is no longer in the Drafts folder' })
+        }
+
         // Fixed up front (rather than left to the DB's default) because it doubles as the
         // object-storage key prefix below, so uploads for a brand-new draft land under the
         // same id the row is about to be inserted with.
@@ -643,8 +660,9 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
         let savedMessage
 
         if (existingDraft) {
+            // folder_id is deliberately NOT part of this update: the draft already lives in
+            // Drafts (checked above) and folder changes only go through moveMessagesToFolder.
             [savedMessage] = await db.update(mailMessages).set({
-                folderId: draftsFolder.id,
                 messageId,
                 subject: data.subject || null,
                 fromAddress: mailbox.email,

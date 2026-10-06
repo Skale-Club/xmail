@@ -2,9 +2,14 @@ import React, { useState, useEffect } from 'react'
 import { EmailItem } from './EmailList'
 import { EmailHtmlViewer } from './EmailHtmlViewer'
 import { useMessage } from '../../hooks/useMail'
-import { useCompose } from '../../hooks/useCompose'
-import { Reply, ReplyAll, Forward, Paperclip } from 'lucide-react'
+import { useCompose, useMailtoHandler } from '../../hooks/useCompose'
+import { useMailbox } from '../../hooks/useMailbox'
+import { mailApi } from '../../lib/mail-api'
+import { getSenderAuthStatus } from '../../lib/mail-auth-status'
+import { toast } from '../ui/toaster'
+import { Reply, ReplyAll, Forward } from 'lucide-react'
 import { EmailMessageHeader } from './EmailMessageHeader'
+import { AttachmentList } from './AttachmentList'
 
 interface EmailDetailViewProps {
     email: EmailItem
@@ -36,8 +41,22 @@ export function EmailDetailView({
     replyActions = 'all',
 }: EmailDetailViewProps) {
     const { openCompose } = useCompose()
+    const openMailto = useMailtoHandler()
+    const { selectedMailbox } = useMailbox()
     const { data: messageData, isLoading: isMessageLoading } = useMessage(email.id)
     const fullMessage = messageData?.message
+    const attachments = fullMessage?.attachments ?? []
+
+    const handleDownload = (index: number, filename: string) => {
+        if (!selectedMailbox) return
+        mailApi.downloadAttachment(selectedMailbox.id, email.id, index, filename).catch((err) => {
+            toast({
+                title: 'Failed to download attachment',
+                description: err instanceof Error ? err.message : undefined,
+                variant: 'destructive',
+            })
+        })
+    }
     const [emailDarkMode, setEmailDarkMode] = useState(false)
 
     useEffect(() => {
@@ -69,6 +88,7 @@ export function EmailDetailView({
                         archiveIcon={archiveIcon}
                         emailDarkMode={emailDarkMode}
                         onToggleEmailDarkMode={() => setEmailDarkMode(!emailDarkMode)}
+                        authStatus={getSenderAuthStatus(fullMessage?.headers)}
                     />
 
                     {email.labels && email.labels.length > 0 && (
@@ -91,23 +111,15 @@ export function EmailDetailView({
                             emailDarkMode={emailDarkMode}
                             isLoading={isMessageLoading}
                             senderEmail={email.from.email}
+                            onMailto={openMailto}
                         />
                     </div>
 
-                    {email.hasAttachments && (
-                        <div className="mt-6 p-4 bg-muted/30 rounded-lg">
-                            <h3 className="text-sm font-medium text-foreground mb-3 flex items-center gap-2">
-                                <Paperclip className="w-4 h-4" />
-                                Attachments
-                            </h3>
-                            <div className="flex flex-wrap gap-2">
-                                <div className="flex items-center gap-2 px-3 py-2 bg-background rounded-lg border border-border">
-                                    <Paperclip className="w-4 h-4 text-muted-foreground" />
-                                    <span className="text-sm text-foreground">Attachment</span>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+                    <AttachmentList
+                        attachments={attachments}
+                        onDownload={handleDownload}
+                        className="mt-6 p-4 bg-muted/30 rounded-lg"
+                    />
 
                     {replyActions !== 'none' && (
                         <div className="mt-8 pt-6 border-t border-border">
