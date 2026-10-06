@@ -2,7 +2,9 @@ import React from 'react'
 import { Link, useLocation } from 'wouter'
 import { useBranding } from '../../lib/branding'
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { useKeyboardShortcutHelp } from '../../hooks/useKeyboardShortcuts'
+import { useGoToShortcuts, useKeyboardShortcutHelp } from '../../hooks/useKeyboardShortcuts'
+import { FOCUS_MAILBOX_SEARCH_EVENT } from './mailbox-navigation'
+import { findFolderByKind } from './folder-lookup'
 import { AppLogo } from '../AppLogo'
 import { ModeToggle } from '../mode-toggle'
 import { DeployFooter } from '../DeployFooter'
@@ -35,6 +37,24 @@ import { useCompose } from '../../hooks/useCompose'
 
 const MailLayoutContext = React.createContext(false)
 
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'xmail:mail:sidebar-collapsed'
+
+function readSidebarCollapsed(): boolean {
+    try {
+        return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
+    } catch {
+        return false
+    }
+}
+
+function writeSidebarCollapsed(collapsed: boolean) {
+    try {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0')
+    } catch {
+        // Storage blocked: the sidebar just forgets its state on reload.
+    }
+}
+
 interface MailLayoutProps {
     children: React.ReactNode
 }
@@ -59,6 +79,7 @@ interface SidebarContentProps {
 
 function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, branding, closeSidebar, openCompose }: SidebarContentProps) {
     const { data: foldersData } = useFolders()
+    const inboxUnread = findFolderByKind(foldersData?.folders, 'inbox')?.unread ?? 0
     const spamUnread = foldersData?.folders.find(f => f.type === 'spam')?.unread ?? 0
     const archiveUnread = foldersData?.folders.find(
         f => f.type === 'archive' || f.remoteId === 'Archive'
@@ -67,7 +88,7 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
     const isActiveRoute = (href: string) => location.startsWith(href)
 
     const folders: FolderItem[] = [
-        { id: 'inbox',   label: 'Inbox',   icon: <Inbox className="w-5 h-5" />,   href: '/mail/inbox' },
+        { id: 'inbox',   label: 'Inbox',   icon: <Inbox className="w-5 h-5" />,   href: '/mail/inbox', badge: inboxUnread || undefined },
         { id: 'sent',    label: 'Sent',    icon: <Send className="w-5 h-5" />,    href: '/mail/sent' },
         { id: 'starred', label: 'Starred', icon: <Star className="w-5 h-5" />,    href: '/mail/starred' },
         { id: 'archive', label: 'Archive', icon: <Archive className="w-5 h-5" />, href: '/mail/archive', badge: archiveUnread || undefined },
@@ -138,17 +159,21 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
                         ${isCollapsed && !isMobile ? 'justify-center px-0' : ''}
                     `}
                     title={isCollapsed && !isMobile ? folder.label : undefined}
+                    aria-current={isActiveRoute(folder.href) ? 'page' : undefined}
                     onClick={closeSidebar}
                 >
                     <span className="shrink-0">{folder.icon}</span>
                     {(!isCollapsed || isMobile) && (
                         <>
                             <span className="flex-1">{folder.label}</span>
-                            {folder.badge && (
-                                <span className="px-2 py-0.5 text-xs font-bold bg-primary text-primary-foreground rounded-full">
-                                    {folder.badge}
+                            {folder.badge ? (
+                                <span
+                                    className="px-2 py-0.5 text-xs font-bold bg-primary text-primary-foreground rounded-full"
+                                    aria-label={`${folder.badge} unread`}
+                                >
+                                    {folder.badge > 99 ? '99+' : folder.badge}
                                 </span>
-                            )}
+                            ) : null}
                         </>
                     )}
                 </Link>
@@ -241,7 +266,11 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
     const { isOpen: shortcutsOpen, openHelp: openShortcuts, closeHelp: closeShortcuts } = useKeyboardShortcutHelp()
     const [location, navigate] = useLocation()
     const [sidebarOpen, setSidebarOpen] = React.useState(false)
-    const [isCollapsed, setIsCollapsed] = React.useState(false)
+    const [isCollapsed, setIsCollapsedState] = React.useState(readSidebarCollapsed)
+    const setIsCollapsed = React.useCallback((value: boolean) => {
+        setIsCollapsedState(value)
+        writeSidebarCollapsed(value)
+    }, [])
     const [searchOpen, setSearchOpen] = React.useState(false)
     const [searchQuery, setSearchQuery] = React.useState('')
 
@@ -257,6 +286,16 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
             setSearchOpen(false)
         }
     }
+
+    // "g then i/s/d" jump to a folder, "g then m" jumps to the mailbox switcher.
+    useGoToShortcuts({
+        actions: {
+            i: () => navigate('/mail/inbox'),
+            s: () => navigate('/mail/sent'),
+            d: () => navigate('/mail/drafts'),
+            m: () => window.dispatchEvent(new Event(FOCUS_MAILBOX_SEARCH_EVENT)),
+        },
+    })
 
     const closeSidebar = React.useCallback(() => setSidebarOpen(false), [])
     const openSidebar = React.useCallback(() => setSidebarOpen(true), [])

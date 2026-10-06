@@ -21,6 +21,7 @@ import {
 } from '../../lib/outreach-sequences'
 import { buildCampaignActivationPreview } from '../../lib/outreach-approval-preview'
 import { isPlatformEmail } from '../../lib/platform-emails'
+import { getOperationDomains } from '../../lib/operation-domains'
 
 const router = Router()
 
@@ -175,12 +176,7 @@ const addLeadsToCampaignSchema = z.object({
 // P009 — the domains cold outreach must NOT send from (primary transactional domain).
 // Sourced from MAIL_DOMAIN plus an optional OUTREACH_PROTECTED_DOMAINS (comma-separated) override.
 function getProtectedSendingDomains(): Set<string> {
-    const raw = [process.env.MAIL_DOMAIN, process.env.OUTREACH_PROTECTED_DOMAINS]
-        .filter((v): v is string => Boolean(v))
-        .join(',')
-    return new Set(
-        raw.split(',').map(d => d.trim().toLowerCase()).filter(Boolean)
-    )
+    return getOperationDomains()
 }
 
 // A mailbox that never completed its warm-up ramp must not start cold outreach. The counter is

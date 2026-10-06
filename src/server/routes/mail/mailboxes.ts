@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { eq, and, desc, inArray, sql } from 'drizzle-orm'
 import { db } from '../../../db'
 import { mailboxes, mailFolders, mailMessages, users, organizationUsers, organizations } from '../../../db/schema'
-import { computeMailboxOrganizationInfo } from './mailbox-organizations'
+import { classifyMailboxes } from './mailbox-organizations'
+import { getOperationDomains } from '../../lib/operation-domains'
 import { encryptSecret } from '../../lib/crypto'
 import { authenticateNativeUser, createUserMailbox, deleteMailboxById } from '../../lib/native-mail'
 import { isPrivateHostWithDns } from '../../lib/network-guard'
@@ -127,7 +128,7 @@ router.get('/', async (req: Request, res: Response) => {
         // Per-mailbox INBOX unread count and organization info, each in ONE grouped
         // query for the whole list (no N+1 — admins have dozens of mailboxes).
         const mailboxIds = userMailboxes.map(mb => mb.id)
-        const ownerIds = [...new Set([userId, ...userMailboxes.map(mb => mb.userId)])]
+        const ownerIds = [...new Set(userMailboxes.map(mb => mb.userId))]
 
         const [unreadRows, membershipRows] = await Promise.all([
             mailboxIds.length === 0
@@ -149,7 +150,6 @@ router.get('/', async (req: Request, res: Response) => {
             db
                 .select({
                     userId: organizationUsers.userId,
-                    organizationId: organizations.id,
                     organizationName: organizations.name,
                 })
                 .from(organizationUsers)
@@ -158,17 +158,20 @@ router.get('/', async (req: Request, res: Response) => {
         ])
 
         const unreadByMailbox = new Map(unreadRows.map(row => [row.mailboxId, row.unread]))
-        const orgInfo = computeMailboxOrganizationInfo({
+        const classification = classifyMailboxes({
             requesterId: userId,
-            mailboxes: userMailboxes.map(mb => ({ id: mb.id, userId: mb.userId })),
+            mailboxes: userMailboxes.map(mb => ({ id: mb.id, userId: mb.userId, email: mb.email })),
             memberships: membershipRows,
+            operationDomains: getOperationDomains(),
         })
 
         const safeMailboxes = userMailboxes.map(mb => ({
             ...toMailboxResponse(mb),
             unreadCount: unreadByMailbox.get(mb.id) ?? 0,
-            organizations: orgInfo.get(mb.id)?.organizations ?? [],
-            inMyOrganizations: orgInfo.get(mb.id)?.inMyOrganizations ?? true,
+            // organizationName: first organization of the owner (null if none).
+            // isOperationMailbox: operation domain (MAIL_DOMAIN + OUTREACH_PROTECTED_DOMAINS) or own mailbox.
+            organizationName: classification.get(mb.id)?.organizationName ?? null,
+            isOperationMailbox: classification.get(mb.id)?.isOperationMailbox ?? true,
         }))
 
         res.json({ mailboxes: safeMailboxes })

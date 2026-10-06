@@ -3,12 +3,13 @@ import { Link, useParams, useLocation } from 'wouter'
 import { MailLayout } from '../../components/mail/MailLayout'
 import { toast } from '../../components/ui/toaster'
 import { useMailbox } from '../../hooks/useMailbox'
-import { useCompose } from '../../hooks/useCompose'
+import { useCompose, useMailtoHandler } from '../../hooks/useCompose'
 import { useMessage, useUpdateMessage, useDeleteMessage, useArchiveMessage, useSpamMessage, mapMessageToEmailItem } from '../../hooks/useMail'
 import { mailApi } from '../../lib/mail-api'
 import { EmailHtmlViewer } from '../../components/mail/EmailHtmlViewer'
 import { EmailMessageHeader } from '../../components/mail/EmailMessageHeader'
 import { EmailThreadView } from '../../components/mail/EmailThread'
+import { AttachmentList, formatFileSize } from '../../components/mail/AttachmentList'
 import { ThreadMessage } from '../../lib/email-threading'
 import { getSenderAuthStatus } from '../../lib/mail-auth-status'
 import {
@@ -22,8 +23,6 @@ import {
     ReplyAll,
     Forward,
     MoreVertical,
-    Paperclip,
-    Download,
     AlertCircle,
     Loader2,
     MessagesSquare
@@ -63,8 +62,9 @@ export default function EmailDetailPage() {
                     starred: emailItem.starred,
                     attachments: apiMessage.message.attachments?.map(a => ({
                         name: a.filename,
-                        size: `${Math.round(a.size / 1024)} KB`,
-                        type: a.mimeType
+                        size: formatFileSize(a.size),
+                        sizeBytes: a.size,
+                        type: a.mimeType || a.contentType || 'application/octet-stream'
                     })),
                     messageId: emailItem.id,
                     headers: apiMessage.message.headers
@@ -466,6 +466,7 @@ function SingleEmailView({
     onStar: () => void
 }) {
     const [emailDarkMode, setEmailDarkMode] = useState(false)
+    const openMailto = useMailtoHandler()
 
     useEffect(() => {
         setEmailDarkMode(false)
@@ -503,44 +504,24 @@ function SingleEmailView({
                             plainText={message.body || message.snippet}
                             emailDarkMode={emailDarkMode}
                             senderEmail={message.from.email}
+                            onMailto={openMailto}
                         />
                     </div>
 
-                    {message.attachments && message.attachments.length > 0 && (
-                        <div className="mt-8">
-                            <h3 className="text-sm font-medium text-foreground mb-3 flex items-center gap-2">
-                                <Paperclip className="w-4 h-4" />
-                                Attachments ({message.attachments.length})
-                            </h3>
-                            <div className="flex flex-wrap gap-2">
-                                {message.attachments.map((attachment, index) => (
-                                    <div
-                                        key={index}
-                                        onClick={() => {
-                                            if (!mailboxId) return
-                                            mailApi.downloadAttachment(mailboxId, message.id, index, attachment.name).catch((err) => {
-                                                toast({
-                                                    title: 'Failed to download attachment',
-                                                    description: err instanceof Error ? err.message : undefined,
-                                                    variant: 'destructive',
-                                                })
-                                            })
-                                        }}
-                                        className="flex items-center gap-2 px-3 py-2 bg-muted rounded-lg hover:bg-muted/80 transition-colors cursor-pointer"
-                                    >
-                                        <Paperclip className="w-4 h-4 text-muted-foreground" />
-                                        <div>
-                                            <p className="text-sm font-medium text-foreground">
-                                                {attachment.name}
-                                            </p>
-                                            <p className="text-xs text-muted-foreground">{attachment.size}</p>
-                                        </div>
-                                        <Download className="w-4 h-4 text-muted-foreground ml-2" />
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
+                    <AttachmentList
+                        className="mt-8"
+                        attachments={(message.attachments ?? []).map(attachment => ({ filename: attachment.name, size: attachment.sizeBytes }))}
+                        onDownload={(index, filename) => {
+                            if (!mailboxId) return
+                            mailApi.downloadAttachment(mailboxId, message.id, index, filename).catch((err) => {
+                                toast({
+                                    title: 'Failed to download attachment',
+                                    description: err instanceof Error ? err.message : undefined,
+                                    variant: 'destructive',
+                                })
+                            })
+                        }}
+                    />
 
                     <div className="mt-8 pt-6 border-t border-border">
                         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">

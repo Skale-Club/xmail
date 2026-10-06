@@ -36,6 +36,7 @@ describe('parseMailSearchQuery', () => {
         expect(parsed.starred).toBe(true)
         expect(parsed.folders).toEqual(['trash'])
         expect(parseMailSearchQuery('is:read').unread).toBe(false)
+        expect(parseMailSearchQuery('has:noattachment').hasAttachment).toBe(false)
     })
 
     it('parses before/after dates and rejects impossible ones', () => {

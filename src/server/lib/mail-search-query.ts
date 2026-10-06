@@ -6,6 +6,7 @@
  *   to:<text>          any To recipient contains <text>
  *   subject:<text>     subject contains <text>
  *   has:attachment     message has at least one attachment (also "has:attachments")
+ *   has:noattachment   message has no attachment
  *   before:YYYY-MM-DD  received strictly before that day (UTC)
  *   after:YYYY-MM-DD   received on or after that day (UTC)
  *   is:unread | is:read | is:starred
@@ -143,6 +144,7 @@ export function parseMailSearchQuery(input: string): ParsedMailSearch {
                 break
             case 'has':
                 if (lower === 'attachment' || lower === 'attachments') parsed.hasAttachment = true
+                else if (lower === 'noattachment' || lower === 'no-attachment') parsed.hasAttachment = false
                 else handled = false
                 break
             case 'is':

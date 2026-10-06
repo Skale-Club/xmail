@@ -12,11 +12,15 @@ import { toast } from '../ui/toaster'
 import { ConfirmDialog } from '../ui/ConfirmDialog'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useMailbox } from '../../hooks/useMailbox'
-import { useCompose } from '../../hooks/useCompose'
+import { useCompose, useMailtoHandler } from '../../hooks/useCompose'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
+import { getSenderAuthStatus } from '../../lib/mail-auth-status'
+import { findFolderByKind } from './folder-lookup'
 import { useInfiniteScroll, useDebounce } from '../../hooks/useInfiniteScroll'
 import {
     useInfiniteMessages,
+    useFolders,
+    useEmptyFolder,
     useMessage,
     useUpdateMessage,
     useDeleteMessage,
@@ -61,15 +65,16 @@ export interface FolderPageProps {
     title: string
     icon: React.ReactNode
     emptyMessage: string
-    storageKey: string
+    /** Kept for existing callers; every folder now shares one panel-width key. */
+    storageKey?: string
     /** No-mailbox empty-state icon; falls back to `icon`. */
     emptyStateIcon?: React.ReactNode
 }
 
-export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyStateIcon }: FolderPageProps) {
+export function FolderPage({ kind, title, icon, emptyMessage, emptyStateIcon }: FolderPageProps) {
     const isMobile = useIsMobile()
     const [, navigate] = useLocation()
-    const { openCompose } = useCompose()
+    const { openCompose, isOpen: composeOpen } = useCompose()
     const { selectedMailbox, mailboxes, isLoading: mailboxesLoading } = useMailbox()
 
     const [selectedEmail, setSelectedEmail] = useState<string | null>(null)
@@ -106,6 +111,8 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
         onLoadMore: () => { void fetchNextPage() },
     })
 
+    const { data: foldersData } = useFolders()
+    const emptyFolder = useEmptyFolder()
     const updateMessage = useUpdateMessage()
     const deleteMessage = useDeleteMessage()
     const archiveMessage = useArchiveMessage()
@@ -119,7 +126,23 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
         [data]
     )
     const total = data?.pages[0]?.total
-    const unreadCount = React.useMemo(() => emails.filter((e) => !e.read).length, [emails])
+    // Unread comes from the server folder counter: counting loaded rows undercounts as soon as
+    // the folder has more than one page. Starred is cross-folder and has no single counter.
+    const serverUnread = crossFolder ? undefined : findFolderByKind(foldersData?.folders, kind)?.unread
+    const unreadCount = serverUnread ?? emails.filter((e) => !e.read).length
+
+    // Selection belongs to one mailbox + folder: switching either must not carry it over, or a
+    // bulk action would target message ids from another list.
+    React.useEffect(() => {
+        setSelectedEmails(new Set())
+        setSelectedEmail(null)
+    }, [selectedMailbox?.id, kind])
+
+    // Only ids that are really in the list count: the toast must report what was affected.
+    const activeSelection = React.useMemo(() => {
+        const loadedIds = new Set(emails.map((e) => e.id))
+        return Array.from(selectedEmails).filter((id) => loadedIds.has(id))
+    }, [emails, selectedEmails])
 
     const currentIndex = React.useMemo(() => {
         if (!selectedEmail) return -1
@@ -235,7 +258,7 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
     }
 
     const handleDeleteSelected = () => {
-        if (selectedEmails.size > 0) {
+        if (activeSelection.length > 0) {
             handleBulkDelete()
         } else if (selectedEmail) {
             handleDelete(selectedEmail)
@@ -258,7 +281,7 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
     }
 
     const handleArchiveSelected = () => {
-        if (selectedEmails.size > 0) {
+        if (activeSelection.length > 0) {
             handleBulkArchive()
         } else if (selectedEmail) {
             if (kind === 'archive') handleMoveToInbox(selectedEmail)
@@ -286,9 +309,9 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
     }
 
     const handleBulkDelete = () => {
-        if (selectedEmails.size === 0) return
-        const count = selectedEmails.size
-        const ids = Array.from(selectedEmails)
+        const ids = activeSelection
+        const count = ids.length
+        if (count === 0) return
 
         const run = () => {
             if (selectedMailbox) batchUpdate.mutate({ messageIds: ids, action: 'delete' })
@@ -332,8 +355,8 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
     }
 
     const handleBulkArchive = () => {
-        if (selectedEmails.size === 0) return
-        const count = selectedEmails.size
+        const count = activeSelection.length
+        if (count === 0) return
 
         if (kind === 'drafts') {
             toast({ title: 'Cannot archive drafts', variant: 'destructive' })
@@ -349,56 +372,80 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
         }
 
         const action = kind === 'archive' ? 'move' : 'archive'
-        if (selectedMailbox) batchUpdate.mutate({ messageIds: Array.from(selectedEmails), action })
+        if (selectedMailbox) batchUpdate.mutate({ messageIds: activeSelection, action })
         setSelectedEmails(new Set())
-        toast({ title: kind === 'archive' ? `${count} messages moved to Inbox` : `${count} emails archived`, variant: 'success' })
+        toast({ title: kind === 'archive' ? `${count} ${count === 1 ? 'message' : 'messages'} moved to Inbox` : `${count} ${count === 1 ? 'email' : 'emails'} archived`, variant: 'success' })
     }
 
     const handleBulkRead = (read: boolean) => {
-        if (selectedEmails.size === 0) return
+        const count = activeSelection.length
+        if (count === 0) return
         if (selectedMailbox) {
-            batchUpdate.mutate({ messageIds: Array.from(selectedEmails), action: read ? 'read' : 'unread' })
+            batchUpdate.mutate({ messageIds: activeSelection, action: read ? 'read' : 'unread' })
         }
         setSelectedEmails(new Set())
+        toast({ title: `${count} ${count === 1 ? 'message' : 'messages'} marked as ${read ? 'read' : 'unread'}`, variant: 'success' })
     }
 
     const handleBulkSpam = () => {
-        if (selectedEmails.size === 0) return
-        const count = selectedEmails.size
+        const count = activeSelection.length
+        if (count === 0) return
         if (selectedMailbox) {
-            batchUpdate.mutate({ messageIds: Array.from(selectedEmails), action: kind === 'spam' ? 'unspam' : 'spam' })
+            batchUpdate.mutate({ messageIds: activeSelection, action: kind === 'spam' ? 'unspam' : 'spam' })
         }
         setSelectedEmails(new Set())
         toast({
-            title: kind === 'spam' ? `${count} messages moved to Inbox` : `${count} emails marked as spam`,
+            title: kind === 'spam'
+                ? `${count} ${count === 1 ? 'message' : 'messages'} moved to Inbox`
+                : `${count} ${count === 1 ? 'email' : 'emails'} marked as spam`,
             variant: 'success',
         })
     }
 
-    const handleMarkReadSelected = () => {
-        if (selectedEmails.size > 0) {
-            handleBulkRead(true)
+    // "m": with a selection, mark it read unless it is already all read (then unread);
+    // with none, flip the open message.
+    const handleToggleReadSelected = () => {
+        if (activeSelection.length > 0) {
+            const selectedRows = emails.filter((e) => activeSelection.includes(e.id))
+            handleBulkRead(selectedRows.some((e) => !e.read))
         } else if (selectedEmail) {
-            const email = emails.find((e) => e.id === selectedEmail)
-            if (email && !email.read) {
-                updateMessage.mutate({ messageId: selectedEmail, data: { read: true } })
-            }
+            handleToggleRead(selectedEmail)
         }
     }
 
+    // Emptying runs on the server over the WHOLE folder (the list only holds the pages loaded so
+    // far), and the toast reports how many rows it really deleted.
     const handleEmptyFolder = () => {
-        if (emails.length === 0 || !selectedMailbox) return
+        if (!selectedMailbox || (kind !== 'trash' && kind !== 'spam')) return
+        const folderName = kind === 'trash' ? 'Trash' : 'Spam'
+        const knownTotal = total ?? emails.length
         setConfirmDialog({
             open: true,
             title: kind === 'trash' ? 'Empty trash?' : 'Delete all spam?',
-            description: `All ${emails.length} message${emails.length > 1 ? 's' : ''} will be permanently deleted. This action cannot be undone.`,
+            description: `${knownTotal === 1 ? 'The 1 message' : `All ${knownTotal} messages`} in ${folderName} will be permanently deleted. This action cannot be undone.`,
             confirmLabel: kind === 'trash' ? 'Empty trash' : 'Delete all',
             variant: 'danger',
             onConfirm: () => {
                 setConfirmDialog(NO_CONFIRM)
-                batchUpdate.mutate({ messageIds: emails.map((e) => e.id), action: 'delete' })
                 setSelectedEmail(null)
-                toast({ title: kind === 'trash' ? 'Trash emptied' : 'Spam folder emptied', variant: 'success' })
+                setSelectedEmails(new Set())
+                emptyFolder.mutate(kind, {
+                    onSuccess: (result) => {
+                        toast({
+                            title: result.deleted === 0
+                                ? `${folderName} was already empty`
+                                : `${result.deleted} ${result.deleted === 1 ? 'message' : 'messages'} permanently deleted`,
+                            variant: 'success',
+                        })
+                    },
+                    onError: (error) => {
+                        toast({
+                            title: `Failed to empty ${folderName.toLowerCase()}`,
+                            description: error instanceof Error ? error.message : undefined,
+                            variant: 'destructive',
+                        })
+                    },
+                })
             },
         })
     }
@@ -420,7 +467,8 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
     const canStar = kind !== 'drafts' && kind !== 'trash' && kind !== 'spam'
 
     useKeyboardShortcuts({
-        enabled: true,
+        // The compose window owns the keyboard while it is open.
+        enabled: !composeOpen,
         onNavigate: (direction) => {
             if (emails.length === 0) return
             let newIndex = direction === 'down' ? currentIndex + 1 : currentIndex - 1
@@ -433,7 +481,7 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
         onArchive: handleArchiveSelected,
         onDelete: handleDeleteSelected,
         onStar: () => canStar && selectedEmail && handleStar(selectedEmail),
-        onMarkRead: handleMarkReadSelected,
+        onToggleRead: handleToggleReadSelected,
         onRefresh: handleRefresh,
         onCompose: () => openCompose(),
         onSelect: handleToggleSelect,
@@ -529,7 +577,13 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
         </div>
     )
 
+    // Only the actions that make sense in this folder: no archive/reply/forward on Drafts, Trash
+    // or Spam rows, forward-only on Sent.
     const listActions = {
+        showRecipient: kind === 'sent' || kind === 'drafts',
+        replyActions: (kind === 'drafts' || kind === 'trash' || kind === 'spam'
+            ? 'none'
+            : kind === 'sent' ? 'forwardOnly' : 'all') as 'all' | 'forwardOnly' | 'none',
         onToggleRead: kind === 'drafts' || kind === 'spam' || kind === 'trash' ? undefined : handleToggleRead,
         onStar: kind === 'drafts' || kind === 'spam' || kind === 'trash' ? undefined : handleStar,
         onArchive: kind === 'drafts' || kind === 'spam' || kind === 'trash'
@@ -541,10 +595,11 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
 
     const toolbar = (
         <EmailToolbar
-            selectedCount={selectedEmails.size}
+            selectedCount={activeSelection.length}
+            loadedCount={emails.length}
             totalCount={total}
             onSelectAll={() => {
-                if (selectedEmails.size === emails.length) setSelectedEmails(new Set())
+                if (activeSelection.length === emails.length) setSelectedEmails(new Set())
                 else setSelectedEmails(new Set(emails.map((e) => e.id)))
             }}
             onMarkRead={() => handleBulkRead(true)}
@@ -624,7 +679,7 @@ export function FolderPage({ kind, title, icon, emptyMessage, storageKey, emptyS
                 </div>
             ) : (
                 <ResizablePanels
-                    storageKey={`mail-panels-${storageKey}`}
+                    storageKey="mail-panels"
                     left={<>{headerRow}{toolbar}{listNode}</>}
                     right={detailNode}
                 />
@@ -703,6 +758,7 @@ function DraftDetailPanel({
     onStar: (id: string) => void
 }) {
     const { openCompose } = useCompose()
+    const openMailto = useMailtoHandler()
     const { data: messageData, isLoading } = useMessage(email.id)
     const fullMessage = messageData?.message
 
@@ -728,6 +784,7 @@ function DraftDetailPanel({
                             plainText={fullMessage?.bodyText || fullMessage?.plainBody || email.snippet}
                             isLoading={isLoading}
                             senderEmail={email.from.email}
+                            onMailto={openMailto}
                         />
                     </div>
                     <div className="mt-8 pt-6 border-t border-border flex items-center gap-3">
@@ -753,6 +810,7 @@ function SpamDetailPanel({
     onNotSpam: (id: string) => void
     onDelete: (id: string) => void
 }) {
+    const openMailto = useMailtoHandler()
     const { data: messageData, isLoading } = useMessage(email.id)
     const fullMessage = messageData?.message
     const [emailDarkMode, setEmailDarkMode] = useState(false)
@@ -768,6 +826,7 @@ function SpamDetailPanel({
                         read={email.read}
                         starred={email.starred}
                         isSpam
+                        authStatus={getSenderAuthStatus(fullMessage?.headers)}
                         onSpam={() => onNotSpam(email.id)}
                         onDelete={() => onDelete(email.id)}
                         emailDarkMode={emailDarkMode}
@@ -781,6 +840,7 @@ function SpamDetailPanel({
                             emailDarkMode={emailDarkMode}
                             isLoading={isLoading}
                             senderEmail={email.from.email}
+                            onMailto={openMailto}
                         />
                     </div>
                     <div className="mt-8 pt-6 border-t border-border">

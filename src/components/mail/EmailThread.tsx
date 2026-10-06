@@ -3,6 +3,7 @@ import { ThreadMessage, EmailThread, getThreadParticipants } from '../../lib/ema
 import { EmailHtmlViewer } from './EmailHtmlViewer'
 import { SenderAuthBadge } from './SenderAuthBadge'
 import { getSenderAuthStatus } from '../../lib/mail-auth-status'
+import { useMailtoHandler } from '../../hooks/useCompose'
 import { getAvatarColor, getInitials } from '../../lib/utils'
 import {
     ChevronDown,
@@ -169,6 +170,7 @@ function ThreadMessageCard({
     const avatarColor = getAvatarColor(message.from.email)
     const initials = getInitials(message.from.name || message.from.email)
     const authStatus = getSenderAuthStatus(message.headers)
+    const openMailto = useMailtoHandler()
     const [emailDarkMode, setEmailDarkMode] = useState(false)
 
     useEffect(() => {
@@ -257,6 +259,7 @@ function ThreadMessageCard({
                             plainText={message.body || message.snippet}
                             emailDarkMode={emailDarkMode}
                             senderEmail={message.from.email}
+                            onMailto={openMailto}
                         />
                     </div>
 

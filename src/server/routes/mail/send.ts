@@ -13,7 +13,7 @@ import { findLocalUser } from '../../lib/native-mail'
 import { processInboundEmail, deliverViaRoutes } from '../../lib/route-matcher'
 import { relayMessage, storeMessage } from '../../lib/native-send'
 import { jsonbParam } from '../../lib/jsonb'
-import { allocateUidForNewMessage } from '../../lib/move-messages'
+import { allocateUidForNewMessage, deleteMessagesPermanently } from '../../lib/move-messages'
 import { sanitizeAttachmentFilename, InboxAttachmentError } from '../../lib/inbox-attachments'
 import { createObjectStorage } from '../../lib/object-storage'
 // nodemailer's own RFC 2047 header-word encoder — used so the manually-built native raw
@@ -503,6 +503,16 @@ router.post('/:mailboxId/send', async (req: Request, res: Response) => {
             }
         } catch (contactSyncError) {
             console.warn('[Send] Contact sync skipped:', contactSyncError instanceof Error ? contactSyncError.message : contactSyncError)
+        }
+
+        // The draft this message was composed from is consumed by the send. Without this the
+        // draft (and every autosaved version of it) would sit in Drafts after the mail left.
+        if (sourceDraft && data.draftId) {
+            try {
+                await deleteMessagesPermanently([data.draftId], mailboxId)
+            } catch (draftCleanupError) {
+                console.warn('[Send] Draft cleanup skipped:', draftCleanupError instanceof Error ? draftCleanupError.message : draftCleanupError)
+            }
         }
 
         const duration = Date.now() - startTime

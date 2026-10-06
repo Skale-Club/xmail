@@ -73,7 +73,7 @@ export function buildMailSearchConditions(parsed: ParsedMailSearch, options: Sea
         conditions.push(sql`${mailMessages.subject} ilike ${containsPattern(value)}`)
     }
 
-    if (parsed.hasAttachment) conditions.push(eq(mailMessages.hasAttachments, true))
+    if (parsed.hasAttachment !== null) conditions.push(eq(mailMessages.hasAttachments, parsed.hasAttachment))
     if (parsed.unread !== null) conditions.push(eq(mailMessages.isRead, !parsed.unread))
     if (parsed.starred) conditions.push(eq(mailMessages.isStarred, true))
     // `timestamp` columns hold UTC wall-clock time, so the bound is cast the same way.

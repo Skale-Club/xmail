@@ -1,62 +1,59 @@
+import { emailDomain } from '../../lib/operation-domains'
+
 /**
- * Pure helper behind GET /api/mail/mailboxes: decides, for each mailbox, which
- * organizations its owner belongs to and whether the mailbox is "mine".
+ * Pure helper behind GET /api/mail/mailboxes: classifies each mailbox as part of the
+ * operation (shown by default in the webmail switcher) or as belonging to a client
+ * organization (hidden behind a toggle, grouped by organization name).
  *
- * A mailbox is `inMyOrganizations` when it is the requester's own, or when its
- * owner shares at least one organization with the requester. The webmail
- * switcher hides every other mailbox by default (admins can still open them).
+ * A mailbox is an "operation mailbox" when its email domain is one of the operation's own
+ * domains (MAIL_DOMAIN + OUTREACH_PROTECTED_DOMAINS), or when it is the requester's own
+ * mailbox. Membership of the requester is deliberately NOT used: the platform admin belongs
+ * to no organization.
  *
- * `organizations` lists ALL organizations of the owner, sorted by name, so the
- * client can group foreign mailboxes under `organizations[0]` and still show
- * the full list on hover. A user with no membership gets an empty list.
+ * `organizationName` is the first (alphabetical) organization of the mailbox owner, or null
+ * when the owner belongs to none; the client then falls back to the email domain.
  */
-
-export interface OrganizationRef {
-    id: string
-    name: string
-}
-
-export interface MailboxOrganizationInfo {
-    organizations: OrganizationRef[]
-    inMyOrganizations: boolean
-}
 
 export interface MailboxOwnerRow {
     id: string
     userId: string
+    email: string
 }
 
 export interface MembershipRow {
     userId: string
-    organizationId: string
     organizationName: string
 }
 
-export function computeMailboxOrganizationInfo(input: {
+export interface MailboxClassification {
+    organizationName: string | null
+    isOperationMailbox: boolean
+}
+
+export function classifyMailboxes(input: {
     requesterId: string
     mailboxes: MailboxOwnerRow[]
     memberships: MembershipRow[]
-}): Map<string, MailboxOrganizationInfo> {
-    const orgsByUser = new Map<string, OrganizationRef[]>()
+    operationDomains: Set<string>
+}): Map<string, MailboxClassification> {
+    const orgNamesByUser = new Map<string, string[]>()
     for (const row of input.memberships) {
-        const list = orgsByUser.get(row.userId) ?? []
-        if (!list.some(org => org.id === row.organizationId)) {
-            list.push({ id: row.organizationId, name: row.organizationName })
-        }
-        orgsByUser.set(row.userId, list)
+        const names = orgNamesByUser.get(row.userId) ?? []
+        if (!names.includes(row.organizationName)) names.push(row.organizationName)
+        orgNamesByUser.set(row.userId, names)
     }
 
-    const myOrgIds = new Set((orgsByUser.get(input.requesterId) ?? []).map(org => org.id))
-    const result = new Map<string, MailboxOrganizationInfo>()
-
+    const result = new Map<string, MailboxClassification>()
     for (const mailbox of input.mailboxes) {
-        const organizations = [...(orgsByUser.get(mailbox.userId) ?? [])]
-            .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base' }))
-        const inMyOrganizations =
-            mailbox.userId === input.requesterId ||
-            organizations.some(org => myOrgIds.has(org.id))
-        result.set(mailbox.id, { organizations, inMyOrganizations })
+        const names = [...(orgNamesByUser.get(mailbox.userId) ?? [])]
+            .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+        const domain = emailDomain(mailbox.email)
+        result.set(mailbox.id, {
+            organizationName: names[0] ?? null,
+            isOperationMailbox:
+                mailbox.userId === input.requesterId ||
+                (domain !== '' && input.operationDomains.has(domain)),
+        })
     }
-
     return result
 }
