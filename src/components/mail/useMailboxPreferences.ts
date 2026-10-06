@@ -1,7 +1,8 @@
 import React from 'react'
+import { useAuth } from '../../hooks/useAuth'
 import {
-    PINNED_MAILBOXES_STORAGE_KEY,
-    SHOW_OTHER_ORGS_STORAGE_KEY,
+    pinnedMailboxesStorageKey,
+    showOtherOrgsStorageKey,
     parseStoredIds,
     togglePinned,
 } from './mailbox-navigation'
@@ -24,25 +25,36 @@ function writeStorage(key: string, value: string) {
 
 /** Per-browser switcher preferences: pinned mailboxes and the "other organizations" toggle. */
 export function useMailboxPreferences() {
+    const { user } = useAuth()
+    const userId = user?.id
+    const pinnedKey = pinnedMailboxesStorageKey(userId)
+    const showOthersKey = showOtherOrgsStorageKey(userId)
+
     const [pinnedIds, setPinnedIds] = React.useState<Set<string>>(
-        () => parseStoredIds(readStorage(PINNED_MAILBOXES_STORAGE_KEY)),
+        () => parseStoredIds(readStorage(pinnedKey)),
     )
     const [showOthers, setShowOthersState] = React.useState<boolean>(
-        () => readStorage(SHOW_OTHER_ORGS_STORAGE_KEY) === '1',
+        () => readStorage(showOthersKey) === '1',
     )
+
+    // Signing in as another user (multi-session) loads that user's preferences.
+    React.useEffect(() => {
+        setPinnedIds(parseStoredIds(readStorage(pinnedKey)))
+        setShowOthersState(readStorage(showOthersKey) === '1')
+    }, [pinnedKey, showOthersKey])
 
     const togglePin = React.useCallback((mailboxId: string) => {
         setPinnedIds(previous => {
             const next = togglePinned(previous, mailboxId)
-            writeStorage(PINNED_MAILBOXES_STORAGE_KEY, JSON.stringify([...next]))
+            writeStorage(pinnedKey, JSON.stringify([...next]))
             return next
         })
-    }, [])
+    }, [pinnedKey])
 
     const setShowOthers = React.useCallback((value: boolean) => {
         setShowOthersState(value)
-        writeStorage(SHOW_OTHER_ORGS_STORAGE_KEY, value ? '1' : '0')
-    }, [])
+        writeStorage(showOthersKey, value ? '1' : '0')
+    }, [showOthersKey])
 
     return { pinnedIds, togglePin, showOthers, setShowOthers }
 }

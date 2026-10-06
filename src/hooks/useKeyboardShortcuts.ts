@@ -20,8 +20,13 @@ interface UseKeyboardShortcutsOptions {
     onDeselectAll?: () => void
     onSend?: () => void
     onSaveDraft?: () => void
-    onEscape?: () => void
+    onEscape?: (event: KeyboardEvent) => void
 }
+
+// "g then <key>" sequences and the plain list shortcuts live on the same window. They share
+// this flag so the key that completes a sequence is never also handled as a list shortcut
+// (otherwise "g s" would go to Sent AND star, "g m" would go to the switcher AND toggle read).
+let goPrefixArmed = false
 
 const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]'
 
@@ -76,6 +81,10 @@ export function useKeyboardShortcuts({
         if (!enabled) return
 
         const handleKeyDown = (event: KeyboardEvent) => {
+            // Second key of a "g" sequence (or already consumed by someone else): not ours.
+            // Escape is exempt from the sequence rule so it can always back out.
+            if ((goPrefixArmed && event.key !== 'Escape') || (event.defaultPrevented && event.key !== 'Escape')) return
+
             const handlers = handlersRef.current
             const target = event.target
             const typing = isTypingTarget(target)
@@ -83,8 +92,10 @@ export function useKeyboardShortcuts({
             const lower = key.toLowerCase()
 
             if (key === 'Escape') {
+                // A dropdown/popup that already used the key (autocomplete list, select) keeps it.
+                if (event.defaultPrevented) return
                 if (typing) (target as HTMLElement).blur()
-                handlers.onEscape?.()
+                handlers.onEscape?.(event)
                 return
             }
 
@@ -209,6 +220,7 @@ export function useGoToShortcuts({ enabled = true, actions }: UseGoToShortcutsOp
         let timer: ReturnType<typeof setTimeout> | null = null
         const disarm = () => {
             armed = false
+            goPrefixArmed = false
             if (timer) clearTimeout(timer)
             timer = null
         }
@@ -217,19 +229,21 @@ export function useGoToShortcuts({ enabled = true, actions }: UseGoToShortcutsOp
             if (event.ctrlKey || event.metaKey || event.altKey) return
             if (isTypingTarget(event.target) || isInsideDialog(event.target)) return
 
+            if (event.key === 'Shift' || event.key === 'Control' || event.key === 'Alt' || event.key === 'Meta') return
+
             const lower = event.key.toLowerCase()
             if (armed) {
                 const action = actionsRef.current[lower]
                 disarm()
-                if (action && !event.shiftKey) {
-                    event.preventDefault()
-                    action()
-                }
+                // The key after "g" always belongs to the sequence, even when it maps to nothing.
+                event.preventDefault()
+                if (action && !event.shiftKey) action()
                 return
             }
 
             if (lower === 'g' && !event.shiftKey) {
                 armed = true
+                goPrefixArmed = true
                 timer = setTimeout(disarm, SEQUENCE_TIMEOUT_MS)
             }
         }

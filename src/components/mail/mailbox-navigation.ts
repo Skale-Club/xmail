@@ -8,8 +8,17 @@ export interface MailboxGroup {
 /** Window event that asks the mailbox switcher to focus its search box (shortcut "g m"). */
 export const FOCUS_MAILBOX_SEARCH_EVENT = 'xmail:focus-mailbox-search'
 
-export const PINNED_MAILBOXES_STORAGE_KEY = 'xmail:mail:pinned-mailboxes'
-export const SHOW_OTHER_ORGS_STORAGE_KEY = 'xmail:mail:show-other-orgs'
+const PINNED_MAILBOXES_STORAGE_PREFIX = 'xmail:mail:pinned-mailboxes'
+const SHOW_OTHER_ORGS_STORAGE_PREFIX = 'xmail:mail:show-other-orgs'
+
+/** Switcher preferences are per user: two people sharing a browser must not share pins. */
+export function pinnedMailboxesStorageKey(userId: string | null | undefined): string {
+    return `${PINNED_MAILBOXES_STORAGE_PREFIX}:${userId || 'anonymous'}`
+}
+
+export function showOtherOrgsStorageKey(userId: string | null | undefined): string {
+    return `${SHOW_OTHER_ORGS_STORAGE_PREFIX}:${userId || 'anonymous'}`
+}
 
 function searchableMailboxText(mailbox: Mailbox): string {
     return `${mailbox.displayName ?? ''} ${mailbox.email} ${mailbox.organizationName ?? ''}`.toLocaleLowerCase()

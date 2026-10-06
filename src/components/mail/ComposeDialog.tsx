@@ -110,6 +110,10 @@ export function ComposeDialog() {
     const initialBodyTextRef = React.useRef('')
     const editVersionRef = React.useRef(0)
     const savePromiseRef = React.useRef<Promise<boolean> | null>(null)
+    // Set as soon as the window is on its way out (send, discard, close). From then on nothing
+    // may write a draft: an autosave that lands after a discard or a send would resurrect it.
+    const closingRef = React.useRef(false)
+    const autosaveTimerRef = React.useRef<number | null>(null)
     const attachmentsLoadedForSession = React.useRef<number | null>(null)
 
     const signaturesQuery = useQuery({
@@ -156,6 +160,7 @@ export function ComposeDialog() {
         setDraftMailboxId(draftId ? originMailboxId : null)
         editVersionRef.current = 0
         savePromiseRef.current = null
+        closingRef.current = false
     }, [sessionId])
 
     // Builds the initial fields once everything they depend on has loaded, in ONE update:
@@ -281,11 +286,22 @@ export function ComposeDialog() {
     const latestRef = React.useRef({ email, attachments, fromMailboxId, activeDraftId, draftMailboxId, isDirty })
     latestRef.current = { email, attachments, fromMailboxId, activeDraftId, draftMailboxId, isDirty }
 
+    const beginClosing = () => {
+        closingRef.current = true
+        if (autosaveTimerRef.current !== null) {
+            window.clearTimeout(autosaveTimerRef.current)
+            autosaveTimerRef.current = null
+        }
+    }
+
     const persistDraft = async (opts: { silent?: boolean } = {}): Promise<boolean> => {
+        if (closingRef.current) return false
         // Overlapping saves would create two drafts; wait for the one in flight first.
         if (savePromiseRef.current) {
             await savePromiseRef.current.catch(() => false)
         }
+        // The window may have started closing while we waited.
+        if (closingRef.current) return false
 
         const run = async (): Promise<boolean> => {
             const current = latestRef.current
@@ -353,8 +369,16 @@ export function ComposeDialog() {
     useEffect(() => {
         if (!isOpen || !initialized || !isDirty || sendEmail.isPending) return
         if (!hasMeaningfulContent(email, attachments)) return
-        const timer = window.setTimeout(() => { void persistDraftRef.current({ silent: true }) }, AUTOSAVE_DELAY_MS)
-        return () => window.clearTimeout(timer)
+        if (closingRef.current) return
+        const timer = window.setTimeout(() => {
+            autosaveTimerRef.current = null
+            if (!closingRef.current) void persistDraftRef.current({ silent: true })
+        }, AUTOSAVE_DELAY_MS)
+        autosaveTimerRef.current = timer
+        return () => {
+            window.clearTimeout(timer)
+            if (autosaveTimerRef.current === timer) autosaveTimerRef.current = null
+        }
     }, [isOpen, initialized, isDirty, email, attachments, fromMailboxId, sendEmail.isPending])
 
     // Warn before the tab closes with edits that autosave has not stored yet.
@@ -423,7 +447,8 @@ export function ComposeDialog() {
             return
         }
 
-        // An autosave still in flight would otherwise create a draft after the send.
+        // From here on no autosave may run: it would create a draft after the send.
+        beginClosing()
         if (savePromiseRef.current) {
             await savePromiseRef.current.catch(() => false)
         }
@@ -446,9 +471,20 @@ export function ComposeDialog() {
                     draftId: current.draftMailboxId === fromMailboxId ? current.activeDraftId : undefined,
                 },
             })
+            // The server only removes the draft that lives in the sending mailbox. When the sender
+            // was changed after a draft was saved, the copy in the old mailbox is now an orphan.
+            if (current.activeDraftId && current.draftMailboxId && current.draftMailboxId !== fromMailboxId) {
+                const oldMailbox = current.draftMailboxId
+                const oldDraft = current.activeDraftId
+                // Drafts -> Trash, then out of Trash.
+                void mailApi.deleteMessage(oldMailbox, oldDraft)
+                    .then(() => mailApi.deleteMessage(oldMailbox, oldDraft))
+                    .catch(() => undefined)
+            }
             closeCompose()
             toast({ title: 'Email sent successfully!', variant: 'success' })
         } catch (error) {
+            closingRef.current = false
             toast({
                 title: 'Failed to send email',
                 description: error instanceof Error ? error.message : 'Unknown error',
@@ -470,11 +506,15 @@ export function ComposeDialog() {
             }
             if (saved) toast({ title: 'Draft saved', variant: 'success' })
         }
+        beginClosing()
         closeCompose()
     }
 
     const discardNow = async () => {
         setDiscardConfirmOpen(false)
+        // Stop autosave BEFORE touching the draft: a save that lands after the delete would
+        // find the row in Trash and bring it back.
+        beginClosing()
         // Let an in-flight autosave finish first so the draft it creates is the one we delete.
         if (savePromiseRef.current) {
             await savePromiseRef.current.catch(() => false)
@@ -485,6 +525,7 @@ export function ComposeDialog() {
                 await mailApi.deleteMessage(current.draftMailboxId, current.activeDraftId)
                 toast({ title: 'Draft deleted', variant: 'success' })
             } catch (error) {
+                closingRef.current = false
                 toast({
                     title: 'Failed to delete draft',
                     description: error instanceof Error ? error.message : 'Unknown error',
@@ -501,6 +542,7 @@ export function ComposeDialog() {
             setDiscardConfirmOpen(true)
             return
         }
+        beginClosing()
         closeCompose()
     }
 
@@ -518,9 +560,18 @@ export function ComposeDialog() {
 
     useKeyboardShortcuts({
         enabled: isOpen,
-        onSend: handleSend,
-        onSaveDraft: handleSaveDraftClick,
-        onEscape: () => { if (!discardConfirmOpen) void handleClose() }
+        // While the discard confirmation is up, the keyboard belongs to it.
+        onSend: () => { if (!discardConfirmOpen) void handleSend() },
+        onSaveDraft: () => { if (!discardConfirmOpen) void handleSaveDraftClick() },
+        onEscape: (event) => {
+            if (discardConfirmOpen) {
+                setDiscardConfirmOpen(false)
+                return
+            }
+            // Esc inside the From select only closes the select.
+            if ((event.target as HTMLElement | null)?.tagName === 'SELECT') return
+            void handleClose()
+        }
     })
 
     if (!isOpen) return null

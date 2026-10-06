@@ -146,4 +146,38 @@ describe('ComposeDialog', () => {
         await screen.findByLabelText('Body')
         await waitFor(() => expect(mocks.registerGuard).toHaveBeenCalledWith(expect.any(Function)))
     })
+
+    it('does not autosave once the window started closing (discard, send)', async () => {
+        renderDialog()
+        const body = (await screen.findByLabelText('Body')) as HTMLTextAreaElement
+        await waitFor(() => expect(body.value).toContain('-- Bia'))
+
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        try {
+            fireEvent.change(body, { target: { value: `${body.value} more` } })
+            fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+            await vi.advanceTimersByTimeAsync(8000)
+            expect(mocks.saveMock).not.toHaveBeenCalled()
+            expect(mocks.closeCompose).toHaveBeenCalled()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('autosaves after a pause when the message is edited', async () => {
+        mocks.saveMock.mockResolvedValue({ draftId: 'd1' })
+        renderDialog()
+        const body = (await screen.findByLabelText('Body')) as HTMLTextAreaElement
+        await waitFor(() => expect(body.value).toContain('-- Bia'))
+
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        try {
+            fireEvent.change(body, { target: { value: `${body.value} more` } })
+            await vi.advanceTimersByTimeAsync(5500)
+            expect(mocks.saveMock).toHaveBeenCalledTimes(1)
+            expect(mocks.saveMock.mock.calls[0][0].mailboxId).toBe('mb1')
+        } finally {
+            vi.useRealTimers()
+        }
+    })
 })

@@ -101,3 +101,42 @@ describe('useGoToShortcuts', () => {
         expect(goInbox).not.toHaveBeenCalled()
     })
 })
+
+describe('g sequences vs list shortcuts', () => {
+    afterEach(() => cleanup())
+
+    it('"g s" navigates without also starring, and "g m" without toggling read', () => {
+        const onStar = vi.fn()
+        const onToggleRead = vi.fn()
+        const goSent = vi.fn()
+        const goSwitcher = vi.fn()
+        // Same registration order as the app: the list hook (child) mounts before the layout hook (parent).
+        renderHook(() => useKeyboardShortcuts({ onStar, onToggleRead }))
+        renderHook(() => useGoToShortcuts({ actions: { s: goSent, m: goSwitcher } }))
+
+        press('g')
+        press('s')
+        press('g')
+        press('m')
+
+        expect(goSent).toHaveBeenCalledTimes(1)
+        expect(goSwitcher).toHaveBeenCalledTimes(1)
+        expect(onStar).not.toHaveBeenCalled()
+        expect(onToggleRead).not.toHaveBeenCalled()
+
+        // Once the sequence is over, plain keys work again.
+        press('s')
+        expect(onStar).toHaveBeenCalledTimes(1)
+    })
+
+    it('swallows an unmapped key after "g"', () => {
+        const onArchive = vi.fn()
+        renderHook(() => useKeyboardShortcuts({ onArchive }))
+        renderHook(() => useGoToShortcuts({ actions: {} }))
+        press('g')
+        press('e')
+        expect(onArchive).not.toHaveBeenCalled()
+        press('e')
+        expect(onArchive).toHaveBeenCalledTimes(1)
+    })
+})

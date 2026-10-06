@@ -34,7 +34,9 @@ interface MailboxContextType {
 }
 
 /** How often unread counts are re-read while the tab is visible. */
-const MAILBOX_POLL_MS = 60_000
+const MAILBOX_POLL_MS = 120_000
+/** Minimum gap between focus-triggered refreshes, so alt-tabbing cannot hammer the API. */
+const MAILBOX_FOCUS_MIN_GAP_MS = 30_000
 
 function sameMailbox(a: Mailbox, b: Mailbox): boolean {
     return JSON.stringify(a) === JSON.stringify(b)
@@ -122,14 +124,19 @@ export function MailboxProvider({ children }: { children: React.ReactNode }) {
     React.useEffect(() => {
         if (authLoading || !user) return
 
-        const refreshIfVisible = () => {
-            if (document.visibilityState === 'visible') void refreshMailboxes()
+        let lastRefresh = Date.now()
+        const refreshIfVisible = (minGapMs: number) => {
+            if (document.visibilityState !== 'visible') return
+            if (Date.now() - lastRefresh < minGapMs) return
+            lastRefresh = Date.now()
+            void refreshMailboxes()
         }
-        const interval = window.setInterval(refreshIfVisible, MAILBOX_POLL_MS)
-        window.addEventListener('focus', refreshIfVisible)
+        const interval = window.setInterval(() => refreshIfVisible(MAILBOX_POLL_MS - 1000), MAILBOX_POLL_MS)
+        const onFocus = () => refreshIfVisible(MAILBOX_FOCUS_MIN_GAP_MS)
+        window.addEventListener('focus', onFocus)
         return () => {
             window.clearInterval(interval)
-            window.removeEventListener('focus', refreshIfVisible)
+            window.removeEventListener('focus', onFocus)
         }
     }, [authLoading, user, refreshMailboxes])
 

@@ -637,6 +637,13 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
             })
             : null
 
+        // A draft that is no longer in Drafts (discarded to Trash, archived, ...) must not be
+        // revived by a late autosave: writing folder_id here would also import the other
+        // folder's UID into Drafts (see "Mail Message UIDs" in CLAUDE.md). Refuse instead.
+        if (existingDraft && existingDraft.folderId !== draftsFolder.id) {
+            return res.status(409).json({ error: 'Draft is no longer in the Drafts folder' })
+        }
+
         // Fixed up front (rather than left to the DB's default) because it doubles as the
         // object-storage key prefix below, so uploads for a brand-new draft land under the
         // same id the row is about to be inserted with.
@@ -653,8 +660,9 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
         let savedMessage
 
         if (existingDraft) {
+            // folder_id is deliberately NOT part of this update: the draft already lives in
+            // Drafts (checked above) and folder changes only go through moveMessagesToFolder.
             [savedMessage] = await db.update(mailMessages).set({
-                folderId: draftsFolder.id,
                 messageId,
                 subject: data.subject || null,
                 fromAddress: mailbox.email,

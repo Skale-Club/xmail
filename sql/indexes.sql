@@ -341,3 +341,20 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospect_ai_assessments_candidate_cr
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospect_ai_assessments_org_recommendation
     ON prospect_ai_assessments (organization_id, recommendation, confidence DESC, created_at DESC);
+
+-- =============================================================================
+-- Webmail search (operators from:/subject:/free text use ILIKE '%term%')
+-- Needs the pg_trgm extension; the statement below is idempotent, and a migration on
+-- another branch also creates it. plain_body is intentionally NOT indexed (index size).
+-- =============================================================================
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mail_messages_subject_trgm
+    ON mail_messages USING gin (subject gin_trgm_ops);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mail_messages_from_address_trgm
+    ON mail_messages USING gin (from_address gin_trgm_ops);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mail_messages_from_name_trgm
+    ON mail_messages USING gin (from_name gin_trgm_ops);

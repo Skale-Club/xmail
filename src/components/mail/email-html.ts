@@ -8,11 +8,6 @@
 // doesn't jump when a message is first rendered with images off.
 export const BLOCKED_IMAGE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
-// http(s) and protocol-relative URLs: both fetch from the network.
-const REMOTE_URL_RE = /^\s*(https?:)?\/\//i
-const CSS_URL_RE = /url\(\s*(['"]?)\s*((?:https?:)?\/\/[^'")]+)\1\s*\)/gi
-const CSS_IMPORT_STRING_RE = /@import\s+(['"])\s*(?:https?:)?\/\/[^'"]+\1[^;]*;?/gi
-
 export const QUOTE_ATTRIBUTE = 'data-xmail-quote'
 
 export interface ProcessedEmailHtml {
@@ -24,37 +19,124 @@ export interface ProcessedEmailHtml {
     hasQuotedText: boolean
 }
 
-function isRemote(url: string | null | undefined): boolean {
-    return !!url && REMOTE_URL_RE.test(url)
+function baseUrl(): string {
+    try {
+        return window.location.href
+    } catch {
+        return 'https://xmail.invalid/'
+    }
 }
 
-function rewriteCss(css: string): { css: string; changed: boolean } {
-    const rewritten = css
-        .replace(CSS_IMPORT_STRING_RE, '')
-        // Global regexes carry mutable lastIndex state, so each use goes through replace().
-        .replace(CSS_URL_RE, `url($1${BLOCKED_IMAGE_PLACEHOLDER}$1)`)
-    return { css: rewritten, changed: rewritten !== css }
+/**
+ * Decides by what the browser would actually request, not by how the attribute is spelled:
+ * the value is resolved with the URL parser, which already handles backslashes
+ * (`\\tracker`, `https:\\x`), tabs/newlines inside the scheme, protocol-relative URLs and
+ * relative paths. Anything that resolves to http(s) is remote. `cid:`, `data:`, `blob:` and
+ * same-document `#fragment` references never leave the sandbox.
+ */
+export function isRemoteUrl(value: string | null | undefined): boolean {
+    if (!value) return false
+    const trimmed = value.trim()
+    if (!trimmed || trimmed.startsWith('#')) return false
+    try {
+        const resolved = new URL(trimmed, baseUrl())
+        return resolved.protocol === 'http:' || resolved.protocol === 'https:'
+    } catch {
+        return false
+    }
 }
+
+/** Resolves CSS escapes (`\75rl(`, `\68ttp`) so detection sees what the CSS parser will see. */
+export function unescapeCss(css: string): string {
+    return css
+        .replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?/g, (_, hex: string) => {
+            const code = parseInt(hex, 16)
+            if (!code || code > 0x10ffff) return '�'
+            return String.fromCodePoint(code)
+        })
+        .replace(/\\([^0-9a-fA-F\n\r\f])/g, '$1')
+}
+
+const CSS_URL_FN_RE = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s][^)]*?))\s*\)/gi
+const CSS_IMPORT_RE = /@import\b[^;{]*(?:;|$)/gi
+
+/** Rewrites remote references inside the argument of every `image-set(` call. */
+function blockImageSets(css: string, onBlocked: () => void): string {
+    const re = /(?:-webkit-)?image-set\(/gi
+    let out = ''
+    let last = 0
+    let match: RegExpExecArray | null
+    while ((match = re.exec(css)) !== null) {
+        const start = match.index + match[0].length
+        let depth = 1
+        let index = start
+        while (index < css.length && depth > 0) {
+            if (css[index] === '(') depth += 1
+            else if (css[index] === ')') depth -= 1
+            index += 1
+        }
+        const inner = css.slice(start, depth === 0 ? index - 1 : index)
+        const rewritten = inner.replace(/"([^"]*)"|'([^']*)'/g, (whole, dq: string | undefined, sq: string | undefined) => {
+            const url = dq ?? sq ?? ''
+            if (!isRemoteUrl(url)) return whole
+            onBlocked()
+            return `"${BLOCKED_IMAGE_PLACEHOLDER}"`
+        })
+        out += css.slice(last, start) + rewritten
+        last = depth === 0 ? index - 1 : index
+        re.lastIndex = last
+    }
+    return out + css.slice(last)
+}
+
+function rewriteCss(original: string): { css: string; changed: boolean } {
+    // Detect on the unescaped text; only adopt it as output when something was blocked, so
+    // untouched stylesheets keep their exact original bytes.
+    const normalized = unescapeCss(original)
+    let changed = false
+    const mark = () => { changed = true }
+
+    let css = normalized.replace(CSS_IMPORT_RE, () => { mark(); return '' })
+    css = css.replace(CSS_URL_FN_RE, (whole, dq: string | undefined, sq: string | undefined, bare: string | undefined) => {
+        const url = (dq ?? sq ?? bare ?? '').trim()
+        if (!isRemoteUrl(url)) return whole
+        mark()
+        return `url("${BLOCKED_IMAGE_PLACEHOLDER}")`
+    })
+    css = blockImageSets(css, mark)
+
+    return changed ? { css, changed: true } : { css: original, changed: false }
+}
+
+// Attributes that make the browser fetch something, on any element except links (links only
+// load on click, and they must keep working).
+const FETCHING_ATTRIBUTES = ['src', 'poster', 'background', 'data', 'href', 'xlink:href', 'lowsrc', 'dynsrc']
+const LINK_LIKE = new Set(['A', 'AREA'])
 
 function blockRemoteContent(doc: Document): boolean {
     let blocked = false
 
-    doc.querySelectorAll('img, input[type="image"]').forEach((el) => {
-        const src = el.getAttribute('src')
-        if (isRemote(src)) {
-            blocked = true
-            el.setAttribute('src', BLOCKED_IMAGE_PLACEHOLDER)
-        }
+    // <link> (stylesheets, preloads, icons), frames and plugins all fetch from the network.
+    doc.querySelectorAll('link').forEach((el) => {
+        if (isRemoteUrl(el.getAttribute('href'))) blocked = true
+        el.remove()
+    })
+    doc.querySelectorAll('iframe, object, embed, frame, frameset, applet').forEach((el) => {
+        blocked = true
+        el.remove()
+    })
+    doc.querySelectorAll('meta[http-equiv]').forEach((el) => {
+        if ((el.getAttribute('http-equiv') || '').toLowerCase() === 'refresh') el.remove()
     })
 
-    // <img srcset> and <picture><source srcset>.
-    doc.querySelectorAll('img[srcset], source[srcset]').forEach((el) => {
+    // srcset on <img> and <picture><source>.
+    doc.querySelectorAll('[srcset]').forEach((el) => {
         const srcset = el.getAttribute('srcset') || ''
         const rewritten = srcset
             .split(',')
             .map((candidate) => {
                 const [url, descriptor] = candidate.trim().split(/\s+/, 2)
-                if (isRemote(url)) {
+                if (isRemoteUrl(url)) {
                     blocked = true
                     return [BLOCKED_IMAGE_PLACEHOLDER, descriptor].filter(Boolean).join(' ')
                 }
@@ -64,52 +146,23 @@ function blockRemoteContent(doc: Document): boolean {
         el.setAttribute('srcset', rewritten)
     })
 
-    // Legacy `background="..."` on table/td/body, <video poster>, <video|audio|source src>.
-    doc.querySelectorAll('[background]').forEach((el) => {
-        if (isRemote(el.getAttribute('background'))) {
+    // Every other URL-bearing attribute, SVG included (<image>, <feImage>, <use>).
+    doc.querySelectorAll('*').forEach((el) => {
+        if (LINK_LIKE.has(el.tagName)) return
+        for (const name of FETCHING_ATTRIBUTES) {
+            const value = el.getAttribute(name)
+            if (!isRemoteUrl(value)) continue
             blocked = true
-            el.removeAttribute('background')
-        }
-    })
-    doc.querySelectorAll('video[poster]').forEach((el) => {
-        if (isRemote(el.getAttribute('poster'))) {
-            blocked = true
-            el.setAttribute('poster', BLOCKED_IMAGE_PLACEHOLDER)
-        }
-    })
-    doc.querySelectorAll('video[src], audio[src], source[src], track[src]').forEach((el) => {
-        if (isRemote(el.getAttribute('src'))) {
-            blocked = true
-            el.removeAttribute('src')
-        }
-    })
-
-    // SVG <image href> / xlink:href.
-    doc.querySelectorAll('image').forEach((el) => {
-        for (const name of ['href', 'xlink:href']) {
-            if (isRemote(el.getAttribute(name))) {
-                blocked = true
+            const tag = el.tagName.toLowerCase()
+            if ((tag === 'img' || tag === 'input' || tag === 'video') && (name === 'src' || name === 'poster')) {
+                el.setAttribute(name, BLOCKED_IMAGE_PLACEHOLDER)
+            } else {
                 el.removeAttribute(name)
             }
         }
     })
 
-    // External stylesheets, frames and plugins all fetch from the network.
-    doc.querySelectorAll('link').forEach((el) => {
-        if (isRemote(el.getAttribute('href'))) {
-            blocked = true
-            el.remove()
-        }
-    })
-    doc.querySelectorAll('iframe, object, embed, frame').forEach((el) => {
-        blocked = true
-        el.remove()
-    })
-    doc.querySelectorAll('meta[http-equiv]').forEach((el) => {
-        if ((el.getAttribute('http-equiv') || '').toLowerCase() === 'refresh') el.remove()
-    })
-
-    // Inline style="...url(...)" and <style> blocks (backgrounds, @import, @font-face).
+    // Inline style="...url(...)" and <style> blocks (backgrounds, @import, @font-face, image-set).
     doc.querySelectorAll<HTMLElement>('[style]').forEach((el) => {
         const { css, changed } = rewriteCss(el.getAttribute('style') || '')
         if (changed) {
@@ -128,17 +181,30 @@ function blockRemoteContent(doc: Document): boolean {
     return blocked
 }
 
+// Only these are ever treated as a quoted reply. A <blockquote> in the middle of a message is
+// content (a pull quote, a cited paragraph) and must stay visible.
 const QUOTE_SELECTOR = [
     'blockquote',
     '.gmail_quote',
     '.yahoo_quoted',
-    '.moz-cite-prefix',
     '#divRplyFwdMsg',
     '#appendonsend',
 ].join(', ')
 
 const ATTRIBUTION_RE = /(wrote|escreveu|a écrit|schrieb|escribió)\s*:\s*$/i
 const FORWARD_MARKER_RE = /forwarded message|begin forwarded|mensagem encaminhada/i
+const ORIGINAL_MESSAGE_RE = /^[-_\s]*(original message|mensagem original|ursprüngliche nachricht)[-_\s]*$/i
+
+function textAfter(doc: Document, node: Element): string {
+    try {
+        const range = doc.createRange()
+        range.setStartAfter(node)
+        range.setEndAfter(doc.body.lastChild ?? doc.body)
+        return range.toString()
+    } catch {
+        return 'x'
+    }
+}
 
 function textBefore(doc: Document, node: Element): string {
     try {
@@ -151,42 +217,60 @@ function textBefore(doc: Document, node: Element): string {
     }
 }
 
+function markWithFollowingSiblings(element: Element) {
+    let sibling: Element | null = element
+    while (sibling) {
+        sibling.setAttribute(QUOTE_ATTRIBUTE, '1')
+        sibling = sibling.nextElementSibling
+    }
+}
+
 /**
- * Marks quoted-reply blocks with `data-xmail-quote` so the viewer can hide them behind a
- * "Show quoted text" toggle. A message that is nothing but a quote (or a forward) is left alone:
- * hiding the whole body would hide the content the user came to read.
+ * Marks the TRAILING quoted-reply block with `data-xmail-quote` so the viewer can hide it behind
+ * a "Show quoted text" toggle. Only blocks that end the message qualify (nothing but whitespace
+ * after them); a message that is nothing but a quote, or a forward, is left alone.
  */
 function markQuotedText(doc: Document): boolean {
     if (!doc.body) return false
     let marked = false
 
+    // Outlook "-----Original Message-----" lines: that line and everything after it is the quote.
+    doc.body.querySelectorAll('p, div, span, font, b').forEach((el) => {
+        if (el.closest(`[${QUOTE_ATTRIBUTE}]`)) return
+        if (!ORIGINAL_MESSAGE_RE.test((el.textContent || '').trim())) return
+        if (el.children.length > 0 && el.querySelector('p, div')) return
+        if (textBefore(doc, el).trim().length === 0) return
+        markWithFollowingSiblings(el)
+        marked = true
+    })
+
     const candidates = Array.from(doc.body.querySelectorAll(QUOTE_SELECTOR))
     for (const candidate of candidates) {
         if (candidate.closest(`[${QUOTE_ATTRIBUTE}]`)) continue // nested inside an already-marked quote
 
+        const isOutlookHeader = candidate.id === 'divRplyFwdMsg' || candidate.id === 'appendonsend'
+        // Outlook's reply header always introduces a quote that runs to the end; other quotes
+        // only count when nothing but whitespace follows them.
+        if (!isOutlookHeader && textAfter(doc, candidate).trim().length > 0) continue
+
         const before = textBefore(doc, candidate)
         if (before.trim().length === 0) continue // quote is the first thing: nothing to collapse behind
         if (FORWARD_MARKER_RE.test(before.slice(-400))) continue // forwarded content is the point of the message
+        if (FORWARD_MARKER_RE.test((candidate.textContent || '').slice(0, 300))) continue
 
-        candidate.setAttribute(QUOTE_ATTRIBUTE, '1')
+        if (isOutlookHeader) {
+            markWithFollowingSiblings(candidate)
+        } else {
+            candidate.setAttribute(QUOTE_ATTRIBUTE, '1')
+        }
         marked = true
 
-        // Outlook puts the header block and the original body as following siblings.
-        if (candidate.id === 'divRplyFwdMsg' || candidate.id === 'appendonsend') {
-            let sibling = candidate.nextElementSibling
-            while (sibling) {
-                sibling.setAttribute(QUOTE_ATTRIBUTE, '1')
-                sibling = sibling.nextElementSibling
-            }
-        }
-
-        // "On <date>, <name> wrote:" line right before a bare blockquote.
+        // "On <date>, <name> wrote:" line (or Thunderbird's cite prefix) right before the quote.
         const previous = candidate.previousElementSibling
         if (
-            candidate.tagName === 'BLOCKQUOTE'
-            && previous
+            previous
             && !previous.hasAttribute(QUOTE_ATTRIBUTE)
-            && ATTRIBUTION_RE.test((previous.textContent || '').trim())
+            && (previous.classList.contains('moz-cite-prefix') || ATTRIBUTION_RE.test((previous.textContent || '').trim()))
         ) {
             previous.setAttribute(QUOTE_ATTRIBUTE, '1')
         }

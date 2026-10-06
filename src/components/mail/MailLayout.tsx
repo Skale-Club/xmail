@@ -78,7 +78,7 @@ interface SidebarContentProps {
 }
 
 function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, branding, closeSidebar, openCompose }: SidebarContentProps) {
-    const { data: foldersData } = useFolders()
+    const { data: foldersData } = useFolders({ poll: true })
     const inboxUnread = findFolderByKind(foldersData?.folders, 'inbox')?.unread ?? 0
     const spamUnread = foldersData?.folders.find(f => f.type === 'spam')?.unread ?? 0
     const archiveUnread = foldersData?.folders.find(

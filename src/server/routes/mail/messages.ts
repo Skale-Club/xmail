@@ -1055,9 +1055,11 @@ router.post('/:mailboxId/empty-folder', async (req: Request, res: Response) => {
 
         const data = z.object({ folderType: z.enum(['trash', 'spam']) }).parse(req.body)
 
-        const folder = data.folderType === 'trash'
-            ? await resolveTrashFolder(mailboxId, false)
-            : await resolveSpamFolder(mailboxId, false)
+        // Exact `type` only: the name-based fallback of resolveTrash/SpamFolder would also match
+        // folders like "Not Spam" (and rewrite their type), which must never be emptied.
+        const folder = await db.query.mailFolders.findFirst({
+            where: and(eq(mailFolders.mailboxId, mailboxId), eq(mailFolders.type, data.folderType)),
+        })
         if (!folder) {
             return res.json({ success: true, deleted: 0 })
         }

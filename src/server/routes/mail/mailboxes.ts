@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { eq, and, desc, inArray, sql } from 'drizzle-orm'
 import { db } from '../../../db'
-import { mailboxes, mailFolders, mailMessages, users, organizationUsers, organizations } from '../../../db/schema'
+import { mailboxes, mailFolders, users, organizationUsers, organizations } from '../../../db/schema'
 import { classifyMailboxes } from './mailbox-organizations'
 import { getOperationDomains } from '../../lib/operation-domains'
 import { encryptSecret } from '../../lib/crypto'
@@ -131,22 +131,21 @@ router.get('/', async (req: Request, res: Response) => {
         const ownerIds = [...new Set(userMailboxes.map(mb => mb.userId))]
 
         const [unreadRows, membershipRows] = await Promise.all([
+            // mail_folders.unread_count is maintained by recomputeFolderCounts(), so the INBOX
+            // badge is a cheap read of the folder rows instead of a scan of mail_messages.
             mailboxIds.length === 0
                 ? Promise.resolve([] as Array<{ mailboxId: string; unread: number }>)
                 : db
                     .select({
-                        mailboxId: mailMessages.mailboxId,
-                        unread: sql<number>`count(*)::int`,
+                        mailboxId: mailFolders.mailboxId,
+                        unread: sql<number>`coalesce(sum(${mailFolders.unreadCount}), 0)::int`,
                     })
-                    .from(mailMessages)
-                    .innerJoin(mailFolders, eq(mailFolders.id, mailMessages.folderId))
+                    .from(mailFolders)
                     .where(and(
-                        inArray(mailMessages.mailboxId, mailboxIds),
+                        inArray(mailFolders.mailboxId, mailboxIds),
                         eq(mailFolders.type, 'inbox'),
-                        eq(mailMessages.isRead, false),
-                        eq(mailMessages.isDeleted, false),
                     ))
-                    .groupBy(mailMessages.mailboxId),
+                    .groupBy(mailFolders.mailboxId),
             db
                 .select({
                     userId: organizationUsers.userId,

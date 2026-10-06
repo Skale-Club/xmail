@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { Mailbox } from '../../hooks/useMailbox'
 import { MailboxSidebarSwitcher } from './MailboxSidebarSwitcher'
-import { SHOW_OTHER_ORGS_STORAGE_KEY } from './mailbox-navigation'
+import { showOtherOrgsStorageKey } from './mailbox-navigation'
 
 function mailbox(email: string, extra: Partial<Mailbox> = {}): Mailbox {
     return {
@@ -43,6 +43,8 @@ vi.mock('../../hooks/useMailbox', () => ({
     getProviderIcon: () => '@',
 }))
 
+vi.mock('../../hooks/useAuth', () => ({ useAuth: () => ({ user: { id: 'user-1' } }) }))
+
 vi.mock('./ConnectMailboxDialog', () => ({ ConnectMailboxDialog: () => null }))
 
 function renderSwitcher() {
@@ -72,11 +74,11 @@ describe('MailboxSidebarSwitcher', () => {
         expect(screen.getByText('gustavo@gruporodobens.com.br')).toBeTruthy()
         expect(screen.getByText('Grupo Rodobens')).toBeTruthy()
         expect(screen.getByText('Monte Carlo Postos')).toBeTruthy()
-        expect(window.localStorage.getItem(SHOW_OTHER_ORGS_STORAGE_KEY)).toBe('1')
+        expect(window.localStorage.getItem(showOtherOrgsStorageKey('user-1'))).toBe('1')
     })
 
     it('starts expanded when the toggle was saved', () => {
-        window.localStorage.setItem(SHOW_OTHER_ORGS_STORAGE_KEY, '1')
+        window.localStorage.setItem(showOtherOrgsStorageKey('user-1'), '1')
         renderSwitcher()
         expect(screen.getByText('eduardo@montecarlopostos.com.br')).toBeTruthy()
     })

@@ -49,7 +49,56 @@ describe('processEmailHtml remote content blocking', () => {
     })
 })
 
+describe('processEmailHtml blocking bypasses', () => {
+    it('normalizes backslash, tab and newline tricks before deciding', () => {
+        const result = blocked(String.raw`<img src="\\t.example/a.gif"><img src="https:\\t.example/b.gif"><img src="ht&#9;tp://t.example/c.gif"><img src="  HTTPS://t.example/d.gif">`)
+        expect(result.html).not.toContain('t.example')
+        expect(result.hadRemoteContent).toBe(true)
+    })
+
+    it('blocks relative image paths (they would hit our own origin)', () => {
+        expect(blocked('<img src="/t/open/abc.gif">').hadRemoteContent).toBe(true)
+    })
+
+    it('blocks image-set() without url(), including bare strings', () => {
+        const result = blocked(`<div style="background:image-set('https://t.example/a.png' 1x, 'https://t.example/b.png' 2x)"></div><style>.x{background-image:-webkit-image-set("//t.example/c.png" 1x)}</style>`)
+        expect(result.html).not.toContain('t.example')
+    })
+
+    it('sees through css escapes in url() and the function name', () => {
+        const result = blocked(String.raw`<div style="background:\75rl(\68ttps://t.example/a.png)"></div><div style="background:url(h\74tps://t.example/b.png)"></div>`)
+        expect(result.html).not.toContain('t.example')
+        expect(result.hadRemoteContent).toBe(true)
+    })
+
+    it('blocks svg image, feImage and use references but keeps same-document use', () => {
+        const result = blocked('<svg><image href="https://t.example/a.png"/><filter><feImage href="https://t.example/b.png"/></filter><use xlink:href="https://t.example/c.svg#x"/><use href="#local"/></svg>')
+        expect(result.html).not.toContain('t.example')
+        expect(result.html).toContain('#local')
+    })
+
+    it('keeps plain links clickable', () => {
+        expect(blocked('<a href="https://example.com/page">x</a>').html).toContain('https://example.com/page')
+    })
+})
+
 describe('processEmailHtml quoted text', () => {
+    it('never collapses a blockquote in the middle of a message', () => {
+        const result = blocked('<p>Intro</p><blockquote>a pull quote</blockquote><p>More text after it</p>')
+        expect(result.hasQuotedText).toBe(false)
+    })
+
+    it('collapses an Outlook reply header and what follows it', () => {
+        const result = blocked('<p>My answer</p><div id="appendonsend"></div><hr><div id="divRplyFwdMsg"><b>From:</b> Ana</div><div>old body</div>')
+        expect(result.hasQuotedText).toBe(true)
+        expect(result.html).toContain(QUOTE_ATTRIBUTE)
+    })
+
+    it('collapses an Original Message block', () => {
+        const result = blocked('<p>My answer</p><p>-----Original Message-----</p><p>From: Ana</p><p>old</p>')
+        expect(result.hasQuotedText).toBe(true)
+    })
+
     it('marks a reply blockquote and its "wrote:" line', () => {
         const result = blocked('<p>My reply</p><p>On Mon, Ana wrote:</p><blockquote>old text</blockquote>')
         expect(result.hasQuotedText).toBe(true)
@@ -82,6 +131,15 @@ describe('parseMailtoUrl', () => {
             cc: 'bob@x.com',
             subject: 'Hello there',
             body: 'Hi\nAll',
+        })
+    })
+
+    it('keeps "+" in addresses (RFC 6068 only percent-decodes)', () => {
+        expect(parseMailtoUrl('mailto:john+tag@x.com?subject=a+b')).toEqual({
+            address: 'john+tag@x.com',
+            cc: undefined,
+            subject: 'a+b',
+            body: undefined,
         })
     })
 
