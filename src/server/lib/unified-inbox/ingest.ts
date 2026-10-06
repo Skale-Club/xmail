@@ -25,6 +25,14 @@ import { attributeConversation, type MatchConfidence } from './attribute'
 import type { OutreachMessageMatchStrategy } from './types'
 import { sqlTimestampValue } from '../sql-timestamp'
 import {
+    isMeshAccount,
+    isWarmupTraffic,
+    loadMeshAddresses,
+    supportsSkippedStatus,
+    warmupMessageIdTokens,
+    type MeshAddressSet,
+} from './warmup-traffic'
+import {
     bodyPreview,
     buildSourceKey,
     normalizeAddress,
@@ -70,8 +78,12 @@ export interface MaterializeAttribution {
 }
 
 export interface MaterializeResult {
-    /** `materialized` = first ingestion; `duplicate` = message already existed; `skipped` = event gone. */
-    status: 'materialized' | 'duplicate' | 'skipped'
+    /**
+     * `materialized` = first ingestion; `duplicate` = message already existed; `skipped` = event
+     * gone; `warmup_excluded` = the event is warm-up mesh traffic and was deliberately NOT turned
+     * into a conversation (its materialization lifecycle is closed as `skipped`).
+     */
+    status: 'materialized' | 'duplicate' | 'skipped' | 'warmup_excluded'
     inserted: boolean
     /** The owning organization (available post-commit for org-scoped near-real-time fanout). */
     organizationId: string | null
@@ -85,6 +97,10 @@ export interface MaterializeProviderEventDeps {
     sql?: UnifiedInboxSql
     now?: () => Date
     lookbackDays?: number
+    /** Test seam: the mesh address set. Defaults to a fresh read of `email_accounts`. */
+    meshAddresses?: MeshAddressSet
+    /** Test seam: whether the DB accepts materialization_status='skipped' (migration 068). */
+    skippedStatusSupported?: boolean
 }
 
 interface ProviderEventRow {
@@ -207,11 +223,59 @@ export async function materializeProviderEvent(
         }
 
         // Validate the account still belongs to the event's organization before any lookup.
-        const accountRows = await tx<{ organization_id: string }>`
-            SELECT organization_id FROM email_accounts WHERE id = ${event.email_account_id}
+        const accountRows = await tx<{ organization_id: string; warmup_only: boolean; warmup_source: string }>`
+            SELECT organization_id, warmup_only, warmup_source FROM email_accounts WHERE id = ${event.email_account_id}
         `
         if (!accountRows[0] || accountRows[0].organization_id !== event.organization_id) {
             throw new Error('provider event account does not belong to its organization')
+        }
+
+        // Warm-up mesh traffic never becomes a conversation (see warmup-traffic.ts). Staging
+        // already filters it at ingestion; this guard covers events staged before that filter
+        // existed and any path that stages without it. The event is closed as `skipped` (not
+        // `failed`, which would page the operator, and not `materialized`, which requires a
+        // message) and its row stays as the dedupe record for the provider message.
+        //
+        // Only a MESH mailbox can hold warm-up mail: an info@ (warmup_source 'none') is a working
+        // mailbox, so a message from a mesh address or a forwarded prospect reply stays real.
+        const accountInMesh = isMeshAccount({
+            warmupSource: accountRows[0].warmup_source,
+            warmupOnly: accountRows[0].warmup_only,
+        })
+        const meshAddresses = deps.meshAddresses ?? (accountInMesh ? await loadMeshAddresses(tx) : new Set<string>())
+        // The deploy may land before migration 068: until the CHECK accepts 'skipped', fall back to
+        // the pre-068 behavior (materialize normally) instead of failing the event.
+        const canSkip = accountInMesh
+            && (deps.skippedStatusSupported ?? await supportsSkippedStatus(tx))
+        if (canSkip && isWarmupTraffic({
+            accountWarmupOnly: accountRows[0].warmup_only === true,
+            accountInMesh,
+            counterpartAddresses: [event.from_address],
+            messageIds: warmupMessageIdTokens({
+                messageId: event.message_id,
+                inReplyTo: event.in_reply_to,
+                references: event.message_references,
+            }),
+            meshAddresses,
+        })) {
+            await tx`
+                UPDATE outreach_provider_events SET
+                    materialization_status = 'skipped',
+                    materialization_lease_token = NULL,
+                    materialization_lease_expires_at = NULL,
+                    materialization_error = NULL,
+                    updated_at = now()
+                WHERE id = ${eventId}
+            `
+            return {
+                status: 'warmup_excluded',
+                inserted: false,
+                organizationId: event.organization_id,
+                conversationId: null,
+                conversationMessageId: null,
+                classification: event.classification,
+                attribution: EMPTY_ATTRIBUTION,
+            }
         }
 
         // Normalize once, in the shared module, before any lookup or persistence.
@@ -326,6 +390,14 @@ export async function materializeProviderEvent(
                 `
             }
 
+            // A genuinely NEW inbound REPLY resurfaces an archived or closed conversation (Gmail-like)
+            // so a reply can never sit invisible behind an old archive. Only a message that is newer
+            // than anything we already hold from them counts as new, so a late-staged older message
+            // or a backfill replay cannot resurrect a thread the operator already dealt with. Only
+            // classification 'reply' qualifies: a bounce, an out-of-office or a newsletter ('other')
+            // is not a person asking for attention and must not undo an archive.
+            const resurfaces = event.classification === 'reply'
+
             // Summary from the message's own timestamp (subquery avoids re-binding a Date).
             await tx`
                 UPDATE outreach_conversations c SET
@@ -333,6 +405,9 @@ export async function materializeProviderEvent(
                     last_inbound_at = GREATEST(COALESCE(c.last_inbound_at, mts.ts), mts.ts),
                     last_message_id = CASE WHEN c.last_message_at IS NULL OR mts.ts >= c.last_message_at THEN mts.id ELSE c.last_message_id END,
                     latest_message_preview = CASE WHEN c.last_message_at IS NULL OR mts.ts >= c.last_message_at THEN ${preview} ELSE c.latest_message_preview END,
+                    status = CASE WHEN ${resurfaces}::boolean AND (c.last_inbound_at IS NULL OR mts.ts > c.last_inbound_at) THEN 'open' ELSE c.status END,
+                    archived_at = CASE WHEN ${resurfaces}::boolean AND (c.last_inbound_at IS NULL OR mts.ts > c.last_inbound_at) THEN NULL ELSE c.archived_at END,
+                    archived_by_user_id = CASE WHEN ${resurfaces}::boolean AND (c.last_inbound_at IS NULL OR mts.ts > c.last_inbound_at) THEN NULL ELSE c.archived_by_user_id END,
                     updated_at = now()
                 FROM (
                     SELECT id, COALESCE(received_at, sent_at, created_at) AS ts

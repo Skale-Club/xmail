@@ -601,3 +601,39 @@ describe('consumeClassifiedEvents', () => {
         expect(handle).toHaveBeenCalledTimes(3)
     })
 })
+
+describe('ingestInboundPage - isExcluded (warm-up mesh traffic)', () => {
+    it('does not stage excluded messages, still stages the rest, and advances the cursor past all of them', async () => {
+        const store = createFakeStore()
+        const source = createFakeSource([[
+            message({ providerMessageId: 'mesh-1', fromAddress: 'contato@skale.club' }),
+            message({ providerMessageId: 'real-1', fromAddress: 'lead@prospect.test', inReplyTo: 'xmail-1@outreach.local' }),
+            message({ providerMessageId: 'mesh-2', fromAddress: 'agenda@xkedule.com' }),
+        ]], { ...EMPTY_CURSOR, lastReceivedAt: new Date('2026-07-16T10:00:00.000Z'), lastProviderMessageId: 'mesh-2' })
+        const mesh = new Set(['contato@skale.club', 'agenda@xkedule.com'])
+
+        const result = await ingestInboundPage({
+            store,
+            source,
+            account: { id: ACCOUNT, organizationId: ORG },
+            isExcluded: (candidate) => mesh.has(candidate.fromAddress ?? ''),
+        })
+
+        expect(result).toMatchObject({ scanned: 3, recorded: 1, excluded: 2 })
+        expect(store.all().map((event) => event.providerMessageId)).toEqual(['real-1'])
+        // The page cursor was saved, so the skipped messages are never re-fetched.
+        expect(store.cursorState()?.lastProviderMessageId).toBe('mesh-2')
+    })
+
+    it('leaves `excluded` absent when nothing was dropped', async () => {
+        const store = createFakeStore()
+        const source = createFakeSource([[message({ providerMessageId: 'a' })]], EMPTY_CURSOR)
+        const result = await ingestInboundPage({
+            store,
+            source,
+            account: { id: ACCOUNT, organizationId: ORG },
+            isExcluded: () => false,
+        })
+        expect(result.excluded).toBeUndefined()
+    })
+})

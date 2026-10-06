@@ -341,3 +341,27 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospect_ai_assessments_candidate_cr
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_prospect_ai_assessments_org_recommendation
     ON prospect_ai_assessments (organization_id, recommendation, confidence DESC, created_at DESC);
+
+-- =============================================================================
+-- Unified Inbox: ordering by activity + trigram search (migration 068)
+-- =============================================================================
+
+-- The list orders and paginates on COALESCE(last_message_at, created_at) so conversations with a
+-- NULL last_message_at keep a stable keyset position. The plain (org, last_message_at, id) index
+-- from migration 041 cannot serve that expression.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_conversations_activity
+    ON outreach_conversations (organization_id, (COALESCE(last_message_at, created_at)) DESC, id DESC);
+
+-- Search is ILIKE '%term%' over subject, preview and participant address/name. Requires pg_trgm
+-- (CREATE EXTENSION in migration 068).
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_conversations_subject_trgm
+    ON outreach_conversations USING gin (normalized_subject gin_trgm_ops);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_conversations_preview_trgm
+    ON outreach_conversations USING gin (latest_message_preview gin_trgm_ops);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_conversation_participants_address_trgm
+    ON outreach_conversation_participants USING gin (address gin_trgm_ops);
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_outreach_conversation_participants_name_trgm
+    ON outreach_conversation_participants USING gin (name gin_trgm_ops);

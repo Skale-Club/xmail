@@ -71,6 +71,10 @@ export interface InboxConversationListItem {
     lastOutboundAt: string | null
     archived: boolean
     unread: boolean
+    /** Classification of the most recent inbound message (null when there is none). */
+    lastInboundClassification: InboxMessageClassification | null
+    /** Scheduled-and-past-due or notified-and-not-dismissed reminder for the current user. */
+    reminderDue: boolean
     participants: InboxParticipant[]
     labels: InboxLabel[]
 }
@@ -104,6 +108,8 @@ export interface InboxConversationSummary {
     lastOutboundAt: string | null
     archived: boolean
     unread: boolean
+    lastInboundClassification: InboxMessageClassification | null
+    reminderDue: boolean
     labels: InboxLabel[]
 }
 
@@ -135,6 +141,17 @@ export interface InboxConversationDetail {
     conversation: InboxConversationSummary
     participants: InboxParticipant[]
     messages: InboxMessage[]
+}
+
+/** The rail counters. Computed server-side with the same predicates as the list views. */
+export interface InboxCounts {
+    needsReply: number
+    awaiting: number
+    unread: number
+    /** Conversations with an ACTIVE reminder: exactly what the Reminders view lists. Use for the rail. */
+    remindersActive: number
+    /** Conversations that want attention now (past-due scheduled or notified reminder); subset of remindersActive. */
+    remindersDue: number
 }
 
 export interface InboxCampaignOption {
@@ -234,6 +251,8 @@ export const inboxKeys = {
         ['outreach-inbox', organizationId, 'detail', conversationId] as const,
     unread: (organizationId: string | undefined) =>
         ['outreach-inbox', organizationId, 'unread-count'] as const,
+    counts: (organizationId: string | undefined) =>
+        ['outreach-inbox', organizationId, 'counts'] as const,
     labels: (organizationId: string | undefined) =>
         ['outreach-inbox', organizationId, 'labels'] as const,
     campaigns: (organizationId: string | undefined) =>
@@ -268,10 +287,12 @@ const INBOX_BASE = '/api/outreach/unified-inbox'
 // ------------------------------------------------------------
 
 /**
- * Build the exact query string the Phase 21 `GET /conversations` endpoint expects from a
- * validated URL state. Archived conversations are HIDDEN by default (`archived=false`);
- * only the explicit Archived view sends `archived=true`. Inactive filters are omitted.
- * The server currently filters by a single label, so the first selected label is sent.
+ * Build the exact query string the `GET /conversations` endpoint expects from a validated URL
+ * state. The quick view travels as ONE `view` param (default `inbox`); the server owns what it
+ * means (archived hidden, cold sends excluded, reminders including already-fired ones, ...), so the
+ * client no longer composes `status=open` / `archived` / `unread` flags itself. Refinement filters
+ * compose on top. Inactive filters are omitted. The server currently filters by a single label, so
+ * the first selected label is sent.
  */
 export function toListQueryString(
     organizationId: string,
@@ -282,14 +303,11 @@ export function toListQueryString(
     const params = new URLSearchParams()
     params.set('organizationId', organizationId)
     params.set('limit', String(limit))
-    // Default view hides archived; only the Archived quick-view opts into archived rows.
-    params.set('archived', state.archived ? 'true' : 'false')
+    params.set('view', state.view ?? 'inbox')
     if (state.q) params.set('search', state.q)
-    if (state.unread) params.set('unread', 'true')
     if (state.status) params.set('status', state.status)
     if (state.campaign) params.set('campaignId', state.campaign)
     if (state.account) params.set('emailAccountId', state.account)
-    if (state.reminder) params.set('reminderState', state.reminder)
     if (state.labels.length > 0) params.set('labelId', state.labels[0])
     const effectiveCursor = cursor ?? state.cursor
     if (effectiveCursor) params.set('cursor', effectiveCursor)
@@ -326,6 +344,20 @@ export async function getInboxUnreadCount(organizationId: string): Promise<numbe
     return data.unreadCount ?? 0
 }
 
+/** Rail counters: needs reply / awaiting / unread / reminders due, in one request. */
+export async function getInboxCounts(organizationId: string): Promise<InboxCounts> {
+    const data = await apiFetch<Partial<InboxCounts>>(
+        `${INBOX_BASE}/counts?organizationId=${encodeURIComponent(organizationId)}`,
+    )
+    return {
+        needsReply: data.needsReply ?? 0,
+        awaiting: data.awaiting ?? 0,
+        unread: data.unread ?? 0,
+        remindersActive: data.remindersActive ?? 0,
+        remindersDue: data.remindersDue ?? 0,
+    }
+}
+
 export async function listInboxLabels(organizationId: string): Promise<InboxLabel[]> {
     const data = await apiFetch<{ labels?: InboxLabel[] }>(`${INBOX_BASE}/labels?organizationId=${organizationId}`)
     return data.labels ?? []
@@ -360,13 +392,21 @@ function jsonBody(method: 'POST' | 'PATCH' | 'DELETE', body?: unknown) {
     return { method, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }
 }
 
-/** Explicit per-user read/unread. Returns the reconciled unread flag for the current user. */
+/**
+ * Explicit per-user read/unread. Returns the reconciled unread flag for the current user.
+ * `upTo` is the conversation's `lastMessageAt` as the client rendered it: the server marks read up
+ * to that point only, so a message that arrives between render and click stays unread.
+ */
 export async function setInboxReadState(
     organizationId: string,
     conversationId: string,
     read: boolean,
+    upTo?: string | null,
 ): Promise<{ conversationId: string; read: boolean; unread: boolean }> {
-    return apiFetch(withOrg(`/conversations/${conversationId}/read-state`, organizationId), jsonBody('PATCH', { read }))
+    return apiFetch(
+        withOrg(`/conversations/${conversationId}/read-state`, organizationId),
+        jsonBody('PATCH', upTo ? { read, upTo } : { read }),
+    )
 }
 
 export async function setInboxArchived(

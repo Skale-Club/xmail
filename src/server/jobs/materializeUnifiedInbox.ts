@@ -35,6 +35,11 @@ export interface MaterializeInboxResult {
     materialized: number
     duplicates: number
     failed: number
+    /**
+     * Warm-up mesh events closed as `skipped` instead of becoming conversations. Only present when
+     * at least one was excluded this tick, so quiet ticks keep the original four-field shape.
+     */
+    warmupExcluded?: number
 }
 
 export interface MaterializeInboxDeps {
@@ -51,7 +56,7 @@ export interface MaterializeInboxDeps {
      */
     organizationId?: string
     /** Injectable materializer (tests force failures); defaults to the real service. */
-    materialize?: (eventId: string) => Promise<{ inserted: boolean; organizationId?: string | null; conversationId?: string | null }>
+    materialize?: (eventId: string) => Promise<{ inserted: boolean; status?: string; organizationId?: string | null; conversationId?: string | null }>
     /** Injectable fanout publisher (tests assert it is called post-commit); defaults to the in-process bus. */
     publish?: (event: { organizationId: string; conversationId: string | null }) => void
 }
@@ -141,6 +146,8 @@ export async function materializeUnifiedInbox(deps: MaterializeInboxDeps = {}): 
                 if (outcome.organizationId) {
                     publish({ organizationId: outcome.organizationId, conversationId: outcome.conversationId ?? null })
                 }
+            } else if (outcome.status === 'warmup_excluded') {
+                result.warmupExcluded = (result.warmupExcluded ?? 0) + 1
             } else {
                 result.duplicates++
             }
@@ -182,6 +189,7 @@ export async function materializeUnifiedInbox(deps: MaterializeInboxDeps = {}): 
             materialized: result.materialized,
             duplicates: result.duplicates,
             failed: result.failed,
+            warmupExcluded: result.warmupExcluded ?? 0,
         }, 'unified inbox materialization tick')
     }
 

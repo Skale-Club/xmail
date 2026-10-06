@@ -19,6 +19,7 @@
 import type { UnifiedInboxSql } from './ingest'
 import type { OutreachProviderName } from '@/db/schema'
 import { sqlTimestampValue } from '../sql-timestamp'
+import { isMeshAccount, isWarmupTraffic, loadMeshAddresses, warmupMessageIdTokens, type MeshAddressSet } from './warmup-traffic'
 import {
     bodyPreview,
     generatedThreadKey,
@@ -45,6 +46,13 @@ export interface MaterializeOutboundResult {
     /** `materialized` = first ingestion; `duplicate` = already materialized; `skipped` = not sent / missing. */
     status: 'materialized' | 'duplicate' | 'skipped'
     inserted: boolean
+    /** The owning organization, for post-commit SSE fanout. Null when nothing was materialized. */
+    organizationId?: string | null
+    /**
+     * Whether the conversation has an inbound message, i.e. is visible in an operator view. A cold
+     * send nobody has answered is in no view, so it needs no SSE signal.
+     */
+    hasInbound?: boolean
     conversationId: string | null
     conversationMessageId: string | null
 }
@@ -52,6 +60,8 @@ export interface MaterializeOutboundResult {
 export interface MaterializeOutboundDeps {
     sql?: UnifiedInboxSql
     now?: () => Date
+    /** Test seam: the mesh address set. Defaults to a fresh read of `email_accounts`. */
+    meshAddresses?: MeshAddressSet
     /** Optional organization scope (unused in the single-id load, reserved for symmetry with backfill). */
     organizationId?: string
 }
@@ -122,18 +132,40 @@ export async function materializeOutboundEmail(
             return {
                 status: 'duplicate',
                 inserted: false,
+                organizationId: email.organization_id,
                 conversationId: existingMessage[0].conversation_id,
                 conversationMessageId: existingMessage[0].id,
             }
         }
 
         // Resolve the sending account (provider + address) and re-validate org ownership.
-        const accountRows = await tx<{ organization_id: string; email: string; provider: OutreachProviderName }>`
-            SELECT organization_id, email, provider FROM email_accounts WHERE id = ${email.email_account_id}
+        const accountRows = await tx<{ organization_id: string; email: string; provider: OutreachProviderName; warmup_only: boolean; warmup_source: string }>`
+            SELECT organization_id, email, provider, warmup_only, warmup_source FROM email_accounts WHERE id = ${email.email_account_id}
         `
         const account = accountRows[0]
         if (!account || account.organization_id !== email.organization_id) {
             throw new Error('outreach email account does not belong to its organization')
+        }
+
+        // Warm-up sends never become conversations (see warmup-traffic.ts). The mesh engine sends
+        // through sendComposedOutreachMessage and does not write outreach_emails today, so this is
+        // a guard against that changing, not a path in current use. A skipped send is not an error
+        // and leaves no row behind.
+        // Only a mesh mailbox can be sending warm-up mail (an info@ replying to a mesh address is real).
+        const accountInMesh = isMeshAccount({ warmupSource: account.warmup_source, warmupOnly: account.warmup_only })
+        const meshAddresses = deps.meshAddresses ?? (accountInMesh ? await loadMeshAddresses(tx) : new Set<string>())
+        if (accountInMesh && isWarmupTraffic({
+            accountWarmupOnly: account.warmup_only === true,
+            accountInMesh,
+            counterpartAddresses: [email.to_address],
+            messageIds: warmupMessageIdTokens({
+                messageId: email.message_id,
+                inReplyTo: email.in_reply_to,
+                references: email.message_references,
+            }),
+            meshAddresses,
+        })) {
+            return SKIPPED
         }
 
         // Attribution: campaign/campaign_lead come straight from the send; the lead is the
@@ -259,6 +291,7 @@ export async function materializeOutboundEmail(
             inserted = false
         }
 
+        let hasInbound = false
         if (inserted) {
             const participants: Array<{ address: string; role: string }> = []
             if (fromAddress) participants.push({ address: fromAddress, role: 'from' })
@@ -272,7 +305,7 @@ export async function materializeOutboundEmail(
             }
 
             // Outbound summary: advance last_outbound_at / last_message_*, never last_inbound_at.
-            await tx`
+            const summaryRows = await tx<{ has_inbound: boolean }>`
                 UPDATE outreach_conversations c SET
                     last_message_at = GREATEST(COALESCE(c.last_message_at, mts.ts), mts.ts),
                     last_outbound_at = GREATEST(COALESCE(c.last_outbound_at, mts.ts), mts.ts),
@@ -284,12 +317,16 @@ export async function materializeOutboundEmail(
                     FROM outreach_conversation_messages WHERE id = ${conversationMessageId}
                 ) mts
                 WHERE c.id = ${conversationId} AND c.organization_id = ${email.organization_id}
+                RETURNING (c.last_inbound_at IS NOT NULL) AS has_inbound
             `
+            hasInbound = summaryRows[0]?.has_inbound === true
         }
 
         return {
             status: inserted ? 'materialized' : 'duplicate',
             inserted,
+            organizationId: email.organization_id,
+            hasInbound,
             conversationId,
             conversationMessageId,
         }

@@ -213,7 +213,7 @@ function orchestratorDeps(overrides: Partial<CreateResolvedSendCommandDeps> = {}
         created: true,
     }))
     const deps: CreateResolvedSendCommandDeps = {
-        loadConversation: vi.fn(async () => ({ leadId: null })),
+        loadConversation: vi.fn(async () => ({ leadId: null, emailAccountId: ACCOUNT_1 })),
         loadAccountAddress: vi.fn(async () => SELF),
         loadThreadMessages: vi.fn(async () => [outbound(), inbound()]),
         validateAttachments: vi.fn(async () => undefined),
@@ -253,6 +253,14 @@ describe('createResolvedSendCommand', () => {
         expect('dispatch' in deps).toBe(false)
         await createResolvedSendCommand({ ...base, mode: 'reply' }, deps)
         expect(persistCommand).toHaveBeenCalledOnce()
+    })
+
+    it('rejects an email account that is not the one owning the conversation', async () => {
+        const { deps, persistCommand } = orchestratorDeps()
+        const otherAccount = '77777777-7777-4777-8777-777777777777'
+        await expect(createResolvedSendCommand({ ...base, emailAccountId: otherAccount, mode: 'reply' }, deps))
+            .rejects.toMatchObject({ code: 'account_conversation_mismatch', status: 409 })
+        expect(persistCommand).not.toHaveBeenCalled()
     })
 
     it('rejects a conversation outside the caller organization (cross-tenant)', async () => {
