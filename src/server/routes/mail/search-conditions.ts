@@ -1,5 +1,5 @@
 import { and, eq, sql, type SQL } from 'drizzle-orm'
-import { mailFolders, mailMessages } from '../../../db/schema'
+import { mailMessages } from '../../../db/schema'
 import {
     containsPattern,
     normalizeFolderAlias,
@@ -80,6 +80,10 @@ export function buildMailSearchConditions(parsed: ParsedMailSearch, options: Sea
     if (parsed.after) conditions.push(sql`${messageDate} >= ${parsed.after.toISOString()}::timestamp`)
     if (parsed.before) conditions.push(sql`${messageDate} < ${parsed.before.toISOString()}::timestamp`)
 
+    // The folder subqueries name mail_folders with a literal alias on purpose: these conditions also
+    // run inside db.query.mailMessages.findMany, and Drizzle's relational builder rewrites every
+    // column reference in a raw sql`` template to the outer "mailMessages" alias, which turned
+    // ${mailFolders.type} into "mailMessages"."type" (column does not exist -> 500 on every search).
     const folderOperators = options.allowFolderOperator === false ? [] : parsed.folders
 
     if (folderId) {
@@ -87,20 +91,20 @@ export function buildMailSearchConditions(parsed: ParsedMailSearch, options: Sea
     } else if (folderOperators.length > 0) {
         const wanted = folderOperators.map(normalizeFolderAlias)
         const folderChecks = wanted.map(value => sql`(
-            lower(${mailFolders.type}) = ${value}
-            or lower(${mailFolders.name}) = ${value}
-            or lower(${mailFolders.remoteId}) = ${value}
+            lower(search_mf.type) = ${value}
+            or lower(search_mf.name) = ${value}
+            or lower(search_mf.remote_id) = ${value}
         )`)
         conditions.push(sql`${mailMessages.folderId} in (
-            select ${mailFolders.id} from ${mailFolders}
-            where ${mailFolders.mailboxId} = ${mailboxId}
+            select search_mf.id from mail_folders search_mf
+            where search_mf.mailbox_id = ${mailboxId}
             and (${sql.join(folderChecks, sql` or `)})
         )`)
     } else if (options.excludeTrashSpamByDefault) {
         conditions.push(sql`${mailMessages.folderId} not in (
-            select ${mailFolders.id} from ${mailFolders}
-            where ${mailFolders.mailboxId} = ${mailboxId}
-            and ${mailFolders.type} in ('trash', 'spam')
+            select search_mf.id from mail_folders search_mf
+            where search_mf.mailbox_id = ${mailboxId}
+            and search_mf.type in ('trash', 'spam')
         )`)
     }
 

@@ -79,6 +79,7 @@ export default function SearchPage() {
     const {
         data,
         isLoading,
+        isError,
         isFetching,
         isFetchingNextPage,
         hasNextPage,
@@ -369,10 +370,11 @@ export default function SearchPage() {
                 <h1 className="text-lg font-semibold text-foreground">
                     Search Results
                 </h1>
-                {hasQuery && !isLoading && (
+                {hasQuery && !isLoading && !isError && (
                     <p className="text-sm text-muted-foreground" aria-live="polite">
                         {total} {total === 1 ? 'result' : 'results'}
                         {filters.query && ` for "${filters.query}"`}
+                        {selectedMailbox && ` in ${selectedMailbox.email}`}
                     </p>
                 )}
             </div>
@@ -418,6 +420,19 @@ export default function SearchPage() {
                         Tip: combine words with operators such as from:ana, to:bob, subject:invoice,
                         has:attachment, is:unread, before:2026-01-31 or in:sent.
                     </p>
+                </div>
+            ) : isError ? (
+                <div role="alert" className="flex flex-col items-center justify-center h-64 px-6 text-center text-muted-foreground">
+                    <SearchIcon className="w-12 h-12 mb-4 opacity-50" />
+                    <p className="text-lg font-medium text-foreground">Search failed</p>
+                    <p className="text-sm mt-1">Something went wrong on our side. Your mail is fine.</p>
+                    <button
+                        type="button"
+                        onClick={() => { void refetch() }}
+                        className="mt-4 text-sm text-blue-600 hover:text-blue-700"
+                    >
+                        Try again
+                    </button>
                 </div>
             ) : emails.length > 0 ? (
                 <EmailList
