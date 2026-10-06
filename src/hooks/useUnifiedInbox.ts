@@ -19,6 +19,7 @@ import {
     type UseInfiniteQueryResult,
     type InfiniteData,
 } from '@tanstack/react-query'
+import { toast } from '../components/ui/toaster'
 import {
     acceptInboxAiRun,
     applyInboxSuppression,
@@ -33,6 +34,7 @@ import {
     detachInboxLabel,
     getInboxAiSettings,
     getInboxConversation,
+    getInboxCounts,
     getInboxSendCommand,
     getInboxUnreadCount,
     inboxKeys,
@@ -65,6 +67,7 @@ import {
     type InboxConversationListResponse,
     type InboxConversationState,
     type InboxConversationSummary,
+    type InboxCounts,
     type InboxLabel,
     type InboxReminder,
     type InboxReminderStatus,
@@ -72,6 +75,7 @@ import {
     type InboxSnippet,
     type SuppressionScope,
 } from '../lib/unified-inbox-api'
+import { refreshInboxListsFirstPage } from '../lib/unified-inbox-cache'
 import { listFilterSignature, type InboxUrlState } from '../lib/unified-inbox-url'
 
 const LIST_PAGE_SIZE = 25
@@ -109,14 +113,32 @@ export function useInboxConversation(
     })
 }
 
-/** Org-scoped unread aggregate for the navigation badge. Bounded polling (SSE is a later plan). */
+/**
+ * Org-scoped unread aggregate for the navigation badge. NO polling of its own: while the SSE
+ * stream is live it is refreshed by pushed signals, and when the stream is down
+ * useUnifiedInboxEvents runs a 30s aggregate fallback that invalidates this key. A second timer
+ * here only duplicated that work (and ran even while SSE was healthy).
+ */
 export function useInboxUnreadCount(organizationId: string | undefined) {
     return useQuery<number, Error>({
         queryKey: inboxKeys.unread(organizationId),
         enabled: !!organizationId,
         queryFn: () => getInboxUnreadCount(organizationId as string),
-        refetchInterval: 120_000,
         staleTime: 60_000,
+    })
+}
+
+/**
+ * The rail counters ({ needsReply, awaiting, unread, remindersDue }), computed server-side with the
+ * same predicates the list views use so a count and its list always agree. Refreshed by the same
+ * SSE/fallback invalidation as the unread badge.
+ */
+export function useInboxCounts(organizationId: string | undefined) {
+    return useQuery<InboxCounts, Error>({
+        queryKey: inboxKeys.counts(organizationId),
+        enabled: !!organizationId,
+        queryFn: () => getInboxCounts(organizationId as string),
+        staleTime: 30_000,
     })
 }
 
@@ -210,6 +232,16 @@ function patchInboxDetail(
     )
 }
 
+/** Mark every list stale WITHOUT a network request (the optimistic patch + reconcile is already truth). */
+function markInboxListsStale(queryClient: QueryClient, organizationId: string | undefined): void {
+    void queryClient.invalidateQueries({ predicate: isOrgListQuery(organizationId), refetchType: 'none' })
+}
+
+function refreshInboxAggregates(queryClient: QueryClient, organizationId: string | undefined): void {
+    void queryClient.invalidateQueries({ queryKey: inboxKeys.unread(organizationId) })
+    void queryClient.invalidateQueries({ queryKey: inboxKeys.counts(organizationId) })
+}
+
 interface OptimisticContext {
     listSnapshots: ListSnapshot
     detailKey: readonly unknown[]
@@ -218,8 +250,11 @@ interface OptimisticContext {
 
 /**
  * Shared engine for a single-conversation optimistic mutation. It snapshots every affected
- * list + the detail, patches the target conversation in place, rolls back on error, reconciles
- * from the server response on success, and invalidates the unread + list caches on settle.
+ * list + the detail, patches the target conversation in place, rolls back on error (and tells the
+ * operator, so a vanished change is never silent), reconciles from the server response on success,
+ * and on settle refreshes the aggregates. Lists are refetched (first page only) only when the
+ * mutation can change view MEMBERSHIP (`affectsMembership`: archive/status); for the rest the
+ * reconciled patch is already the truth, so they are merely marked stale.
  */
 function useOptimisticConversationMutation<TVars extends { conversationId: string }, TData>(
     organizationId: string | undefined,
@@ -227,6 +262,7 @@ function useOptimisticConversationMutation<TVars extends { conversationId: strin
     patchItem: (item: InboxConversationListItem, vars: TVars) => InboxConversationListItem | null,
     patchSummary: (summary: InboxConversationSummary, vars: TVars) => InboxConversationSummary,
     reconcile?: (queryClient: QueryClient, data: TData, vars: TVars) => void,
+    options: { affectsMembership?: boolean; failureTitle?: string } = {},
 ) {
     const queryClient = useQueryClient()
     return useMutation<TData, Error, TVars, OptimisticContext>({
@@ -244,6 +280,11 @@ function useOptimisticConversationMutation<TVars extends { conversationId: strin
             return { listSnapshots, detailKey, detailSnapshot }
         },
         onError: (_error, _vars, context) => {
+            toast({
+                title: options.failureTitle ?? "Couldn't update the conversation",
+                description: 'The change was not saved and has been undone.',
+                variant: 'destructive',
+            })
             if (!context) return
             restoreInboxLists(queryClient, context.listSnapshots)
             queryClient.setQueryData(context.detailKey, context.detailSnapshot)
@@ -252,17 +293,28 @@ function useOptimisticConversationMutation<TVars extends { conversationId: strin
             reconcile?.(queryClient, data, vars)
         },
         onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: inboxKeys.unread(organizationId) })
-            queryClient.invalidateQueries({ predicate: isOrgListQuery(organizationId) })
+            refreshInboxAggregates(queryClient, organizationId)
+            if (options.affectsMembership) refreshInboxListsFirstPage(queryClient, organizationId)
+            else markInboxListsStale(queryClient, organizationId)
         },
     })
 }
 
-/** Toggle explicit per-user read/unread. Optimistically flips `unread`, reconciles to server truth. */
+/**
+ * Toggle explicit per-user read/unread. Optimistically flips `unread`, reconciles to server truth.
+ *
+ * Pass `upTo` (the conversation's `lastMessageAt` as rendered) when marking READ: the server then
+ * marks read only up to what the operator actually saw, so a message that arrives while the thread
+ * is open stays unread instead of being swallowed. The reconcile step reflects that (`unread`
+ * stays true when something newer exists).
+ */
 export function useInboxReadState(organizationId: string | undefined) {
-    return useOptimisticConversationMutation<{ conversationId: string; read: boolean }, { conversationId: string; read: boolean; unread: boolean }>(
+    return useOptimisticConversationMutation<
+        { conversationId: string; read: boolean; upTo?: string | null },
+        { conversationId: string; read: boolean; unread: boolean }
+    >(
         organizationId,
-        ({ conversationId, read }) => setInboxReadState(organizationId as string, conversationId, read),
+        ({ conversationId, read, upTo }) => setInboxReadState(organizationId as string, conversationId, read, upTo),
         (item, { read }) => ({ ...item, unread: !read }),
         (summary, { read }) => ({ ...summary, unread: !read }),
         (queryClient, data, vars) => {
@@ -271,6 +323,7 @@ export function useInboxReadState(organizationId: string | undefined) {
             )
             patchInboxDetail(queryClient, organizationId, vars.conversationId, (s) => ({ ...s, unread: data.unread }))
         },
+        { failureTitle: "Couldn't update read state" },
     )
 }
 
@@ -287,6 +340,7 @@ export function useInboxArchive(organizationId: string | undefined) {
             )
             patchInboxDetail(queryClient, organizationId, vars.conversationId, (s) => ({ ...s, archived: data.archived, status: data.status }))
         },
+        { affectsMembership: true, failureTitle: "Couldn't archive the conversation" },
     )
 }
 
@@ -303,6 +357,7 @@ export function useInboxStatus(organizationId: string | undefined) {
             )
             patchInboxDetail(queryClient, organizationId, vars.conversationId, (s) => ({ ...s, status: data.status, archived: data.archived }))
         },
+        { affectsMembership: true, failureTitle: "Couldn't change the conversation status" },
     )
 }
 
@@ -317,6 +372,8 @@ export function useInboxLabelAttach(organizationId: string | undefined) {
         ({ conversationId, label }) => attachInboxLabel(organizationId as string, conversationId, label.id),
         (item, { label }) => ({ ...item, labels: addLabel(item.labels, label) }),
         (summary, { label }) => ({ ...summary, labels: addLabel(summary.labels, label) }),
+        undefined,
+        { failureTitle: "Couldn't add the label" },
     )
 }
 
@@ -327,6 +384,8 @@ export function useInboxLabelDetach(organizationId: string | undefined) {
         ({ conversationId, labelId }) => detachInboxLabel(organizationId as string, conversationId, labelId),
         (item, { labelId }) => ({ ...item, labels: item.labels.filter((l) => l.id !== labelId) }),
         (summary, { labelId }) => ({ ...summary, labels: summary.labels.filter((l) => l.id !== labelId) }),
+        undefined,
+        { failureTitle: "Couldn't remove the label" },
     )
 }
 
@@ -379,13 +438,20 @@ export function useInboxBulkAction(organizationId: string | undefined) {
             return { listSnapshots, detailSnapshots }
         },
         onError: (_error, _vars, context) => {
+            toast({
+                title: "Couldn't update the selected conversations",
+                description: 'The change was not saved and has been undone.',
+                variant: 'destructive',
+            })
             if (!context) return
             restoreInboxLists(queryClient, context.listSnapshots)
             for (const [detailKey, data] of context.detailSnapshots) queryClient.setQueryData(detailKey, data)
         },
         onSettled: (_data, _error, vars) => {
-            queryClient.invalidateQueries({ queryKey: inboxKeys.unread(organizationId) })
-            queryClient.invalidateQueries({ predicate: isOrgListQuery(organizationId) })
+            refreshInboxAggregates(queryClient, organizationId)
+            // Bulk results are only matched/updated/skipped counts (no per-row truth to reconcile
+            // from), and most bulk actions move rows between views, so the first page is refetched.
+            refreshInboxListsFirstPage(queryClient, organizationId)
             // Invalidate each affected detail so the open thread reconciles to server truth on settle.
             for (const id of vars.conversationIds) {
                 queryClient.invalidateQueries({ queryKey: inboxKeys.detail(organizationId, id) })
@@ -465,20 +531,39 @@ export function useInboxReminderMutations(organizationId: string | undefined, co
         if (conversationId) {
             queryClient.invalidateQueries({ queryKey: inboxKeys.reminders(organizationId, conversationId) })
         }
-        queryClient.invalidateQueries({ predicate: isOrgListQuery(organizationId) })
+        // A reminder changes membership of the Reminders view and the remindersDue counter, not the
+        // loaded rows themselves: mark lists stale and refetch just the first page of the active one.
+        refreshInboxListsFirstPage(queryClient, organizationId)
+        refreshInboxAggregates(queryClient, organizationId)
     }
 
     const create = useMutation<InboxReminder, Error, { remindAt: string; note?: string | null }>({
         mutationFn: ({ remindAt, note }) => createInboxReminder(organizationId as string, conversationId as string, remindAt, note),
-        onSuccess: invalidate,
+        onSuccess: () => {
+            invalidate()
+            toast({ title: 'Reminder set', variant: 'success' })
+        },
+        onError: () => {
+            toast({
+                title: "Couldn't set the reminder",
+                description: 'Please try again.',
+                variant: 'destructive',
+            })
+        },
     })
     const update = useMutation<InboxReminder, Error, { reminderId: string; remindAt?: string; note?: string | null; status?: InboxReminderStatus }>({
         mutationFn: ({ reminderId, ...patch }) => updateInboxReminder(organizationId as string, reminderId, patch),
         onSuccess: invalidate,
+        onError: () => {
+            toast({ title: "Couldn't update the reminder", description: 'Please try again.', variant: 'destructive' })
+        },
     })
     const remove = useMutation<void, Error, { reminderId: string }>({
         mutationFn: ({ reminderId }) => deleteInboxReminder(organizationId as string, reminderId),
         onSuccess: invalidate,
+        onError: () => {
+            toast({ title: "Couldn't remove the reminder", description: 'Please try again.', variant: 'destructive' })
+        },
     })
     return { create, update, remove }
 }
@@ -521,8 +606,8 @@ export function useInboxComposer(organizationId: string | undefined, conversatio
     useEffect(() => {
         if (settledStatus === 'sent') {
             if (conversationId) queryClient.invalidateQueries({ queryKey: inboxKeys.detail(organizationId, conversationId) })
-            queryClient.invalidateQueries({ predicate: isOrgListQuery(organizationId) })
-            queryClient.invalidateQueries({ queryKey: inboxKeys.unread(organizationId) })
+            refreshInboxListsFirstPage(queryClient, organizationId)
+            refreshInboxAggregates(queryClient, organizationId)
         }
     }, [settledStatus, organizationId, conversationId, queryClient])
 
@@ -571,8 +656,8 @@ export function useInboxSuppression(organizationId: string | undefined) {
         mutationFn: ({ email, scope }: { email: string; scope: SuppressionScope }) =>
             applyInboxSuppression(organizationId as string, email, scope),
         onSuccess: () => {
-            queryClient.invalidateQueries({ predicate: isOrgListQuery(organizationId) })
-            queryClient.invalidateQueries({ queryKey: inboxKeys.unread(organizationId) })
+            refreshInboxListsFirstPage(queryClient, organizationId)
+            refreshInboxAggregates(queryClient, organizationId)
         },
     })
     return {

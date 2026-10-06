@@ -594,7 +594,7 @@ export interface PersistResolvedCommandArgs {
 }
 
 export interface CreateResolvedSendCommandDeps {
-    loadConversation: (organizationId: string, conversationId: string) => Promise<{ leadId: string | null } | null>
+    loadConversation: (organizationId: string, conversationId: string) => Promise<{ leadId: string | null; emailAccountId: string } | null>
     loadAccountAddress: (organizationId: string, emailAccountId: string) => Promise<string | null>
     loadThreadMessages: (organizationId: string, conversationId: string) => Promise<PersistedThreadMessage[]>
     validateAttachments: (organizationId: string, attachmentIds: string[]) => Promise<void>
@@ -609,6 +609,18 @@ export async function createResolvedSendCommand(
 
     const conversation = await d.loadConversation(request.organizationId, request.conversationId)
     if (!conversation) throw new InboxCommandResolutionError('conversation_not_found', 'Conversation not found', 404)
+
+    // A reply always leaves through the mailbox that owns the conversation. Sending it from a
+    // different one (e.g. an info@ conversation answered from a campaign sender, or the reverse)
+    // breaks the three-boxes rule and the thread the recipient sees. Rejected before any account
+    // lookup so the error does not depend on whether the other account exists.
+    if (request.emailAccountId !== conversation.emailAccountId) {
+        throw new InboxCommandResolutionError(
+            'account_conversation_mismatch',
+            'Replies must be sent from the email account that owns the conversation',
+            409,
+        )
+    }
 
     const accountAddress = await d.loadAccountAddress(request.organizationId, request.emailAccountId)
     if (!accountAddress) throw new InboxCommandResolutionError('account_not_found', 'Sending account not found', 404)
@@ -658,11 +670,11 @@ export function defaultCreateResolvedSendCommandDeps(): CreateResolvedSendComman
             const { and, eq } = await import('drizzle-orm')
             const { outreachConversations } = await import('../../db/schema')
             const rows = await db
-                .select({ leadId: outreachConversations.leadId })
+                .select({ leadId: outreachConversations.leadId, emailAccountId: outreachConversations.emailAccountId })
                 .from(outreachConversations)
                 .where(and(eq(outreachConversations.organizationId, organizationId), eq(outreachConversations.id, conversationId)))
                 .limit(1)
-            return rows[0] ? { leadId: rows[0].leadId ?? null } : null
+            return rows[0] ? { leadId: rows[0].leadId ?? null, emailAccountId: rows[0].emailAccountId } : null
         },
         async loadAccountAddress(organizationId, emailAccountId) {
             const { db } = await import('../../db')

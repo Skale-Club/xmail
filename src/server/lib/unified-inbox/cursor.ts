@@ -77,6 +77,8 @@ export interface ConversationCursorFilters {
     labelId?: string | null
     reminderState?: 'active' | 'due' | null
     archived?: boolean | null
+    /** Quick view (inbox, needs_reply, ...). Part of the fingerprint only when set. */
+    view?: string | null
 }
 
 /**
@@ -116,7 +118,7 @@ interface CursorEnvelope {
  * "can't replay across filters" guard, and tenant isolation does not rely on it.
  */
 export function fingerprintConversationFilters(filters: ConversationCursorFilters): string {
-    const canonical = JSON.stringify([
+    const parts: unknown[] = [
         filters.organizationId,
         filters.unread ? 1 : 0,
         filters.status ?? null,
@@ -126,7 +128,11 @@ export function fingerprintConversationFilters(filters: ConversationCursorFilter
         filters.labelId ?? null,
         filters.reminderState ?? null,
         filters.archived == null ? null : (filters.archived ? 1 : 0),
-    ])
+    ]
+    // Appended only when set, so fingerprints of view-less filter sets are byte-identical to the
+    // ones minted before views existed.
+    if (filters.view) parts.push(filters.view)
+    const canonical = JSON.stringify(parts)
     return createHash('sha256').update(canonical).digest('base64url').slice(0, 22)
 }
 

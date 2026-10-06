@@ -1580,7 +1580,7 @@ export type OutreachProviderEventClassification = 'reply' | 'bounce' | 'auto_rep
  * message, then flips it to `materialized`; exhausted retries land on `failed`.
  * Deliberately independent from `processed_at` (classification side effects).
  */
-export type OutreachProviderEventMaterializationStatus = 'pending' | 'processing' | 'materialized' | 'failed'
+export type OutreachProviderEventMaterializationStatus = 'pending' | 'processing' | 'materialized' | 'failed' | 'skipped'
 
 /**
  * Bounded, resumable per-account ingestion state. Replaces user-visible read/unread
@@ -1695,7 +1695,7 @@ export const outreachProviderEvents = pgTable('outreach_provider_events', {
     ),
     materializationStatusCheck: check(
         'outreach_provider_events_materialization_status_check',
-        sql`${table.materializationStatus} IN ('pending', 'processing', 'materialized', 'failed')`,
+        sql`${table.materializationStatus} IN ('pending', 'processing', 'materialized', 'failed', 'skipped')`,
     ),
     materializationLeaseCheck: check(
         'outreach_provider_events_materialization_lease_check',
