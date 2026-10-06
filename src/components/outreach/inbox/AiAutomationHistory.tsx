@@ -1,5 +1,14 @@
 import { History } from 'lucide-react'
 import type { AiRunPublicDto } from '../../../lib/unified-inbox-api'
+import { formatDateTime } from '../../../lib/inbox-relative-time'
+import {
+    RUN_ACTION_LABEL,
+    RUN_KIND_LABEL,
+    RUN_STATUS_LABEL,
+    runOutcomeLabel,
+    runOutcomeSummary,
+    type RunTone,
+} from './ai-run-labels'
 
 // ============================================================
 // AI automation causal history (Phase 23 AI-05 / AI-06)
@@ -8,58 +17,29 @@ import type { AiRunPublicDto } from '../../../lib/unified-inbox-api'
 // public DTO (toPublicAiRun): a run's kind/status, prompt version + model LABEL, trigger message
 // REFERENCE + time, the decision, the approval actor/time, the policy code, and the command/send
 // outcome or failure code. It is structurally incapable of leaking a secret because the DTO carries
-// none — there is no system/hidden prompt, model parameters, credential, lease token, raw error
-// detail, idempotency key, or cross-tenant body anywhere in its props (locked #5).
+// none (locked #5).
+//
+// This is the ONLY place the history renders (at the end of the thread). Model, prompt version,
+// trigger message id and approver id live under "Technical details", collapsed by default.
 
-/** Human labels for each redacted run status. */
-const RUN_STATUS_LABEL: Record<string, string> = {
-    pending: 'Queued',
-    running: 'Working',
-    awaiting_approval: 'Draft ready',
-    completed: 'Completed',
-    failed: 'Failed',
-    deferred: 'Held / deferred',
-    cancelled: 'Cancelled',
-}
-
-/** Human labels for the redacted model decision (action). */
-const RUN_ACTION_LABEL: Record<string, string> = {
-    draft: 'Drafted a reply',
-    wait: 'Chose to wait',
-    complete: 'Marked complete',
-    escalate: 'Escalated to a human',
-    none: 'No action',
-}
-
-const KIND_LABEL: Record<string, string> = {
-    draft: 'Suggestion',
-    autonomous: 'Autonomous',
+const TONE_CLASS: Record<RunTone, string> = {
+    good: 'text-emerald-700 dark:text-emerald-400',
+    bad: 'text-red-600 dark:text-red-400',
+    warn: 'text-amber-700 dark:text-amber-400',
+    muted: 'text-muted-foreground',
 }
 
 function statusTone(status: string): string {
     switch (status) {
         case 'completed':
-            return 'text-emerald-700 dark:text-emerald-400'
+            return TONE_CLASS.good
         case 'failed':
-            return 'text-red-600 dark:text-red-400'
+            return TONE_CLASS.bad
         case 'deferred':
-            return 'text-amber-700 dark:text-amber-400'
+            return TONE_CLASS.warn
         default:
-            return 'text-muted-foreground'
+            return 'text-foreground'
     }
-}
-
-/**
- * Describe the command/send outcome of a run WITHOUT leaking anything: an autonomous run that produced
- * an outreach email is "Sent"; a linked-but-unsent command is "Queued to send"; a policy stop shows the
- * policy code; a failure shows the coarse machine error code.
- */
-function outcomeSummary(run: AiRunPublicDto): { label: string; tone: string } | null {
-    if (run.outreachEmailId) return { label: 'Sent through the policy gate', tone: 'text-emerald-700 dark:text-emerald-400' }
-    if (run.status === 'failed' && run.errorCode) return { label: `Failed: ${run.errorCode}`, tone: 'text-red-600 dark:text-red-400' }
-    if (run.policyCode) return { label: `Policy: ${run.policyCode}`, tone: 'text-amber-700 dark:text-amber-400' }
-    if (run.sendCommandId) return { label: 'Command queued (not yet sent)', tone: 'text-muted-foreground' }
-    return null
 }
 
 export interface AiAutomationHistoryProps {
@@ -89,13 +69,17 @@ export function AiAutomationHistory({
             ) : (
                 <ul className="space-y-1.5">
                     {items.map((run) => {
-                        const outcome = outcomeSummary(run)
+                        const outcome = runOutcomeSummary(run)
+                        const decision = runOutcomeLabel(run.outputOutcome)
                         const approved = run.approvedByUserId && run.approvedAt
+                        const hasTechnical = Boolean(
+                            run.promptVersion || run.model || run.triggerMessageId || run.approvedByUserId || run.errorCode || run.policyCode || run.outputOutcome,
+                        )
                         return (
                             <li key={run.id} className="rounded border border-border bg-card/60 p-2 text-xs">
                                 <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                                    <span className="rounded bg-muted px-1.5 py-0.5 text-[0.65rem] uppercase tracking-wide text-muted-foreground">
-                                        {KIND_LABEL[run.runKind] ?? run.runKind}
+                                    <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-foreground">
+                                        {RUN_KIND_LABEL[run.runKind] ?? run.runKind}
                                     </span>
                                     <span className={`font-medium ${statusTone(run.status)}`}>
                                         {RUN_STATUS_LABEL[run.status] ?? run.status}
@@ -103,27 +87,36 @@ export function AiAutomationHistory({
                                     {run.action && (
                                         <span className="text-muted-foreground">· {RUN_ACTION_LABEL[run.action] ?? run.action}</span>
                                     )}
+                                    {decision && <span className="text-muted-foreground">· {decision}</span>}
                                     <time dateTime={run.createdAt} className="ml-auto shrink-0 text-muted-foreground">
-                                        {new Date(run.createdAt).toLocaleString()}
+                                        {formatDateTime(run.createdAt)}
                                     </time>
                                 </div>
-                                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[0.7rem] text-muted-foreground">
-                                    {run.promptVersion && <span title="Prompt version">{run.promptVersion}</span>}
-                                    {run.model && <span title="Model">· {run.model}</span>}
-                                    {run.outputOutcome && <span>· {run.outputOutcome}</span>}
-                                    {run.triggerMessageId && (
-                                        <span title="Triggering message reference">· trigger #{run.triggerMessageId.slice(0, 8)}</span>
-                                    )}
-                                </div>
                                 {(outcome || approved) && (
-                                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[0.7rem]">
-                                        {outcome && <span className={outcome.tone}>{outcome.label}</span>}
+                                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                        {outcome && <span className={TONE_CLASS[outcome.tone]}>{outcome.label}</span>}
                                         {approved && (
                                             <span className="text-muted-foreground">
-                                                · Approved by {run.approvedByUserId!.slice(0, 8)}
+                                                {outcome ? '· ' : ''}Approved by a person on {formatDateTime(run.approvedAt as string)}
                                             </span>
                                         )}
                                     </div>
+                                )}
+                                {hasTechnical && (
+                                    <details className="mt-1">
+                                        <summary className="cursor-pointer select-none text-muted-foreground hover:text-foreground">
+                                            Technical details
+                                        </summary>
+                                        <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-muted-foreground">
+                                            {run.promptVersion && (<><dt>Prompt version</dt><dd className="break-all text-foreground">{run.promptVersion}</dd></>)}
+                                            {run.model && (<><dt>Model</dt><dd className="break-all text-foreground">{run.model}</dd></>)}
+                                            {run.outputOutcome && (<><dt>Outcome</dt><dd className="break-all text-foreground">{run.outputOutcome}</dd></>)}
+                                            {run.triggerMessageId && (<><dt>Trigger message</dt><dd className="break-all text-foreground">#{run.triggerMessageId.slice(0, 8)}</dd></>)}
+                                            {run.approvedByUserId && (<><dt>Approved by</dt><dd className="break-all text-foreground">{run.approvedByUserId.slice(0, 8)}</dd></>)}
+                                            {run.policyCode && (<><dt>Policy code</dt><dd className="break-all text-foreground">{run.policyCode}</dd></>)}
+                                            {run.errorCode && (<><dt>Error code</dt><dd className="break-all text-foreground">{run.errorCode}</dd></>)}
+                                        </dl>
+                                    </details>
                                 )}
                             </li>
                         )

@@ -3,7 +3,6 @@ import {
     Archive,
     ArchiveRestore,
     Ban,
-    Check,
     CheckCircle2,
     Clock,
     Loader2,
@@ -15,6 +14,14 @@ import {
     X,
 } from 'lucide-react'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
+import {
+    DropdownMenu,
+    DropdownMenuCheckboxItem,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from '../../ui/dropdown-menu'
+import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover'
 import { cn } from '../../../lib/utils'
 import type {
     InboxConversationStatus,
@@ -318,54 +325,56 @@ export function ConversationActions({
                 </button>
             )}
 
-            {/* Labels — named controls in a native disclosure (keyboard-operable). */}
-            <details className="relative">
-                <summary className={cn(ACTION_BTN, 'cursor-pointer list-none')}>
-                    <Tag className="h-3.5 w-3.5" aria-hidden="true" /> Labels
-                </summary>
-                <div className="absolute left-0 z-20 mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-md">
+            {/* Labels: a real menu (role="menu" + menuitemcheckbox). Radix closes it on outside
+                click / Escape and only one menu is open at a time. Selecting keeps it open so
+                several labels can be toggled in a row. */}
+            <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                    <button type="button" className={ACTION_BTN}>
+                        <Tag className="h-3.5 w-3.5" aria-hidden="true" /> Labels
+                    </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="max-h-64 w-56 overflow-y-auto">
                     {labels.length === 0 ? (
                         <p className="px-2 py-1.5 text-xs text-muted-foreground">No labels yet. Create one in the filter rail.</p>
                     ) : (
-                        <ul className="max-h-56 overflow-y-auto">
-                            {labels.map((label) => {
-                                const attached = attachedIds.has(label.id)
-                                return (
-                                    <li key={label.id}>
-                                        <button
-                                            type="button"
-                                            role="menuitemcheckbox"
-                                            aria-checked={attached}
-                                            disabled={busy}
-                                            onClick={() => (attached ? onDetachLabel(label.id) : onAttachLabel(label))}
-                                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                        >
-                                            <span className="flex h-4 w-4 items-center justify-center rounded border border-border">
-                                                {attached && <Check className="h-3 w-3" aria-hidden="true" />}
-                                            </span>
-                                            <span
-                                                className="h-2 w-2 rounded-full border border-border"
-                                                style={label.color ? { backgroundColor: label.color } : undefined}
-                                                aria-hidden="true"
-                                            />
-                                            <span className="flex-1 truncate">{label.name}</span>
-                                        </button>
-                                    </li>
-                                )
-                            })}
-                        </ul>
+                        labels.map((label) => {
+                            const attached = attachedIds.has(label.id)
+                            return (
+                                <DropdownMenuCheckboxItem
+                                    key={label.id}
+                                    checked={attached}
+                                    disabled={busy}
+                                    onSelect={(event) => {
+                                        event.preventDefault()
+                                        if (attached) onDetachLabel(label.id)
+                                        else onAttachLabel(label)
+                                    }}
+                                    className="gap-2 text-xs"
+                                >
+                                    <span
+                                        className="h-2 w-2 shrink-0 rounded-full border border-border"
+                                        style={label.color ? { backgroundColor: label.color } : undefined}
+                                        aria-hidden="true"
+                                    />
+                                    <span className="flex-1 truncate">{label.name}</span>
+                                </DropdownMenuCheckboxItem>
+                            )
+                        })
                     )}
-                </div>
-            </details>
+                </DropdownMenuContent>
+            </DropdownMenu>
 
-            {/* Reminders — durable (server-scheduled), never a browser timer. */}
+            {/* Reminders: durable (server-scheduled), never a browser timer. A form, so a Popover. */}
             {onCreateReminder && (
-                <details className="relative">
-                    <summary className={cn(ACTION_BTN, 'cursor-pointer list-none')}>
-                        <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-                        {scheduled.length > 0 ? `Reminder (${scheduled.length})` : 'Remind me'}
-                    </summary>
-                    <div className="absolute left-0 z-20 mt-1 w-64 rounded-md border border-border bg-popover p-2 shadow-md">
+                <Popover>
+                    <PopoverTrigger asChild>
+                        <button type="button" className={ACTION_BTN}>
+                            <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                            {scheduled.length > 0 ? `Reminder (${scheduled.length})` : 'Remind me'}
+                        </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-64 p-2">
                         <ReminderForm onCreate={onCreateReminder} busy={busy} />
                         {scheduled.length > 0 && (
                             <ul className="mt-2 space-y-1 border-t border-border pt-2 text-xs text-muted-foreground">
@@ -374,38 +383,39 @@ export function ConversationActions({
                                 ))}
                             </ul>
                         )}
-                    </div>
-                </details>
+                    </PopoverContent>
+                </Popover>
             )}
 
-            {/* Block sender / domain — destructive, always confirmed server-side. The operator
-                explicitly chooses the scope; the server rejects a public/free-mail domain block. */}
+            {/* Block sender / domain: destructive, always confirmed server-side. The operator
+                explicitly chooses the scope; the server rejects a public/free-mail domain block.
+                Non-modal so the confirmation dialog it opens is not fighting the menu's focus lock. */}
             {suppression && counterpartyEmail && (
-                <details className="relative">
-                    <summary className={cn(ACTION_BTN, 'cursor-pointer list-none text-destructive')}>
-                        <Ban className="h-3.5 w-3.5" aria-hidden="true" /> Block
-                    </summary>
-                    <div className="absolute left-0 z-20 mt-1 w-60 rounded-md border border-border bg-popover p-1 shadow-md">
-                        <button
-                            type="button"
+                <DropdownMenu modal={false}>
+                    <DropdownMenuTrigger asChild>
+                        <button type="button" className={cn(ACTION_BTN, 'text-destructive')}>
+                            <Ban className="h-3.5 w-3.5" aria-hidden="true" /> Block
+                        </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="w-60">
+                        <DropdownMenuItem
                             disabled={busy}
-                            onClick={() => { setBlockNotice(null); setBlockScope('sender') }}
-                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            onSelect={() => { setBlockNotice(null); setBlockScope('sender') }}
+                            className="text-xs"
                         >
                             <Ban className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                             <span className="truncate">Block sender ({counterpartyEmail})</span>
-                        </button>
-                        <button
-                            type="button"
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
                             disabled={busy || !counterpartyDomain}
-                            onClick={() => { setBlockNotice(null); setBlockScope('domain') }}
-                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            onSelect={() => { setBlockNotice(null); setBlockScope('domain') }}
+                            className="text-xs"
                         >
                             <Ban className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                             <span className="truncate">Block domain ({counterpartyDomain})</span>
-                        </button>
-                    </div>
-                </details>
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
             )}
 
             {blockNotice && (
@@ -542,32 +552,30 @@ export function BulkActionsBar({
                 <Archive className="h-3.5 w-3.5" aria-hidden="true" /> Archive
             </button>
 
-            <details className="relative">
-                <summary className={cn(ACTION_BTN, 'cursor-pointer list-none', disabled && 'pointer-events-none opacity-50')}>
-                    <Tag className="h-3.5 w-3.5" aria-hidden="true" /> Label
-                </summary>
-                <div className="absolute left-0 z-20 mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-md">
+            <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                    <button type="button" className={ACTION_BTN} disabled={disabled}>
+                        <Tag className="h-3.5 w-3.5" aria-hidden="true" /> Label
+                    </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="max-h-64 w-56 overflow-y-auto">
                     {labels.length === 0 ? (
                         <p className="px-2 py-1.5 text-xs text-muted-foreground">No labels yet.</p>
                     ) : (
-                        <ul className="max-h-56 overflow-y-auto">
-                            {labels.map((label) => (
-                                <li key={label.id}>
-                                    <button
-                                        type="button"
-                                        disabled={disabled}
-                                        onClick={() => onBulkAddLabel(label)}
-                                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                    >
-                                        <Plus className="h-3 w-3" aria-hidden="true" />
-                                        <span className="flex-1 truncate">{label.name}</span>
-                                    </button>
-                                </li>
-                            ))}
-                        </ul>
+                        labels.map((label) => (
+                            <DropdownMenuItem
+                                key={label.id}
+                                disabled={disabled}
+                                onSelect={() => onBulkAddLabel(label)}
+                                className="text-xs"
+                            >
+                                <Plus className="h-3 w-3" aria-hidden="true" />
+                                <span className="flex-1 truncate">{label.name}</span>
+                            </DropdownMenuItem>
+                        ))
                     )}
-                </div>
-            </details>
+                </DropdownMenuContent>
+            </DropdownMenu>
 
             <button type="button" className={cn(ACTION_BTN, 'ml-auto')} onClick={onExit} disabled={busy}>
                 <X className="h-3.5 w-3.5" aria-hidden="true" /> Done

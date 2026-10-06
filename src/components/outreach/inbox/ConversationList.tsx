@@ -1,9 +1,36 @@
-import { AlertTriangle, Archive, CheckCircle2, CheckSquare, Inbox as InboxIcon, Mail, Search, Target } from 'lucide-react'
-import type React from 'react'
+import React from 'react'
+import {
+    AlertTriangle,
+    Archive,
+    ArchiveRestore,
+    BellRing,
+    CheckCircle2,
+    CheckSquare,
+    Inbox as InboxIcon,
+    Mail,
+    MailOpen,
+    MailX,
+    Search,
+    Target,
+    X,
+    Zap,
+} from 'lucide-react'
 import { Button } from '../../ui/button'
 import { Skeleton } from '../../ui/Skeleton'
-import { cn, formatRelativeDate, truncate } from '../../../lib/utils'
-import type { InboxConversationListItem } from '../../../lib/unified-inbox-api'
+import { cn, truncate } from '../../../lib/utils'
+import { formatDateTime, formatRelativeShort } from '../../../lib/inbox-relative-time'
+import type { InboxConversationListItem, InboxMessageClassification } from '../../../lib/unified-inbox-api'
+
+// TODO(contract): the list DTO does not carry these yet. When the backend adds them, drop this
+// local extension and read them straight off InboxConversationListItem. Until then the badges only
+// render if the field happens to be present, and the reminder indicator also lights up for every
+// row while the Reminders view is active (see `remindersView`).
+export type InboxListItemExt = InboxConversationListItem & {
+    /** Classification of the last inbound message (bounce / auto_reply drive a badge). */
+    lastInboundClassification?: InboxMessageClassification | null
+    /** A reminder on this conversation is due. */
+    reminderDue?: boolean
+}
 
 export interface ConversationListProps {
     conversations: InboxConversationListItem[]
@@ -21,10 +48,19 @@ export interface ConversationListProps {
     onClearFilters: () => void
     searchValue: string
     onSearchChange: (value: string) => void
-    /** emailAccountId -> provider label, derived from the list response sync status. */
-    providerByAccount: Record<string, string>
+    /** Lets the page focus the search box (the "/" shortcut). */
+    searchInputRef?: React.Ref<HTMLInputElement>
+    /** emailAccountId -> receiving account email, from the account options. */
+    accountEmailById?: Record<string, string>
     /** campaignId -> human name, from the campaign index. */
     campaignNameById: Record<string, string>
+    /** Keyboard cursor (j / k), distinct from the opened conversation. */
+    cursorId?: string | null
+    /** The Reminders view is active: every row is there because of a reminder. */
+    remindersView?: boolean
+    /** Hover quick actions. Omit to hide them. */
+    onToggleArchive?: (id: string, archived: boolean) => void
+    onToggleRead?: (id: string, read: boolean) => void
     // --- Bulk selection (bounded to the loaded set) ---
     bulkMode?: boolean
     onEnterBulkMode?: () => void
@@ -34,53 +70,81 @@ export interface ConversationListProps {
     bulkBar?: React.ReactNode
 }
 
-function ConversationRow({
-    conversation,
-    selected,
-    onSelect,
-    providerByAccount,
-    campaignNameById,
-    bulkMode,
-    checked,
-    onToggleSelect,
-}: {
-    conversation: InboxConversationListItem
+const BADGE = 'inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground'
+const QUICK_BTN =
+    'inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+
+/** Needs a reply from us: open, the lead wrote last (or we never wrote). */
+function waitingSince(conversation: InboxConversationListItem): string | null {
+    if (conversation.status !== 'open' || conversation.archived || !conversation.lastInboundAt) return null
+    if (conversation.lastOutboundAt && conversation.lastOutboundAt >= conversation.lastInboundAt) return null
+    return conversation.lastInboundAt
+}
+
+interface ConversationRowProps {
+    conversation: InboxListItemExt
     selected: boolean
+    cursor: boolean
     onSelect: (id: string) => void
-    providerByAccount: Record<string, string>
-    campaignNameById: Record<string, string>
+    accountEmail?: string
+    campaignName?: string
+    remindersView?: boolean
+    onToggleArchive?: (id: string, archived: boolean) => void
+    onToggleRead?: (id: string, read: boolean) => void
     bulkMode?: boolean
     checked?: boolean
     onToggleSelect?: (id: string) => void
-}) {
+}
+
+const ConversationRow = React.memo(function ConversationRow({
+    conversation,
+    selected,
+    cursor,
+    onSelect,
+    accountEmail,
+    campaignName,
+    remindersView,
+    onToggleArchive,
+    onToggleRead,
+    bulkMode,
+    checked,
+    onToggleSelect,
+}: ConversationRowProps) {
     const primary = conversation.participants.find((p) => p.role === 'from') ?? conversation.participants[0]
     const displayName = primary?.name || primary?.address || 'Unknown sender'
-    const provider = providerByAccount[conversation.emailAccountId]
-    const campaignName = conversation.campaignId ? campaignNameById[conversation.campaignId] : undefined
-    const exactTime = conversation.lastMessageAt ? new Date(conversation.lastMessageAt).toLocaleString() : undefined
+    const exactTime = conversation.lastMessageAt ? formatDateTime(conversation.lastMessageAt) : undefined
+    const waiting = waitingSince(conversation)
+    const classification = conversation.lastInboundClassification
+    const reminderDue = Boolean(conversation.reminderDue) || Boolean(remindersView)
+    const visibleLabels = conversation.labels.slice(0, 2)
+    const hiddenLabelCount = conversation.labels.length - visibleLabels.length
 
     return (
-        <li className={cn(bulkMode && 'flex items-center gap-1 pl-2')}>
+        <li className={cn('group relative', bulkMode && 'flex items-center gap-1 pl-2')}>
             {bulkMode && (
                 <input
                     type="checkbox"
                     checked={Boolean(checked)}
                     onChange={() => onToggleSelect?.(conversation.id)}
-                    // Checkbox labels name the conversation subject/lead — never "Select row".
+                    // Checkbox labels name the conversation subject/lead, never "Select row".
                     aria-label={`Select conversation with ${displayName}: ${conversation.subject || 'No subject'}`}
                     className="h-5 w-5 shrink-0 rounded border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
             )}
             <button
                 type="button"
+                data-conversation-id={conversation.id}
+                data-cursor={cursor ? 'true' : undefined}
                 onClick={() => onSelect(conversation.id)}
                 aria-current={selected ? 'true' : undefined}
                 aria-label={`Conversation with ${displayName}: ${conversation.subject || 'No subject'}${conversation.unread ? ', unread' : ''}`}
                 className={cn(
-                    'flex min-h-[4.5rem] w-full min-w-0 flex-1 flex-col gap-1 px-3 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                    'flex w-full min-w-0 flex-1 flex-col gap-0.5 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                     selected ? 'bg-accent' : 'hover:bg-accent/50',
+                    cursor && !selected && 'ring-2 ring-inset ring-primary/60',
                 )}
             >
+                {/* Line 1: sender + time */}
                 <div className="flex items-center gap-2">
                     <span
                         className={cn('h-2 w-2 shrink-0 rounded-full', conversation.unread ? 'bg-primary' : 'bg-transparent')}
@@ -89,36 +153,60 @@ function ConversationRow({
                     <span className={cn('flex-1 truncate text-sm', conversation.unread ? 'font-semibold text-foreground' : 'text-foreground')}>
                         {displayName}
                     </span>
+                    {reminderDue && (
+                        <span className="shrink-0 text-amber-600 dark:text-amber-400" title="Reminder due">
+                            <BellRing className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span className="sr-only">Reminder due</span>
+                        </span>
+                    )}
                     {conversation.lastMessageAt && (
-                        <span className="shrink-0 text-xs text-muted-foreground" title={exactTime}>
-                            {formatRelativeDate(conversation.lastMessageAt)}
+                        <span className="shrink-0 text-xs text-muted-foreground group-hover:invisible group-focus-within:invisible" title={exactTime}>
+                            {formatRelativeShort(conversation.lastMessageAt)}
                         </span>
                     )}
                 </div>
 
-                <span className={cn('truncate text-sm', conversation.unread ? 'font-medium text-foreground' : 'text-muted-foreground')}>
-                    {conversation.subject || '(No subject)'}
+                {/* Line 2: subject, with the preview trailing it */}
+                <span className="truncate text-sm">
+                    <span className={conversation.unread ? 'font-medium text-foreground' : 'text-foreground'}>
+                        {conversation.subject || '(No subject)'}
+                    </span>
+                    {conversation.preview && (
+                        <span className="text-muted-foreground">{' — '}{truncate(conversation.preview, 100)}</span>
+                    )}
                 </span>
 
-                {conversation.preview && (
-                    <span className="truncate text-xs text-muted-foreground">{truncate(conversation.preview, 140)}</span>
-                )}
-
-                <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                {/* Line 3: state badges, receiving account, campaign, labels */}
+                <div className="flex flex-nowrap items-center gap-1.5 overflow-hidden">
+                    {waiting && (
+                        <span className={cn(BADGE, 'shrink-0 bg-amber-500/15 text-amber-800 dark:text-amber-300')} title="Waiting for your reply">
+                            Waiting {formatRelativeShort(waiting)}
+                        </span>
+                    )}
+                    {classification === 'bounce' && (
+                        <span className={cn(BADGE, 'shrink-0 bg-red-500/15 text-red-700 dark:text-red-300')}>
+                            <MailX className="h-3 w-3" aria-hidden="true" /> Bounce
+                        </span>
+                    )}
+                    {classification === 'auto_reply' && (
+                        <span className={cn(BADGE, 'shrink-0')}>
+                            <Zap className="h-3 w-3" aria-hidden="true" /> Auto reply
+                        </span>
+                    )}
+                    {accountEmail && (
+                        <span className="inline-flex min-w-0 items-center gap-1 text-xs text-muted-foreground" title={`Received on ${accountEmail}`}>
+                            <Mail className="h-3 w-3 shrink-0" aria-hidden="true" />
+                            <span className="max-w-[9rem] truncate">{accountEmail}</span>
+                        </span>
+                    )}
                     {campaignName && (
-                        <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                            <Target className="h-3 w-3" aria-hidden="true" />
-                            <span className="max-w-[8rem] truncate">{campaignName}</span>
+                        <span className={cn(BADGE, 'min-w-0 shrink')}>
+                            <Target className="h-3 w-3 shrink-0" aria-hidden="true" />
+                            <span className="max-w-[7rem] truncate">{campaignName}</span>
                         </span>
                     )}
-                    {provider && (
-                        <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] capitalize text-muted-foreground">
-                            <Mail className="h-3 w-3" aria-hidden="true" />
-                            {provider}
-                        </span>
-                    )}
-                    {conversation.labels.map((label) => (
-                        <span key={label.id} className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                    {visibleLabels.map((label) => (
+                        <span key={label.id} className={cn(BADGE, 'shrink-0')}>
                             <span
                                 className="h-2 w-2 rounded-full border border-border"
                                 style={label.color ? { backgroundColor: label.color } : undefined}
@@ -127,22 +215,51 @@ function ConversationRow({
                             {label.name}
                         </span>
                     ))}
+                    {hiddenLabelCount > 0 && <span className={cn(BADGE, 'shrink-0')}>+{hiddenLabelCount}</span>}
                     {conversation.archived && (
-                        <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                        <span className={cn(BADGE, 'shrink-0')}>
                             <Archive className="h-3 w-3" aria-hidden="true" /> Archived
                         </span>
                     )}
                     {conversation.status === 'closed' && (
-                        <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                        <span className={cn(BADGE, 'shrink-0')}>
                             <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> Closed
                         </span>
                     )}
                 </div>
                 {conversation.unread && <span className="sr-only">Unread</span>}
             </button>
+
+            {/* Hover / focus quick actions (siblings of the row button, never nested in it). */}
+            {!bulkMode && (onToggleArchive || onToggleRead) && (
+                <div className="absolute right-2 top-1.5 flex items-center gap-1 opacity-0 focus-within:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100">
+                    {onToggleRead && (
+                        <button
+                            type="button"
+                            className={QUICK_BTN}
+                            onClick={() => onToggleRead(conversation.id, conversation.unread)}
+                            aria-label={`${conversation.unread ? 'Mark as read' : 'Mark as unread'}: ${displayName}`}
+                            title={conversation.unread ? 'Mark as read' : 'Mark as unread'}
+                        >
+                            {conversation.unread ? <MailOpen className="h-3.5 w-3.5" aria-hidden="true" /> : <Mail className="h-3.5 w-3.5" aria-hidden="true" />}
+                        </button>
+                    )}
+                    {onToggleArchive && (
+                        <button
+                            type="button"
+                            className={QUICK_BTN}
+                            onClick={() => onToggleArchive(conversation.id, !conversation.archived)}
+                            aria-label={`${conversation.archived ? 'Restore' : 'Archive'}: ${displayName}`}
+                            title={conversation.archived ? 'Restore' : 'Archive'}
+                        >
+                            {conversation.archived ? <ArchiveRestore className="h-3.5 w-3.5" aria-hidden="true" /> : <Archive className="h-3.5 w-3.5" aria-hidden="true" />}
+                        </button>
+                    )}
+                </div>
+            )}
         </li>
     )
-}
+})
 
 export function ConversationList(props: ConversationListProps) {
     const {
@@ -161,8 +278,13 @@ export function ConversationList(props: ConversationListProps) {
         onClearFilters,
         searchValue,
         onSearchChange,
-        providerByAccount,
+        searchInputRef,
+        accountEmailById,
         campaignNameById,
+        cursorId,
+        remindersView,
+        onToggleArchive,
+        onToggleRead,
         bulkMode,
         onEnterBulkMode,
         selectedIds,
@@ -178,13 +300,31 @@ export function ConversationList(props: ConversationListProps) {
                     <div className="relative flex-1">
                         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
                         <input
-                            type="search"
+                            ref={searchInputRef}
+                            type="text"
+                            role="searchbox"
                             value={searchValue}
                             onChange={(event) => onSearchChange(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Escape' && searchValue) {
+                                    event.preventDefault()
+                                    onSearchChange('')
+                                }
+                            }}
                             placeholder="Search conversations…"
                             aria-label="Search conversations"
-                            className="w-full rounded-md border border-border bg-background py-2 pl-9 pr-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            className="w-full rounded-md border border-border bg-background py-2 pl-9 pr-8 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         />
+                        {searchValue && (
+                            <button
+                                type="button"
+                                onClick={() => onSearchChange('')}
+                                aria-label="Clear search"
+                                className="absolute right-1.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                                <X className="h-3.5 w-3.5" aria-hidden="true" />
+                            </button>
+                        )}
                     </div>
                     {onEnterBulkMode && !bulkMode && (
                         <button
@@ -277,9 +417,13 @@ export function ConversationList(props: ConversationListProps) {
                                     key={conversation.id}
                                     conversation={conversation}
                                     selected={conversation.id === selectedId}
+                                    cursor={conversation.id === cursorId}
                                     onSelect={onSelect}
-                                    providerByAccount={providerByAccount}
-                                    campaignNameById={campaignNameById}
+                                    accountEmail={accountEmailById?.[conversation.emailAccountId]}
+                                    campaignName={conversation.campaignId ? campaignNameById[conversation.campaignId] : undefined}
+                                    remindersView={remindersView}
+                                    onToggleArchive={onToggleArchive}
+                                    onToggleRead={onToggleRead}
                                     bulkMode={bulkMode}
                                     checked={selectedIds?.has(conversation.id)}
                                     onToggleSelect={onToggleSelect}

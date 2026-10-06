@@ -1,55 +1,40 @@
 import React from 'react'
+import { Link } from 'wouter'
 import { AlertTriangle, Sparkles, X } from 'lucide-react'
 import { Button } from '../../ui/button'
 import {
     AI_SUGGESTION_TONE_GOALS,
-    type AiRunPublicDto,
     type AiSuggestionResponse,
     type AiSuggestionToneGoal,
 } from '../../../lib/unified-inbox-api'
+import { runErrorLabel, runOutcomeLabel } from './ai-run-labels'
 
 // ============================================================
 // AI draft assistant (Phase 23 AI-02 / AI-06)
 // ============================================================
-// A HUMAN-IN-THE-LOOP affordance rendered INSIDE the Phase 22 composer. It requests an editable draft
-// from the persisted conversation, previews it, and — only on an explicit operator action — INSERTS
-// the body into the composer's normal editable field. It NEVER sends and it NEVER mutates the
-// recipient/account: sending remains the operator's separate composer action (locked #6).
+// A HUMAN-IN-THE-LOOP affordance rendered in the Phase 22 composer toolbar. It requests an editable
+// draft from the persisted conversation, previews it, and, only on an explicit operator action,
+// INSERTS the body into the composer's normal editable field. It NEVER sends and it NEVER mutates
+// the recipient/account: sending remains the operator's separate composer action (locked #6).
 //
-// It renders nothing at all unless draft assistance is enabled for the organization. The preview
-// shows ONLY the redacted, operator-facing draft — there is no system prompt, hidden reasoning,
-// model parameters, or credential anywhere in its props or output (locked #5).
+// When draft assistance is disabled for the organization it renders a compact disabled state with
+// the way to turn it on (it used to disappear, so nobody knew the feature existed). The preview
+// shows ONLY the redacted, operator-facing draft: no system prompt, hidden reasoning, model
+// parameters, or credential anywhere in its props or output (locked #5). Run history lives only at
+// the end of the thread (AiAutomationHistory), not here.
 
-/** Human labels for the redacted run statuses shown in the compact history. */
-const RUN_STATUS_LABEL: Record<string, string> = {
-    pending: 'Queued',
-    running: 'Generating',
-    awaiting_approval: 'Draft ready',
-    completed: 'No reply suggested',
-    failed: 'Failed',
-    deferred: 'Deferred',
-    cancelled: 'Cancelled',
+const TONE_LABEL: Record<AiSuggestionToneGoal, string> = {
+    neutral: 'Neutral',
+    warm: 'Warm',
+    concise: 'Concise',
+    formal: 'Formal',
+    friendly: 'Friendly',
 }
 
-// A readable next-step for each recoverable fail-closed suggestion error code.
-const ERROR_HINTS: Record<string, string> = {
-    no_decider_configured: 'The draft assistant is not configured yet.',
-    decider_timeout: 'The assistant timed out. You can try again.',
-    decider_unreachable: 'The assistant could not be reached. You can try again.',
-    decider_http_error: 'The assistant returned an error. You can try again.',
-    decider_bad_response: 'The assistant returned an unusable response. You can try again.',
-    unsafe_output: 'The assistant could not produce a safe draft. Please write your reply.',
-    no_inbound_body: 'There is no message body to draft a reply from yet.',
-    no_inbound_message: 'There is no reply to draft an answer to yet.',
-}
-
-function errorHint(code: string | null | undefined): string {
-    if (!code) return 'Could not generate a draft. You can try again.'
-    return ERROR_HINTS[code] ?? `Could not generate a draft (${code}). You can try again.`
-}
+const SETTINGS_HREF = '/outreach/settings'
 
 export interface AiDraftAssistantProps {
-    /** When false the assistant renders nothing (the affordance is hidden entirely). */
+    /** When false a compact disabled state with a link to Settings is shown. */
     enabled: boolean
     /** Request a draft. Resolves with the suggestion response; rejects on rate-limit/in-flight/etc. */
     onRequest: (toneGoal: AiSuggestionToneGoal | null) => Promise<AiSuggestionResponse>
@@ -58,8 +43,6 @@ export interface AiDraftAssistantProps {
     /** Record the operator's explicit acceptance/approval against the run (audit only; never sends). */
     onAccept?: (runId: string) => void | Promise<void>
     toneGoals?: readonly AiSuggestionToneGoal[]
-    /** Compact, redacted run history (most-recent first). */
-    history?: AiRunPublicDto[]
 }
 
 type Phase =
@@ -75,7 +58,6 @@ export function AiDraftAssistant({
     onInsert,
     onAccept,
     toneGoals = AI_SUGGESTION_TONE_GOALS,
-    history = [],
 }: AiDraftAssistantProps) {
     const [phase, setPhase] = React.useState<Phase>({ kind: 'idle' })
     const [tone, setTone] = React.useState<AiSuggestionToneGoal | ''>('')
@@ -91,7 +73,7 @@ export function AiDraftAssistant({
             if (response.suggestion) {
                 setPhase({ kind: 'preview', runId: response.suggestion.runId, subject: response.suggestion.subject, body: response.suggestion.body })
             } else if (response.run && response.run.status === 'failed') {
-                setPhase({ kind: 'error', message: errorHint(response.run.errorCode) })
+                setPhase({ kind: 'error', message: runErrorLabel(response.run.errorCode) })
             } else if (response.run) {
                 setPhase({ kind: 'no_action', outcome: response.run.outputOutcome })
             } else {
@@ -100,7 +82,7 @@ export function AiDraftAssistant({
         } catch (error) {
             if (token !== requestToken.current) return
             const code = (error as { code?: string; message?: string })?.code
-            setPhase({ kind: 'error', message: code ? errorHint(code) : ((error as Error)?.message || errorHint(null)) })
+            setPhase({ kind: 'error', message: code ? runErrorLabel(code) : ((error as Error)?.message || runErrorLabel(null)) })
         }
     }, [onRequest, tone])
 
@@ -119,16 +101,40 @@ export function AiDraftAssistant({
 
     const discard = React.useCallback(() => setPhase({ kind: 'idle' }), [])
 
-    if (!enabled) return null
+    if (!enabled) {
+        return (
+            <p
+                aria-label="AI draft assistant is off"
+                className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+            >
+                <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>
+                    AI suggestions off{' — '}
+                    <Link
+                        href={SETTINGS_HREF}
+                        className="font-medium text-foreground underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                        enable in Settings
+                    </Link>
+                </span>
+            </p>
+        )
+    }
+
+    // Idle the assistant is one compact inline group inside the toolbar; every other phase takes the
+    // full row so the preview has room.
+    const compact = phase.kind === 'idle'
 
     return (
         <section
             aria-label="AI draft assistant"
-            className="rounded border border-dashed border-border bg-muted/20 p-2 text-xs"
+            className={compact
+                ? 'inline-flex flex-wrap items-center gap-1.5 text-xs'
+                : 'w-full basis-full rounded border border-dashed border-border bg-muted/20 p-2 text-xs'}
         >
             {phase.kind === 'idle' && (
-                <div className="flex flex-wrap items-center gap-2">
-                    <Button type="button" size="sm" variant="outline" onClick={() => void request()}>
+                <>
+                    <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" onClick={() => void request()}>
                         <Sparkles className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
                         Suggest draft
                     </Button>
@@ -138,16 +144,15 @@ export function AiDraftAssistant({
                             aria-label="Draft tone"
                             value={tone}
                             onChange={(e) => setTone(e.target.value as AiSuggestionToneGoal | '')}
-                            className="rounded border border-border bg-background px-1.5 py-1"
+                            className="h-8 rounded-md border border-border bg-background px-1.5 text-xs"
                         >
                             <option value="">Default tone</option>
                             {toneGoals.map((t) => (
-                                <option key={t} value={t}>{t}</option>
+                                <option key={t} value={t}>{TONE_LABEL[t] ?? t}</option>
                             ))}
                         </select>
                     </label>
-                    <span className="text-[0.7rem] italic text-muted-foreground">The assistant drafts a reply for you to edit — it never sends.</span>
-                </div>
+                </>
             )}
 
             {phase.kind === 'loading' && (
@@ -163,7 +168,7 @@ export function AiDraftAssistant({
                     <div className="flex items-center justify-between">
                         <span className="font-semibold uppercase tracking-wide text-muted-foreground">Suggested draft</span>
                         <button type="button" onClick={discard} aria-label="Discard suggestion" className="rounded p-0.5 text-muted-foreground hover:text-foreground">
-                            <X className="h-3.5 w-3.5" />
+                            <X className="h-3.5 w-3.5" aria-hidden="true" />
                         </button>
                     </div>
                     {phase.subject && (
@@ -171,21 +176,23 @@ export function AiDraftAssistant({
                     )}
                     <div
                         aria-label="AI draft preview"
-                        className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded border border-border bg-background p-2"
+                        className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded border border-border bg-background p-2"
                     >
                         {phase.body}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                         <Button type="button" size="sm" onClick={insert}>Insert into reply</Button>
                         <Button type="button" size="sm" variant="ghost" onClick={discard}>Discard</Button>
+                        <span className="text-xs italic text-muted-foreground">Review and edit before sending. Inserting does not send.</span>
                     </div>
-                    <p className="text-[0.7rem] italic text-muted-foreground">Review and edit before sending. Inserting does not send.</p>
                 </div>
             )}
 
             {phase.kind === 'no_action' && (
                 <div className="flex items-center gap-2" aria-live="polite">
-                    <span className="text-muted-foreground">The assistant did not suggest a reply{phase.outcome ? ` (${phase.outcome})` : ''}.</span>
+                    <span className="text-muted-foreground">
+                        The assistant did not suggest a reply{runOutcomeLabel(phase.outcome) ? ` (${runOutcomeLabel(phase.outcome)})` : ''}.
+                    </span>
                     <button type="button" onClick={discard} className="underline hover:no-underline">Dismiss</button>
                 </div>
             )}
@@ -200,17 +207,6 @@ export function AiDraftAssistant({
                         <Button type="button" size="sm" variant="outline" onClick={() => void request()}>Try again</Button>
                     </div>
                 </div>
-            )}
-
-            {history.length > 0 && phase.kind === 'idle' && (
-                <ul className="mt-2 space-y-0.5 border-t border-border pt-1.5 text-[0.7rem] text-muted-foreground">
-                    {history.slice(0, 3).map((run) => (
-                        <li key={run.id} className="flex items-center justify-between gap-2">
-                            <span>{RUN_STATUS_LABEL[run.status] ?? run.status}</span>
-                            <time dateTime={run.createdAt}>{new Date(run.createdAt).toLocaleString()}</time>
-                        </li>
-                    ))}
-                </ul>
             )}
         </section>
     )

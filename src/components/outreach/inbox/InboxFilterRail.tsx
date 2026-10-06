@@ -1,12 +1,6 @@
 import React from 'react'
-import { Archive, Clock, Inbox as InboxIcon, Plus, Reply, Tag, X } from 'lucide-react'
-import {
-    activeFilterCount,
-    activeQuickView,
-    quickViewPatch,
-    type InboxQuickView,
-    type InboxUrlState,
-} from '../../../lib/unified-inbox-url'
+import { Archive, BellRing, Hourglass, Inbox as InboxIcon, Mail, PanelLeftClose, PanelLeftOpen, Plus, Reply, Tag, X } from 'lucide-react'
+import { activeFilterCount, type InboxUrlState } from '../../../lib/unified-inbox-url'
 import type {
     InboxAccountOption,
     InboxCampaignOption,
@@ -16,12 +10,21 @@ import type {
 import { cn } from '../../../lib/utils'
 import { InboxSyncStatus } from './InboxSyncStatus'
 import type { InboxRealtimeStatus } from '../../../hooks/useUnifiedInboxEvents'
+// TODO(contract): swap the shim for the real url-lib / hook exports at merge (see contract-shim.ts).
+import {
+    railActiveQuickView,
+    railQuickViewPatch,
+    type InboxCounts,
+    type RailQuickView,
+} from './contract-shim'
 
 interface InboxFilterRailProps {
     state: InboxUrlState
     onPatch: (patch: Partial<InboxUrlState>) => void
     onClearFilters: () => void
     unreadCount?: number
+    /** Per-view counts (needs reply, awaiting, unread, reminders due). */
+    counts?: InboxCounts
     labels: InboxLabel[]
     labelsLoading?: boolean
     campaigns: InboxCampaignOption[]
@@ -32,27 +35,39 @@ interface InboxFilterRailProps {
     syncFetching?: boolean
     /** Near-real-time channel status (from the single SSE stream). */
     realtimeStatus?: InboxRealtimeStatus
-    /** The live stream was lost — updates are delayed and the bounded polling fallback is active. */
+    /** The live stream was lost: updates are delayed and the bounded polling fallback is active. */
     realtimeStale?: boolean
     /** Create a named label for this organization (labels are named operator controls). */
     onCreateLabel?: (name: string) => void
     creatingLabel?: boolean
     /** `overlay` is the tablet/mobile sheet variant; `rail` is the fixed desktop column. */
     variant?: 'rail' | 'overlay'
+    /** Desktop only: the rail is collapsed to a narrow strip. */
+    collapsed?: boolean
+    onToggleCollapsed?: () => void
+    /** Extra header controls (AI status chip, shortcuts help) shown when expanded. */
+    toolbar?: React.ReactNode
+    /** Compact version of the same controls for the collapsed strip. */
+    collapsedToolbar?: React.ReactNode
 }
 
 interface QuickView {
-    key: InboxQuickView
+    key: RailQuickView
     label: string
     icon: React.ReactNode
+    /** Which count feeds the badge, and how the badge is announced. */
+    count?: { key: keyof InboxCounts; noun: string }
 }
 
+const ICON = 'h-4 w-4 shrink-0'
+
 const QUICK_VIEWS: QuickView[] = [
-    { key: 'inbox', label: 'Inbox', icon: <InboxIcon className="h-4 w-4" aria-hidden="true" /> },
-    { key: 'unread', label: 'Unread', icon: <Reply className="h-4 w-4" aria-hidden="true" /> },
-    { key: 'needs_reply', label: 'Needs reply', icon: <Reply className="h-4 w-4" aria-hidden="true" /> },
-    { key: 'reminders', label: 'Reminders', icon: <Clock className="h-4 w-4" aria-hidden="true" /> },
-    { key: 'archived', label: 'Archived', icon: <Archive className="h-4 w-4" aria-hidden="true" /> },
+    { key: 'inbox', label: 'Inbox', icon: <InboxIcon className={ICON} aria-hidden="true" /> },
+    { key: 'needs_reply', label: 'Needs reply', icon: <Reply className={ICON} aria-hidden="true" />, count: { key: 'needsReply', noun: 'need a reply' } },
+    { key: 'awaiting', label: 'Awaiting reply', icon: <Hourglass className={ICON} aria-hidden="true" />, count: { key: 'awaiting', noun: 'awaiting reply' } },
+    { key: 'unread', label: 'Unread', icon: <Mail className={ICON} aria-hidden="true" />, count: { key: 'unread', noun: 'unread' } },
+    { key: 'reminders', label: 'Reminders', icon: <BellRing className={ICON} aria-hidden="true" />, count: { key: 'remindersDue', noun: 'reminders due' } },
+    { key: 'archived', label: 'Archived', icon: <Archive className={ICON} aria-hidden="true" /> },
 ]
 
 export function InboxFilterRail({
@@ -60,6 +75,7 @@ export function InboxFilterRail({
     onPatch,
     onClearFilters,
     unreadCount,
+    counts,
     labels,
     labelsLoading,
     campaigns,
@@ -73,8 +89,12 @@ export function InboxFilterRail({
     onCreateLabel,
     creatingLabel,
     variant = 'rail',
+    collapsed = false,
+    onToggleCollapsed,
+    toolbar,
+    collapsedToolbar,
 }: InboxFilterRailProps) {
-    const currentView = activeQuickView(state)
+    const currentView = railActiveQuickView(state)
     const filterCount = activeFilterCount(state)
     const [newLabel, setNewLabel] = React.useState('')
 
@@ -85,6 +105,35 @@ export function InboxFilterRail({
         setNewLabel('')
     }
 
+    const countFor = (view: QuickView): number | undefined => {
+        if (!view.count) return undefined
+        const fromContract = counts?.[view.count.key]
+        // The unread view falls back to the standalone unread counter until the contract lands.
+        if (fromContract == null && view.count.key === 'unread') return unreadCount
+        return fromContract
+    }
+
+    // Collapsed desktop strip: just the expand toggle and the compact tools.
+    if (variant === 'rail' && collapsed) {
+        return (
+            <nav
+                aria-label="Conversation filters (collapsed)"
+                className="flex h-full w-12 flex-col items-center gap-2 border-r border-border bg-card py-2"
+            >
+                <button
+                    type="button"
+                    onClick={onToggleCollapsed}
+                    aria-label="Show filters"
+                    aria-expanded={false}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                    <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
+                </button>
+                {collapsedToolbar}
+            </nav>
+        )
+    }
+
     return (
         <nav
             aria-label="Conversation filters"
@@ -93,16 +142,37 @@ export function InboxFilterRail({
                 variant === 'rail' ? 'w-56 border-r border-border' : 'w-full',
             )}
         >
+            {variant === 'rail' && (
+                <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+                    <span className="flex-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Filters</span>
+                    {onToggleCollapsed && (
+                        <button
+                            type="button"
+                            onClick={onToggleCollapsed}
+                            aria-label="Hide filters"
+                            aria-expanded
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                            <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                    )}
+                </div>
+            )}
+            {toolbar && variant === 'rail' && (
+                <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-2">{toolbar}</div>
+            )}
+
             <div className="flex-1 overflow-y-auto p-3">
                 {/* Quick views */}
                 <ul className="space-y-1">
                     {QUICK_VIEWS.map((view) => {
                         const active = currentView === view.key
+                        const count = countFor(view)
                         return (
                             <li key={view.key}>
                                 <button
                                     type="button"
-                                    onClick={() => onPatch(quickViewPatch(view.key))}
+                                    onClick={() => onPatch(railQuickViewPatch(view.key))}
                                     aria-current={active ? 'true' : undefined}
                                     className={cn(
                                         'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -113,16 +183,16 @@ export function InboxFilterRail({
                                 >
                                     {view.icon}
                                     <span className="flex-1 text-left">{view.label}</span>
-                                    {/* Persistent polite live region so unread-count changes
-                                        (SSE/poll driven) are announced to screen readers. */}
-                                    {view.key === 'unread' && (
+                                    {/* Persistent polite live region so count changes (SSE/poll
+                                        driven) are announced to screen readers. */}
+                                    {view.count && (
                                         <span aria-live="polite" aria-atomic="true">
-                                            {unreadCount != null && unreadCount > 0 && (
+                                            {count != null && count > 0 && (
                                                 <span
-                                                    className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-primary-foreground"
-                                                    aria-label={`${unreadCount} unread`}
+                                                    className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 py-0.5 text-xs font-semibold leading-none text-primary-foreground"
+                                                    aria-label={`${count} ${view.count.noun}`}
                                                 >
-                                                    <span aria-hidden="true">{unreadCount > 99 ? '99+' : unreadCount}</span>
+                                                    <span aria-hidden="true">{count > 99 ? '99+' : count}</span>
                                                 </span>
                                             )}
                                         </span>
@@ -170,7 +240,7 @@ export function InboxFilterRail({
                     </div>
                 </div>
 
-                {/* Labels */}
+                {/* Labels (single-select: the URL state and the server filter by one label only) */}
                 <div className="mt-4">
                     <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         <Tag className="h-3.5 w-3.5" aria-hidden="true" /> Labels
