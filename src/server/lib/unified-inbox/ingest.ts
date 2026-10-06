@@ -24,6 +24,7 @@ import type {
 import { attributeConversation, type MatchConfidence } from './attribute'
 import type { OutreachMessageMatchStrategy } from './types'
 import { sqlTimestampValue } from '../sql-timestamp'
+import { isWarmupTraffic, loadMeshAddresses, warmupMessageIdTokens, type MeshAddressSet } from './warmup-traffic'
 import {
     bodyPreview,
     buildSourceKey,
@@ -70,8 +71,12 @@ export interface MaterializeAttribution {
 }
 
 export interface MaterializeResult {
-    /** `materialized` = first ingestion; `duplicate` = message already existed; `skipped` = event gone. */
-    status: 'materialized' | 'duplicate' | 'skipped'
+    /**
+     * `materialized` = first ingestion; `duplicate` = message already existed; `skipped` = event
+     * gone; `warmup_excluded` = the event is warm-up mesh traffic and was deliberately NOT turned
+     * into a conversation (its materialization lifecycle is closed as `skipped`).
+     */
+    status: 'materialized' | 'duplicate' | 'skipped' | 'warmup_excluded'
     inserted: boolean
     /** The owning organization (available post-commit for org-scoped near-real-time fanout). */
     organizationId: string | null
@@ -85,6 +90,8 @@ export interface MaterializeProviderEventDeps {
     sql?: UnifiedInboxSql
     now?: () => Date
     lookbackDays?: number
+    /** Test seam: the mesh address set. Defaults to a fresh read of `email_accounts`. */
+    meshAddresses?: MeshAddressSet
 }
 
 interface ProviderEventRow {
@@ -207,11 +214,47 @@ export async function materializeProviderEvent(
         }
 
         // Validate the account still belongs to the event's organization before any lookup.
-        const accountRows = await tx<{ organization_id: string }>`
-            SELECT organization_id FROM email_accounts WHERE id = ${event.email_account_id}
+        const accountRows = await tx<{ organization_id: string; warmup_only: boolean }>`
+            SELECT organization_id, warmup_only FROM email_accounts WHERE id = ${event.email_account_id}
         `
         if (!accountRows[0] || accountRows[0].organization_id !== event.organization_id) {
             throw new Error('provider event account does not belong to its organization')
+        }
+
+        // Warm-up mesh traffic never becomes a conversation (see warmup-traffic.ts). Staging
+        // already filters it at ingestion; this guard covers events staged before that filter
+        // existed and any path that stages without it. The event is closed as `skipped` (not
+        // `failed`, which would page the operator, and not `materialized`, which requires a
+        // message) and its row stays as the dedupe record for the provider message.
+        const meshAddresses = deps.meshAddresses ?? (await loadMeshAddresses(tx))
+        if (isWarmupTraffic({
+            accountWarmupOnly: accountRows[0].warmup_only === true,
+            counterpartAddresses: [event.from_address],
+            messageIds: warmupMessageIdTokens({
+                messageId: event.message_id,
+                inReplyTo: event.in_reply_to,
+                references: event.message_references,
+            }),
+            meshAddresses,
+        })) {
+            await tx`
+                UPDATE outreach_provider_events SET
+                    materialization_status = 'skipped',
+                    materialization_lease_token = NULL,
+                    materialization_lease_expires_at = NULL,
+                    materialization_error = NULL,
+                    updated_at = now()
+                WHERE id = ${eventId}
+            `
+            return {
+                status: 'warmup_excluded',
+                inserted: false,
+                organizationId: event.organization_id,
+                conversationId: null,
+                conversationMessageId: null,
+                classification: event.classification,
+                attribution: EMPTY_ATTRIBUTION,
+            }
         }
 
         // Normalize once, in the shared module, before any lookup or persistence.
@@ -326,6 +369,14 @@ export async function materializeProviderEvent(
                 `
             }
 
+            // A genuinely NEW inbound message resurfaces an archived or closed conversation
+            // (Gmail-like) so a reply can never sit invisible behind an old archive. Only a message
+            // that is newer than anything we already hold from them counts as new, so a late-staged
+            // older message or a backfill replay cannot resurrect a thread the operator already
+            // dealt with. Bounces and auto-replies are excluded: an out-of-office or a DSN is not a
+            // person asking for attention, and must not undo an archive.
+            const resurfaces = event.classification !== 'bounce' && event.classification !== 'auto_reply'
+
             // Summary from the message's own timestamp (subquery avoids re-binding a Date).
             await tx`
                 UPDATE outreach_conversations c SET
@@ -333,6 +384,9 @@ export async function materializeProviderEvent(
                     last_inbound_at = GREATEST(COALESCE(c.last_inbound_at, mts.ts), mts.ts),
                     last_message_id = CASE WHEN c.last_message_at IS NULL OR mts.ts >= c.last_message_at THEN mts.id ELSE c.last_message_id END,
                     latest_message_preview = CASE WHEN c.last_message_at IS NULL OR mts.ts >= c.last_message_at THEN ${preview} ELSE c.latest_message_preview END,
+                    status = CASE WHEN ${resurfaces}::boolean AND (c.last_inbound_at IS NULL OR mts.ts > c.last_inbound_at) THEN 'open' ELSE c.status END,
+                    archived_at = CASE WHEN ${resurfaces}::boolean AND (c.last_inbound_at IS NULL OR mts.ts > c.last_inbound_at) THEN NULL ELSE c.archived_at END,
+                    archived_by_user_id = CASE WHEN ${resurfaces}::boolean AND (c.last_inbound_at IS NULL OR mts.ts > c.last_inbound_at) THEN NULL ELSE c.archived_by_user_id END,
                     updated_at = now()
                 FROM (
                     SELECT id, COALESCE(received_at, sent_at, created_at) AS ts

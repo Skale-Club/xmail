@@ -407,6 +407,11 @@ export interface IngestResult {
     retryAfter?: Date | null
     /** Provider pages actually read; 0 means nothing was read. See InboundSourcePage. */
     pagesFetched?: number
+    /**
+     * Messages the caller's `isExcluded` filter dropped (warm-up mesh traffic). They are read and
+     * the cursor advances past them, but nothing is staged. Absent when nothing was dropped.
+     */
+    excluded?: number
 }
 
 // ============================================================
@@ -434,6 +439,12 @@ export async function ingestInboundPage(deps: {
     pageSize?: number
     /** Resolves the tier-3 from-address fallback; omitted means "no known correspondent". */
     isKnownCorrespondent?: (fromAddress: string) => Promise<boolean>
+    /**
+     * Messages this returns true for are never staged (warm-up mesh traffic must not reach the
+     * Unified Inbox or the reply/bounce queues). The cursor still advances past them: skipping is
+     * a decision about the message, not a failure to read it, so it must not be re-fetched forever.
+     */
+    isExcluded?: (message: NormalizedInboundMessage) => boolean
 }): Promise<IngestResult> {
     const pageSize = resolveInboundPageSize(deps.pageSize)
     const cursor = await deps.store.loadCursor(deps.account.id, deps.source.provider)
@@ -464,6 +475,18 @@ export async function ingestInboundPage(deps: {
 
     try {
         for (const [index, message] of messages.entries()) {
+            if (deps.isExcluded?.(message)) {
+                result.excluded = (result.excluded ?? 0) + 1
+                const skippedCursor = page.getMessageCursor?.(index) ?? null
+                if (skippedCursor) {
+                    lastStagedCursor = skippedCursor
+                    if ((index + 1) % CURSOR_CHECKPOINT_INTERVAL === 0) {
+                        await deps.store.saveCursor(deps.account.id, deps.source.provider, skippedCursor)
+                    }
+                }
+                continue
+            }
+
             let hasKnownCorrespondent = false
             // Only consulted when cheaper signals are absent, so the extra lookup does not
             // run for the common threaded-reply/DSN cases.

@@ -156,6 +156,9 @@ async function backfillInbound(
             SELECT e.id, e.received_at
             FROM outreach_provider_events e
             WHERE e.received_at >= ${input.cutoffIso}::timestamp
+              -- Warm-up mesh events are closed as 'skipped' on purpose and never have a message;
+              -- without this they would be re-selected (and re-skipped) on every pass forever.
+              AND e.materialization_status <> 'skipped'
               AND (${input.organizationId}::uuid IS NULL OR e.organization_id = ${input.organizationId}::uuid)
               AND (e.received_at, e.id) > (${cursorAtIso}::timestamp, ${cursorId}::uuid)
               AND NOT EXISTS (

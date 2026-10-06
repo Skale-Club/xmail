@@ -36,8 +36,10 @@ import {
 } from '../../lib/inbox-ai-suggestions'
 import { ConversationCursorError } from '../../lib/unified-inbox/cursor'
 import {
-    getAccountSyncStatus,
+    INBOX_VIEWS,
+    getAccountSyncStatusCached,
     getConversationDetail,
+    getInboxCounts,
     getUnreadCount,
     listConversations,
     setConversationReadState,
@@ -46,6 +48,7 @@ import {
 import {
     InboxOperatorError,
     BULK_CONVERSATION_LIMIT,
+    conversationInOrg,
     attachConversationLabel,
     bulkUpdateConversations,
     cancelInboxSendCommand,
@@ -126,10 +129,14 @@ const listQuerySchema = z.object({
     labelId: z.string().uuid().optional(),
     reminderState: z.enum(['active', 'due']).optional(),
     archived: z.enum(['true', 'false']).optional(),
+    // Server-owned queue semantics. When present it supersedes unread/archived/reminderState.
+    view: z.enum(INBOX_VIEWS).optional(),
 })
 
 const readStateBodySchema = z.object({
     read: z.boolean(),
+    // The conversation's lastMessageAt as the client rendered it; the read mark stops there.
+    upTo: z.string().datetime().optional(),
 })
 
 const recipientSchema = z.object({
@@ -217,6 +224,7 @@ router.get('/conversations', async (req: Request, res: Response) => {
             labelId: parsed.labelId ?? null,
             reminderState: parsed.reminderState ?? null,
             archived: parsed.archived === undefined ? null : parsed.archived === 'true',
+            view: parsed.view ?? null,
         }
 
         const result = await listConversations({
@@ -228,8 +236,9 @@ router.get('/conversations', async (req: Request, res: Response) => {
         })
 
         // Sanitized per-account sync status (no cursor tokens / credentials) so the UI can
-        // surface a degraded-sync badge alongside the list.
-        const syncStatus = await getAccountSyncStatus(organizationId)
+        // surface a degraded-sync badge alongside the list. Cached briefly per organization:
+        // the list is requested on every page/filter/SSE refetch, sync health is not that volatile.
+        const syncStatus = await getAccountSyncStatusCached(organizationId)
 
         res.json({
             conversations: result.conversations,
@@ -261,6 +270,21 @@ router.get('/unread-count', async (req: Request, res: Response) => {
         res.json({ unreadCount })
     } catch (error) {
         console.error('Error counting unified inbox unread:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// GET /counts — the rail counters (needs reply / awaiting / unread / reminders due) for the
+// current user, computed with the exact predicates the list views use.
+router.get('/counts', async (req: Request, res: Response) => {
+    try {
+        const organizationId = await authorizeOrganization(req, res)
+        if (!organizationId) return
+        const userId = req.headers['x-user-id'] as string
+
+        res.json(await getInboxCounts({ organizationId, userId }))
+    } catch (error) {
+        console.error('Error counting unified inbox queues:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
 })
@@ -368,9 +392,15 @@ router.patch('/conversations/:id/read-state', async (req: Request, res: Response
             return res.status(404).json({ error: 'Conversation not found' })
         }
 
-        const { read } = readStateBodySchema.parse(req.body)
+        const { read, upTo } = readStateBodySchema.parse(req.body)
 
-        const result = await setConversationReadState({ organizationId, conversationId, userId, read })
+        const result = await setConversationReadState({
+            organizationId,
+            conversationId,
+            userId,
+            read,
+            upTo: upTo ? new Date(upTo) : null,
+        })
         if (!result.found) return res.status(404).json({ error: 'Conversation not found' })
 
         res.json({ conversationId, read, unread: result.unread })
@@ -780,6 +810,12 @@ router.post(
             const ctx = await authorizeWrite(req, res)
             if (!ctx) return
             if (!uuid.safeParse(req.params.id).success) return res.status(404).json({ error: 'conversation_not_found' })
+            // The :id is the conversation the attachment is being composed for. It was never
+            // checked, so an id from another tenant (or a made-up one) uploaded happily; it now has
+            // to belong to the authorized organization, and is indistinguishable from missing if not.
+            if (!(await conversationInOrg(ctx.organizationId, req.params.id))) {
+                return res.status(404).json({ error: 'conversation_not_found' })
+            }
             const filenameHeader = req.headers['x-attachment-filename']
             const filename = typeof filenameHeader === 'string' ? decodeURIComponent(filenameHeader) : ''
             const mimeType = (req.headers['x-attachment-content-type'] as string | undefined)

@@ -36,6 +36,7 @@ import type {
     OutreachProviderEventClassification,
     OutreachProviderName,
 } from '@/db/schema'
+import { escapeLikePattern } from './like'
 import {
     decodeConversationCursor,
     encodeConversationCursor,
@@ -56,6 +57,40 @@ export interface ConversationListFilters {
     labelId: string | null
     reminderState: 'active' | 'due' | null
     archived: boolean | null
+    /**
+     * Server-owned queue semantics (see {@link INBOX_VIEWS}). When set it REPLACES the legacy
+     * `unread` / `archived` / `reminderState` filters (the route zeroes those out); the explicit
+     * filters (`status`, campaign, account, label, search) keep composing on top of it.
+     */
+    view: InboxView | null
+}
+
+/**
+ * The six operator queues. The server owns their meaning so the client never composes
+ * `status=open` or archive flags itself and every surface (list, counts, badge) agrees.
+ *
+ *   inbox       not archived, and the other side has written at least once. A cold send nobody has
+ *               answered is NOT an inbox conversation (it only shows up through search, a campaign
+ *               filter, or by opening the campaign).
+ *   needs_reply open, not archived, and a real reply (classification 'reply') arrived after our
+ *               last outbound. Bounces and auto-replies never put a conversation here.
+ *   awaiting    not archived, they have written, and our last outbound is newer than their last
+ *               inbound: we answered, the ball is in their court.
+ *   unread      not archived and unread for the calling user.
+ *   reminders   the calling user has an ACTIVE reminder on it: scheduled OR already notified but
+ *               not done/cancelled. Includes archived conversations (archiving does not cancel a
+ *               reminder you set on purpose).
+ *   archived    archived only.
+ */
+export const INBOX_VIEWS = ['inbox', 'needs_reply', 'awaiting', 'unread', 'reminders', 'archived'] as const
+export type InboxView = (typeof INBOX_VIEWS)[number]
+
+export interface InboxCounts {
+    needsReply: number
+    awaiting: number
+    unread: number
+    /** Conversations with an active reminder whose time has come (remind_at <= now). */
+    remindersDue: number
 }
 
 export interface ListConversationsParams {
@@ -181,11 +216,6 @@ function unreadPredicate(userId: string): SQL {
     )`
 }
 
-/** Escape ILIKE wildcards so user input matches literally (Postgres default '\' escape char). */
-function escapeLikePattern(input: string): string {
-    return input.replace(/[\\%_]/g, (char) => `\\${char}`)
-}
-
 /** Bounded keyword match over subject, latest preview, and participant address/name. */
 function searchPredicate(term: string): SQL {
     return sql`(
@@ -210,7 +240,13 @@ function labelPredicate(labelId: string): SQL {
     )`
 }
 
-/** The calling user has a scheduled ('active') or due reminder on the conversation. */
+/**
+ * The calling user has an ACTIVE reminder on the conversation. Active is `scheduled` OR
+ * `notified`: processInboxCommands flips a reminder to `notified` the moment it fires, and a
+ * notified reminder is exactly the one the operator still has to act on, so filtering on
+ * `scheduled` alone made the Reminders view empty itself at the instant it mattered. Only `done`
+ * and `cancelled` are finished. `due` additionally requires remind_at <= now().
+ */
 function reminderPredicate(userId: string, state: 'active' | 'due'): SQL {
     const dueClause = state === 'due' ? sql`AND r.remind_at <= now()` : sql``
     return sql`EXISTS (
@@ -218,9 +254,75 @@ function reminderPredicate(userId: string, state: 'active' | 'due'): SQL {
         WHERE r.organization_id = outreach_conversations.organization_id
           AND r.conversation_id = outreach_conversations.id
           AND r.user_id = ${userId}::uuid
-          AND r.status = 'scheduled'
+          AND r.status IN ('scheduled', 'notified')
           ${dueClause}
     )`
+}
+
+const NOT_ARCHIVED: SQL = sql`outreach_conversations.archived_at IS NULL`
+const HAS_INBOUND: SQL = sql`outreach_conversations.last_inbound_at IS NOT NULL`
+
+/**
+ * Sort/cursor key. `last_message_at` is nullable in the schema, and a NULL sorts FIRST under
+ * `DESC` in Postgres and never satisfies a `<` comparison, so a keyset walk would either bury those
+ * rows forever or loop on them. `created_at` is NOT NULL, so COALESCE onto it gives every row a
+ * total, stable position. ORDER BY, the cursor predicate and the minted cursor all use THIS
+ * expression so they cannot drift apart (see idx_outreach_conversations_activity).
+ */
+const ACTIVITY_AT: SQL = sql`COALESCE(outreach_conversations.last_message_at, outreach_conversations.created_at)`
+
+/**
+ * They wrote, we haven't answered, and what they wrote is a real reply. EXISTS (rather than "the
+ * last inbound message is a reply") on purpose: an out-of-office landing AFTER a genuine reply
+ * would otherwise hide a person who is still waiting on us. The cheap column comparison is kept
+ * alongside the EXISTS so the planner can discard most rows before touching messages.
+ */
+const NEEDS_REPLY: SQL = sql`(
+    outreach_conversations.status = 'open'
+    AND outreach_conversations.archived_at IS NULL
+    AND outreach_conversations.last_inbound_at IS NOT NULL
+    AND outreach_conversations.last_inbound_at > COALESCE(outreach_conversations.last_outbound_at, '-infinity'::timestamp)
+    AND EXISTS (
+        SELECT 1 FROM outreach_conversation_messages m
+        WHERE m.organization_id = outreach_conversations.organization_id
+          AND m.conversation_id = outreach_conversations.id
+          AND m.direction = 'inbound'
+          AND m.classification = 'reply'
+          AND COALESCE(m.received_at, m.sent_at, m.created_at)
+              > COALESCE(outreach_conversations.last_outbound_at, '-infinity'::timestamp)
+    )
+)`
+
+const AWAITING: SQL = sql`(
+    outreach_conversations.archived_at IS NULL
+    AND outreach_conversations.last_inbound_at IS NOT NULL
+    AND outreach_conversations.last_outbound_at IS NOT NULL
+    AND outreach_conversations.last_outbound_at > outreach_conversations.last_inbound_at
+)`
+
+/**
+ * The SQL conditions a quick view contributes. `scopedLookup` is true when the operator is looking
+ * something up on purpose (a search term or a campaign filter): the Inbox view then drops its
+ * "has inbound" requirement so a cold send is findable, which is the one place it is allowed to
+ * appear. It is deliberately NOT triggered by the account or label filters, which describe a
+ * mailbox/bucket rather than a lookup, and would otherwise flood the Inbox with thousands of
+ * unanswered cold sends from one sender.
+ */
+export function viewConditions(view: InboxView, userId: string, scopedLookup: boolean): SQL[] {
+    switch (view) {
+        case 'inbox':
+            return scopedLookup ? [NOT_ARCHIVED] : [NOT_ARCHIVED, HAS_INBOUND]
+        case 'needs_reply':
+            return [NEEDS_REPLY]
+        case 'awaiting':
+            return [AWAITING]
+        case 'unread':
+            return [NOT_ARCHIVED, sql`(${unreadPredicate(userId)})`]
+        case 'reminders':
+            return [reminderPredicate(userId, 'active')]
+        case 'archived':
+            return [sql`outreach_conversations.archived_at IS NOT NULL`]
+    }
 }
 
 function cursorFiltersOf(organizationId: string, filters: ConversationListFilters): ConversationCursorFilters {
@@ -234,6 +336,7 @@ function cursorFiltersOf(organizationId: string, filters: ConversationListFilter
         labelId: filters.labelId,
         reminderState: filters.reminderState,
         archived: filters.archived,
+        view: filters.view,
     }
 }
 
@@ -307,13 +410,18 @@ export async function listConversations(params: ListConversationsParams): Promis
     if (filters.status) conditions.push(eq(outreachConversations.status, filters.status))
     if (filters.campaignId) conditions.push(eq(outreachConversations.campaignId, filters.campaignId))
     if (filters.emailAccountId) conditions.push(eq(outreachConversations.emailAccountId, filters.emailAccountId))
-    if (filters.unread) conditions.push(sql`(${unreadPredicate(userId)})`)
-    if (filters.archived === true) conditions.push(sql`outreach_conversations.archived_at IS NOT NULL`)
-    if (filters.archived === false) conditions.push(sql`outreach_conversations.archived_at IS NULL`)
-    if (filters.labelId) conditions.push(labelPredicate(filters.labelId))
-    if (filters.reminderState) conditions.push(reminderPredicate(userId, filters.reminderState))
-
     const trimmedSearch = filters.search?.trim()
+    if (filters.view) {
+        // A view owns read/archive/reminder semantics; legacy flags are ignored when one is set.
+        conditions.push(...viewConditions(filters.view, userId, Boolean(trimmedSearch) || Boolean(filters.campaignId)))
+    } else {
+        if (filters.unread) conditions.push(sql`(${unreadPredicate(userId)})`)
+        if (filters.archived === true) conditions.push(sql`outreach_conversations.archived_at IS NOT NULL`)
+        if (filters.archived === false) conditions.push(sql`outreach_conversations.archived_at IS NULL`)
+        if (filters.reminderState) conditions.push(reminderPredicate(userId, filters.reminderState))
+    }
+    if (filters.labelId) conditions.push(labelPredicate(filters.labelId))
+
     if (trimmedSearch) {
         conditions.push(searchPredicate(`%${escapeLikePattern(trimmedSearch)}%`))
     }
@@ -323,8 +431,8 @@ export async function listConversations(params: ListConversationsParams): Promis
     if (params.cursor) {
         const position = decodeConversationCursor(params.cursor, cursorFiltersOf(organizationId, filters))
         conditions.push(sql`(
-            outreach_conversations.last_message_at < ${position.lastMessageAt}::timestamp
-            OR (outreach_conversations.last_message_at = ${position.lastMessageAt}::timestamp
+            ${ACTIVITY_AT} < ${position.lastMessageAt}::timestamp
+            OR (${ACTIVITY_AT} = ${position.lastMessageAt}::timestamp
                 AND outreach_conversations.id < ${position.id}::uuid)
         )`)
     }
@@ -343,12 +451,12 @@ export async function listConversations(params: ListConversationsParams): Promis
             lastInboundAt: outreachConversations.lastInboundAt,
             lastOutboundAt: outreachConversations.lastOutboundAt,
             archivedAt: outreachConversations.archivedAt,
-            cursorTs: sql<string | null>`outreach_conversations.last_message_at::text`,
+            cursorTs: sql<string | null>`(${ACTIVITY_AT})::text`,
             unread: sql<boolean>`(${unreadPredicate(userId)})`,
         })
         .from(outreachConversations)
         .where(and(...conditions))
-        .orderBy(desc(outreachConversations.lastMessageAt), desc(outreachConversations.id))
+        .orderBy(sql`${ACTIVITY_AT} DESC`, desc(outreachConversations.id))
         .limit(limit + 1)
 
     const hasMore = rows.length > limit
@@ -498,15 +606,45 @@ export async function getConversationDetail(params: {
 // Unread count
 // ------------------------------------------------------------
 
+/**
+ * Org-scoped unread count for the navigation badge. Uses the SAME predicate as the Unread view
+ * (not archived, has inbound, no read row at/after the last inbound) so the badge can never show a
+ * number the list then fails to produce.
+ */
 export async function getUnreadCount(params: { organizationId: string; userId: string }): Promise<number> {
     const rows = await db
         .select({ count: sql<string>`count(*)` })
         .from(outreachConversations)
         .where(and(
             eq(outreachConversations.organizationId, params.organizationId),
+            NOT_ARCHIVED,
             sql`(${unreadPredicate(params.userId)})`,
         ))
     return Number(rows[0]?.count ?? 0)
+}
+
+/**
+ * The four rail counters in one round trip, built from the exact predicates the list views use
+ * (NEEDS_REPLY / AWAITING / unread / active-and-due reminder), tenant-scoped first like every other
+ * query here.
+ */
+export async function getInboxCounts(params: { organizationId: string; userId: string }): Promise<InboxCounts> {
+    const rows = await db
+        .select({
+            needsReply: sql<string>`count(*) FILTER (WHERE ${NEEDS_REPLY})`,
+            awaiting: sql<string>`count(*) FILTER (WHERE ${AWAITING})`,
+            unread: sql<string>`count(*) FILTER (WHERE ${NOT_ARCHIVED} AND (${unreadPredicate(params.userId)}))`,
+            remindersDue: sql<string>`count(*) FILTER (WHERE ${reminderPredicate(params.userId, 'due')})`,
+        })
+        .from(outreachConversations)
+        .where(eq(outreachConversations.organizationId, params.organizationId))
+    const row = rows[0]
+    return {
+        needsReply: Number(row?.needsReply ?? 0),
+        awaiting: Number(row?.awaiting ?? 0),
+        unread: Number(row?.unread ?? 0),
+        remindersDue: Number(row?.remindersDue ?? 0),
+    }
 }
 
 // ------------------------------------------------------------
@@ -518,15 +656,17 @@ export async function setConversationReadState(params: {
     conversationId: string
     userId: string
     read: boolean
+    /**
+     * The `lastMessageAt` of the conversation as the client RENDERED it. Marking read covers up to
+     * that point and no further: a message that landed between the client's fetch and this call
+     * stays unread instead of being silently swallowed by a blind "read up to now".
+     */
+    upTo?: Date | null
 }): Promise<ReadStateResult> {
     const { organizationId, conversationId, userId, read } = params
 
     const convRows = await db
-        .select({
-            id: outreachConversations.id,
-            lastMessageId: outreachConversations.lastMessageId,
-            lastMessageAt: outreachConversations.lastMessageAt,
-        })
+        .select({ id: outreachConversations.id })
         .from(outreachConversations)
         .where(and(
             eq(outreachConversations.organizationId, organizationId),
@@ -534,35 +674,53 @@ export async function setConversationReadState(params: {
         ))
         .limit(1)
 
-    const conv = convRows[0]
-    if (!conv) return { found: false, unread: false }
+    if (!convRows[0]) return { found: false, unread: false }
 
     if (read) {
-        // Mark read up to the latest message. Idempotent: GREATEST never moves the read
-        // watermark backward, and the unique (org, conversation, user) key means a second
-        // call updates the same single row rather than inserting a duplicate.
-        const readAt = conv.lastMessageAt ?? new Date()
-        await db
-            .insert(outreachConversationReads)
-            .values({
-                organizationId,
-                conversationId,
-                userId,
-                lastReadMessageId: conv.lastMessageId ?? null,
-                lastReadAt: readAt,
-            })
-            .onConflictDoUpdate({
-                target: [
-                    outreachConversationReads.organizationId,
-                    outreachConversationReads.conversationId,
-                    outreachConversationReads.userId,
-                ],
-                set: {
-                    lastReadMessageId: sql`excluded.last_read_message_id`,
-                    lastReadAt: sql`GREATEST(outreach_conversation_reads.last_read_at, excluded.last_read_at)`,
-                    updatedAt: sql`now()`,
-                },
-            })
+        // Read watermark = LEAST(server last_message_at, client upTo). JSON carries milliseconds
+        // but the column can hold microseconds, so upTo is widened by one millisecond before the
+        // comparison; otherwise a message the client genuinely saw at .123456 would be "newer"
+        // than its own .123 echo and the conversation would stay unread forever. The widening
+        // cannot swallow a later message in practice (it would have to land in the same ms).
+        // Computed in SQL so no timestamp is round-tripped through a JS Date.
+        const upTo = params.upTo && !Number.isNaN(params.upTo.getTime()) ? params.upTo.toISOString() : null
+        // Idempotent: GREATEST never moves the watermark backward, and the unique
+        // (org, conversation, user) key means a second call updates the same single row.
+        // Provider time is used for the watermark (last_inbound_at is provider time too, so the
+        // two stay comparable); ingestion time would require a second timestamp on every message.
+        await db.execute(sql`
+            INSERT INTO outreach_conversation_reads
+                (organization_id, conversation_id, user_id, last_read_message_id, last_read_at)
+            SELECT c.organization_id, c.id, ${userId}::uuid,
+                (
+                    SELECT m.id FROM outreach_conversation_messages m
+                    WHERE m.organization_id = c.organization_id
+                      AND m.conversation_id = c.id
+                      AND COALESCE(m.received_at, m.sent_at, m.created_at) <= w.ts
+                    ORDER BY COALESCE(m.received_at, m.sent_at, m.created_at) DESC, m.id DESC
+                    LIMIT 1
+                ),
+                w.ts
+            FROM outreach_conversations c
+            CROSS JOIN LATERAL (
+                SELECT CASE
+                    WHEN ${upTo}::timestamp IS NULL THEN COALESCE(c.last_message_at, now())
+                    ELSE LEAST(
+                        COALESCE(c.last_message_at, now()),
+                        ${upTo}::timestamp + interval '1 millisecond'
+                    )
+                END AS ts
+            ) w
+            WHERE c.organization_id = ${organizationId}::uuid AND c.id = ${conversationId}::uuid
+            ON CONFLICT (organization_id, conversation_id, user_id) DO UPDATE SET
+                last_read_message_id = CASE
+                    WHEN excluded.last_read_at >= outreach_conversation_reads.last_read_at
+                        THEN excluded.last_read_message_id
+                    ELSE outreach_conversation_reads.last_read_message_id
+                END,
+                last_read_at = GREATEST(outreach_conversation_reads.last_read_at, excluded.last_read_at),
+                updated_at = now()
+        `)
     } else {
         // Mark unread: drop only THIS user's read row. Idempotent (deleting nothing is a no-op)
         // and never affects any other user's read state.
@@ -600,6 +758,30 @@ function categorizeSyncError(rawError: string | null): string | null {
     if (/(timeout|econn|refused|network|unreachable|dns|socket|reset)/.test(text)) return 'network'
     if (/(410|delta|cursor|invalid)/.test(text)) return 'provider_cursor'
     return 'provider'
+}
+
+const SYNC_STATUS_TTL_MS = 15_000
+const syncStatusCache = new Map<string, { at: number; value: AccountSyncStatusDto[] }>()
+
+/** Test seam: drop the short-lived per-organization sync-status cache. */
+export function clearAccountSyncStatusCache(): void {
+    syncStatusCache.clear()
+}
+
+/**
+ * Sync health changes on the scale of ingestion ticks (minutes), but the list endpoint is hit on
+ * every page, filter change and SSE-triggered refetch. A 15s per-organization cache keeps the
+ * degraded badge fresh enough without re-reading the cursor table on each of those.
+ */
+export async function getAccountSyncStatusCached(
+    organizationId: string,
+    now: number = Date.now(),
+): Promise<AccountSyncStatusDto[]> {
+    const hit = syncStatusCache.get(organizationId)
+    if (hit && now - hit.at < SYNC_STATUS_TTL_MS) return hit.value
+    const value = await getAccountSyncStatus(organizationId)
+    syncStatusCache.set(organizationId, { at: now, value })
+    return value
 }
 
 export async function getAccountSyncStatus(organizationId: string): Promise<AccountSyncStatusDto[]> {

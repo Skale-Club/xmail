@@ -118,7 +118,7 @@ export interface BulkUpdateResult {
 // Shared org-scoping guards
 // ------------------------------------------------------------
 
-async function conversationInOrg(organizationId: string, conversationId: string): Promise<boolean> {
+export async function conversationInOrg(organizationId: string, conversationId: string): Promise<boolean> {
     const rows = await db
         .select({ id: outreachConversations.id })
         .from(outreachConversations)
@@ -605,7 +605,9 @@ export async function getReminderDueSummary(organizationId: string, userId: stri
         .where(and(
             eq(inboxReminders.organizationId, organizationId),
             eq(inboxReminders.userId, userId),
-            eq(inboxReminders.status, 'scheduled'),
+            // Scheduled AND notified: a reminder flips to 'notified' the moment it fires, which is
+            // exactly when it is due, so counting only 'scheduled' zeroed the due summary on fire.
+            inArray(inboxReminders.status, ['scheduled', 'notified']),
         ))
         .orderBy(asc(inboxReminders.remindAt))
     const due = rows.filter((r) => r.remindAt.getTime() <= now.getTime())

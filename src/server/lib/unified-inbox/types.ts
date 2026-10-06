@@ -73,13 +73,16 @@ export const OUTREACH_MESSAGE_MATCH_STRATEGIES = [
  * Provider-event materialization lifecycle. This is INDEPENDENT from the Phase 19
  * `processed_at` field, which records reply/bounce classification side-effects. A
  * worker leases a `pending` (or stale `processing`) row, commits the normalized
- * message, then flips it to `materialized`; exhausted retries land on `failed`.
+ * message, then flips it to `materialized`; exhausted retries land on `failed`. `skipped`
+ * (migration 068) closes an event that is warm-up mesh traffic and deliberately never becomes a
+ * conversation; the row stays as the provider-message dedupe record.
  */
 export const OUTREACH_PROVIDER_EVENT_MATERIALIZATION_STATUSES = [
     'pending',
     'processing',
     'materialized',
     'failed',
+    'skipped',
 ] as const satisfies readonly OutreachProviderEventMaterializationStatus[]
 
 // ------------------------------------------------------------

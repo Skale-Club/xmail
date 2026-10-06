@@ -18,7 +18,8 @@
 import React from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { apiRequest } from '../lib/api-client'
-import { inboxKeys, isInboxListQueryKey } from '../lib/unified-inbox-api'
+import { inboxKeys } from '../lib/unified-inbox-api'
+import { refreshInboxListsFirstPage } from '../lib/unified-inbox-cache'
 
 const RECONNECT_BASE_MS = 1_000
 const RECONNECT_MAX_MS = 30_000
@@ -53,10 +54,14 @@ function isDetailKey(queryKey: readonly unknown[], organizationId: string | unde
 }
 
 function invalidateAggregates(queryClient: QueryClient, organizationId: string): void {
-    // Unread badge + the conversation list only. The list re-filters membership/ordering on the
-    // server; this is the bounded work the polling fallback repeats — it NEVER enumerates threads.
+    // Unread badge + rail counters + the conversation list only. The list re-filters
+    // membership/ordering on the server; this is the bounded work the polling fallback repeats - it
+    // NEVER enumerates threads. Lists are trimmed to their first page before the refetch: a new
+    // message lands at the top, so page one is the only page that can have changed, and refetching
+    // every loaded page of every cached filter set on each signal was the dominant request cost.
     void queryClient.invalidateQueries({ queryKey: inboxKeys.unread(organizationId) })
-    void queryClient.invalidateQueries({ predicate: (q) => isInboxListQueryKey(q.queryKey, organizationId) })
+    void queryClient.invalidateQueries({ queryKey: inboxKeys.counts(organizationId) })
+    refreshInboxListsFirstPage(queryClient, organizationId)
 }
 
 /**
