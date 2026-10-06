@@ -19,17 +19,7 @@ import { Button } from '../../ui/button'
 import { Skeleton } from '../../ui/Skeleton'
 import { cn, truncate } from '../../../lib/utils'
 import { formatDateTime, formatRelativeShort } from '../../../lib/inbox-relative-time'
-import type { InboxConversationListItem, InboxMessageClassification } from '../../../lib/unified-inbox-api'
-
-// TODO(contract): the backend is adding these to InboxConversationListItem. When it lands, drop this
-// local extension and read them straight off the DTO. Until then the badges only render if the
-// field happens to be present.
-export type InboxListItemExt = InboxConversationListItem & {
-    /** Classification of the last inbound message (bounce / auto_reply drive a badge). */
-    lastInboundClassification?: InboxMessageClassification | null
-    /** A reminder on this conversation is due (the bell shows only when this is exactly true). */
-    reminderDue?: boolean
-}
+import type { InboxConversationListItem } from '../../../lib/unified-inbox-api'
 
 export interface ConversationListProps {
     conversations: InboxConversationListItem[]
@@ -81,7 +71,7 @@ function waitingSince(conversation: InboxConversationListItem): string | null {
 }
 
 interface ConversationRowProps {
-    conversation: InboxListItemExt
+    conversation: InboxConversationListItem
     selected: boolean
     cursor: boolean
     onSelect: (id: string) => void

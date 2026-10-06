@@ -2700,7 +2700,7 @@ describe('InboxFilterRail: six quick views with counts', () => {
             accounts: [],
             syncStatus: [],
             lastUpdatedAt: null,
-            counts: { needsReply: 4, awaiting: 7, unread: 3, remindersDue: 2 },
+            counts: { needsReply: 4, awaiting: 7, unread: 3, remindersActive: 5, remindersDue: 2 },
             ...overrides,
         }
         return { props, ...render(<InboxFilterRail {...props} />) }
