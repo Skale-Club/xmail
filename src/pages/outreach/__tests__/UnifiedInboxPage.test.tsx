@@ -91,6 +91,7 @@ import { ConversationList, type ConversationListProps } from '@/components/outre
 import { ConversationThread } from '@/components/outreach/inbox/ConversationThread'
 import { BulkActionsBar, ConversationActions } from '@/components/outreach/inbox/ConversationActions'
 import { ComposerUnavailable, ConversationComposer } from '@/components/outreach/inbox/ConversationComposer'
+import { clearComposerDraftsForUser, readComposerDraft, writeComposerDraft } from '@/components/outreach/inbox/composer-draft'
 import { AiDraftAssistant } from '@/components/outreach/inbox/AiDraftAssistant'
 import { AiAutomationHistory } from '@/components/outreach/inbox/AiAutomationHistory'
 import { AiAutomationChip } from '@/components/outreach/inbox/AiAutomationChip'
@@ -422,7 +423,7 @@ describe('ConversationList: rows + pagination', () => {
         renderList({
             conversations: [makeConversation({ status: 'open', lastInboundAt: hourAgo, lastOutboundAt: null, lastMessageAt: hourAgo })],
         })
-        expect(screen.getByText('Waiting 2h ago')).toBeInTheDocument()
+        expect(screen.getByText('Waiting 2h')).toBeInTheDocument()
     })
 
     it('does not show a waiting badge when we replied last or the conversation is closed', () => {
@@ -448,9 +449,29 @@ describe('ConversationList: rows + pagination', () => {
         expect(screen.getByText('Auto reply')).toBeInTheDocument()
     })
 
-    it('flags every row as having a reminder while the Reminders view is active', () => {
-        renderList({ conversations: [makeConversation()], remindersView: true })
-        expect(screen.getByText('Reminder due')).toBeInTheDocument()
+    it('shows the reminder bell only for rows whose reminder is due', () => {
+        renderList({
+            conversations: [
+                makeConversation({ id: CONV_1, reminderDue: true } as Partial<InboxConversationListItem>),
+                makeConversation({ id: CAMPAIGN_1, subject: 'No reminder' }),
+            ],
+        })
+        expect(screen.getAllByText('Reminder due')).toHaveLength(1)
+    })
+
+    it('keeps the quick actions out of reach until hover/focus and disables them while busy', () => {
+        const onToggleArchive = vi.fn()
+        renderList({ conversations: [makeConversation()], onToggleArchive, onToggleRead: vi.fn(), actionsBusy: true })
+        const archive = screen.getByRole('button', { name: /Archive: Lead Person/ })
+        expect(archive).toBeDisabled()
+        // Invisible quick actions must not be tappable: pointer events are off until hover/focus,
+        // and the group is hidden entirely on touch devices.
+        const group = archive.parentElement as HTMLElement
+        expect(group.className).toContain('pointer-events-none')
+        expect(group.className).toContain('group-hover:pointer-events-auto')
+        expect(group.className).toContain('[@media(hover:none)]:hidden')
+        fireEvent.click(archive)
+        expect(onToggleArchive).not.toHaveBeenCalled()
     })
 
     it('offers hover quick actions that archive and toggle read without opening the row', () => {
@@ -784,6 +805,10 @@ vi.mock('@/components/outreach/inbox/useOrgAiAutomation', () => ({
         pending: false,
         error: null,
     }),
+}))
+
+vi.mock('@/hooks/useAuth', () => ({
+    useAuth: () => ({ user: { id: 'user-1', email: 'op@skale.club' }, isAdmin: false, isLoading: false }),
 }))
 
 vi.mock('@/hooks/useOrganization', () => ({
@@ -1130,6 +1155,98 @@ describe('UnifiedInboxPage: tenant isolation + selection', () => {
         hooks.state.detail = { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
         view.rerender(<UnifiedInboxPage />)
         expect(document.activeElement).toBe(screen.getByRole('button', { name: /Conversation with Lead Person/ }))
+    })
+})
+
+describe('UnifiedInboxPage: review hardening', () => {
+    useThreadTimerGuard()
+    afterEach(() => {
+        vi.clearAllMocks()
+        hooks.state.org = { id: '' }
+        hooks.state.search = ''
+        hooks.state.list = hooks.makeListReturn([])
+        hooks.state.detail = { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
+        hooks.state.labelAttachPending = false
+        hooks.state.readStateMutate = vi.fn()
+        hooks.state.archiveMutate = vi.fn()
+        hooks.state.accounts = { data: [], isLoading: false }
+        window.localStorage.clear()
+    })
+
+    const withAccounts = () => {
+        hooks.state.accounts = { data: [{ id: ACCOUNT_1, email: 'rep@skale.club', provider: 'native' }], isLoading: false }
+    }
+
+    it('marks a reopened conversation read again when a new reply arrived since the last time', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        const view = render(<UnifiedInboxPage />)
+        expect(hooks.state.readStateMutate).toHaveBeenCalledTimes(1)
+        // A newer message lands and the conversation is unread again.
+        const base = makeDetail()
+        hooks.state.detail = {
+            data: makeDetail({ conversation: { ...base.conversation, lastMessageAt: '2026-07-17T08:00:00.000Z', unread: true } }),
+            isLoading: false,
+            isError: false,
+            refetch: vi.fn(),
+        }
+        view.rerender(<UnifiedInboxPage />)
+        expect(hooks.state.readStateMutate).toHaveBeenCalledTimes(2)
+        expect(hooks.state.readStateMutate).toHaveBeenLastCalledWith({ conversationId: CONV_1, read: true, upTo: '2026-07-17T08:00:00.000Z' })
+    })
+
+    it('e and u act on the highlighted (j/k) row when it differs from the open conversation', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.list = hooks.makeListReturn([
+            makeConversation({ id: CONV_1 }),
+            makeConversation({ id: CAMPAIGN_1, subject: 'Second', archived: false, unread: false }),
+        ])
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        withAccounts()
+        render(<UnifiedInboxPage />)
+        fireEvent.keyDown(document.body, { key: 'j' })
+        hooks.state.readStateMutate.mockClear()
+        fireEvent.keyDown(document.body, { key: 'e' })
+        expect(hooks.state.archiveMutate).toHaveBeenCalledWith({ conversationId: CAMPAIGN_1, archived: true })
+        fireEvent.keyDown(document.body, { key: 'u' })
+        // The highlighted row is already read, so toggling marks it UNread.
+        expect(hooks.state.readStateMutate).toHaveBeenCalledWith({ conversationId: CAMPAIGN_1, read: false })
+    })
+
+    it('r pressed before the thread has loaded still opens the composer once it does', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: undefined, isLoading: true, isError: false, refetch: vi.fn() }
+        withAccounts()
+        const view = render(<UnifiedInboxPage />)
+        fireEvent.keyDown(document.body, { key: 'r' })
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        view.rerender(<UnifiedInboxPage />)
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toBeInTheDocument()
+    })
+
+    it('a consumed shortcut request is not replayed when the composer remounts', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        withAccounts()
+        const view = render(<UnifiedInboxPage />)
+        fireEvent.keyDown(document.body, { key: 'r' })
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Close composer' }))
+        view.unmount()
+        render(<UnifiedInboxPage />)
+        expect(screen.queryByRole('textbox', { name: 'Reply body' })).not.toBeInTheDocument()
+    })
+
+    it('disables the row quick actions while a single-conversation mutation is in flight', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.list = hooks.makeListReturn([makeConversation()])
+        hooks.state.labelAttachPending = true
+        render(<UnifiedInboxPage />)
+        expect(screen.getByRole('button', { name: /Archive: Lead Person/ })).toBeDisabled()
     })
 })
 
@@ -1973,10 +2090,10 @@ describe('ConversationComposer: per-conversation draft persistence', () => {
         window.localStorage.clear()
     })
 
-    const DRAFT_KEY = `xmail:inbox-draft:v1:${CONV_1}`
+    const DRAFT_KEY = `xmail:inbox-draft:v2:user-1:${CONV_1}`
 
     it('saves the typed draft, shows "Draft saved" and restores it when the conversation is reopened', () => {
-        const first = renderComposer({ conversationId: CONV_1 })
+        const first = renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
         fireEvent.click(screen.getByRole('button', { name: 'Reply all' }))
         fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'half written' } })
         expect(screen.queryByText('Draft saved')).not.toBeInTheDocument()
@@ -1986,13 +2103,13 @@ describe('ConversationComposer: per-conversation draft persistence', () => {
 
         // Switching conversation unmounts the composer; reopening restores mode + text.
         first.unmount()
-        renderComposer({ conversationId: CONV_1 })
+        renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
         expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('half written')
         expect(screen.getByText('Reply all', { selector: 'p' })).toBeInTheDocument()
     })
 
     it('flushes the draft on unmount even before the debounce fires', () => {
-        const first = renderComposer({ conversationId: CONV_1 })
+        const first = renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
         fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
         fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'fast switch' } })
         first.unmount()
@@ -2000,16 +2117,16 @@ describe('ConversationComposer: per-conversation draft persistence', () => {
     })
 
     it('keeps drafts separate per conversation', () => {
-        const first = renderComposer({ conversationId: CONV_1 })
+        const first = renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
         fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
         fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'for one' } })
         first.unmount()
-        renderComposer({ conversationId: CAMPAIGN_1 })
+        renderComposer({ draftUserId: 'user-1', conversationId: CAMPAIGN_1 })
         expect(screen.queryByRole('textbox', { name: 'Reply body' })).not.toBeInTheDocument()
     })
 
     it('clears the stored draft on discard', () => {
-        renderComposer({ conversationId: CONV_1 })
+        renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
         fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
         fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'bye' } })
         act(() => { vi.advanceTimersByTime(600) })
@@ -2022,7 +2139,7 @@ describe('ConversationComposer: per-conversation draft persistence', () => {
     it('clears the stored draft after a successful send', async () => {
         vi.useRealTimers()
         const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand())
-        renderComposer({ conversationId: CONV_1, onSend })
+        renderComposer({ draftUserId: 'user-1', conversationId: CONV_1, onSend })
         fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
         fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'sent soon' } })
         fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
@@ -2034,7 +2151,7 @@ describe('ConversationComposer: per-conversation draft persistence', () => {
     it('survives a blocked localStorage', () => {
         const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
         const getSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
-        renderComposer({ conversationId: CONV_1 })
+        renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
         fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
         fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'still works' } })
         act(() => { vi.advanceTimersByTime(600) })
@@ -2042,6 +2159,148 @@ describe('ConversationComposer: per-conversation draft persistence', () => {
         expect(screen.queryByText('Draft saved')).not.toBeInTheDocument()
         spy.mockRestore()
         getSpy.mockRestore()
+    })
+})
+
+describe('ConversationComposer: review hardening', () => {
+    afterEach(() => {
+        vi.clearAllMocks()
+        window.localStorage.clear()
+    })
+
+    const networkError = () => Object.assign(new Error('Network request failed'), { status: 0 })
+
+    it('after a network error keeps the SAME key even when the text is edited, and revalidates the thread', async () => {
+        const onSend = vi.fn<(input: CreateSendCommandInput) => Promise<InboxSendCommand>>(async () => { throw networkError() })
+        const onUncertainSend = vi.fn(async () => undefined)
+        renderComposer({ onSend, onUncertainSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        const body = screen.getByRole('textbox', { name: 'Reply body' })
+        fireEvent.change(body, { target: { value: 'Thanks' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        expect(await screen.findByText(/may already have been sent/)).toBeInTheDocument()
+        await waitFor(() => expect(onUncertainSend).toHaveBeenCalledOnce())
+        // The draft is intact and no scary "failed" error replaces the uncertainty notice.
+        expect(body).toHaveValue('Thanks')
+        // Fix a comma and resend: it must reuse the key so the server can dedup, not mint a new one.
+        fireEvent.change(body, { target: { value: 'Thanks.' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2))
+        expect(onSend.mock.calls[1][0].idempotencyKey).toBe(onSend.mock.calls[0][0].idempotencyKey)
+    })
+
+    it('treats a 5xx like a network error but a 4xx as a definite failure with a fresh key on edit', async () => {
+        const fiveHundred = Object.assign(new Error('Bad gateway'), { status: 502 })
+        const fourHundred = Object.assign(new Error('Validation failed'), { status: 422 })
+        const onSend = vi.fn<(input: CreateSendCommandInput) => Promise<InboxSendCommand>>()
+            .mockRejectedValueOnce(fiveHundred)
+            .mockRejectedValueOnce(fiveHundred)
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        const body = screen.getByRole('textbox', { name: 'Reply body' })
+        fireEvent.change(body, { target: { value: 'a' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await screen.findByText(/may already have been sent/)
+        fireEvent.change(body, { target: { value: 'ab' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2))
+        expect(onSend.mock.calls[1][0].idempotencyKey).toBe(onSend.mock.calls[0][0].idempotencyKey)
+
+        // A definite 4xx, on a fresh composer, shows the server reason and an edit gets a new key.
+        const onSend2 = vi.fn<(input: CreateSendCommandInput) => Promise<InboxSendCommand>>(async () => { throw fourHundred })
+        document.body.innerHTML = ''
+        renderComposer({ onSend: onSend2 })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        const body2 = screen.getByRole('textbox', { name: 'Reply body' })
+        fireEvent.change(body2, { target: { value: 'x' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        expect(await screen.findByText('Validation failed')).toBeInTheDocument()
+        expect(screen.queryByText(/may already have been sent/)).not.toBeInTheDocument()
+        fireEvent.change(body2, { target: { value: 'xy' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend2).toHaveBeenCalledTimes(2))
+        expect(onSend2.mock.calls[1][0].idempotencyKey).not.toBe(onSend2.mock.calls[0][0].idempotencyKey)
+    })
+
+    it('"Edit and resend" brings the attachments back along with the text', async () => {
+        const onSend = vi.fn(async () => makeCommand({ id: 'cmd-5', status: 'queued' }))
+        const { rerender } = renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'with file' } })
+        fireEvent.change(screen.getByLabelText('Attach file'), {
+            target: { files: [new File([new Uint8Array(4)], 'brief.pdf', { type: 'application/pdf' })] },
+        })
+        await screen.findByText('brief.pdf')
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalled())
+        rerender(<ConversationComposer
+            accounts={ACCOUNTS}
+            defaultAccountId={ACCOUNT_1}
+            replyToPreview={['lead@acme.example']}
+            replyAllCcPreview={[]}
+            subjectPreview="Re: Demo request"
+            snippets={SNIPPETS}
+            onSend={onSend}
+            onUploadAttachment={vi.fn()}
+            polledCommand={makeCommand({ id: 'cmd-5', status: 'failed', lastError: 'boom' })}
+        />)
+        fireEvent.click(await screen.findByRole('button', { name: 'Edit and resend' }))
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('with file')
+        expect(screen.getByText('brief.pdf')).toBeInTheDocument()
+    })
+
+    it('makes the body read-only while a send is in flight so late keystrokes are not wiped', async () => {
+        let resolve!: (c: InboxSendCommand) => void
+        const onSend = vi.fn(() => new Promise<InboxSendCommand>((r) => { resolve = r }))
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'sending' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await screen.findByRole('button', { name: /Sending/ })
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveAttribute('readonly')
+        resolve(makeCommand())
+        await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Reply body' })).not.toBeInTheDocument())
+    })
+
+    it('applies a shortcut request that arrived before the composer mounted, then reports it handled', () => {
+        const onOpenRequestHandled = vi.fn()
+        renderComposer({ openRequest: { mode: 'reply', nonce: 1 }, onOpenRequestHandled })
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toBeInTheDocument()
+        expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply body' }))
+        expect(onOpenRequestHandled).toHaveBeenCalledOnce()
+    })
+
+    it('focuses the To field when a shortcut switches an open reply to a forward', () => {
+        const { props, rerender } = renderComposer({ openRequest: { mode: 'reply', nonce: 1 } })
+        expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply body' }))
+        rerender(<ConversationComposer {...props} openRequest={{ mode: 'forward', nonce: 2 }} />)
+        expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Forward recipients' }))
+    })
+
+    it('scrolls the discard confirmation into view and focuses its safe action', () => {
+        const scroll = vi.spyOn(window.HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {})
+        renderComposer()
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'words' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+        expect(scroll).toHaveBeenCalled()
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep editing' }))
+    })
+
+    it('namespaces stored drafts by user, expires old ones on write, and clears a user on sign-out', () => {
+        window.localStorage.setItem(`xmail:inbox-draft:v2:user-9:${CONV_1}`, JSON.stringify({ mode: 'reply', body: 'someone else', forwardTo: '', savedAt: Date.now() }))
+        window.localStorage.setItem('xmail:inbox-draft:v2:user-1:stale', JSON.stringify({ mode: 'reply', body: 'old', forwardTo: '', savedAt: Date.now() - 40 * 86400_000 }))
+        // user-1 never sees user-9's draft for the same conversation.
+        expect(readComposerDraft('user-1', CONV_1)).toBeNull()
+        expect(readComposerDraft('user-9', CONV_1)?.body).toBe('someone else')
+        // No user id, no persistence.
+        expect(writeComposerDraft(undefined, CONV_1, { mode: 'reply', body: 'x', forwardTo: '' })).toBeNull()
+        // A write sweeps expired drafts of any user.
+        expect(writeComposerDraft('user-1', CONV_1, { mode: 'reply', body: 'mine', forwardTo: '' })).not.toBeNull()
+        expect(window.localStorage.getItem('xmail:inbox-draft:v2:user-1:stale')).toBeNull()
+        clearComposerDraftsForUser('user-1')
+        expect(readComposerDraft('user-1', CONV_1)).toBeNull()
+        expect(readComposerDraft('user-9', CONV_1)).not.toBeNull()
     })
 })
 
@@ -2391,6 +2650,7 @@ describe('AiAutomationChip: org AI automation state', () => {
         const view = render(<AiAutomationChip settings={makeChipSettings({ autonomousEnabled: true, autonomyPaused: true })} canManage onPause={vi.fn()} onResume={onResume} />)
         await user.click(screen.getByRole('button', { name: /AI status/ }))
         await user.click(await screen.findByRole('button', { name: 'Resume automation' }))
+        await user.click(await screen.findByRole('button', { name: 'Confirm resume' }))
         expect(onResume).toHaveBeenCalledOnce()
         view.unmount()
 
@@ -2398,6 +2658,21 @@ describe('AiAutomationChip: org AI automation state', () => {
         await user.click(screen.getByRole('button', { name: /AI status/ }))
         await screen.findByText(/read-only access/)
         expect(screen.queryByRole('button', { name: 'Pause automation' })).not.toBeInTheDocument()
+    })
+
+    it('asks for confirmation before resuming automation (it re-enables autonomous replies)', async () => {
+        const user = userEvent.setup()
+        const onResume = vi.fn()
+        render(<AiAutomationChip settings={makeChipSettings({ autonomousEnabled: true, autonomyPaused: true })} canManage onPause={vi.fn()} onResume={onResume} />)
+        await user.click(screen.getByRole('button', { name: /AI status/ }))
+        await user.click(await screen.findByRole('button', { name: 'Resume automation' }))
+        expect(onResume).not.toHaveBeenCalled()
+        expect(screen.getByRole('alertdialog', { name: 'Resume automation?' })).toBeInTheDocument()
+        await user.click(screen.getByRole('button', { name: 'Keep paused' }))
+        expect(onResume).not.toHaveBeenCalled()
+        await user.click(screen.getByRole('button', { name: 'Resume automation' }))
+        await user.click(screen.getByRole('button', { name: 'Confirm resume' }))
+        expect(onResume).toHaveBeenCalledOnce()
     })
 
     it('links to the Settings page', async () => {

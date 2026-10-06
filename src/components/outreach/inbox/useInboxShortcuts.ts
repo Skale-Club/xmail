@@ -6,8 +6,8 @@ import { useEffect, useRef } from 'react'
 // j / k  next / previous conversation (moves the list cursor)
 // Enter  open the conversation under the cursor
 // r / a / f  reply / reply all / forward
-// e  archive (or restore) the open conversation
-// u  toggle unread on the open conversation
+// e  archive (or restore) the highlighted (j/k) conversation, else the open one
+// u  toggle unread on the highlighted (j/k) conversation, else the open one
 // /  focus the search box
 // ?  show the shortcut help
 //
@@ -33,8 +33,8 @@ export const SHORTCUT_HELP: ReadonlyArray<{ keys: string; description: string }>
     { keys: 'r', description: 'Reply' },
     { keys: 'a', description: 'Reply all' },
     { keys: 'f', description: 'Forward' },
-    { keys: 'e', description: 'Archive or restore' },
-    { keys: 'u', description: 'Mark read or unread' },
+    { keys: 'e', description: 'Archive or restore the highlighted conversation (the open one if none)' },
+    { keys: 'u', description: 'Mark the highlighted conversation read or unread (the open one if none)' },
     { keys: '/', description: 'Search conversations' },
     { keys: '?', description: 'Show this help' },
     { keys: 'Ctrl+Enter', description: 'Send the reply (in the composer)' },

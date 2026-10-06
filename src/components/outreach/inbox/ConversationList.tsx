@@ -21,14 +21,13 @@ import { cn, truncate } from '../../../lib/utils'
 import { formatDateTime, formatRelativeShort } from '../../../lib/inbox-relative-time'
 import type { InboxConversationListItem, InboxMessageClassification } from '../../../lib/unified-inbox-api'
 
-// TODO(contract): the list DTO does not carry these yet. When the backend adds them, drop this
-// local extension and read them straight off InboxConversationListItem. Until then the badges only
-// render if the field happens to be present, and the reminder indicator also lights up for every
-// row while the Reminders view is active (see `remindersView`).
+// TODO(contract): the backend is adding these to InboxConversationListItem. When it lands, drop this
+// local extension and read them straight off the DTO. Until then the badges only render if the
+// field happens to be present.
 export type InboxListItemExt = InboxConversationListItem & {
     /** Classification of the last inbound message (bounce / auto_reply drive a badge). */
     lastInboundClassification?: InboxMessageClassification | null
-    /** A reminder on this conversation is due. */
+    /** A reminder on this conversation is due (the bell shows only when this is exactly true). */
     reminderDue?: boolean
 }
 
@@ -56,8 +55,8 @@ export interface ConversationListProps {
     campaignNameById: Record<string, string>
     /** Keyboard cursor (j / k), distinct from the opened conversation. */
     cursorId?: string | null
-    /** The Reminders view is active: every row is there because of a reminder. */
-    remindersView?: boolean
+    /** A single-conversation mutation is in flight: row quick actions are disabled meanwhile. */
+    actionsBusy?: boolean
     /** Hover quick actions. Omit to hide them. */
     onToggleArchive?: (id: string, archived: boolean) => void
     onToggleRead?: (id: string, read: boolean) => void
@@ -88,7 +87,7 @@ interface ConversationRowProps {
     onSelect: (id: string) => void
     accountEmail?: string
     campaignName?: string
-    remindersView?: boolean
+    actionsBusy?: boolean
     onToggleArchive?: (id: string, archived: boolean) => void
     onToggleRead?: (id: string, read: boolean) => void
     bulkMode?: boolean
@@ -103,7 +102,7 @@ const ConversationRow = React.memo(function ConversationRow({
     onSelect,
     accountEmail,
     campaignName,
-    remindersView,
+    actionsBusy,
     onToggleArchive,
     onToggleRead,
     bulkMode,
@@ -115,7 +114,7 @@ const ConversationRow = React.memo(function ConversationRow({
     const exactTime = conversation.lastMessageAt ? formatDateTime(conversation.lastMessageAt) : undefined
     const waiting = waitingSince(conversation)
     const classification = conversation.lastInboundClassification
-    const reminderDue = Boolean(conversation.reminderDue) || Boolean(remindersView)
+    const reminderDue = conversation.reminderDue === true
     const visibleLabels = conversation.labels.slice(0, 2)
     const hiddenLabelCount = conversation.labels.length - visibleLabels.length
 
@@ -180,7 +179,7 @@ const ConversationRow = React.memo(function ConversationRow({
                 <div className="flex flex-nowrap items-center gap-1.5 overflow-hidden">
                     {waiting && (
                         <span className={cn(BADGE, 'shrink-0 bg-amber-500/15 text-amber-800 dark:text-amber-300')} title="Waiting for your reply">
-                            Waiting {formatRelativeShort(waiting)}
+                            Waiting {formatRelativeShort(waiting, undefined, true)}
                         </span>
                     )}
                     {classification === 'bounce' && (
@@ -232,11 +231,12 @@ const ConversationRow = React.memo(function ConversationRow({
 
             {/* Hover / focus quick actions (siblings of the row button, never nested in it). */}
             {!bulkMode && (onToggleArchive || onToggleRead) && (
-                <div className="absolute right-2 top-1.5 flex items-center gap-1 opacity-0 focus-within:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100">
+                <div className="pointer-events-none absolute right-2 top-1.5 flex items-center gap-1 opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 [@media(hover:none)]:hidden">
                     {onToggleRead && (
                         <button
                             type="button"
                             className={QUICK_BTN}
+                            disabled={actionsBusy}
                             onClick={() => onToggleRead(conversation.id, conversation.unread)}
                             aria-label={`${conversation.unread ? 'Mark as read' : 'Mark as unread'}: ${displayName}`}
                             title={conversation.unread ? 'Mark as read' : 'Mark as unread'}
@@ -248,6 +248,7 @@ const ConversationRow = React.memo(function ConversationRow({
                         <button
                             type="button"
                             className={QUICK_BTN}
+                            disabled={actionsBusy}
                             onClick={() => onToggleArchive(conversation.id, !conversation.archived)}
                             aria-label={`${conversation.archived ? 'Restore' : 'Archive'}: ${displayName}`}
                             title={conversation.archived ? 'Restore' : 'Archive'}
@@ -282,7 +283,7 @@ export function ConversationList(props: ConversationListProps) {
         accountEmailById,
         campaignNameById,
         cursorId,
-        remindersView,
+        actionsBusy,
         onToggleArchive,
         onToggleRead,
         bulkMode,
@@ -421,7 +422,7 @@ export function ConversationList(props: ConversationListProps) {
                                     onSelect={onSelect}
                                     accountEmail={accountEmailById?.[conversation.emailAccountId]}
                                     campaignName={conversation.campaignId ? campaignNameById[conversation.campaignId] : undefined}
-                                    remindersView={remindersView}
+                                    actionsBusy={actionsBusy}
                                     onToggleArchive={onToggleArchive}
                                     onToggleRead={onToggleRead}
                                     bulkMode={bulkMode}

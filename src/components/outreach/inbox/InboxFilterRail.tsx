@@ -107,7 +107,7 @@ export function InboxFilterRail({
     const countFor = (view: QuickView): number | undefined => {
         if (!view.count) return undefined
         const fromContract = counts?.[view.count.key]
-        // The unread view falls back to the standalone unread counter until the contract lands.
+        // Fall back to the standalone unread counter if the counts have not loaded yet.
         if (fromContract == null && view.count.key === 'unread') return unreadCount
         return fromContract
     }

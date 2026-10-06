@@ -97,6 +97,7 @@ export function AiAutomationChip({
     className,
 }: AiAutomationChipProps) {
     const [reason, setReason] = React.useState('')
+    const [confirmResume, setConfirmResume] = React.useState(false)
 
     if (isLoading || !settings) {
         return <span className={cn('h-7 w-28 animate-pulse rounded-full bg-muted', compact && 'w-7', className)} aria-hidden="true" />
@@ -157,10 +158,24 @@ export function AiAutomationChip({
                     </div>
                 )}
 
-                {canResume && (
-                    <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => onResume()}>
+                {canResume && !confirmResume && (
+                    <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => setConfirmResume(true)}>
                         <PlayCircle className="mr-1.5 h-4 w-4" aria-hidden="true" /> Resume automation
                     </Button>
+                )}
+
+                {/* Resuming turns automatic replies back on, so it asks first (pausing never does). */}
+                {canResume && confirmResume && (
+                    <div className="space-y-2 rounded border border-amber-300 bg-amber-50 p-2 dark:border-amber-800 dark:bg-amber-950/40" role="alertdialog" aria-label="Resume automation?">
+                        <p className="font-medium text-foreground">Resume automatic replies?</p>
+                        <p className="text-muted-foreground">The AI will start replying on its own again in campaigns that opted in.</p>
+                        <div className="flex gap-2">
+                            <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmResume(false)}>Keep paused</Button>
+                            <Button type="button" size="sm" disabled={pending} onClick={() => { onResume(); setConfirmResume(false) }}>
+                                Confirm resume
+                            </Button>
+                        </div>
+                    </div>
                 )}
 
                 {error && <p role="alert" className="text-red-600 dark:text-red-400">{error}</p>}

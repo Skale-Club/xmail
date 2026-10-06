@@ -58,8 +58,10 @@ export interface ConversationComposerProps {
     /** Policy-eligible sending accounts; the conversation's own account is the one used. */
     accounts: InboxAccountOption[]
     defaultAccountId: string
-    /** Conversation id: enables draft persistence in localStorage. */
+    /** Conversation id: with `draftUserId` enables draft persistence in localStorage. */
     conversationId?: string
+    /** Signed-in user id. Drafts are namespaced by it; without it nothing is persisted. */
+    draftUserId?: string
     /** DISPLAY-ONLY preview of the server-resolved recipients (server re-derives on send). */
     replyToPreview: string[]
     replyAllCcPreview: string[]
@@ -82,8 +84,15 @@ export interface ConversationComposerProps {
      * behind an explicit replace confirmation). The assistant NEVER sends.
      */
     renderAiAssistant?: (insertDraft: (body: string, subject?: string | null) => void) => React.ReactNode
-    /** External request to open the editor (keyboard shortcuts). Only NEW requests take effect. */
+    /** External request to open the editor (keyboard shortcuts). */
     openRequest?: ComposerOpenRequest | null
+    /** Called once an `openRequest` has been applied, so the parent can drop it. */
+    onOpenRequestHandled?: () => void
+    /**
+     * A send ended in a network error / 5xx: the server may or may not have created the command.
+     * The parent should revalidate the thread (refetch) so the operator can see what happened.
+     */
+    onUncertainSend?: () => void | Promise<unknown>
 }
 
 type Mode = InboxSendMode | null
@@ -133,6 +142,7 @@ export function ConversationComposer({
     accounts,
     defaultAccountId,
     conversationId,
+    draftUserId,
     replyToPreview,
     replyAllCcPreview,
     subjectPreview,
@@ -145,9 +155,11 @@ export function ConversationComposer({
     polledCommand,
     renderAiAssistant,
     openRequest,
+    onOpenRequestHandled,
+    onUncertainSend,
 }: ConversationComposerProps) {
     // Read once on mount: the composer is remounted per conversation (key in the parent).
-    const [initialDraft] = React.useState(() => readComposerDraft(conversationId))
+    const [initialDraft] = React.useState(() => readComposerDraft(draftUserId, conversationId))
     const [mode, setMode] = React.useState<Mode>(initialDraft?.mode ?? null)
     const [body, setBody] = React.useState(initialDraft?.body ?? '')
     const [pendingDraft, setPendingDraft] = React.useState<string | null>(null)
@@ -161,7 +173,16 @@ export function ConversationComposer({
     const [sendError, setSendError] = React.useState<string | null>(null)
     const [confirmDiscard, setConfirmDiscard] = React.useState(false)
     const [command, setCommand] = React.useState<InboxSendCommand | null>(null)
-    const [sentSnapshot, setSentSnapshot] = React.useState<{ mode: InboxSendMode; body: string; forwardTo: string } | null>(null)
+    const [sentSnapshot, setSentSnapshot] = React.useState<{
+        mode: InboxSendMode
+        body: string
+        forwardTo: string
+        attachments: InboxUploadedAttachment[]
+    } | null>(null)
+    // 'checking' / 'checked': the last send ended in a network error or 5xx, so the command may exist.
+    const [uncertain, setUncertain] = React.useState<'checking' | 'checked' | null>(null)
+    const discardRef = React.useRef<HTMLDivElement | null>(null)
+    const replaceRef = React.useRef<HTMLDivElement | null>(null)
     const [draftSavedAt, setDraftSavedAt] = React.useState<number | null>(initialDraft?.savedAt ?? null)
 
     // One key per distinct ATTEMPT: identical content reuses the key (double click, retry after a
@@ -171,7 +192,7 @@ export function ConversationComposer({
     const bodyRef = React.useRef<HTMLTextAreaElement | null>(null)
     const forwardRef = React.useRef<HTMLInputElement | null>(null)
     const focusOnOpenRef = React.useRef(false)
-    const lastNonceRef = React.useRef<number | null>(openRequest?.nonce ?? null)
+    const lastNonceRef = React.useRef<number | null>(null)
 
     // The account is always the conversation's own; the email is display-only.
     const accountId = defaultAccountId
@@ -202,12 +223,30 @@ export function ConversationComposer({
         lastNonceRef.current = openRequest.nonce
         if (mode === null) {
             openEditor(openRequest.mode)
+        } else if (mode !== openRequest.mode) {
+            // The target field does not exist until the mode switch renders: let the [mode] effect
+            // above focus it (the "To" input for a forward) instead of focusing a null ref here.
+            focusOnOpenRef.current = true
+            setMode(openRequest.mode)
         } else {
-            if (mode !== openRequest.mode) setMode(openRequest.mode)
             const target = openRequest.mode === 'forward' ? forwardRef.current : bodyRef.current
             target?.focus()
         }
-    }, [openRequest, mode, openEditor])
+        onOpenRequestHandled?.()
+    }, [openRequest, mode, openEditor, onOpenRequestHandled])
+
+    // The inline confirmations live inside a max-height scroll area: bring them into view and put
+    // focus on their safe (non-destructive) action so they cannot be missed.
+    React.useEffect(() => {
+        if (!confirmDiscard) return
+        discardRef.current?.scrollIntoView?.({ block: 'nearest' })
+        discardRef.current?.querySelector('button')?.focus()
+    }, [confirmDiscard])
+    React.useEffect(() => {
+        if (pendingDraft === null) return
+        replaceRef.current?.scrollIntoView?.({ block: 'nearest' })
+        replaceRef.current?.querySelector('button')?.focus()
+    }, [pendingDraft])
 
     const resetDraft = React.useCallback(() => {
         setBody('')
@@ -221,36 +260,37 @@ export function ConversationComposer({
         setPendingDraft(null)
         setMode(null)
         setDraftSavedAt(null)
+        setUncertain(null)
         attemptRef.current = null
-        clearComposerDraft(conversationId)
-    }, [conversationId])
+        clearComposerDraft(draftUserId, conversationId)
+    }, [draftUserId, conversationId])
 
     // --- Draft persistence (short debounce + flush on unmount) ---
     const latestRef = React.useRef({ mode, body, forwardTo })
     latestRef.current = { mode, body, forwardTo }
 
     React.useEffect(() => {
-        if (!conversationId || mode === null) return
+        if (!draftUserId || !conversationId || mode === null) return
         const empty = body.trim().length === 0 && forwardTo.trim().length === 0
         const timer = setTimeout(() => {
             if (empty) {
-                clearComposerDraft(conversationId)
+                clearComposerDraft(draftUserId, conversationId)
                 setDraftSavedAt(null)
             } else {
-                const savedAt = writeComposerDraft(conversationId, { mode, body, forwardTo })
+                const savedAt = writeComposerDraft(draftUserId, conversationId, { mode, body, forwardTo })
                 if (savedAt) setDraftSavedAt(savedAt)
             }
         }, 500)
         return () => clearTimeout(timer)
-    }, [conversationId, mode, body, forwardTo])
+    }, [draftUserId, conversationId, mode, body, forwardTo])
 
     React.useEffect(() => () => {
         // Switching conversation before the debounce fires must not lose what was just typed.
         const latest = latestRef.current
-        if (!conversationId || latest.mode === null) return
+        if (!draftUserId || !conversationId || latest.mode === null) return
         if (latest.body.trim().length === 0 && latest.forwardTo.trim().length === 0) return
-        writeComposerDraft(conversationId, { mode: latest.mode, body: latest.body, forwardTo: latest.forwardTo })
-    }, [conversationId])
+        writeComposerDraft(draftUserId, conversationId, { mode: latest.mode, body: latest.body, forwardTo: latest.forwardTo })
+    }, [draftUserId, conversationId])
 
     // Textarea starts small and grows up to a cap, then scrolls internally.
     React.useLayoutEffect(() => {
@@ -339,8 +379,13 @@ export function ConversationComposer({
             attachments.map((a) => a.id),
             scheduleEnabled ? scheduledAt : null,
         ])
-        if (!attemptRef.current || attemptRef.current.fingerprint !== fingerprint) {
+        if (!attemptRef.current) {
             attemptRef.current = { fingerprint, key: makeIdempotencyKey() }
+        } else if (attemptRef.current.fingerprint !== fingerprint) {
+            // After a network error / 5xx the server may already hold the command. Editing and
+            // resending then KEEPS the key (the server dedups it) instead of minting a new one,
+            // which could send the reply twice. After a definite failure an edit is a new intent.
+            attemptRef.current = { fingerprint, key: uncertain ? attemptRef.current.key : makeIdempotencyKey() }
         }
         const idempotencyKey = attemptRef.current.key
 
@@ -360,7 +405,8 @@ export function ConversationComposer({
             // Success: the durable command now holds the text. Reset the form, drop the local
             // draft and release the key so any new send (including edited text) gets its own key.
             // The snapshot lets the operator reopen it if the command fails later.
-            setSentSnapshot({ mode, body, forwardTo })
+            setSentSnapshot({ mode, body, forwardTo, attachments })
+            setUncertain(null)
             setCommand(created)
             setBody('')
             setForwardTo('')
@@ -373,20 +419,32 @@ export function ConversationComposer({
             setDraftSavedAt(null)
             setMode(null)
             attemptRef.current = null
-            clearComposerDraft(conversationId)
+            clearComposerDraft(draftUserId, conversationId)
         } catch (error) {
-            // Draft is preserved: the body/attachments/mode all remain. Surface a specific reason.
-            setSendError(error instanceof Error ? error.message : 'Could not create the reply. Your draft is safe.')
+            // Draft is preserved: the body/attachments/mode all remain.
+            const status = (error as { status?: unknown } | null)?.status
+            if (typeof status === 'number' && (status === 0 || status >= 500)) {
+                // Network error or 5xx: the command may exist. Keep the key, say so, and ask the
+                // parent to revalidate the thread before the operator tries again.
+                setSendError(null)
+                setUncertain('checking')
+                void Promise.resolve(onUncertainSend?.())
+                    .catch(() => undefined)
+                    .finally(() => setUncertain('checked'))
+            } else {
+                setSendError(error instanceof Error ? error.message : 'Could not create the reply. Your draft is safe.')
+            }
         } finally {
             setSubmitting(false)
         }
-    }, [mode, submitting, bodyEmpty, scheduleEnabled, scheduledAt, forwardInvalid, body, forwardTo, attachments, accountId, forwardRecipients, onSend, conversationId])
+    }, [mode, submitting, bodyEmpty, scheduleEnabled, scheduledAt, forwardInvalid, body, forwardTo, attachments, accountId, forwardRecipients, onSend, onUncertainSend, uncertain, draftUserId, conversationId])
 
     const reopenSnapshot = React.useCallback(() => {
         if (!sentSnapshot) return
         focusOnOpenRef.current = true
         setBody(sentSnapshot.body)
         setForwardTo(sentSnapshot.forwardTo)
+        setAttachments(sentSnapshot.attachments)
         setMode(sentSnapshot.mode)
         setCommand(null)
         setSentSnapshot(null)
@@ -478,6 +536,7 @@ export function ConversationComposer({
                                 ref={forwardRef}
                                 aria-label="Forward recipients"
                                 value={forwardTo}
+                                readOnly={submitting}
                                 onChange={(e) => setForwardTo(e.target.value)}
                                 placeholder="name@example.com, other@example.com"
                                 className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-sm"
@@ -507,10 +566,10 @@ export function ConversationComposer({
 
             {/* Replace-draft confirmation: an inserted suggestion never overwrites typed text silently. */}
             {pendingDraft !== null && (
-                <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs dark:border-amber-800 dark:bg-amber-950/40" role="alertdialog" aria-label="Replace your draft?">
+                <div ref={replaceRef} className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs dark:border-amber-800 dark:bg-amber-950/40" role="alertdialog" aria-label="Replace your draft?">
                     <p className="mb-1 font-medium">Replace your current draft with the suggestion?</p>
                     <div className="flex gap-2">
-                        <Button type="button" size="sm" variant="ghost" onClick={() => setPendingDraft(null)}>Keep mine</Button>
+                        <Button type="button" size="sm" variant="ghost" onClick={() => { setPendingDraft(null); bodyRef.current?.focus() }}>Keep mine</Button>
                         <Button type="button" size="sm" onClick={confirmReplaceDraft}>Replace</Button>
                     </div>
                 </div>
@@ -521,6 +580,10 @@ export function ConversationComposer({
                 aria-label="Reply body"
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
+                // Read-only (not disabled) while sending: text typed mid-send would be wiped by the
+                // post-success reset, and disabling would also drop focus on an error.
+                readOnly={submitting}
+                aria-busy={submitting}
                 rows={4}
                 style={{ maxHeight: BODY_MAX_HEIGHT }}
                 className="w-full resize-none overflow-y-auto rounded border border-border bg-background p-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -594,6 +657,15 @@ export function ConversationComposer({
                 </div>
             )}
 
+            {uncertain && (
+                <p role="alert" className="flex items-start gap-1 text-xs text-amber-700 dark:text-amber-400">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    {uncertain === 'checking'
+                        ? 'This reply may already have been sent \u2014 checking\u2026'
+                        : 'This reply may already have been sent. Check the thread above. Sending again is safe: the same request key is reused, so it cannot go out twice.'}
+                </p>
+            )}
+
             {sendError && (
                 <p role="alert" className="flex items-start gap-1 text-xs text-red-600 dark:text-red-400">
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -614,10 +686,10 @@ export function ConversationComposer({
 
             {/* Unsaved-exit confirmation (never destroys a draft on a stray Escape/Cancel). */}
             {confirmDiscard && (
-                <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs dark:border-amber-800 dark:bg-amber-950/40" role="alertdialog" aria-label="Discard draft?">
+                <div ref={discardRef} className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs dark:border-amber-800 dark:bg-amber-950/40" role="alertdialog" aria-label="Discard draft?">
                     <p className="mb-1 font-medium">Discard this draft?</p>
                     <div className="flex gap-2">
-                        <Button type="button" size="sm" variant="ghost" onClick={() => setConfirmDiscard(false)}>Keep editing</Button>
+                        <Button type="button" size="sm" variant="ghost" onClick={() => { setConfirmDiscard(false); bodyRef.current?.focus() }}>Keep editing</Button>
                         <Button type="button" size="sm" variant="destructive" onClick={resetDraft}>Discard</Button>
                     </div>
                 </div>

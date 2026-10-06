@@ -20,6 +20,13 @@ describe('formatRelativeShort', () => {
         expect(formatRelativeShort(ago(400 * 86400), NOW)).toBe('1y ago')
     })
 
+    it('never rounds up to the next unit at the boundaries', () => {
+        expect(formatRelativeShort(ago(3599), NOW)).toBe('59m ago')
+        expect(formatRelativeShort(ago(86399), NOW)).toBe('23h ago')
+        expect(formatRelativeShort(ago(30 * 86400 - 1), NOW)).toBe('29d ago')
+        expect(formatRelativeShort(ago(2 * 3600), NOW, true)).toBe('2h')
+    })
+
     it('accepts ISO strings and returns empty for invalid dates', () => {
         expect(formatRelativeShort(ago(3600).toISOString(), NOW)).toBe('1h ago')
         expect(formatRelativeShort('garbage', NOW)).toBe('')

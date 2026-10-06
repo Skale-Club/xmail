@@ -4,6 +4,7 @@ import { useAuth } from '../../hooks/useAuth'
 import { useOrganization } from '../../hooks/useOrganization'
 import { useInboxUnreadCount } from '../../hooks/useUnifiedInbox'
 import { InboxRealtimeProvider } from '../../hooks/useUnifiedInboxEvents'
+import { clearComposerDraftsForUser } from './inbox/composer-draft'
 import { useBranding } from '../../lib/branding'
 import { supabase } from '../../lib/supabase'
 import { AppLogo } from '../AppLogo'
@@ -93,6 +94,8 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
     const [orgSelectorOpen, setOrgSelectorOpen] = React.useState(false)
 
     const handleSignOut = async () => {
+        // Drafts are per user: drop this user's unsent inbox replies from the browser on sign-out.
+        clearComposerDraftsForUser(user?.id)
         await supabase.auth.signOut()
         navigate('/login')
     }

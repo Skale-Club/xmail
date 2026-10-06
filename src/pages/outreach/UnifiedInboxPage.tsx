@@ -18,6 +18,7 @@ import { ShortcutsHelp } from '../../components/outreach/inbox/ShortcutsHelp'
 import { useInboxShortcuts } from '../../components/outreach/inbox/useInboxShortcuts'
 import { useOrgAiAutomation } from '../../components/outreach/inbox/useOrgAiAutomation'
 import { Button } from '../../components/ui/button'
+import { useAuth } from '../../hooks/useAuth'
 import { useOrganization } from '../../hooks/useOrganization'
 import {
     useCreateInboxLabel,
@@ -47,7 +48,6 @@ import { useInboxRealtimeStatus } from '../../hooks/useUnifiedInboxEvents'
 import { INBOX_BULK_LIMIT, type InboxLabel } from '../../lib/unified-inbox-api'
 import {
     activeFilterCount,
-    activeQuickView,
     buildInboxSearch,
     hasAnyFilter,
     mergeInboxState,
@@ -58,25 +58,26 @@ import {
 const INBOX_PATH = '/outreach/unified-inbox'
 const RAIL_COLLAPSED_KEY = 'xmail:inbox-rail-collapsed'
 const DESKTOP_QUERY = '(min-width: 1280px)'
+const MD_QUERY = '(min-width: 768px)'
 
 function toUrl(state: InboxUrlState): string {
     const qs = buildInboxSearch(state)
     return qs ? `${INBOX_PATH}?${qs}` : INBOX_PATH
 }
 
-/** xl and up: the filter rail is a fixed column; below it, a sheet. jsdom has no matchMedia: desktop. */
-function useIsDesktop(): boolean {
+/** Live media query. jsdom has no matchMedia: report a match (desktop). */
+function useMediaQuery(queryText: string): boolean {
     const [matches, setMatches] = React.useState(() =>
-        typeof window === 'undefined' || typeof window.matchMedia !== 'function' ? true : window.matchMedia(DESKTOP_QUERY).matches,
+        typeof window === 'undefined' || typeof window.matchMedia !== 'function' ? true : window.matchMedia(queryText).matches,
     )
     React.useEffect(() => {
         if (typeof window.matchMedia !== 'function') return
-        const query = window.matchMedia(DESKTOP_QUERY)
+        const query = window.matchMedia(queryText)
         const onChange = () => setMatches(query.matches)
         onChange()
         query.addEventListener('change', onChange)
         return () => query.removeEventListener('change', onChange)
-    }, [])
+    }, [queryText])
     return matches
 }
 
@@ -114,10 +115,16 @@ export function UnifiedInboxPage() {
 
     const [filtersOpen, setFiltersOpen] = React.useState(false)
     const [railCollapsed, toggleRailCollapsed] = useRailCollapsed()
-    const isDesktop = useIsDesktop()
+    const isDesktop = useMediaQuery(DESKTOP_QUERY)
+    // md and up shows the list next to the thread; below it the list is hidden while a thread is open.
+    const isMdUp = useMediaQuery(MD_QUERY)
+    const { user } = useAuth()
     const [helpOpen, setHelpOpen] = React.useState(false)
     const [cursorId, setCursorId] = React.useState<string | null>(null)
-    const [composerRequest, setComposerRequest] = React.useState<ComposerOpenRequest | null>(null)
+    // A shortcut-driven composer request is tied to the conversation it was made for, so it is
+    // applied once by that conversation's composer and never replayed on another one.
+    const [composerRequest, setComposerRequest] = React.useState<{ conversationId: string; request: ComposerOpenRequest } | null>(null)
+    const composerNonceRef = React.useRef(0)
     const searchInputRef = React.useRef<HTMLInputElement | null>(null)
     const restoreFocusIdRef = React.useRef<string | null>(null)
 
@@ -210,15 +217,16 @@ export function UnifiedInboxPage() {
     const composer = useInboxComposer(organizationId, state.conversation)
 
     // --- Auto mark-as-read: once the opened conversation's detail resolves unread, mark it read.
-    // Bounded to once per conversation id via a ref (not state) so it never re-fires on a
-    // background refetch of the same conversation, and never fights the manual "Mark unread"
-    // toggle in ConversationActions (which stays the only way back to unread).
+    // Bounded to once per conversation id AND last message via a ref (not state): it never re-fires
+    // on a background refetch of the same state, never fights the manual "Mark unread" toggle, and
+    // still marks a conversation read again when it is reopened after a new reply arrived.
     const autoReadMarkedRef = React.useRef<Set<string>>(new Set())
     React.useEffect(() => {
         const conversation = detailQuery.data?.conversation
         if (!conversation || !conversation.unread) return
-        if (autoReadMarkedRef.current.has(conversation.id)) return
-        autoReadMarkedRef.current.add(conversation.id)
+        const markKey = `${conversation.id}:${conversation.lastMessageAt ?? ''}`
+        if (autoReadMarkedRef.current.has(markKey)) return
+        autoReadMarkedRef.current.add(markKey)
         // `upTo` is the last message the operator actually rendered: a message that lands between
         // the fetch and this call must stay unread.
         readState.mutate({ conversationId: conversation.id, read: true, upTo: conversation.lastMessageAt })
@@ -348,6 +356,7 @@ export function UnifiedInboxPage() {
                 <ConversationComposer
                     key={detailConversation.id}
                     conversationId={detailConversation.id}
+                    draftUserId={user?.id}
                     accounts={accountOptions}
                     defaultAccountId={detailConversation.emailAccountId}
                     replyToPreview={composerPreview.replyTo}
@@ -359,7 +368,9 @@ export function UnifiedInboxPage() {
                     onRemoveAttachment={composer.removeAttachment}
                     onCancelCommand={composer.cancel}
                     polledCommand={composer.polledCommand}
-                    openRequest={composerRequest}
+                    openRequest={composerRequest?.conversationId === detailConversation.id ? composerRequest.request : null}
+                    onOpenRequestHandled={() => setComposerRequest(null)}
+                    onUncertainSend={() => detailQuery.refetch()}
                     renderAiAssistant={(insertDraft) => (
                         <AiDraftAssistant
                             enabled={draftAssistanceEnabled}
@@ -447,10 +458,28 @@ export function UnifiedInboxPage() {
         document.querySelector<HTMLElement>(`[data-conversation-id="${cursorId}"]`)?.scrollIntoView?.({ block: 'nearest' })
     }, [cursorId])
 
+    // Drop a pending request when the operator moves to another conversation.
+    React.useEffect(() => {
+        setComposerRequest((prev) => (prev && prev.conversationId !== state.conversation ? null : prev))
+    }, [state.conversation])
+
     const requestComposer = React.useCallback((mode: ComposerOpenRequest['mode']) => {
-        if (!stateRef.current.conversation) return
-        setComposerRequest((prev) => ({ mode, nonce: (prev?.nonce ?? 0) + 1 }))
+        const conversationId = stateRef.current.conversation
+        if (!conversationId) return
+        composerNonceRef.current += 1
+        setComposerRequest({ conversationId, request: { mode, nonce: composerNonceRef.current } })
     }, [])
+
+    // e / u act on the row under the j/k cursor when it differs from the open conversation AND the
+    // list is actually on screen (md and up, or mobile with no thread open); otherwise on the open one.
+    const shortcutTarget = React.useMemo(() => {
+        const listOnScreen = isMdUp || !state.conversation
+        const cursorRow = cursorId && cursorId !== state.conversation && listOnScreen
+            ? conversations.find((c) => c.id === cursorId)
+            : undefined
+        const source = cursorRow ?? detailConversation
+        return source ? { id: source.id, archived: source.archived, unread: source.unread } : null
+    }, [isMdUp, state.conversation, cursorId, conversations, detailConversation])
 
     useInboxShortcuts({
         next: () => moveCursor(1),
@@ -460,12 +489,12 @@ export function UnifiedInboxPage() {
         replyAll: () => requestComposer('reply_all'),
         forward: () => requestComposer('forward'),
         archive: () => {
-            if (!detailConversation || conversationBusy) return
-            archive.mutate({ conversationId: detailConversation.id, archived: !detailConversation.archived })
+            if (!shortcutTarget || conversationBusy) return
+            archive.mutate({ conversationId: shortcutTarget.id, archived: !shortcutTarget.archived })
         },
         toggleUnread: () => {
-            if (!detailConversation || conversationBusy) return
-            readState.mutate({ conversationId: detailConversation.id, read: detailConversation.unread })
+            if (!shortcutTarget || conversationBusy) return
+            readState.mutate({ conversationId: shortcutTarget.id, read: shortcutTarget.unread })
         },
         focusSearch: () => searchInputRef.current?.focus(),
         toggleHelp: () => setHelpOpen((prev) => !prev),
@@ -609,7 +638,7 @@ export function UnifiedInboxPage() {
                             accountEmailById={accountEmailById}
                             campaignNameById={campaignNameById}
                             cursorId={cursorId}
-                            remindersView={activeQuickView(state) === 'reminders'}
+                            actionsBusy={conversationBusy}
                             onToggleArchive={rowToggleArchive}
                             onToggleRead={rowToggleRead}
                             bulkMode={bulkMode}
