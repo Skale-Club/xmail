@@ -63,9 +63,14 @@ const BADGE = 'inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 tex
 const QUICK_BTN =
     'inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background text-muted-foreground shadow-sm hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
-/** Needs a reply from us: open, the lead wrote last (or we never wrote). */
+/**
+ * Needs a reply from us: open, the lead wrote last (or we never wrote), and what they wrote is a real
+ * reply. Notifications, newsletters, bounces and auto-replies never "wait" on us — same rule as the
+ * server's needs_reply view, so the badge and the queue agree.
+ */
 function waitingSince(conversation: InboxConversationListItem): string | null {
     if (conversation.status !== 'open' || conversation.archived || !conversation.lastInboundAt) return null
+    if (conversation.lastInboundClassification !== 'reply') return null
     if (conversation.lastOutboundAt && conversation.lastOutboundAt >= conversation.lastInboundAt) return null
     return conversation.lastInboundAt
 }
