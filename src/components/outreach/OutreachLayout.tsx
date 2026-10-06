@@ -4,6 +4,7 @@ import { useAuth } from '../../hooks/useAuth'
 import { useOrganization } from '../../hooks/useOrganization'
 import { useInboxUnreadCount } from '../../hooks/useUnifiedInbox'
 import { InboxRealtimeProvider } from '../../hooks/useUnifiedInboxEvents'
+import { clearComposerDraftsForUser } from './inbox/composer-draft'
 import { useBranding } from '../../lib/branding'
 import { supabase } from '../../lib/supabase'
 import { AppLogo } from '../AppLogo'
@@ -48,6 +49,8 @@ interface NavItem {
 
 const navItems: NavItem[] = [
     { label: 'Dashboard', href: '/outreach', icon: <LayoutDashboard className="w-5 h-5" /> },
+    // The unified outreach inbox. The top-bar button that opens /mail is called "Webmail" so the
+    // two are not confused.
     { label: 'Inbox', href: '/outreach/unified-inbox', icon: <Inbox className="w-5 h-5" /> },
     { label: 'Campaigns', href: '/outreach/campaigns', icon: <Target className="w-5 h-5" /> },
     { label: 'Leads', href: '/outreach/leads', icon: <Users className="w-5 h-5" /> },
@@ -71,7 +74,7 @@ function InboxUnreadBadge() {
 
     return (
         <span
-            className="ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 py-0.5 text-[0.65rem] font-semibold leading-none text-primary-foreground"
+            className="ml-auto inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 py-0.5 text-xs font-semibold leading-none text-primary-foreground"
             aria-label={`${unreadCount} unread conversations`}
         >
             <span aria-hidden="true">{display}</span>
@@ -91,6 +94,8 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
     const [orgSelectorOpen, setOrgSelectorOpen] = React.useState(false)
 
     const handleSignOut = async () => {
+        // Drafts are per user: drop this user's unsent inbox replies from the browser on sign-out.
+        clearComposerDraftsForUser(user?.id)
         await supabase.auth.signOut()
         navigate('/login')
     }
@@ -111,7 +116,7 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
     }
 
     return (
-        <div className="min-h-screen bg-background">
+        <div className="min-h-[100dvh] bg-background">
             {/* Mobile sidebar backdrop */}
             {sidebarOpen && (
                 <div
@@ -255,10 +260,12 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
                                 Admin only for platform admins, current area omitted. */}
                             <button
                                 onClick={() => navigate('/mail/inbox')}
+                                aria-label="Open webmail"
+                                title="Open webmail"
                                 className="inline-flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                             >
                                 <Inbox className="w-4 h-4" />
-                                <span className="hidden sm:inline">Open Inbox</span>
+                                <span className="hidden sm:inline">Webmail</span>
                             </button>
                             {isAdmin && (
                                 <button

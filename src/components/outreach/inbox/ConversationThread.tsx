@@ -1,5 +1,6 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Download, Paperclip, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
+import { Link } from 'wouter'
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Download, MailX, Paperclip, X, Zap } from 'lucide-react'
 import { Button } from '../../ui/button'
 import { Skeleton } from '../../ui/Skeleton'
 import { EmailHtmlViewer } from '../../mail/EmailHtmlViewer'
@@ -16,7 +17,10 @@ export interface ConversationThreadProps {
     onRetry: () => void
     onBack: () => void
     onClose: () => void
-    providerByAccount: Record<string, string>
+    /** emailAccountId -> provider label; only a fallback when the account email is unknown. */
+    providerByAccount?: Record<string, string>
+    /** emailAccountId -> receiving account email (shown in the attribution strip). */
+    accountEmailById?: Record<string, string>
     campaignNameById: Record<string, string>
     /** Operator action toolbar (ConversationActions), rendered in the thread header. */
     actions?: ReactNode
@@ -59,12 +63,22 @@ function MessageCard({ message, initiallyExpanded }: { message: InboxMessage; in
                 <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-medium text-foreground">{from}</span>
-                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] uppercase tracking-wide text-muted-foreground">
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs uppercase tracking-wide text-foreground">
                             {directionLabel(message)}
                         </span>
-                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] capitalize text-muted-foreground">
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs capitalize text-foreground">
                             {message.provider}
                         </span>
+                        {message.classification === 'bounce' && (
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-red-500/15 px-1.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-300">
+                                <MailX className="h-3 w-3" aria-hidden="true" /> Bounce
+                            </span>
+                        )}
+                        {message.classification === 'auto_reply' && (
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:text-amber-300">
+                                <Zap className="h-3 w-3" aria-hidden="true" /> Auto reply
+                            </span>
+                        )}
                         {relative && (
                             <span className="ml-auto shrink-0 text-xs text-muted-foreground" title={exact ?? undefined}>
                                 {formatRelativeDate(relative)}
@@ -137,11 +151,23 @@ export function ConversationThread({
     onBack,
     onClose,
     providerByAccount,
+    accountEmailById,
     campaignNameById,
     actions,
     composer,
     aiHistory,
 }: ConversationThreadProps) {
+    // Move focus to the thread heading when a conversation opens (once per conversation id, never
+    // on a background refetch), so keyboard and screen-reader users land on the thread they chose.
+    const headingRef = useRef<HTMLHeadingElement | null>(null)
+    const focusedConversationRef = useRef<string | null>(null)
+    const openedId = detail?.conversation.id ?? null
+    useEffect(() => {
+        if (!openedId || focusedConversationRef.current === openedId) return
+        focusedConversationRef.current = openedId
+        headingRef.current?.focus({ preventScroll: true })
+    }, [openedId])
+
     // Latest message always expands; the latest inbound also expands so a new reply is
     // readable immediately. Older messages collapse behind a keyboard-operable toggle.
     const initiallyExpanded = useMemo(() => {
@@ -194,7 +220,10 @@ export function ConversationThread({
     const { conversation, participants, messages } = detail
     const counterparty = participants.find((p) => p.role === 'from') ?? participants[0]
     const campaignName = conversation.campaignId ? campaignNameById[conversation.campaignId] : undefined
-    const provider = providerByAccount[conversation.emailAccountId]
+    const accountLabel = accountEmailById?.[conversation.emailAccountId]
+        ?? providerByAccount?.[conversation.emailAccountId]
+        ?? 'Unknown account'
+    const campaignHref = conversation.campaignId ? `/outreach/campaigns/${conversation.campaignId}` : null
     const firstActivity = conversation.lastOutboundAt || messages[0]?.sentAt || messages[0]?.receivedAt || messages[0]?.createdAt || null
     const lastActivity = conversation.lastMessageAt || messages[messages.length - 1]?.createdAt || null
 
@@ -208,6 +237,7 @@ export function ConversationThread({
                 onBack={onBack}
                 onClose={onClose}
                 actions={actions}
+                headingRef={headingRef}
             />
 
             {/* Non-destructive background-refresh failure indicator: the last-good thread stays
@@ -234,17 +264,29 @@ export function ConversationThread({
                 <div className="flex items-center gap-1.5">
                     <dt className="text-muted-foreground">Campaign:</dt>
                     <dd className={campaignName ? 'text-foreground' : 'text-muted-foreground italic'}>
-                        {campaignName ?? (conversation.campaignId ? 'Linked' : NOT_LINKED)}
+                        {campaignHref ? (
+                            <Link href={campaignHref} className="underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                                {campaignName ?? 'Linked'}
+                            </Link>
+                        ) : NOT_LINKED}
                     </dd>
                 </div>
                 <div className="flex items-center gap-1.5">
                     <dt className="text-muted-foreground">Account:</dt>
-                    <dd className="capitalize text-foreground">{provider ?? conversation.emailAccountId.slice(0, 8)}</dd>
+                    <dd className="text-foreground">{accountLabel}</dd>
                 </div>
                 <div className="flex items-center gap-1.5">
                     <dt className="text-muted-foreground">Lead:</dt>
                     <dd className={conversation.leadId ? 'text-foreground' : 'text-muted-foreground italic'}>
                         {conversation.leadId ? (counterparty?.address ?? 'Linked') : NOT_LINKED}
+                        {conversation.leadId && campaignHref && (
+                            <>
+                                {' · '}
+                                <Link href={campaignHref} className="underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                                    View campaign
+                                </Link>
+                            </>
+                        )}
                     </dd>
                 </div>
                 {firstActivity && (
@@ -277,7 +319,8 @@ export function ConversationThread({
                 {aiHistory && <div className="border-t border-border pt-3">{aiHistory}</div>}
             </div>
 
-            {composer && <div className="shrink-0">{composer}</div>}
+            {/* The composer never takes more than ~45% of the column; the messages keep scrolling. */}
+            {composer && <div className="max-h-[45%] shrink-0 overflow-y-auto">{composer}</div>}
         </div>
     )
 }
@@ -290,6 +333,7 @@ function ThreadHeaderBar({
     onBack,
     onClose,
     actions,
+    headingRef,
 }: {
     title: string
     subtitle?: string
@@ -298,6 +342,7 @@ function ThreadHeaderBar({
     onBack: () => void
     onClose: () => void
     actions?: ReactNode
+    headingRef?: Ref<HTMLHeadingElement>
 }) {
     return (
         <div className="border-b border-border p-3">
@@ -310,11 +355,11 @@ function ThreadHeaderBar({
                     <ArrowLeft className="h-4 w-4" /> Back
                 </button>
                 <div className="min-w-0 flex-1">
-                    <h2 className="truncate text-base font-semibold text-foreground">{title}</h2>
+                    <h2 ref={headingRef} tabIndex={-1} className="truncate text-base font-semibold text-foreground focus-visible:outline-none">{title}</h2>
                     {subtitle && <p className="truncate text-xs text-muted-foreground">{subtitle}</p>}
                 </div>
                 {status === 'closed' && (
-                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">Closed</span>
+                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">Closed</span>
                 )}
                 <button
                     type="button"
@@ -328,7 +373,7 @@ function ThreadHeaderBar({
             {labels && labels.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1">
                     {labels.map((label) => (
-                        <span key={label} className="rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">{label}</span>
+                        <span key={label} className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">{label}</span>
                     ))}
                 </div>
             )}

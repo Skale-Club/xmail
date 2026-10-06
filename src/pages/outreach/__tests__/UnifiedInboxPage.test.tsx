@@ -2,6 +2,7 @@ import React from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider, type InfiniteData } from '@tanstack/react-query'
+import userEvent from '@testing-library/user-event'
 
 // useUnifiedInboxEvents connects with authenticated `fetch` — NEVER EventSource. It used to
 // go through lib/api's fetchWithAuth; it now goes through lib/api-client's apiRequest (the
@@ -55,6 +56,19 @@ function useThreadTimerGuard() {
         vi.useRealTimers()
     })
 }
+// Radix popovers/menus need a few DOM APIs jsdom does not implement.
+beforeAll(() => {
+    const g = globalThis as unknown as Record<string, unknown>
+    if (!g.ResizeObserver) {
+        g.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
+    }
+    const proto = window.HTMLElement.prototype as unknown as Record<string, unknown>
+    if (!proto.hasPointerCapture) proto.hasPointerCapture = () => false
+    if (!proto.setPointerCapture) proto.setPointerCapture = () => {}
+    if (!proto.releasePointerCapture) proto.releasePointerCapture = () => {}
+    if (!proto.scrollIntoView) proto.scrollIntoView = () => {}
+})
+
 import {
     DEFAULT_INBOX_STATE,
     activeFilterCount,
@@ -76,9 +90,12 @@ import type {
 import { ConversationList, type ConversationListProps } from '@/components/outreach/inbox/ConversationList'
 import { ConversationThread } from '@/components/outreach/inbox/ConversationThread'
 import { BulkActionsBar, ConversationActions } from '@/components/outreach/inbox/ConversationActions'
-import { ConversationComposer } from '@/components/outreach/inbox/ConversationComposer'
+import { ComposerUnavailable, ConversationComposer } from '@/components/outreach/inbox/ConversationComposer'
+import { clearComposerDraftsForUser, readComposerDraft, writeComposerDraft } from '@/components/outreach/inbox/composer-draft'
 import { AiDraftAssistant } from '@/components/outreach/inbox/AiDraftAssistant'
 import { AiAutomationHistory } from '@/components/outreach/inbox/AiAutomationHistory'
+import { AiAutomationChip } from '@/components/outreach/inbox/AiAutomationChip'
+import { InboxFilterRail } from '@/components/outreach/inbox/InboxFilterRail'
 import { CampaignAiAutomationControl, OrgAiAutomationControl } from '@/components/outreach/inbox/AiAutonomyControls'
 import { InboxSyncStatus } from '@/components/outreach/inbox/InboxSyncStatus'
 import type {
@@ -115,17 +132,16 @@ describe('unified-inbox-url: parse + serialize round-trip', () => {
         const state: InboxUrlState = {
             conversation: CONV_1,
             q: 'hello world',
-            unread: true,
-            status: 'open',
+            view: 'awaiting',
+            status: 'closed',
             campaign: CAMPAIGN_1,
             account: ACCOUNT_1,
             labels: [LABEL_1, LABEL_2],
-            reminder: 'active',
-            archived: true,
             cursor: 'opaque-cursor-token',
         }
         const parsed = parseInboxUrl(buildInboxSearch(state))
-        expect(parsed).toEqual(state)
+        // Legacy fields are always undefined after normalization; everything else round-trips.
+        expect(parsed).toEqual({ ...state, unread: undefined, reminder: undefined, archived: undefined })
     })
 
     it('omits default/empty values from the serialized query', () => {
@@ -157,22 +173,26 @@ describe('unified-inbox-url: validation + bounding', () => {
         expect(parsed.labels).toEqual([LABEL_1, LABEL_2])
     })
 
-    it('only treats unread/archived=true as meaningful', () => {
-        expect(parseInboxUrl('unread=false').unread).toBeUndefined()
-        expect(parseInboxUrl('archived=false').archived).toBeUndefined()
-        expect(parseInboxUrl('unread=true').unread).toBe(true)
-        expect(parseInboxUrl('archived=true').archived).toBe(true)
+    it('only treats unread/archived=true as meaningful, folding them into the view', () => {
+        expect(parseInboxUrl('unread=false').view).toBeUndefined()
+        expect(parseInboxUrl('archived=false').view).toBeUndefined()
+        expect(parseInboxUrl('unread=true').view).toBe('unread')
+        expect(parseInboxUrl('archived=true').view).toBe('archived')
+        // The legacy fields themselves never survive normalization.
+        expect(parseInboxUrl('unread=true').unread).toBeUndefined()
+        expect(parseInboxUrl('view=bogus').view).toBeUndefined()
+        expect(parseInboxUrl('view=awaiting').view).toBe('awaiting')
     })
 })
 
 describe('unified-inbox-url: cursor reset semantics', () => {
-    const base: InboxUrlState = { labels: [], cursor: 'page-2', status: 'open' }
+    const base: InboxUrlState = { labels: [], cursor: 'page-2', view: 'needs_reply' }
 
     it('drops the cursor when a filter field changes', () => {
         expect(mergeInboxState(base, { status: 'closed' }).cursor).toBeUndefined()
         expect(mergeInboxState(base, { q: 'term' }).cursor).toBeUndefined()
         expect(mergeInboxState(base, { labels: [LABEL_1] }).cursor).toBeUndefined()
-        expect(mergeInboxState(base, { unread: true }).cursor).toBeUndefined()
+        expect(mergeInboxState(base, { view: 'unread' }).cursor).toBeUndefined()
     })
 
     it('keeps the cursor when only the selected conversation changes', () => {
@@ -187,25 +207,28 @@ describe('unified-inbox-url: cursor reset semantics', () => {
         const cleared = mergeInboxState(base, { conversation: undefined, cursor: undefined })
         expect(cleared.conversation).toBeUndefined()
         expect(cleared.cursor).toBeUndefined()
-        // filters preserved
-        expect(cleared.status).toBe('open')
+        // filters (and the active view) preserved
+        expect(cleared.view).toBe('needs_reply')
     })
 })
 
 describe('unified-inbox-url: quick views + active filter count', () => {
-    it('derives the active quick view from orthogonal params', () => {
+    it('derives the active quick view from the view param (and folds legacy params)', () => {
         expect(activeQuickView(DEFAULT_INBOX_STATE)).toBe('inbox')
+        for (const view of ['needs_reply', 'awaiting', 'unread', 'reminders', 'archived'] as const) {
+            expect(activeQuickView({ labels: [], view })).toBe(view)
+        }
         expect(activeQuickView({ labels: [], unread: true })).toBe('unread')
         expect(activeQuickView({ labels: [], reminder: 'active' })).toBe('reminders')
         expect(activeQuickView({ labels: [], archived: true })).toBe('archived')
         expect(activeQuickView({ labels: [], status: 'open' })).toBe('needs_reply')
     })
 
-    it('quickViewPatch clears sibling view params', () => {
-        const patched = mergeInboxState({ labels: [], unread: true, cursor: 'c' }, quickViewPatch('archived'))
-        expect(patched.archived).toBe(true)
-        expect(patched.unread).toBeUndefined()
+    it('quickViewPatch replaces the previous view and resets the cursor', () => {
+        const patched = mergeInboxState({ labels: [], view: 'unread', cursor: 'c' }, quickViewPatch('awaiting'))
+        expect(patched.view).toBe('awaiting')
         expect(patched.cursor).toBeUndefined()
+        expect(mergeInboxState(patched, quickViewPatch('inbox')).view).toBeUndefined()
     })
 
     it('counts only active, non-view filters (search, campaign, account, labels)', () => {
@@ -235,33 +258,34 @@ describe('unified-inbox-api: server query mapping', () => {
         const state: InboxUrlState = {
             labels: [LABEL_1, LABEL_2],
             q: 'reply',
-            unread: true,
+            view: 'awaiting',
             status: 'open',
             campaign: CAMPAIGN_1,
             account: ACCOUNT_1,
-            reminder: 'due',
-            archived: true,
             cursor: 'page-2',
         }
         const qs = new URLSearchParams(toListQueryString(ORG_A, state, 25))
         expect(qs.get('organizationId')).toBe(ORG_A)
         expect(qs.get('limit')).toBe('25')
         expect(qs.get('search')).toBe('reply')
-        expect(qs.get('unread')).toBe('true')
+        expect(qs.get('view')).toBe('awaiting')
         expect(qs.get('status')).toBe('open')
         expect(qs.get('campaignId')).toBe(CAMPAIGN_1)
         expect(qs.get('emailAccountId')).toBe(ACCOUNT_1)
-        expect(qs.get('reminderState')).toBe('due')
-        expect(qs.get('archived')).toBe('true')
+        // The deprecated composed params are never sent any more.
+        expect(qs.get('unread')).toBeNull()
+        expect(qs.get('reminderState')).toBeNull()
+        expect(qs.get('archived')).toBeNull()
         expect(qs.get('cursor')).toBe('page-2')
         // Server currently filters by a single label; the first selected label is sent.
         expect(qs.get('labelId')).toBe(LABEL_1)
     })
 
-    it('hides archived conversations by default and omits inactive filters', () => {
+    it('defaults to the inbox view and omits inactive filters', () => {
         const qs = new URLSearchParams(toListQueryString(ORG_A, DEFAULT_INBOX_STATE, 25))
         expect(qs.get('organizationId')).toBe(ORG_A)
-        expect(qs.get('archived')).toBe('false')
+        expect(qs.get('view')).toBe('inbox')
+        expect(qs.get('archived')).toBeNull()
         expect(qs.get('unread')).toBeNull()
         expect(qs.get('status')).toBeNull()
         expect(qs.get('labelId')).toBeNull()
@@ -314,7 +338,7 @@ function renderList(overrides: Partial<ConversationListProps> = {}) {
         onClearFilters: vi.fn(),
         searchValue: '',
         onSearchChange: vi.fn(),
-        providerByAccount: { [ACCOUNT_1]: 'native' },
+        accountEmailById: { [ACCOUNT_1]: 'rep@skale.club' },
         campaignNameById: { [CAMPAIGN_1]: 'Q3 Outbound' },
         ...overrides,
     }
@@ -385,14 +409,88 @@ describe('ConversationList: rows + pagination', () => {
         expect(screen.getByText('Second')).toBeInTheDocument()
     })
 
-    it('exposes unread state to assistive tech and campaign/provider badges', () => {
+    it('exposes unread state to assistive tech, the campaign and the receiving account (not the provider)', () => {
         renderList({
             conversations: [makeConversation({ campaignId: CAMPAIGN_1 })],
         })
         const row = screen.getByRole('button', { name: /Conversation with Lead Person/ })
         expect(within(row).getByText('Unread')).toBeInTheDocument()
         expect(within(row).getByText('Q3 Outbound')).toBeInTheDocument()
-        expect(within(row).getByText('native')).toBeInTheDocument()
+        expect(within(row).getByText('rep@skale.club')).toBeInTheDocument()
+        expect(within(row).queryByText('native')).not.toBeInTheDocument()
+    })
+
+    it('shows how long a needs-reply conversation has been waiting', () => {
+        const hourAgo = new Date(Date.now() - 2 * 3600 * 1000).toISOString()
+        renderList({
+            conversations: [makeConversation({ status: 'open', lastInboundAt: hourAgo, lastOutboundAt: null, lastMessageAt: hourAgo })],
+        })
+        expect(screen.getByText('Waiting 2h')).toBeInTheDocument()
+    })
+
+    it('does not show a waiting badge when we replied last or the conversation is closed', () => {
+        const earlier = new Date(Date.now() - 5 * 3600 * 1000).toISOString()
+        const later = new Date(Date.now() - 3600 * 1000).toISOString()
+        renderList({
+            conversations: [
+                makeConversation({ id: CONV_1, lastInboundAt: earlier, lastOutboundAt: later }),
+                makeConversation({ id: CAMPAIGN_1, status: 'closed', lastInboundAt: later, lastOutboundAt: null }),
+            ],
+        })
+        expect(screen.queryByText(/^Waiting/)).not.toBeInTheDocument()
+    })
+
+    it('badges bounces and auto replies when the list item carries the classification', () => {
+        renderList({
+            conversations: [
+                makeConversation({ id: CONV_1, lastInboundClassification: 'bounce' } as Partial<InboxConversationListItem>),
+                makeConversation({ id: CAMPAIGN_1, lastInboundClassification: 'auto_reply' } as Partial<InboxConversationListItem>),
+            ],
+        })
+        expect(screen.getByText('Bounce')).toBeInTheDocument()
+        expect(screen.getByText('Auto reply')).toBeInTheDocument()
+    })
+
+    it('shows the reminder bell only for rows whose reminder is due', () => {
+        renderList({
+            conversations: [
+                makeConversation({ id: CONV_1, reminderDue: true } as Partial<InboxConversationListItem>),
+                makeConversation({ id: CAMPAIGN_1, subject: 'No reminder' }),
+            ],
+        })
+        expect(screen.getAllByText('Reminder due')).toHaveLength(1)
+    })
+
+    it('keeps the quick actions out of reach until hover/focus and disables them while busy', () => {
+        const onToggleArchive = vi.fn()
+        renderList({ conversations: [makeConversation()], onToggleArchive, onToggleRead: vi.fn(), actionsBusy: true })
+        const archive = screen.getByRole('button', { name: /Archive: Lead Person/ })
+        expect(archive).toBeDisabled()
+        // Invisible quick actions must not be tappable: pointer events are off until hover/focus,
+        // and the group is hidden entirely on touch devices.
+        const group = archive.parentElement as HTMLElement
+        expect(group.className).toContain('pointer-events-none')
+        expect(group.className).toContain('group-hover:pointer-events-auto')
+        expect(group.className).toContain('[@media(hover:none)]:hidden')
+        fireEvent.click(archive)
+        expect(onToggleArchive).not.toHaveBeenCalled()
+    })
+
+    it('offers hover quick actions that archive and toggle read without opening the row', () => {
+        const onSelect = vi.fn()
+        const onToggleArchive = vi.fn()
+        const onToggleRead = vi.fn()
+        renderList({ conversations: [makeConversation()], onSelect, onToggleArchive, onToggleRead })
+        fireEvent.click(screen.getByRole('button', { name: /Archive: Lead Person/ }))
+        expect(onToggleArchive).toHaveBeenCalledWith(CONV_1, true)
+        fireEvent.click(screen.getByRole('button', { name: /Mark as read: Lead Person/ }))
+        expect(onToggleRead).toHaveBeenCalledWith(CONV_1, true)
+        expect(onSelect).not.toHaveBeenCalled()
+    })
+
+    it('marks the keyboard cursor row', () => {
+        renderList({ conversations: [makeConversation()], cursorId: CONV_1 })
+        expect(screen.getByRole('button', { name: /Conversation with Lead Person/ })).toHaveAttribute('data-cursor', 'true')
     })
 
     it('selects a conversation on click', () => {
@@ -480,6 +578,7 @@ function renderThread(props: Partial<React.ComponentProps<typeof ConversationThr
         onBack: vi.fn(),
         onClose: vi.fn(),
         providerByAccount: { [ACCOUNT_1]: 'native' },
+        accountEmailById: { [ACCOUNT_1]: 'rep@skale.club' },
         campaignNameById: { [CAMPAIGN_1]: 'Q3 Outbound' },
         ...props,
     }
@@ -506,6 +605,52 @@ describe('ConversationThread: async states + safety', () => {
         renderThread()
         expect(screen.getByRole('heading', { name: 'Re: Demo request' })).toBeInTheDocument()
         expect(screen.getByText('Q3 Outbound')).toBeInTheDocument()
+    })
+
+    it('shows the account email (not the provider or a cut UUID) in the attribution strip', () => {
+        renderThread()
+        expect(screen.getByText('Account:').nextElementSibling).toHaveTextContent('rep@skale.club')
+        expect(screen.getByText('Account:').nextElementSibling).not.toHaveTextContent(/native/i)
+    })
+
+    it('falls back to a plain label, never a cut UUID, when the account is unknown', () => {
+        renderThread({ accountEmailById: {}, providerByAccount: {} })
+        expect(screen.getByText('Unknown account')).toBeInTheDocument()
+        expect(screen.queryByText(ACCOUNT_1.slice(0, 8))).not.toBeInTheDocument()
+    })
+
+    it('links the campaign and the lead to the campaign page', () => {
+        renderThread()
+        const href = `/outreach/campaigns/${CAMPAIGN_1}`
+        expect(screen.getByRole('link', { name: 'Q3 Outbound' })).toHaveAttribute('href', href)
+        expect(screen.getByRole('link', { name: 'View campaign' })).toHaveAttribute('href', href)
+    })
+
+    it('does not render campaign links without a campaign', () => {
+        renderThread({
+            detail: makeDetail({ conversation: { ...makeDetail().conversation, campaignId: null } }),
+        })
+        expect(screen.queryByRole('link', { name: 'View campaign' })).not.toBeInTheDocument()
+    })
+
+    it('badges messages classified as bounce or auto reply', () => {
+        renderThread({
+            detail: makeDetail({
+                messages: [
+                    makeMessage({ id: 'b1', fromName: 'Mailer Daemon', classification: 'bounce', receivedAt: '2026-07-16T08:00:00.000Z' }),
+                    makeMessage({ id: 'a1', fromName: 'Out Of Office', classification: 'auto_reply', receivedAt: '2026-07-16T09:00:00.000Z' }),
+                    makeMessage({ id: 'r1', fromName: 'Real Reply', classification: 'reply', receivedAt: '2026-07-16T10:00:00.000Z' }),
+                ],
+            }),
+        })
+        expect(within(screen.getByRole('button', { name: /Mailer Daemon/ })).getByText('Bounce')).toBeInTheDocument()
+        expect(within(screen.getByRole('button', { name: /Out Of Office/ })).getByText('Auto reply')).toBeInTheDocument()
+        expect(within(screen.getByRole('button', { name: /Real Reply/ })).queryByText('Bounce')).not.toBeInTheDocument()
+    })
+
+    it('moves focus to the thread heading when a conversation opens', () => {
+        renderThread()
+        expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Re: Demo request' }))
     })
 
     it('shows "Not linked" when attribution is unknown', () => {
@@ -637,6 +782,8 @@ const hooks = vi.hoisted(() => {
             detail: { data: undefined as InboxConversationDetail | undefined, isLoading: false, isError: false, refetch: vi.fn() },
             labelAttachPending: false,
             readStateMutate: vi.fn(),
+            archiveMutate: vi.fn(),
+            accounts: { data: [] as Array<{ id: string; email: string; provider: string }>, isLoading: false },
         },
         makeListReturn,
     }
@@ -645,6 +792,27 @@ const hooks = vi.hoisted(() => {
 vi.mock('wouter', () => ({
     useLocation: () => ['/outreach/unified-inbox', hooks.navigate],
     useSearch: () => hooks.state.search,
+    Link: ({ href, children, ...rest }: { href: string; children: React.ReactNode } & Record<string, unknown>) => (
+        <a href={href} {...rest}>{children}</a>
+    ),
+}))
+
+// The AI automation chip talks to the settings endpoints through react-query; the page tests render
+// without a QueryClientProvider, so the container hook is stubbed (the chip itself is tested below).
+vi.mock('@/components/outreach/inbox/useOrgAiAutomation', () => ({
+    useOrgAiAutomation: () => ({
+        settings: undefined,
+        isLoading: false,
+        isError: false,
+        pause: vi.fn(),
+        resume: vi.fn(),
+        pending: false,
+        error: null,
+    }),
+}))
+
+vi.mock('@/hooks/useAuth', () => ({
+    useAuth: () => ({ user: { id: 'user-1', email: 'op@skale.club' }, isAdmin: false, isLoading: false }),
 }))
 
 vi.mock('@/hooks/useOrganization', () => ({
@@ -668,12 +836,13 @@ vi.mock('@/hooks/useUnifiedInbox', () => ({
     useInboxConversation: () => hooks.state.detail,
     useInboxLabels: () => ({ data: [], isLoading: false }),
     useInboxCampaignOptions: () => ({ data: [] }),
-    useInboxAccountOptions: () => ({ data: [] }),
+    useInboxAccountOptions: () => hooks.state.accounts,
     useInboxUnreadCount: () => ({ data: 0 }),
+    useInboxCounts: () => ({ data: undefined }),
     // Operator mutations are stubbed for the page/wiring tests; the REAL implementations are
     // exercised against a fake network in the "operator mutations" describe via importActual.
     useInboxReadState: () => ({ ...stubMutation(), mutate: hooks.state.readStateMutate }),
-    useInboxArchive: () => stubMutation(),
+    useInboxArchive: () => ({ ...stubMutation(), mutate: hooks.state.archiveMutate }),
     useInboxStatus: () => stubMutation(),
     useInboxLabelAttach: () => ({ ...stubMutation(), isPending: hooks.state.labelAttachPending }),
     useInboxLabelDetach: () => stubMutation(),
@@ -710,6 +879,9 @@ describe('UnifiedInboxPage: tenant isolation + selection', () => {
         hooks.state.detail = { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
         hooks.state.labelAttachPending = false
         hooks.state.readStateMutate = vi.fn()
+        hooks.state.archiveMutate = vi.fn()
+        hooks.state.accounts = { data: [], isLoading: false }
+        window.localStorage.clear()
     })
 
     // Opening a conversation used to never mark it read — the only `readState.mutate` call was
@@ -720,7 +892,7 @@ describe('UnifiedInboxPage: tenant isolation + selection', () => {
         hooks.state.search = `conversation=${CONV_1}`
         hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
         render(<UnifiedInboxPage />)
-        expect(hooks.state.readStateMutate).toHaveBeenCalledWith({ conversationId: CONV_1, read: true })
+        expect(hooks.state.readStateMutate).toHaveBeenCalledWith({ conversationId: CONV_1, read: true, upTo: '2026-07-16T10:00:00.000Z' })
         expect(hooks.state.readStateMutate).toHaveBeenCalledTimes(1)
     })
 
@@ -821,6 +993,293 @@ describe('UnifiedInboxPage: tenant isolation + selection', () => {
         render(<UnifiedInboxPage />)
         expect(screen.getByRole('button', { name: 'Mark read' })).toBeDisabled()
         expect(screen.getByRole('button', { name: 'Archive' })).toBeDisabled()
+    })
+
+    // The sync effect used to re-apply the trimmed URL value to the input, eating a trailing space
+    // while the operator was still typing a multi-word query.
+    it('keeps a trailing space in the search box while the debounced URL update lands', () => {
+        hooks.state.org = { id: ORG_A }
+        const view = render(<UnifiedInboxPage />)
+        const box = screen.getByRole('searchbox', { name: 'Search conversations' })
+        fireEvent.change(box, { target: { value: 'quarterly ' } })
+        act(() => { vi.advanceTimersByTime(350) })
+        expect(hooks.navigate).toHaveBeenCalledWith(`/outreach/unified-inbox?q=quarterly`)
+        // The URL now reports the trimmed term back.
+        hooks.state.search = 'q=quarterly'
+        view.rerender(<UnifiedInboxPage />)
+        expect(screen.getByRole('searchbox', { name: 'Search conversations' })).toHaveValue('quarterly ')
+    })
+
+    it('syncs the search box when the URL changes externally (e.g. clear filters)', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = 'q=invoice'
+        const view = render(<UnifiedInboxPage />)
+        expect(screen.getByRole('searchbox', { name: 'Search conversations' })).toHaveValue('invoice')
+        hooks.state.search = ''
+        view.rerender(<UnifiedInboxPage />)
+        expect(screen.getByRole('searchbox', { name: 'Search conversations' })).toHaveValue('')
+    })
+
+    it('clears the search with the clear button and with Escape', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = 'q=invoice'
+        render(<UnifiedInboxPage />)
+        fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+        expect(screen.getByRole('searchbox', { name: 'Search conversations' })).toHaveValue('')
+        fireEvent.change(screen.getByRole('searchbox', { name: 'Search conversations' }), { target: { value: 'again' } })
+        fireEvent.keyDown(screen.getByRole('searchbox', { name: 'Search conversations' }), { key: 'Escape' })
+        expect(screen.getByRole('searchbox', { name: 'Search conversations' })).toHaveValue('')
+    })
+
+    it('has no "Unified Inbox" title row at desktop width', () => {
+        hooks.state.org = { id: ORG_A }
+        render(<UnifiedInboxPage />)
+        expect(screen.queryByRole('heading', { name: 'Unified Inbox' })).not.toBeInTheDocument()
+    })
+
+    it('collapses the filter rail and remembers it', () => {
+        hooks.state.org = { id: ORG_A }
+        const view = render(<UnifiedInboxPage />)
+        expect(screen.getByRole('navigation', { name: 'Conversation filters' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Hide filters' }))
+        expect(screen.queryByRole('navigation', { name: 'Conversation filters' })).not.toBeInTheDocument()
+        expect(window.localStorage.getItem('xmail:inbox-rail-collapsed')).toBe('1')
+        view.unmount()
+        render(<UnifiedInboxPage />)
+        expect(screen.getByRole('button', { name: 'Show filters' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Show filters' }))
+        expect(screen.getByRole('navigation', { name: 'Conversation filters' })).toBeInTheDocument()
+    })
+
+    it('explains why the composer is unavailable when there are no sending accounts', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        hooks.state.accounts = { data: [], isLoading: false }
+        render(<UnifiedInboxPage />)
+        expect(screen.getByText(/no sending account is available/i)).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Reply' })).not.toBeInTheDocument()
+    })
+
+    it('renders the composer, sending as the conversation account, when accounts exist', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        hooks.state.accounts = { data: [{ id: ACCOUNT_1, email: 'rep@skale.club', provider: 'native' }], isLoading: false }
+        render(<UnifiedInboxPage />)
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        expect(screen.getByText(/Sending as/)).toHaveTextContent('Sending as rep@skale.club')
+    })
+
+    describe('keyboard shortcuts', () => {
+        function setup() {
+            hooks.state.org = { id: ORG_A }
+            hooks.state.search = `conversation=${CONV_1}`
+            hooks.state.list = hooks.makeListReturn([
+                makeConversation({ id: CONV_1 }),
+                makeConversation({ id: CAMPAIGN_1, subject: 'Second' }),
+            ])
+            hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+            hooks.state.accounts = { data: [{ id: ACCOUNT_1, email: 'rep@skale.club', provider: 'native' }], isLoading: false }
+            return render(<UnifiedInboxPage />)
+        }
+
+        it('j moves the cursor and Enter opens the conversation under it', () => {
+            setup()
+            fireEvent.keyDown(document.body, { key: 'j' })
+            const second = screen.getAllByRole('button', { name: /Conversation with/ })[1]
+            expect(second).toHaveAttribute('data-cursor', 'true')
+            hooks.navigate.mockClear()
+            fireEvent.keyDown(document.body, { key: 'Enter' })
+            expect(hooks.navigate).toHaveBeenCalledWith(expect.stringContaining(`conversation=${CAMPAIGN_1}`))
+        })
+
+        it('e archives and u toggles unread on the open conversation', () => {
+            setup()
+            fireEvent.keyDown(document.body, { key: 'e' })
+            expect(hooks.state.archiveMutate).toHaveBeenCalledWith({ conversationId: CONV_1, archived: true })
+            hooks.state.readStateMutate.mockClear()
+            fireEvent.keyDown(document.body, { key: 'u' })
+            // The fixture is unread, so toggling marks it read.
+            expect(hooks.state.readStateMutate).toHaveBeenCalledWith({ conversationId: CONV_1, read: true })
+        })
+
+        it('r opens the reply composer and focuses its body', () => {
+            setup()
+            fireEvent.keyDown(document.body, { key: 'r' })
+            expect(screen.getByRole('textbox', { name: 'Reply body' })).toBeInTheDocument()
+            expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply body' }))
+        })
+
+        it('a and f open reply-all and forward', () => {
+            setup()
+            fireEvent.keyDown(document.body, { key: 'a' })
+            expect(screen.getByRole('textbox', { name: 'Reply body' })).toBeInTheDocument()
+            expect(screen.getByText('Reply all', { selector: 'p' })).toBeInTheDocument()
+            fireEvent.keyDown(document.body, { key: 'f' })
+            expect(screen.getByRole('textbox', { name: 'Forward recipients' })).toBeInTheDocument()
+        })
+
+        it('/ focuses the search box', () => {
+            setup()
+            fireEvent.keyDown(document.body, { key: '/' })
+            expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: 'Search conversations' }))
+        })
+
+        it('? opens the shortcut help', () => {
+            setup()
+            fireEvent.keyDown(document.body, { key: '?', shiftKey: true })
+            expect(screen.getByText('Keyboard shortcuts', { selector: 'p' })).toBeInTheDocument()
+        })
+
+        it('ignores shortcuts while typing in a field', () => {
+            setup()
+            const box = screen.getByRole('searchbox', { name: 'Search conversations' })
+            box.focus()
+            fireEvent.keyDown(box, { key: 'e' })
+            expect(hooks.state.archiveMutate).not.toHaveBeenCalled()
+        })
+
+        it('ignores shortcuts with a modifier key held', () => {
+            setup()
+            fireEvent.keyDown(document.body, { key: 'e', ctrlKey: true })
+            expect(hooks.state.archiveMutate).not.toHaveBeenCalled()
+        })
+    })
+
+    it('restores focus to the selected row when Back is pressed', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.list = hooks.makeListReturn([makeConversation()])
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        const view = render(<UnifiedInboxPage />)
+        fireEvent.click(screen.getByRole('button', { name: /Back/ }))
+        // The URL leaves the conversation selection; the page re-renders on the list stage.
+        hooks.state.search = ''
+        hooks.state.detail = { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
+        view.rerender(<UnifiedInboxPage />)
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: /Conversation with Lead Person/ }))
+    })
+})
+
+describe('UnifiedInboxPage: review hardening', () => {
+    useThreadTimerGuard()
+    afterEach(() => {
+        vi.clearAllMocks()
+        hooks.state.org = { id: '' }
+        hooks.state.search = ''
+        hooks.state.list = hooks.makeListReturn([])
+        hooks.state.detail = { data: undefined, isLoading: false, isError: false, refetch: vi.fn() }
+        hooks.state.labelAttachPending = false
+        hooks.state.readStateMutate = vi.fn()
+        hooks.state.archiveMutate = vi.fn()
+        hooks.state.accounts = { data: [], isLoading: false }
+        window.localStorage.clear()
+    })
+
+    const withAccounts = () => {
+        hooks.state.accounts = { data: [{ id: ACCOUNT_1, email: 'rep@skale.club', provider: 'native' }], isLoading: false }
+    }
+
+    it('marks a reopened conversation read again when a new reply arrived since the last time', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        const view = render(<UnifiedInboxPage />)
+        expect(hooks.state.readStateMutate).toHaveBeenCalledTimes(1)
+        // A newer message lands and the conversation is unread again.
+        const base = makeDetail()
+        hooks.state.detail = {
+            data: makeDetail({ conversation: { ...base.conversation, lastMessageAt: '2026-07-17T08:00:00.000Z', unread: true } }),
+            isLoading: false,
+            isError: false,
+            refetch: vi.fn(),
+        }
+        view.rerender(<UnifiedInboxPage />)
+        expect(hooks.state.readStateMutate).toHaveBeenCalledTimes(2)
+        expect(hooks.state.readStateMutate).toHaveBeenLastCalledWith({ conversationId: CONV_1, read: true, upTo: '2026-07-17T08:00:00.000Z' })
+    })
+
+    it('e and u act on the highlighted (j/k) row when it differs from the open conversation', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.list = hooks.makeListReturn([
+            makeConversation({ id: CONV_1 }),
+            makeConversation({ id: CAMPAIGN_1, subject: 'Second', archived: false, unread: false }),
+        ])
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        withAccounts()
+        render(<UnifiedInboxPage />)
+        fireEvent.keyDown(document.body, { key: 'j' })
+        hooks.state.readStateMutate.mockClear()
+        fireEvent.keyDown(document.body, { key: 'e' })
+        expect(hooks.state.archiveMutate).toHaveBeenCalledWith({ conversationId: CAMPAIGN_1, archived: true })
+        fireEvent.keyDown(document.body, { key: 'u' })
+        // The highlighted row is already read, so toggling marks it UNread.
+        expect(hooks.state.readStateMutate).toHaveBeenCalledWith({ conversationId: CAMPAIGN_1, read: false })
+    })
+
+    it('r pressed before the thread has loaded still opens the composer once it does', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: undefined, isLoading: true, isError: false, refetch: vi.fn() }
+        withAccounts()
+        const view = render(<UnifiedInboxPage />)
+        fireEvent.keyDown(document.body, { key: 'r' })
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        view.rerender(<UnifiedInboxPage />)
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toBeInTheDocument()
+    })
+
+    it('a consumed shortcut request is not replayed when the composer remounts', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.search = `conversation=${CONV_1}`
+        hooks.state.detail = { data: makeDetail(), isLoading: false, isError: false, refetch: vi.fn() }
+        withAccounts()
+        const view = render(<UnifiedInboxPage />)
+        fireEvent.keyDown(document.body, { key: 'r' })
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Close composer' }))
+        view.unmount()
+        render(<UnifiedInboxPage />)
+        expect(screen.queryByRole('textbox', { name: 'Reply body' })).not.toBeInTheDocument()
+    })
+
+    it('disables the row quick actions while a single-conversation mutation is in flight', () => {
+        hooks.state.org = { id: ORG_A }
+        hooks.state.list = hooks.makeListReturn([makeConversation()])
+        hooks.state.labelAttachPending = true
+        render(<UnifiedInboxPage />)
+        expect(screen.getByRole('button', { name: /Archive: Lead Person/ })).toBeDisabled()
+    })
+})
+
+describe('UnifiedInboxPage: filter sheet below xl', () => {
+    const originalMatchMedia = window.matchMedia
+    beforeEach(() => {
+        window.matchMedia = ((query: string) => ({
+            matches: false,
+            media: query,
+            addEventListener: () => {},
+            removeEventListener: () => {},
+        })) as unknown as typeof window.matchMedia
+        hooks.state.org = { id: ORG_A }
+    })
+    afterEach(() => {
+        window.matchMedia = originalMatchMedia
+        hooks.state.org = { id: '' }
+        vi.clearAllMocks()
+    })
+
+    it('opens an accessible modal dialog, closes on Escape and restores focus to the trigger', async () => {
+        render(<UnifiedInboxPage />)
+        const trigger = screen.getByRole('button', { name: /Filters/ })
+        fireEvent.click(trigger)
+        const dialog = await screen.findByRole('dialog', { name: 'Filters' })
+        expect(dialog).toHaveAttribute('aria-modal', 'true')
+        fireEvent.keyDown(dialog, { key: 'Escape' })
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Filters' })).not.toBeInTheDocument())
+        expect(document.activeElement).toBe(trigger)
     })
 })
 
@@ -1049,22 +1508,52 @@ describe('ConversationActions: single accessible actions', () => {
         expect(onToggleArchive).toHaveBeenCalledWith(true)
     })
 
-    it('attaches a not-yet-applied label as a named checkbox control', () => {
+    it('attaches a not-yet-applied label as a named menu checkbox item', async () => {
+        const user = userEvent.setup()
         const onAttachLabel = vi.fn()
         renderActions({ conversation: makeSummary({ labels: [] }), onAttachLabel })
-        const control = screen.getByRole('menuitemcheckbox', { name: /Priority/ })
+        await user.click(screen.getByRole('button', { name: 'Labels' }))
+        // A real menu: the checkbox items live under role="menu".
+        const menu = await screen.findByRole('menu')
+        const control = within(menu).getByRole('menuitemcheckbox', { name: /Priority/ })
         expect(control).toHaveAttribute('aria-checked', 'false')
-        fireEvent.click(control)
+        await user.click(control)
         expect(onAttachLabel).toHaveBeenCalledWith(LABEL_A)
+        // Selecting keeps the menu open so several labels can be toggled in a row.
+        expect(screen.getByRole('menu')).toBeInTheDocument()
     })
 
-    it('detaches an already-applied label', () => {
+    it('detaches an already-applied label', async () => {
+        const user = userEvent.setup()
         const onDetachLabel = vi.fn()
         renderActions({ conversation: makeSummary({ labels: [LABEL_A] }), onDetachLabel })
-        const control = screen.getByRole('menuitemcheckbox', { name: /Priority/ })
+        await user.click(screen.getByRole('button', { name: 'Labels' }))
+        const control = await screen.findByRole('menuitemcheckbox', { name: /Priority/ })
         expect(control).toHaveAttribute('aria-checked', 'true')
-        fireEvent.click(control)
+        await user.click(control)
         expect(onDetachLabel).toHaveBeenCalledWith(LABEL_1)
+    })
+
+    it('closes the labels menu on Escape and on outside click (no stuck popovers)', async () => {
+        const user = userEvent.setup()
+        renderActions({ conversation: makeSummary({ labels: [] }) })
+        await user.click(screen.getByRole('button', { name: 'Labels' }))
+        await screen.findByRole('menu')
+        await user.keyboard('{Escape}')
+        await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+        await user.click(screen.getByRole('button', { name: 'Labels' }))
+        await screen.findByRole('menu')
+        fireEvent.pointerDown(document.body)
+        await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    })
+
+    it('opens the reminder form in a popover that closes on Escape', async () => {
+        const user = userEvent.setup()
+        renderActions({ conversation: makeSummary({ labels: [] }) })
+        await user.click(screen.getByRole('button', { name: 'Remind me' }))
+        expect(await screen.findByLabelText('Remind at')).toBeInTheDocument()
+        await user.keyboard('{Escape}')
+        await waitFor(() => expect(screen.queryByLabelText('Remind at')).not.toBeInTheDocument())
     })
 })
 
@@ -1165,6 +1654,12 @@ function makeSuppression(overrides: Partial<{
     }
 }
 
+async function openBlockMenu() {
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Block' }))
+    return user
+}
+
 function renderActionsWithBlock(
     suppression: ReturnType<typeof makeSuppression>,
     counterpartyEmail = SENDER,
@@ -1189,7 +1684,7 @@ describe('ConversationActions: suppression confirmation gating', () => {
     it('cancelling the block makes NO apply call', async () => {
         const suppression = makeSuppression()
         renderActionsWithBlock(suppression)
-        fireEvent.click(screen.getByRole('button', { name: /Block sender \(/ }))
+        await (await openBlockMenu()).click(await screen.findByRole('menuitem', { name: /Block sender \(/ }))
         // Confirm dialog appears only after the server preview resolves.
         await screen.findByRole('button', { name: 'Block sender' })
         expect(suppression.preview).toHaveBeenCalledWith(SENDER, 'sender')
@@ -1200,7 +1695,7 @@ describe('ConversationActions: suppression confirmation gating', () => {
     it('blocks a sender on explicit confirm (email scope)', async () => {
         const suppression = makeSuppression()
         renderActionsWithBlock(suppression)
-        fireEvent.click(screen.getByRole('button', { name: /Block sender \(/ }))
+        await (await openBlockMenu()).click(await screen.findByRole('menuitem', { name: /Block sender \(/ }))
         const confirm = await screen.findByRole('button', { name: 'Block sender' })
         fireEvent.click(confirm)
         await waitFor(() => expect(suppression.apply).toHaveBeenCalledWith(SENDER, 'sender'))
@@ -1209,7 +1704,7 @@ describe('ConversationActions: suppression confirmation gating', () => {
     it('requires TWO confirms for a safe domain block', async () => {
         const suppression = makeSuppression()
         renderActionsWithBlock(suppression)
-        fireEvent.click(screen.getByRole('button', { name: /Block domain \(acme.example\)/ }))
+        await (await openBlockMenu()).click(await screen.findByRole('menuitem', { name: /Block domain \(acme.example\)/ }))
         // First confirm.
         const cont = await screen.findByRole('button', { name: 'Continue' })
         expect(suppression.apply).not.toHaveBeenCalled()
@@ -1226,7 +1721,7 @@ describe('ConversationActions: suppression confirmation gating', () => {
                 Promise.resolve({ email, domain: 'gmail.com', scope, isPublicDomain: true, alreadySuppressed: false, warnings: [] })),
         })
         renderActionsWithBlock(suppression, 'someone@gmail.com')
-        fireEvent.click(screen.getByRole('button', { name: /Block domain \(gmail.com\)/ }))
+        await (await openBlockMenu()).click(await screen.findByRole('menuitem', { name: /Block domain \(gmail.com\)/ }))
         await screen.findByText(/Domain block not allowed/)
         // Domain apply is never offered; only the safe sender scope.
         expect(screen.queryByRole('button', { name: 'Block domain' })).not.toBeInTheDocument()
@@ -1240,7 +1735,7 @@ describe('ConversationActions: suppression confirmation gating', () => {
             apply: vi.fn(() => Promise.reject(new apiClientMocks.ApiClientError('denied', { status: 403, details: { error: 'Write access denied' } }))),
         })
         renderActionsWithBlock(suppression)
-        fireEvent.click(screen.getByRole('button', { name: /Block sender \(/ }))
+        await (await openBlockMenu()).click(await screen.findByRole('menuitem', { name: /Block sender \(/ }))
         fireEvent.click(await screen.findByRole('button', { name: 'Block sender' }))
         await screen.findByText(/Could not block/)
         expect(suppression.apply).toHaveBeenCalledTimes(1)
@@ -1254,7 +1749,7 @@ describe('ConversationActions: suppression confirmation gating', () => {
                 Promise.resolve({ suppressed: true, scope, email, domain: email.split('@')[1], alreadySuppressed: true })),
         })
         renderActionsWithBlock(suppression)
-        fireEvent.click(screen.getByRole('button', { name: /Block sender \(/ }))
+        await (await openBlockMenu()).click(await screen.findByRole('menuitem', { name: /Block sender \(/ }))
         fireEvent.click(await screen.findByRole('button', { name: 'Block sender' }))
         expect(await screen.findByText(/was already blocked/)).toBeInTheDocument()
     })
@@ -1312,14 +1807,34 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof Conversat
 }
 
 describe('ConversationComposer: durable reply commands', () => {
-    afterEach(() => vi.clearAllMocks())
+    afterEach(() => {
+        vi.clearAllMocks()
+        window.localStorage.clear()
+    })
 
-    it('is collapsed to mode buttons and never sends inline', () => {
+    it('is collapsed to a single "Reply…" bar with reply-all and forward, and never sends inline', () => {
         renderComposer()
         expect(screen.getByRole('button', { name: 'Reply' })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Reply all' })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Forward' })).toBeInTheDocument()
         expect(screen.queryByRole('textbox', { name: 'Reply body' })).not.toBeInTheDocument()
+    })
+
+    it('has no From selector and shows the conversation account read-only', () => {
+        renderComposer()
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        expect(screen.queryByRole('combobox', { name: 'From account' })).not.toBeInTheDocument()
+        expect(screen.getByText(/Sending as/)).toHaveTextContent('Sending as rep@skale.club')
+    })
+
+    it('always sends from the conversation account, even when other accounts exist', async () => {
+        const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand())
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'hello' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalled())
+        expect(onSend.mock.calls[0][0].emailAccountId).toBe(ACCOUNT_1)
     })
 
     it('creates a durable reply command carrying a stable idempotency key (server resolves recipients)', async () => {
@@ -1336,6 +1851,23 @@ describe('ConversationComposer: durable reply commands', () => {
         // The composer NEVER supplies recipients/threading for a reply — the server resolves them.
         expect(input).not.toHaveProperty('forwardTo')
         expect(input.scheduledAt).toBeNull()
+    })
+
+    it('blocks sending an empty reply body but lets a forward go without a note', async () => {
+        const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand())
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled()
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: '   ' } })
+        expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled()
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'ok' } })
+        expect(screen.getByRole('button', { name: 'Send reply' })).toBeEnabled()
+        // Switch to a forward with a valid recipient and an empty note.
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: '' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Close composer' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Forward' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Forward recipients' }), { target: { value: 'new@partner.example' } })
+        expect(screen.getByRole('button', { name: /Send forward/ })).toBeEnabled()
     })
 
     it('shows resolved Cc for reply-all and a server-authoritative note', () => {
@@ -1376,12 +1908,75 @@ describe('ConversationComposer: durable reply commands', () => {
         await waitFor(() => expect(screen.queryByRole('button', { name: /Sending/ })).not.toBeInTheDocument())
     })
 
+    it('resets the form after a successful send and uses a fresh idempotency key for the next send', async () => {
+        const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand())
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'first' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+        // Back to the collapsed bar with the previous command status visible.
+        await screen.findByRole('button', { name: 'Reply' })
+        expect(screen.queryByRole('textbox', { name: 'Reply body' })).not.toBeInTheDocument()
+        expect(screen.getByText('Scheduled')).toBeInTheDocument()
+        // Send the SAME text again: it is a new intent, so it must not be deduplicated into the old command.
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('')
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'first' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2))
+        expect(onSend.mock.calls[1][0].idempotencyKey).not.toBe(onSend.mock.calls[0][0].idempotencyKey)
+    })
+
+    it('reuses the key for an identical retry but generates a fresh one after the text is edited', async () => {
+        const onSend = vi.fn<(input: CreateSendCommandInput) => Promise<InboxSendCommand>>(async () => { throw new Error('network down') })
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        const body = screen.getByRole('textbox', { name: 'Reply body' })
+        fireEvent.change(body, { target: { value: 'v1' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await screen.findByText('network down')
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2))
+        expect(onSend.mock.calls[1][0].idempotencyKey).toBe(onSend.mock.calls[0][0].idempotencyKey)
+        fireEvent.change(body, { target: { value: 'v2 edited' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(3))
+        expect(onSend.mock.calls[2][0].idempotencyKey).not.toBe(onSend.mock.calls[1][0].idempotencyKey)
+    })
+
+    it('sends with Ctrl+Enter and Cmd+Enter, but not when the body is empty', async () => {
+        const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand())
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        const body = screen.getByRole('textbox', { name: 'Reply body' })
+        fireEvent.keyDown(body, { key: 'Enter', ctrlKey: true })
+        expect(onSend).not.toHaveBeenCalled()
+        fireEvent.change(body, { target: { value: 'via keyboard' } })
+        fireEvent.keyDown(body, { key: 'Enter', ctrlKey: true })
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'via mac' } })
+        fireEvent.keyDown(screen.getByRole('textbox', { name: 'Reply body' }), { key: 'Enter', metaKey: true })
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2))
+    })
+
+    it('Escape keeps the discard confirmation instead of dropping typed text', () => {
+        renderComposer()
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        const body = screen.getByRole('textbox', { name: 'Reply body' })
+        fireEvent.change(body, { target: { value: 'precious words' } })
+        fireEvent.keyDown(body, { key: 'Escape' })
+        expect(screen.getByRole('alertdialog', { name: 'Discard draft?' })).toBeInTheDocument()
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('precious words')
+    })
+
     it('schedules a reply with an explicit time and shows the timezone', async () => {
         const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand({ status: 'scheduled' }))
         renderComposer({ onSend, organizationTimezone: 'America/Sao_Paulo' })
         fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
         fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'later' } })
-        fireEvent.click(screen.getByRole('checkbox', { name: /Schedule for later/ }))
+        fireEvent.click(screen.getByRole('button', { name: /Schedule for later/ }))
         expect(screen.getByText('America/Sao_Paulo')).toBeInTheDocument()
         fireEvent.change(screen.getByLabelText('Scheduled time'), { target: { value: '2026-07-20T09:30' } })
         fireEvent.click(screen.getByRole('button', { name: 'Schedule reply' }))
@@ -1418,7 +2013,7 @@ describe('ConversationComposer: durable reply commands', () => {
         expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('my draft')
     })
 
-    it('renders a recoverable policy denial from the polled command state without clearing the draft', async () => {
+    it('renders a recoverable policy denial from the polled command state', async () => {
         const onSend = vi.fn(async () => makeCommand({ id: 'cmd-9', status: 'scheduled' }))
         const { rerender } = renderComposer({ onSend })
         fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
@@ -1438,7 +2033,29 @@ describe('ConversationComposer: durable reply commands', () => {
             polledCommand={makeCommand({ id: 'cmd-9', status: 'scheduled', lastPolicyCode: 'organization_disabled' })}
         />)
         expect(await screen.findByText(/Outreach is paused/)).toBeInTheDocument()
-        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('draft body')
+    })
+
+    it('lets the operator reopen the text and resend when the command fails', async () => {
+        const onSend = vi.fn(async () => makeCommand({ id: 'cmd-3', status: 'queued' }))
+        const { rerender } = renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'do not lose me' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalled())
+        rerender(<ConversationComposer
+            accounts={ACCOUNTS}
+            defaultAccountId={ACCOUNT_1}
+            replyToPreview={['lead@acme.example']}
+            replyAllCcPreview={[]}
+            subjectPreview="Re: Demo request"
+            snippets={SNIPPETS}
+            onSend={onSend}
+            onUploadAttachment={vi.fn()}
+            polledCommand={makeCommand({ id: 'cmd-3', status: 'failed', lastError: 'smtp rejected' })}
+        />)
+        expect(await screen.findByText('smtp rejected')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Edit and resend' }))
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('do not lose me')
     })
 
     it('offers Cancel for a scheduled command and calls the handler', async () => {
@@ -1462,6 +2079,239 @@ describe('ConversationComposer: durable reply commands', () => {
         expect(screen.getByRole('alertdialog', { name: 'Discard draft?' })).toBeInTheDocument()
         fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }))
         expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('unsaved words')
+    })
+})
+
+describe('ConversationComposer: per-conversation draft persistence', () => {
+    beforeEach(() => {
+        window.localStorage.clear()
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    })
+    afterEach(() => {
+        vi.clearAllTimers()
+        vi.useRealTimers()
+        vi.clearAllMocks()
+        window.localStorage.clear()
+    })
+
+    const DRAFT_KEY = `xmail:inbox-draft:v2:user-1:${CONV_1}`
+
+    it('saves the typed draft, shows "Draft saved" and restores it when the conversation is reopened', () => {
+        const first = renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply all' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'half written' } })
+        expect(screen.queryByText('Draft saved')).not.toBeInTheDocument()
+        act(() => { vi.advanceTimersByTime(600) })
+        expect(screen.getByText('Draft saved')).toBeInTheDocument()
+        expect(JSON.parse(window.localStorage.getItem(DRAFT_KEY) as string)).toMatchObject({ mode: 'reply_all', body: 'half written' })
+
+        // Switching conversation unmounts the composer; reopening restores mode + text.
+        first.unmount()
+        renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('half written')
+        expect(screen.getByText('Reply all', { selector: 'p' })).toBeInTheDocument()
+    })
+
+    it('flushes the draft on unmount even before the debounce fires', () => {
+        const first = renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'fast switch' } })
+        first.unmount()
+        expect(JSON.parse(window.localStorage.getItem(DRAFT_KEY) as string)).toMatchObject({ body: 'fast switch' })
+    })
+
+    it('keeps drafts separate per conversation', () => {
+        const first = renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'for one' } })
+        first.unmount()
+        renderComposer({ draftUserId: 'user-1', conversationId: CAMPAIGN_1 })
+        expect(screen.queryByRole('textbox', { name: 'Reply body' })).not.toBeInTheDocument()
+    })
+
+    it('clears the stored draft on discard', () => {
+        renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'bye' } })
+        act(() => { vi.advanceTimersByTime(600) })
+        expect(window.localStorage.getItem(DRAFT_KEY)).not.toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+        expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull()
+    })
+
+    it('clears the stored draft after a successful send', async () => {
+        vi.useRealTimers()
+        const onSend = vi.fn(async (_input: CreateSendCommandInput) => makeCommand())
+        renderComposer({ draftUserId: 'user-1', conversationId: CONV_1, onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'sent soon' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalled())
+        await screen.findByRole('button', { name: 'Reply' })
+        expect(window.localStorage.getItem(DRAFT_KEY)).toBeNull()
+    })
+
+    it('survives a blocked localStorage', () => {
+        const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+        const getSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
+        renderComposer({ draftUserId: 'user-1', conversationId: CONV_1 })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'still works' } })
+        act(() => { vi.advanceTimersByTime(600) })
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('still works')
+        expect(screen.queryByText('Draft saved')).not.toBeInTheDocument()
+        spy.mockRestore()
+        getSpy.mockRestore()
+    })
+})
+
+describe('ConversationComposer: review hardening', () => {
+    afterEach(() => {
+        vi.clearAllMocks()
+        window.localStorage.clear()
+    })
+
+    const networkError = () => Object.assign(new Error('Network request failed'), { status: 0 })
+
+    it('after a network error keeps the SAME key even when the text is edited, and revalidates the thread', async () => {
+        const onSend = vi.fn<(input: CreateSendCommandInput) => Promise<InboxSendCommand>>(async () => { throw networkError() })
+        const onUncertainSend = vi.fn(async () => undefined)
+        renderComposer({ onSend, onUncertainSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        const body = screen.getByRole('textbox', { name: 'Reply body' })
+        fireEvent.change(body, { target: { value: 'Thanks' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        expect(await screen.findByText(/may already have been sent/)).toBeInTheDocument()
+        await waitFor(() => expect(onUncertainSend).toHaveBeenCalledOnce())
+        // The draft is intact and no scary "failed" error replaces the uncertainty notice.
+        expect(body).toHaveValue('Thanks')
+        // Fix a comma and resend: it must reuse the key so the server can dedup, not mint a new one.
+        fireEvent.change(body, { target: { value: 'Thanks.' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2))
+        expect(onSend.mock.calls[1][0].idempotencyKey).toBe(onSend.mock.calls[0][0].idempotencyKey)
+    })
+
+    it('treats a 5xx like a network error but a 4xx as a definite failure with a fresh key on edit', async () => {
+        const fiveHundred = Object.assign(new Error('Bad gateway'), { status: 502 })
+        const fourHundred = Object.assign(new Error('Validation failed'), { status: 422 })
+        const onSend = vi.fn<(input: CreateSendCommandInput) => Promise<InboxSendCommand>>()
+            .mockRejectedValueOnce(fiveHundred)
+            .mockRejectedValueOnce(fiveHundred)
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        const body = screen.getByRole('textbox', { name: 'Reply body' })
+        fireEvent.change(body, { target: { value: 'a' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await screen.findByText(/may already have been sent/)
+        fireEvent.change(body, { target: { value: 'ab' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2))
+        expect(onSend.mock.calls[1][0].idempotencyKey).toBe(onSend.mock.calls[0][0].idempotencyKey)
+
+        // A definite 4xx, on a fresh composer, shows the server reason and an edit gets a new key.
+        const onSend2 = vi.fn<(input: CreateSendCommandInput) => Promise<InboxSendCommand>>(async () => { throw fourHundred })
+        document.body.innerHTML = ''
+        renderComposer({ onSend: onSend2 })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        const body2 = screen.getByRole('textbox', { name: 'Reply body' })
+        fireEvent.change(body2, { target: { value: 'x' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        expect(await screen.findByText('Validation failed')).toBeInTheDocument()
+        expect(screen.queryByText(/may already have been sent/)).not.toBeInTheDocument()
+        fireEvent.change(body2, { target: { value: 'xy' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend2).toHaveBeenCalledTimes(2))
+        expect(onSend2.mock.calls[1][0].idempotencyKey).not.toBe(onSend2.mock.calls[0][0].idempotencyKey)
+    })
+
+    it('"Edit and resend" brings the attachments back along with the text', async () => {
+        const onSend = vi.fn(async () => makeCommand({ id: 'cmd-5', status: 'queued' }))
+        const { rerender } = renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'with file' } })
+        fireEvent.change(screen.getByLabelText('Attach file'), {
+            target: { files: [new File([new Uint8Array(4)], 'brief.pdf', { type: 'application/pdf' })] },
+        })
+        await screen.findByText('brief.pdf')
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await waitFor(() => expect(onSend).toHaveBeenCalled())
+        rerender(<ConversationComposer
+            accounts={ACCOUNTS}
+            defaultAccountId={ACCOUNT_1}
+            replyToPreview={['lead@acme.example']}
+            replyAllCcPreview={[]}
+            subjectPreview="Re: Demo request"
+            snippets={SNIPPETS}
+            onSend={onSend}
+            onUploadAttachment={vi.fn()}
+            polledCommand={makeCommand({ id: 'cmd-5', status: 'failed', lastError: 'boom' })}
+        />)
+        fireEvent.click(await screen.findByRole('button', { name: 'Edit and resend' }))
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveValue('with file')
+        expect(screen.getByText('brief.pdf')).toBeInTheDocument()
+    })
+
+    it('makes the body read-only while a send is in flight so late keystrokes are not wiped', async () => {
+        let resolve!: (c: InboxSendCommand) => void
+        const onSend = vi.fn(() => new Promise<InboxSendCommand>((r) => { resolve = r }))
+        renderComposer({ onSend })
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'sending' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+        await screen.findByRole('button', { name: /Sending/ })
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toHaveAttribute('readonly')
+        resolve(makeCommand())
+        await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Reply body' })).not.toBeInTheDocument())
+    })
+
+    it('applies a shortcut request that arrived before the composer mounted, then reports it handled', () => {
+        const onOpenRequestHandled = vi.fn()
+        renderComposer({ openRequest: { mode: 'reply', nonce: 1 }, onOpenRequestHandled })
+        expect(screen.getByRole('textbox', { name: 'Reply body' })).toBeInTheDocument()
+        expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply body' }))
+        expect(onOpenRequestHandled).toHaveBeenCalledOnce()
+    })
+
+    it('focuses the To field when a shortcut switches an open reply to a forward', () => {
+        const { props, rerender } = renderComposer({ openRequest: { mode: 'reply', nonce: 1 } })
+        expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Reply body' }))
+        rerender(<ConversationComposer {...props} openRequest={{ mode: 'forward', nonce: 2 }} />)
+        expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Forward recipients' }))
+    })
+
+    it('scrolls the discard confirmation into view and focuses its safe action', () => {
+        const scroll = vi.spyOn(window.HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {})
+        renderComposer()
+        fireEvent.click(screen.getByRole('button', { name: 'Reply' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Reply body' }), { target: { value: 'words' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+        expect(scroll).toHaveBeenCalled()
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep editing' }))
+    })
+
+    it('namespaces stored drafts by user, expires old ones on write, and clears a user on sign-out', () => {
+        window.localStorage.setItem(`xmail:inbox-draft:v2:user-9:${CONV_1}`, JSON.stringify({ mode: 'reply', body: 'someone else', forwardTo: '', savedAt: Date.now() }))
+        window.localStorage.setItem('xmail:inbox-draft:v2:user-1:stale', JSON.stringify({ mode: 'reply', body: 'old', forwardTo: '', savedAt: Date.now() - 40 * 86400_000 }))
+        // user-1 never sees user-9's draft for the same conversation.
+        expect(readComposerDraft('user-1', CONV_1)).toBeNull()
+        expect(readComposerDraft('user-9', CONV_1)?.body).toBe('someone else')
+        // No user id, no persistence.
+        expect(writeComposerDraft(undefined, CONV_1, { mode: 'reply', body: 'x', forwardTo: '' })).toBeNull()
+        // A write sweeps expired drafts of any user.
+        expect(writeComposerDraft('user-1', CONV_1, { mode: 'reply', body: 'mine', forwardTo: '' })).not.toBeNull()
+        expect(window.localStorage.getItem('xmail:inbox-draft:v2:user-1:stale')).toBeNull()
+        clearComposerDraftsForUser('user-1')
+        expect(readComposerDraft('user-1', CONV_1)).toBeNull()
+        expect(readComposerDraft('user-9', CONV_1)).not.toBeNull()
+    })
+})
+
+describe('ComposerUnavailable', () => {
+    it('explains the missing-account case instead of hiding the composer', () => {
+        render(<ComposerUnavailable reason="no_accounts" />)
+        expect(screen.getByRole('status')).toHaveTextContent(/no sending account is available/i)
     })
 })
 
@@ -1516,7 +2366,6 @@ function renderAssistant(overrides: Partial<React.ComponentProps<typeof AiDraftA
         onRequest: vi.fn(async () => suggestedResponse()),
         onInsert: vi.fn(),
         onAccept: vi.fn(),
-        history: [],
         ...overrides,
     }
     return { props, ...render(<AiDraftAssistant {...props} />) }
@@ -1525,9 +2374,10 @@ function renderAssistant(overrides: Partial<React.ComponentProps<typeof AiDraftA
 describe('AiDraftAssistant: gated, previewed, inserted — never sent', () => {
     afterEach(() => vi.clearAllMocks())
 
-    it('renders nothing when draft assistance is disabled', () => {
-        const { container } = renderAssistant({ enabled: false })
-        expect(container).toBeEmptyDOMElement()
+    it('shows a compact disabled state linking to Settings when draft assistance is disabled', () => {
+        renderAssistant({ enabled: false })
+        expect(screen.getByText(/AI suggestions off/)).toBeInTheDocument()
+        expect(screen.getByRole('link', { name: 'enable in Settings' })).toHaveAttribute('href', '/outreach/settings')
         expect(screen.queryByRole('button', { name: 'Suggest draft' })).not.toBeInTheDocument()
     })
 
@@ -1577,9 +2427,9 @@ describe('AiDraftAssistant: gated, previewed, inserted — never sent', () => {
 
     it('never renders secret/prompt/model-parameter fields from a run', () => {
         // A run object only ever carries the redacted DTO fields — assert none of the forbidden ones
-        // are present as props and none leak into the rendered history.
+        // are present as props and none leak into the rendered assistant.
         const run = makeAiRun()
-        renderAssistant({ history: [run] })
+        renderAssistant()
         expect(run).not.toHaveProperty('modelParameters')
         expect(run).not.toHaveProperty('leaseToken')
         expect(run).not.toHaveProperty('errorDetail')
@@ -1612,7 +2462,6 @@ describe('ConversationComposer + AiDraftAssistant: draft flows into the editable
                         onRequest={onRequest}
                         onInsert={(body, subject) => { onInsertSpy(body, subject); insertDraft(body, subject) }}
                         onAccept={vi.fn()}
-                        history={[]}
                     />
                 )}
             />,
@@ -1667,7 +2516,7 @@ describe('ConversationComposer + AiDraftAssistant: draft flows into the editable
 describe('AiAutomationHistory: redacted causal history', () => {
     afterEach(() => vi.clearAllMocks())
 
-    it('renders trigger, decision, approval, policy, and a confirmed send outcome for a run', () => {
+    it('renders decision, approval, and a confirmed send outcome in operator language', () => {
         const run = makeAiRun({
             runKind: 'autonomous',
             status: 'completed',
@@ -1680,15 +2529,35 @@ describe('AiAutomationHistory: redacted causal history', () => {
             approvedAt: '2026-07-16T10:05:00.000Z',
         })
         render(<AiAutomationHistory runs={[run]} />)
-        expect(screen.getByText('Autonomous')).toBeInTheDocument()
+        expect(screen.getByText('Automatic')).toBeInTheDocument()
         expect(screen.getByText('Completed')).toBeInTheDocument()
         expect(screen.getByText(/Drafted a reply/)).toBeInTheDocument()
+        expect(screen.getByText(/Lead is interested/)).toBeInTheDocument()
         expect(screen.getByText(/Sent through the policy gate/)).toBeInTheDocument()
-        expect(screen.getByText(/trigger #aaaaaaaa/)).toBeInTheDocument()
-        expect(screen.getByText(/Approved by user-123/)).toBeInTheDocument()
+        expect(screen.getByText(/Approved by a person on/)).toBeInTheDocument()
     })
 
-    it('shows a policy code and a failure code without leaking any secret', () => {
+    it('keeps model, prompt version, trigger id and approver id under collapsed "Technical details"', () => {
+        const run = makeAiRun({
+            triggerMessageId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+            approvedByUserId: 'user-1234',
+            approvedAt: '2026-07-16T10:05:00.000Z',
+        })
+        const { container } = render(<AiAutomationHistory runs={[run]} />)
+        const details = container.querySelector('details') as HTMLDetailsElement
+        expect(details).not.toBeNull()
+        expect(details.open).toBe(false)
+        expect(within(details).getByText('Technical details')).toBeInTheDocument()
+        expect(within(details).getByText('inbox-draft@1')).toBeInTheDocument()
+        expect(within(details).getByText('kimi')).toBeInTheDocument()
+        expect(within(details).getByText('#aaaaaaaa')).toBeInTheDocument()
+        expect(within(details).getByText('user-123')).toBeInTheDocument()
+        // None of that technical detail leaks into the visible summary line.
+        expect(screen.queryByText(/trigger #/)).not.toBeInTheDocument()
+        expect(screen.queryByText(/Approved by user-/)).not.toBeInTheDocument()
+    })
+
+    it('translates a policy code and a failure code into sentences without leaking any secret', () => {
         const run = makeAiRun({
             runKind: 'autonomous',
             status: 'failed',
@@ -1697,9 +2566,13 @@ describe('AiAutomationHistory: redacted causal history', () => {
             errorCode: 'decider_timeout',
             policyCode: 'recipient_suppressed',
         })
-        render(<AiAutomationHistory runs={[run]} />)
+        const { container } = render(<AiAutomationHistory runs={[run]} />)
         expect(screen.getByText('Failed')).toBeInTheDocument()
-        expect(screen.getByText(/decider_timeout/)).toBeInTheDocument()
+        expect(screen.getByText(/The assistant timed out/)).toBeInTheDocument()
+        // The raw code is only offered under technical details.
+        const details = container.querySelector('details') as HTMLElement
+        expect(within(details).getByText('decider_timeout')).toBeInTheDocument()
+        expect(within(details).getByText('recipient_suppressed')).toBeInTheDocument()
         // The DTO carries no secret/hidden-prompt/model-parameter surface to leak.
         expect(run).not.toHaveProperty('modelParameters')
         expect(run).not.toHaveProperty('leaseToken')
@@ -1710,9 +2583,160 @@ describe('AiAutomationHistory: redacted causal history', () => {
         expect(screen.queryByText(/api[_-]?key/i)).not.toBeInTheDocument()
     })
 
+    it('uses one status vocabulary for every run status', () => {
+        const statuses = ['pending', 'running', 'awaiting_approval', 'completed', 'failed', 'deferred', 'cancelled'] as const
+        render(<AiAutomationHistory runs={statuses.map((status, i) => makeAiRun({ id: `r${i}`, status, approvedByUserId: null, approvedAt: null }))} />)
+        for (const label of ['Queued', 'In progress', 'Draft ready for review', 'Completed', 'Failed', 'On hold', 'Cancelled']) {
+            expect(screen.getByText(label)).toBeInTheDocument()
+        }
+    })
+
     it('renders an empty state with no runs', () => {
         render(<AiAutomationHistory runs={[]} />)
         expect(screen.getByText('No AI activity on this conversation yet.')).toBeInTheDocument()
+    })
+})
+
+// ============================================================
+// Inbox header chip: org AI automation state with a quick pause
+// ============================================================
+
+function makeChipSettings(overrides: Partial<OrgAiAutomationSettings> = {}): OrgAiAutomationSettings {
+    return {
+        draftAssistanceEnabled: false,
+        autonomousEnabled: false,
+        autonomyPaused: false,
+        autonomyPausedAt: null,
+        autonomyPausedReason: null,
+        maxAutonomousFollowUps: 2,
+        outreachEnabled: true,
+        autonomyEffective: false,
+        updatedAt: '2026-07-16T09:00:00.000Z',
+        ...overrides,
+    }
+}
+
+describe('AiAutomationChip: org AI automation state', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    it('shows AI off by default', () => {
+        render(<AiAutomationChip settings={makeChipSettings()} canManage onPause={vi.fn()} onResume={vi.fn()} />)
+        expect(screen.getByRole('button', { name: 'AI status: AI off' })).toBeInTheDocument()
+    })
+
+    it('shows suggestions on, automation on, paused and blocked states with text, not colour alone', () => {
+        const cases: Array<[Partial<OrgAiAutomationSettings>, string]> = [
+            [{ draftAssistanceEnabled: true }, 'AI suggestions on'],
+            [{ autonomousEnabled: true }, 'Automation on'],
+            [{ autonomousEnabled: true, autonomyPaused: true }, 'Automation paused'],
+            [{ autonomousEnabled: true, outreachEnabled: false }, 'Automation blocked'],
+        ]
+        for (const [overrides, label] of cases) {
+            const view = render(<AiAutomationChip settings={makeChipSettings(overrides)} canManage onPause={vi.fn()} onResume={vi.fn()} />)
+            expect(screen.getByRole('button', { name: `AI status: ${label}` })).toHaveTextContent(label)
+            view.unmount()
+        }
+    })
+
+    it('offers a one-click Pause automation when active (no confirmation) and passes the reason', async () => {
+        const user = userEvent.setup()
+        const onPause = vi.fn()
+        render(<AiAutomationChip settings={makeChipSettings({ autonomousEnabled: true })} canManage onPause={onPause} onResume={vi.fn()} />)
+        await user.click(screen.getByRole('button', { name: /AI status/ }))
+        await user.type(await screen.findByLabelText('Pause reason (optional)'), 'checking replies')
+        await user.click(screen.getByRole('button', { name: 'Pause automation' }))
+        expect(onPause).toHaveBeenCalledWith('checking replies')
+    })
+
+    it('offers Resume when paused and hides the controls for viewers', async () => {
+        const user = userEvent.setup()
+        const onResume = vi.fn()
+        const view = render(<AiAutomationChip settings={makeChipSettings({ autonomousEnabled: true, autonomyPaused: true })} canManage onPause={vi.fn()} onResume={onResume} />)
+        await user.click(screen.getByRole('button', { name: /AI status/ }))
+        await user.click(await screen.findByRole('button', { name: 'Resume automation' }))
+        await user.click(await screen.findByRole('button', { name: 'Confirm resume' }))
+        expect(onResume).toHaveBeenCalledOnce()
+        view.unmount()
+
+        render(<AiAutomationChip settings={makeChipSettings({ autonomousEnabled: true })} canManage={false} onPause={vi.fn()} onResume={vi.fn()} />)
+        await user.click(screen.getByRole('button', { name: /AI status/ }))
+        await screen.findByText(/read-only access/)
+        expect(screen.queryByRole('button', { name: 'Pause automation' })).not.toBeInTheDocument()
+    })
+
+    it('asks for confirmation before resuming automation (it re-enables autonomous replies)', async () => {
+        const user = userEvent.setup()
+        const onResume = vi.fn()
+        render(<AiAutomationChip settings={makeChipSettings({ autonomousEnabled: true, autonomyPaused: true })} canManage onPause={vi.fn()} onResume={onResume} />)
+        await user.click(screen.getByRole('button', { name: /AI status/ }))
+        await user.click(await screen.findByRole('button', { name: 'Resume automation' }))
+        expect(onResume).not.toHaveBeenCalled()
+        expect(screen.getByRole('alertdialog', { name: 'Resume automation?' })).toBeInTheDocument()
+        await user.click(screen.getByRole('button', { name: 'Keep paused' }))
+        expect(onResume).not.toHaveBeenCalled()
+        await user.click(screen.getByRole('button', { name: 'Resume automation' }))
+        await user.click(screen.getByRole('button', { name: 'Confirm resume' }))
+        expect(onResume).toHaveBeenCalledOnce()
+    })
+
+    it('links to the Settings page', async () => {
+        const user = userEvent.setup()
+        render(<AiAutomationChip settings={makeChipSettings()} canManage onPause={vi.fn()} onResume={vi.fn()} />)
+        await user.click(screen.getByRole('button', { name: /AI status/ }))
+        expect(await screen.findByRole('link', { name: 'Open AI settings' })).toHaveAttribute('href', '/outreach/settings')
+    })
+})
+
+describe('InboxFilterRail: six quick views with counts', () => {
+    afterEach(() => vi.clearAllMocks())
+
+    function renderRail(overrides: Partial<React.ComponentProps<typeof InboxFilterRail>> = {}) {
+        const props: React.ComponentProps<typeof InboxFilterRail> = {
+            state: DEFAULT_INBOX_STATE,
+            onPatch: vi.fn(),
+            onClearFilters: vi.fn(),
+            labels: [],
+            campaigns: [],
+            accounts: [],
+            syncStatus: [],
+            lastUpdatedAt: null,
+            counts: { needsReply: 4, awaiting: 7, unread: 3, remindersDue: 2 },
+            ...overrides,
+        }
+        return { props, ...render(<InboxFilterRail {...props} />) }
+    }
+
+    it('renders the six views in order with distinct icons', () => {
+        renderRail()
+        const labels = ['Inbox', 'Needs reply', 'Awaiting reply', 'Unread', 'Reminders', 'Archived']
+        const found = labels.map((label) => screen.getByRole('button', { name: new RegExp(`^${label}`) }))
+        expect(found).toHaveLength(6)
+        const icons = found.map((button) => button.querySelector('svg')?.getAttribute('class') ?? '')
+        expect(new Set(icons.map((c) => c.match(/lucide-[a-z-]+/)?.[0])).size).toBe(6)
+    })
+
+    it('shows the counts from the contract with accessible names', () => {
+        renderRail()
+        expect(screen.getByLabelText('4 need a reply')).toBeInTheDocument()
+        expect(screen.getByLabelText('7 awaiting reply')).toBeInTheDocument()
+        expect(screen.getByLabelText('3 unread')).toBeInTheDocument()
+        expect(screen.getByLabelText('2 reminders due')).toBeInTheDocument()
+    })
+
+    it('falls back to the standalone unread counter when the counts are not available yet', () => {
+        renderRail({ counts: undefined, unreadCount: 5 })
+        expect(screen.getByLabelText('5 unread')).toBeInTheDocument()
+        expect(screen.queryByLabelText(/need a reply/)).not.toBeInTheDocument()
+    })
+
+    it('patches the URL for a view and keeps the collapse toggle working', () => {
+        const onPatch = vi.fn()
+        const onToggleCollapsed = vi.fn()
+        renderRail({ onPatch, onToggleCollapsed })
+        fireEvent.click(screen.getByRole('button', { name: /^Archived/ }))
+        expect(onPatch).toHaveBeenCalledWith(expect.objectContaining({ view: 'archived' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Hide filters' }))
+        expect(onToggleCollapsed).toHaveBeenCalledOnce()
     })
 })
 
