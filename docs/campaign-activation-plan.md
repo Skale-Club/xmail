@@ -672,3 +672,17 @@ Apify. Custo zero em créditos. Id do trabalho em `search_history.apify_run_id`.
 `scraper.skale.club` e do service token do Cloudflare Access. Até lá a opção responde 503 para o dono e é invisível
 para os outros. A criação do token de API da Cloudflare por mim foi bloqueada pelo classificador de permissões
 (criação de credencial); o Vanildo escolhe entre terminar o token ele mesmo ou fazer os passos no painel com guia.
+
+**Teste de ponta a ponta do homelab pelo Xcraper (2026-10-07, 22:13–22:34 UTC):** do servidor do Hermes, com a
+chave de serviço dele, duas buscas `scrapeType: homelab` (10 resultados): Framingham começou na hora; Natick entrou
+na fila (posição 1) e começou sozinha quando Framingham terminou. Framingham ~12 min, Natick ~9 min, 10 salvos cada,
+ambas enviadas ao Xphere (19 empresas atualizadas, 1 nova — o resto já existia do Apify; dedupe ok). Netdata durante:
+raspador 400–780 MB (teto 2 GB), freio de CPU acionado às vezes (teto 1,5), máquina 7,0→7,6 GB usados, **swap
+parado** em 4,33 GB, CPU total 38%→~48%. Lento por desenho (uma aba, e-mail de cada site, profundidade fixa 10) →
+`f1288f5`: profundidade proporcional ao pedido (10→2, 30→4, 50→6, 100+→10). Portabilidade do Xcraper `069d171`
+(URLs por configuração, teste que barra domínio no código, Dockerfiles + compose para Coolify ainda não construídos,
+`docs/DOMAIN-CHANGE.md`, `docs/SELF-HOSTING.md`). Xcraper `main=dev=f1288f5`, site, saúde e rota do Hermes 200.
+Configuração na Vercel: as 4 variáveis do homelab (2 coladas pelo Vanildo, as secretas). Credenciais temporárias
+apagadas; o token de API da Cloudflare `homelab-agentes` segue válido até 06/11 em `C:\Users\Vanildo\.cf-homelab-token`.
+
+**Próximo:** passar o Hermes a pedir `scrapeType: homelab` por padrão, com o Apify (plano gratuito) só como reserva.
