@@ -475,8 +475,10 @@ O Hermes listou três bloqueios antes de ativar. Conferido em produção:
 2. **Endereço postal.** A descrição antiga da campanha (de 12/09) dizia que o endereço tinha sido
    incluído; a reescrita de 30/09 tirou o endereço do corpo e ninguém repôs. Hoje o e-mail **não tem
    endereço postal**, e o Xmail só avisa (não bloqueia). A lei americana de e-mail comercial
-   (CAN-SPAM) exige um. **Decisão do Vanildo:** qual endereço (o de Framingham que estava, uma caixa
-   postal, ou outro), que entraria numa linha no rodapé junto do descadastro, fora do texto do e-mail.
-   Descrição da campanha reescrita para registrar a pendência.
+   (CAN-SPAM) exige um. **Decidido pelo Vanildo em 2026-10-07: o endereço pessoal dele não entra de
+   forma alguma.** Saída que cumpre a lei sem expor a casa: caixa postal dos Correios (PO Box) ou caixa
+   postal virtual/comercial (UPS Store, iPostal1, Anytime Mailbox), numa linha no rodapé junto do
+   descadastro. Enquanto ele não contratar uma, o e-mail segue sem endereço; ativar assim é decisão e
+   risco dele. Descrição da campanha reescrita para registrar a pendência.
 3. **Créditos baixos.** Continua: MillionVerifier 169, NeverBounce 0. Os 25 do piloto já estão
    verificados; não bloqueia o piloto, bloqueia a próxima leva.
