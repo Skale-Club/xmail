@@ -608,3 +608,29 @@ materializador às 20:20:03, aviso no Telegram às 20:25:00 (`alert_count=1`, `f
 
 Lições para a operação: não fazer deploy no meio de campanha ativa sem necessidade (cada deploy pode adiar
 a leitura de uma caixa em 30 min); e o caminho de envio só se prova com envio real.
+
+### Raspador no homelab (alternativa ao Apify) — teste de 2026-10-07
+
+Vanildo pediu a viabilidade de `github.com/Mahanaicoach/google-maps-scraper-kit` no homelab (ZimaOS, AMD
+Ryzen 3 4300U, 4 núcleos, 14 GB, 290 GB livres em /DATA, Docker 27, internet residencial). O kit é uma camada
+para Claude Code sobre o motor `gosom/google-maps-scraper` (MIT, v1.18.1). Teste: uma busca, "barber shop in
+Worcester, MA", `-depth 10 -email -c 2 -exit-on-inactivity 2m`, modo CLI (roda e sai; nada fica no ar).
+Arquivos em `/DATA/gmaps-test/` no homelab; imagem `gosom/google-maps-scraper:v1.18.1` baixada.
+
+| | Homelab, 1 busca, ~5 min | Apify, acumulado em Worcester |
+|---|---|---|
+| Barbearias | 70 | 94 |
+| Com telefone | 68 | 86 |
+| Com site | 35 | 20 |
+| Com e-mail | 13 | 10 |
+| Com nota | 71 | — |
+
+13 barbearias novas que o Apify não tinha; cerca de 37 do Apify não vieram nessa busca única (o acumulado
+do Apify vem de mais de uma execução). Sem bloqueio do Google nesse volume; um site de agendamento devolveu
+429 na busca de e-mail. Conclusão: viável e de qualidade igual ou melhor por busca, a custo zero.
+
+**Pendências antes de integrar:** (1) **terminal.skale.club está aberto na internet e entra como root sem
+senha** — testado com curl de fora (HTTP 200, sem Cloudflare Access); Vanildo avisado, decisão dele;
+(2) acesso dos agentes por Tailscale + SSH com chave dedicada (`~/.ssh/homelab_agent` já criada no PC do
+Vanildo, ainda não instalada no homelab); (3) provedor novo no Xcraper (criar trabalho, acompanhar, baixar,
+converter para o formato do Apify), exposto pelo túnel com autenticação; Apify fica como reserva.
