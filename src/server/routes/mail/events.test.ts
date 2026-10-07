@@ -116,4 +116,54 @@ describe('GET /:mailboxId/events', () => {
         expect(over.status).toBe(429)
         controllers.forEach((c) => c.abort())
     })
+
+    it('takes no subscriber slot when the client disconnects during the access check', async () => {
+        let release!: (value: unknown) => void
+        accessMock.mockReturnValue(new Promise((resolve) => { release = resolve }))
+        const { mailboxEventSubscriberCount, MAILBOX_EVENT_MAX_SUBSCRIBERS_PER_USER } = await import('../../lib/mailbox-events')
+
+        const controller = new AbortController()
+        const pending = fetch(`${baseUrl}/${BOX_A}/events`, { headers: { 'x-user-id': 'user-race' }, signal: controller.signal })
+        pending.catch(() => undefined)
+        await vi.waitFor(() => expect(accessMock).toHaveBeenCalledTimes(1))
+
+        controller.abort()
+        await new Promise((resolve) => setTimeout(resolve, 100)) // let the server observe the close
+        release({ id: BOX_A })
+        await new Promise((resolve) => setTimeout(resolve, 100))
+
+        expect(mailboxEventSubscriberCount(BOX_A)).toBe(0)
+        expect(mailboxEventSubscriberCount()).toBe(0)
+
+        // The per-user slot count is untouched: the user can still open the maximum.
+        accessMock.mockResolvedValue({ id: BOX_A })
+        const controllers: AbortController[] = []
+        for (let i = 0; i < MAILBOX_EVENT_MAX_SUBSCRIBERS_PER_USER; i++) {
+            const c = new AbortController()
+            controllers.push(c)
+            const res = await fetch(`${baseUrl}/${BOX_A}/events`, { headers: { 'x-user-id': 'user-race' }, signal: c.signal })
+            expect(res.status).toBe(200)
+            await readUntil(res, ': connected')
+        }
+        controllers.forEach((c) => c.abort())
+    })
+
+    it('ends a stream cleanly after its maximum lifetime and frees the slot', async () => {
+        vi.stubEnv('MAILBOX_SSE_MAX_LIFETIME_MS', '150')
+        accessMock.mockResolvedValue({ id: BOX_A })
+        const { mailboxEventSubscriberCount } = await import('../../lib/mailbox-events')
+
+        const res = await fetch(`${baseUrl}/${BOX_A}/events`, { headers: { 'x-user-id': 'user-life' } })
+        expect(res.status).toBe(200)
+        const reader = res.body!.getReader()
+        await reader.read() // ': connected'
+        expect(mailboxEventSubscriberCount(BOX_A)).toBe(1)
+
+        // The server closes the stream on its own: the next read reports the end.
+        let ended = false
+        for (let i = 0; i < 10 && !ended; i++) ended = (await reader.read()).done
+        expect(ended).toBe(true)
+        await vi.waitFor(() => expect(mailboxEventSubscriberCount(BOX_A)).toBe(0))
+        vi.unstubAllEnvs()
+    })
 })

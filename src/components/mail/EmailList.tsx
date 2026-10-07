@@ -259,15 +259,17 @@ export function EmailList({
                                 )}
                             </button>
 
-                            {/* Quick actions float over the date on hover/focus instead of taking row width,
-                                so the text column never shrinks when the pointer enters a row. Only actions
+                            {/* Quick actions float over the DATE (top-right of the row) on hover or keyboard focus,
+                                never on a click-focus, and never over the subject line's attachment/thread
+                                indicators. They take no row width, so the text column never shrinks. They stay
+                                up while their "More actions" menu is open (it anchors to this bar). Only actions
                                 that exist in the current folder are rendered. */}
-                            <div className="absolute right-2 top-1/2 z-10 hidden -translate-y-1/2 items-center gap-0.5 rounded-lg border border-border bg-card px-1 shadow-sm group-hover:flex group-focus-within:flex">
+                            <div className="absolute right-2 top-1.5 z-10 hidden items-center gap-0.5 rounded-lg border border-border bg-card px-1 shadow-sm group-hover:flex group-has-[:focus-visible]:flex group-has-[[data-state=open]]:flex">
                                     {onToggleRead && (
                                         <button
                                             type="button"
                                             onClick={(e) => { e.stopPropagation(); onToggleRead(email.id) }}
-                                            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
+                                            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
                                             title={email.read ? 'Mark as unread' : 'Mark as read'}
                                             aria-label={email.read ? 'Mark as unread' : 'Mark as read'}
                                         >
@@ -278,7 +280,7 @@ export function EmailList({
                                         <button
                                             type="button"
                                             onClick={(e) => { e.stopPropagation(); onDelete(email.id) }}
-                                            className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
+                                            className="p-1 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
                                             title="Delete"
                                             aria-label="Delete"
                                         >
@@ -289,7 +291,7 @@ export function EmailList({
                                         <button
                                             type="button"
                                             onClick={(e) => { e.stopPropagation(); onArchive(email.id) }}
-                                            className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
+                                            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
                                             title="Archive"
                                             aria-label="Archive"
                                         >
@@ -303,7 +305,7 @@ export function EmailList({
                                                     type="button"
                                                     onClick={(e) => e.stopPropagation()}
                                                     aria-label="More actions"
-                                                    className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
+                                                    className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
                                                 >
                                                     <MoreVertical className="w-4 h-4" />
                                                 </button>

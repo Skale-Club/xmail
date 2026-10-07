@@ -29,8 +29,19 @@ export const MAILBOX_EVENT_COALESCE_MS = 1_000
 export const MAILBOX_STREAM_STALL_MS = 70_000
 /** How long a connection outlives its last subscriber (route changes remount the layout). */
 export const MAILBOX_STREAM_CLOSE_GRACE_MS = 3_000
-/** Minimum gap between mailbox-list refreshes triggered by non-arrival signals. */
-const MAILBOX_LIST_REFRESH_MIN_GAP_MS = 5_000
+/** A stream only counts as healthy (backoff resets) after living this long or hearing a heartbeat. */
+export const MAILBOX_STREAM_STABLE_MS = 30_000
+/** At most one catch-up resync per this window, however often the stream reconnects. */
+export const MAILBOX_RESYNC_MIN_GAP_MS = 30_000
+/** After an HTTP 429 the next attempt waits at least this long (the API is rate limited per IP). */
+export const MAILBOX_RATE_LIMIT_BACKOFF_MS = 60_000
+/**
+ * Minimum gap between counter refreshes (folders + the mailbox list) for ANY signal. The user's own
+ * moves and flag changes echo back as signals too, so these are throttled leading + trailing: the
+ * first runs at once, a burst collapses into one more at the end of the gap. (The open folder's
+ * first-page check is separate and stays immediate; see useInfiniteMessages.)
+ */
+export const MAILBOX_COUNTS_REFRESH_MIN_GAP_MS = 5_000
 
 export type MailboxRealtimeStatus = 'live' | 'connecting' | 'offline'
 
@@ -78,6 +89,8 @@ interface Entry {
     closeTimer: ReturnType<typeof setTimeout> | null
     windowTimer: ReturnType<typeof setTimeout> | null
     stallTimer: ReturnType<typeof setTimeout> | null
+    stableTimer: ReturnType<typeof setTimeout> | null
+    lastResyncAt: number
     stalled: boolean
     attempt: number
     everLive: boolean
@@ -155,7 +168,11 @@ function handleEvent(entry: Entry, event: MailboxEventWire): void {
 function parseFrame(entry: Entry, raw: string): void {
     const dataLines: string[] = []
     for (const line of raw.split('\n')) {
-        if (line.startsWith(':')) continue // comment / heartbeat
+        if (line.startsWith(':')) {
+            // The server's periodic ping proves the stream is genuinely healthy, not flapping.
+            if (line.startsWith(': ping')) markStable(entry)
+            continue
+        }
         if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''))
     }
     if (dataLines.length === 0) return
@@ -171,22 +188,35 @@ function clearStall(entry: Entry): void {
         clearTimeout(entry.stallTimer)
         entry.stallTimer = null
     }
+    if (entry.stableTimer) {
+        clearTimeout(entry.stableTimer)
+        entry.stableTimer = null
+    }
+}
+
+/** The backoff only resets once a stream has proven itself; one that dies right after opening keeps backing off. */
+function markStable(entry: Entry): void {
+    entry.attempt = 0
+    if (entry.stableTimer) {
+        clearTimeout(entry.stableTimer)
+        entry.stableTimer = null
+    }
 }
 
 function armStall(entry: Entry, controller: AbortController): void {
-    clearStall(entry)
+    if (entry.stallTimer) clearTimeout(entry.stallTimer)
     entry.stallTimer = setTimeout(() => {
         entry.stalled = true
         controller.abort()
     }, MAILBOX_STREAM_STALL_MS)
 }
 
-function scheduleReconnect(entry: Entry): void {
+function scheduleReconnect(entry: Entry, minDelayMs = 0): void {
     if (entry.disposed) return
     setStatus(entry, 'offline')
     // Capped exponential backoff with jitter, so a deploy restart doesn't bring every tab back at once.
     const base = Math.min(RECONNECT_BASE_MS * 2 ** entry.attempt, RECONNECT_MAX_MS)
-    const delay = Math.round(base * (0.8 + Math.random() * 0.4))
+    const delay = Math.max(minDelayMs, Math.round(base * (0.8 + Math.random() * 0.4)))
     entry.attempt += 1
     entry.reconnectTimer = setTimeout(() => {
         entry.reconnectTimer = null
@@ -210,10 +240,18 @@ async function connect(entry: Entry): Promise<void> {
 
         const reconnected = entry.everLive
         entry.everLive = true
-        entry.attempt = 0
+        // NOT reset here: a stream that opens and dies at once must keep backing off. It counts as
+        // healthy after a heartbeat or MAILBOX_STREAM_STABLE_MS of life.
+        entry.stableTimer = setTimeout(() => markStable(entry), MAILBOX_STREAM_STABLE_MS)
         setStatus(entry, 'live')
-        // Signals may have been missed while the stream was down: tell consumers to re-read.
-        if (reconnected) enqueue(entry, (p) => { p.resync = true; p.counts = true })
+        // Signals may have been missed while the stream was down: tell consumers to re-read. A
+        // flapping stream must not turn that into a request storm, so at most one per window (the
+        // polling safety net covers whatever the throttled resync would have caught).
+        const now = Date.now()
+        if (reconnected && now - entry.lastResyncAt >= MAILBOX_RESYNC_MIN_GAP_MS) {
+            entry.lastResyncAt = now
+            enqueue(entry, (p) => { p.resync = true; p.counts = true })
+        }
 
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
@@ -243,7 +281,9 @@ async function connect(entry: Entry): Promise<void> {
             setStatus(entry, 'offline')
             return
         }
-        scheduleReconnect(entry)
+        // Rate limited: hammering the API makes it worse for everyone behind this IP.
+        const rateLimited = error instanceof ApiClientError && error.status === 429
+        scheduleReconnect(entry, rateLimited ? MAILBOX_RATE_LIMIT_BACKOFF_MS : 0)
     }
 }
 
@@ -277,6 +317,8 @@ function acquire(
             closeTimer: null,
             windowTimer: null,
             stallTimer: null,
+            stableTimer: null,
+            lastResyncAt: 0,
             stalled: false,
             attempt: 0,
             everLive: false,
@@ -356,20 +398,38 @@ export function useMailboxLiveSync(): { status: MailboxRealtimeStatus } {
     const queryClient = useQueryClient()
     const { selectedMailbox, refreshMailboxes } = useMailbox()
     const mailboxId = selectedMailbox?.id
-    const lastListRefreshRef = React.useRef(0)
+    const lastRefreshRef = React.useRef(0)
+    const trailingRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
-    const onBatch = React.useCallback((batch: MailboxChangeBatch) => {
+    const refresh = React.useCallback(() => {
         if (!mailboxId) return
-        // Folder counters (the sidebar's observer refetches the active query).
+        lastRefreshRef.current = Date.now()
+        // Folder counters (the sidebar's observer refetches the active query) ...
         void queryClient.invalidateQueries({ queryKey: ['folders', mailboxId] })
-        // The switcher's per-mailbox unread: always on arrival, otherwise at most every few seconds.
-        const arrival = batch.newFolders.size > 0 || batch.resync
-        const now = Date.now()
-        if (arrival || now - lastListRefreshRef.current >= MAILBOX_LIST_REFRESH_MIN_GAP_MS) {
-            lastListRefreshRef.current = now
-            void refreshMailboxes()
-        }
+        // ... and the switcher's per-mailbox unread.
+        void refreshMailboxes()
     }, [mailboxId, queryClient, refreshMailboxes])
+    const refreshRef = React.useRef(refresh)
+    refreshRef.current = refresh
+
+    React.useEffect(() => () => {
+        if (trailingRef.current) {
+            clearTimeout(trailingRef.current)
+            trailingRef.current = null
+        }
+    }, [mailboxId])
+
+    const onBatch = React.useCallback(() => {
+        const wait = MAILBOX_COUNTS_REFRESH_MIN_GAP_MS - (Date.now() - lastRefreshRef.current)
+        if (wait <= 0) {
+            refreshRef.current()
+        } else if (!trailingRef.current) {
+            trailingRef.current = setTimeout(() => {
+                trailingRef.current = null
+                refreshRef.current()
+            }, wait)
+        }
+    }, [])
 
     return useMailboxEvents(mailboxId, onBatch)
 }

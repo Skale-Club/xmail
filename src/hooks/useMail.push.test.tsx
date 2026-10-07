@@ -133,6 +133,29 @@ describe('useInfiniteMessages with the live stream', () => {
         expect(getMessages).not.toHaveBeenCalled()
     })
 
+    it('re-checks an arrival that lands while the list query is mid-fetch instead of dropping it', async () => {
+        const { result } = renderHook(() => useInfiniteMessages('inbox', 30), { wrapper: wrapper() })
+        await waitFor(() => expect(result.current.data?.pages[0].messages).toHaveLength(1))
+
+        getMessages.mockClear()
+        let release!: (value: unknown) => void
+        getMessages.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
+        act(() => { void result.current.refetch() })
+        await waitFor(() => expect(result.current.isFetching).toBe(true))
+
+        // The in-flight fetch may predate this arrival.
+        await act(async () => {
+            stream.onBatch!(batch({ newFolders: ['f-inbox'] }))
+        })
+        expect(getMessages).toHaveBeenCalledTimes(1)
+
+        getMessages.mockResolvedValue(pageOf('m2', 'm1'))
+        await act(async () => { release(pageOf('m1')) })
+        await waitFor(() => expect(getMessages.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 3_000 })
+        expect(getMessages.mock.calls[1][2]).toMatchObject({ page: 1 })
+        await waitFor(() => expect(result.current.data?.pages[0].messages.map((m) => m.id)).toEqual(['m2', 'm1']), { timeout: 3_000 })
+    })
+
     it('polls every 120 s while live and every 30 s otherwise', async () => {
         // Only the interval is faked (the first tick passes the min-gap check on its own, since the
         // last check starts at 0). waitFor itself polls with setInterval, so this

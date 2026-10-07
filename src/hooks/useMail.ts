@@ -16,6 +16,8 @@ export const MAIL_POLL_INTERVAL_MS = 30_000
 export const MAIL_POLL_LIVE_INTERVAL_MS = 120_000
 /** Minimum gap between two push-triggered first-page checks for flag/move changes (arrivals ignore it). */
 const PUSH_UPDATE_MIN_GAP_MS = 10_000
+/** How long an arrival waits before re-checking when the list query was already mid-fetch. */
+const PUSH_RECHECK_DELAY_MS = 1_000
 export const FOLDER_POLL_INTERVAL_MS = 90_000
 const FOCUS_CHECK_MIN_GAP_MS = 20_000
 
@@ -197,6 +199,8 @@ export function useInfiniteMessages(folderType: string | undefined, limit = 30, 
     const recheckRef = React.useRef(false)
     // A signal that landed while the tab was hidden: the next wake-up must not be throttled away.
     const dirtyRef = React.useRef(false)
+    // An arrival that finds the list query mid-fetch must not be dropped: that fetch may predate it.
+    const recheckTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
     const checkRef = React.useRef<((minGapMs: number) => Promise<void>) | null>(null)
     const pollEnabled = !!mailboxId && (!folderType || !!folderId)
 
@@ -222,7 +226,16 @@ export function useInfiniteMessages(folderType: string | undefined, limit = 30, 
             }
             if (Date.now() - lastCheckRef.current < minGapMs) return
             const state = queryClient.getQueryState(queryKey)
-            if (!state || state.fetchStatus === 'fetching') return
+            if (!state) return
+            if (state.fetchStatus === 'fetching') {
+                if (minGapMs === 0 && !recheckTimerRef.current) {
+                    recheckTimerRef.current = setTimeout(() => {
+                        recheckTimerRef.current = null
+                        void check(0)
+                    }, PUSH_RECHECK_DELAY_MS)
+                }
+                return
+            }
             checkingRef.current = true
             dirtyRef.current = false
             lastCheckRef.current = Date.now()
@@ -250,6 +263,10 @@ export function useInfiniteMessages(folderType: string | undefined, limit = 30, 
         document.addEventListener('visibilitychange', onWake)
         return () => {
             checkRef.current = null
+            if (recheckTimerRef.current) {
+                clearTimeout(recheckTimerRef.current)
+                recheckTimerRef.current = null
+            }
             window.clearInterval(interval)
             window.removeEventListener('focus', onWake)
             document.removeEventListener('visibilitychange', onWake)

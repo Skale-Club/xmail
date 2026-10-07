@@ -23,7 +23,10 @@ vi.mock('./useMailbox', () => ({ useMailbox: () => ({ selectedMailbox: null, ref
 
 import {
     MAILBOX_EVENT_COALESCE_MS,
+    MAILBOX_RATE_LIMIT_BACKOFF_MS,
+    MAILBOX_RESYNC_MIN_GAP_MS,
     MAILBOX_STREAM_CLOSE_GRACE_MS,
+    MAILBOX_STREAM_STABLE_MS,
     MAILBOX_STREAM_STALL_MS,
     __mailboxStreamCount,
     useMailboxEvents,
@@ -46,6 +49,11 @@ function makeStream() {
 
 function frame(kind: string, folderId: string | null, mailboxId = 'box-1') {
     return `event: ${kind}\ndata: ${JSON.stringify({ mailboxId, folderId, kind, at: '2026-10-06T00:00:00.000Z' })}\n\n`
+}
+
+/** An SSE comment line, as the server's heartbeat sends it. */
+function frameComment(text: string) {
+    return `: ${text}\n\n`
 }
 
 async function flush() {
@@ -299,6 +307,99 @@ describe('useMailboxEvents', () => {
         await advance(1_000)
         expect(apiRequestMock).toHaveBeenCalledTimes(2)
         expect(result.current.status).toBe('live')
+        unmount()
+    })
+
+    it('keeps backing off when streams die right after opening, and resyncs at most once per window', async () => {
+        vi.spyOn(Math, 'random').mockReturnValue(0.5) // delays are exactly 1 s, 2 s, 4 s
+        const streams = [makeStream(), makeStream(), makeStream(), makeStream()]
+        streams.forEach(connectWith)
+        const onBatch = vi.fn()
+        const { unmount } = renderHook(() => useMailboxEvents('box-1', onBatch))
+        await flush()
+        expect(apiRequestMock).toHaveBeenCalledTimes(1)
+
+        // Each stream opens (200) and dies at once. Before the fix `attempt` reset on the 200, so
+        // every retry came after ~1 s forever.
+        streams[0].close()
+        await flush()
+        await advance(1_000)
+        expect(apiRequestMock).toHaveBeenCalledTimes(2)
+        streams[1].close()
+        await flush()
+        await advance(1_900) // second retry needs 2 s
+        expect(apiRequestMock).toHaveBeenCalledTimes(2)
+        await advance(200)
+        expect(apiRequestMock).toHaveBeenCalledTimes(3)
+        streams[2].close()
+        await flush()
+        await advance(3_900) // third needs 4 s
+        expect(apiRequestMock).toHaveBeenCalledTimes(3)
+        await advance(200)
+        expect(apiRequestMock).toHaveBeenCalledTimes(4)
+
+        // Three reconnects inside one window produced exactly ONE resync batch.
+        const resyncs = onBatch.mock.calls.filter(([batch]) => batch.resync)
+        expect(resyncs).toHaveLength(1)
+        unmount()
+    })
+
+    it('resets the backoff once a stream lived long enough, and allows a resync again after the window', async () => {
+        vi.spyOn(Math, 'random').mockReturnValue(0.5)
+        const streams = [makeStream(), makeStream(), makeStream()]
+        streams.forEach(connectWith)
+        const onBatch = vi.fn()
+        const { unmount } = renderHook(() => useMailboxEvents('box-1', onBatch))
+        await flush()
+
+        streams[0].close() // dies at once: next delay 1 s, then 2 s
+        await flush()
+        await advance(1_000)
+        expect(apiRequestMock).toHaveBeenCalledTimes(2)
+
+        // This one stays up past the stable threshold (and past the resync window).
+        await advance(Math.max(MAILBOX_STREAM_STABLE_MS, MAILBOX_RESYNC_MIN_GAP_MS) + 1_000)
+        streams[1].close()
+        await flush()
+        await advance(1_000) // reset: back to the 1 s base, not 2 s
+        expect(apiRequestMock).toHaveBeenCalledTimes(3)
+        expect(onBatch.mock.calls.filter(([batch]) => batch.resync)).toHaveLength(2)
+        unmount()
+    })
+
+    it('treats the first heartbeat as proof of health', async () => {
+        vi.spyOn(Math, 'random').mockReturnValue(0.5)
+        const streams = [makeStream(), makeStream(), makeStream()]
+        streams.forEach(connectWith)
+        const { unmount } = renderHook(() => useMailboxEvents('box-1', vi.fn()))
+        await flush()
+        streams[0].close()
+        await flush()
+        await advance(1_000)
+        expect(apiRequestMock).toHaveBeenCalledTimes(2)
+
+        streams[1].push(frameComment('ping'))
+        await flush()
+        streams[1].close()
+        await flush()
+        await advance(1_000) // reset by the ping: 1 s, not 2 s
+        expect(apiRequestMock).toHaveBeenCalledTimes(3)
+        unmount()
+    })
+
+    it('backs off at least a minute after an HTTP 429', async () => {
+        vi.spyOn(Math, 'random').mockReturnValue(0.5)
+        const { ApiClientError } = await import('../lib/api-client')
+        apiRequestMock.mockRejectedValueOnce(new ApiClientError('Too many requests', { status: 429, path: 'x' }))
+        connectWith(makeStream())
+        const { result, unmount } = renderHook(() => useMailboxEvents('box-1', vi.fn()))
+        await flush()
+        expect(result.current.status).toBe('offline')
+
+        await advance(MAILBOX_RATE_LIMIT_BACKOFF_MS - 1_000)
+        expect(apiRequestMock).toHaveBeenCalledTimes(1)
+        await advance(1_500)
+        expect(apiRequestMock).toHaveBeenCalledTimes(2)
         unmount()
     })
 

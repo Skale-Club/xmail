@@ -801,7 +801,16 @@ async function handleCommand(session: IMAPSession, tag: string, command: string,
                     updated = true
                 }
             }
-            if (updated) await recomputeFolderCounts(session.selectedFolderId!)
+            if (updated) {
+                await recomputeFolderCounts(session.selectedFolderId!)
+                // Same signal STORE +FLAGS \Seen sends: other IMAP sessions and the webmail list
+                // (message.updated) must see the message turn read, not just the counters.
+                emitFolderChange({
+                    folderId: session.selectedFolderId!,
+                    mailboxId: session.selectedMailboxId!,
+                    kind: 'flags',
+                })
+            }
         }
 
         sendLine(socket, `${tag} OK FETCH completed`)

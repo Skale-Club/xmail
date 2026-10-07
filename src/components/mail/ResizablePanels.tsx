@@ -203,6 +203,21 @@ export function ResizablePanels({
         return () => window.removeEventListener('keydown', onKeyDown)
     }, [drawerOpen, closeOnEscape, onCloseRight])
 
+    // Drawer focus management. While the drawer covers the list, the list must be unreachable
+    // (inert: no Tab, no screen-reader browsing of rows hidden behind it); focus moves into the
+    // drawer (its Back button) and, when it closes, returns to the control that opened it.
+    const drawerRef = useRef<HTMLDivElement>(null)
+    useEffect(() => {
+        if (!drawerOpen) return
+        const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+        const drawer = drawerRef.current
+        const target = drawer?.querySelector<HTMLElement>('[data-drawer-back]') ?? drawer
+        target?.focus({ preventScroll: true })
+        return () => {
+            if (opener && opener.isConnected && opener !== document.body) opener.focus({ preventScroll: true })
+        }
+    }, [drawerOpen])
+
     const rightNode = typeof right === 'function' ? right({ overlay, close }) : right
 
     // One tree for both modes, so crossing the threshold keeps the list mounted (scroll position,
@@ -216,6 +231,7 @@ export function ResizablePanels({
             <div
                 style={overlay ? undefined : { width: `${effectivePercent}%` }}
                 className={`overflow-hidden ${overlay ? 'w-full' : ''} ${leftClassName}`}
+                {...(drawerOpen ? { inert: '' } : {})}
             >
                 {left}
             </div>
@@ -246,9 +262,11 @@ export function ResizablePanels({
 
             {overlay && !hasRight ? null : overlay ? (
                 <div
+                    ref={drawerRef}
                     role="region"
                     aria-label="Message"
-                    className="absolute inset-0 z-20 flex flex-col overflow-hidden bg-background animate-in slide-in-from-right duration-200 motion-reduce:animate-none"
+                    tabIndex={-1}
+                    className="absolute inset-0 z-20 flex flex-col overflow-hidden bg-background focus:outline-none animate-in slide-in-from-right duration-200 motion-reduce:animate-none"
                 >
                     {rightNode}
                 </div>

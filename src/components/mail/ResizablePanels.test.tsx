@@ -210,3 +210,48 @@ describe('overlay Back and Esc', () => {
         expect(screen.getByTestId('detail')).toBeInTheDocument()
     })
 })
+
+// Drawer accessibility: the covered list is inert, focus moves to Back and returns to the row.
+function FocusHarness() {
+    const [selected, setSelected] = React.useState<string | null>(null)
+    return (
+        <ResizablePanels
+            left={<button type="button" onClick={() => setSelected('a')}>row a</button>}
+            hasRight={!!selected}
+            onCloseRight={() => setSelected(null)}
+            right={({ overlay, close }) => (
+                <>
+                    {overlay && <DetailBackBar label="Inbox" onBack={close} />}
+                    <div data-testid="detail">{selected}</div>
+                </>
+            )}
+        />
+    )
+}
+
+describe('overlay drawer focus', () => {
+    it('makes the list inert and focuses Back while the drawer is open, then restores the row', () => {
+        width = 700
+        const { container } = render(<FocusHarness />)
+        const leftPanel = container.firstElementChild!.firstElementChild as HTMLElement
+        const row = screen.getByRole('button', { name: 'row a' })
+        expect(leftPanel).not.toHaveAttribute('inert')
+
+        row.focus()
+        fireEvent.click(row)
+        expect(leftPanel).toHaveAttribute('inert')
+        expect(screen.getByRole('button', { name: 'Back to Inbox' })).toHaveFocus()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Back to Inbox' }))
+        expect(leftPanel).not.toHaveAttribute('inert')
+        expect(screen.getByRole('button', { name: 'row a' })).toHaveFocus()
+    })
+
+    it('leaves the list interactive in side-by-side mode', () => {
+        width = 1200
+        const { container } = render(<FocusHarness />)
+        fireEvent.click(screen.getByRole('button', { name: 'row a' }))
+        const leftPanel = container.firstElementChild!.firstElementChild as HTMLElement
+        expect(leftPanel).not.toHaveAttribute('inert')
+    })
+})

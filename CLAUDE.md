@@ -13,7 +13,7 @@ Xmail is a multi-tenant email server management platform inspired by Postal. It 
 - **Container:** `Dockerfile` at repo root builds + runs `dist/server/index.js`
 - **Container network:** if Docker network `coolify` exists, deploy runs the app with `--network coolify` so Traefik can reach `http://xmail:9001`
 - **Published ports:**
-  - `9001` - HTTP API + SPA, bound to `127.0.0.1:9001` only (not public). Traefik reaches it over the `coolify` Docker network at `http://xmail:9001`; `wait_for_container_health()` probes it via `docker exec` from inside the container. Publishing it on `0.0.0.0` would let a client hit Express directly and forge `X-Forwarded-For` (the app trusts it via `trust proxy`) to dodge the 100 req/IP/15min rate limiter — loopback-only closes that off since 25/587/993 have no such proxy-trust surface to spoof.
+  - `9001` - HTTP API + SPA, bound to `127.0.0.1:9001` only (not public). Traefik reaches it over the `coolify` Docker network at `http://xmail:9001`; `wait_for_container_health()` probes it via `docker exec` from inside the container. Publishing it on `0.0.0.0` would let a client hit Express directly and forge `X-Forwarded-For` (the app trusts it via `trust proxy`) to dodge the per-IP rate limiter (500 req/15min in production) — loopback-only closes that off since 25/587/993 have no such proxy-trust surface to spoof.
   - `25` - SMTP MX inbound, direct public TCP to the Node MX server
   - `587` - SMTP submission, direct public TCP to the Node SMTP server
   - `993` - IMAP, direct public TCP to the Node IMAP server
@@ -152,7 +152,7 @@ npm run db:audit         # Audit schema drift between schema.ts and the DB
 
 ### API Conventions
 - All API routes under `/api/`
-- Rate limited: 100 req/IP/15min
+- Rate limited per IP on `/api/`: 500 req/15min in production, 2000 otherwise (`src/server/index.ts`); long-lived SSE reconnects count against it
 - Resources typically require a parent ID as query param, almost always `?organizationId=...` (no `?serverId=` — that layer no longer exists)
 - Standard REST patterns: GET (list/detail), POST (create), PUT (update), DELETE (remove)
 - Zod validation on request bodies

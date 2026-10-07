@@ -17,6 +17,7 @@ export function DetailBackBar({ label, onBack }: DetailBackBarProps) {
             <button
                 type="button"
                 onClick={onBack}
+                data-drawer-back
                 aria-label={`Back to ${label}`}
                 className="rounded-lg p-2 transition-colors hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
