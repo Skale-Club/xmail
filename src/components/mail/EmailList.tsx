@@ -144,7 +144,7 @@ export function EmailList({
                         <li
                             key={email.id}
                             className={`
-                                group relative flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2 sm:py-2.5 cursor-pointer transition-all duration-150
+                                group relative flex items-center gap-2 px-3 sm:px-4 py-2 sm:py-2.5 cursor-pointer transition-all duration-150
                                 ${isSelected ? 'bg-muted' : 'bg-card hover:bg-accent/50'}
                                 ${isChecked && !isSelected ? 'bg-accent/30' : ''}
                                 ${!email.read ? 'font-semibold text-foreground' : 'text-muted-foreground'}
@@ -209,15 +209,20 @@ export function EmailList({
                                 aria-current={isSelected ? 'true' : undefined}
                                 className="flex-1 min-w-0 text-left bg-transparent p-0 font-[inherit] text-[inherit] focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
                             >
+                                {/* Sender and date share the first line; the date never shrinks, the sender
+                                    takes the leftover width and truncates. */}
                                 <span className="flex items-center gap-2 min-w-0">
                                     {!email.read && <span className="sr-only">Unread. </span>}
-                                    <span className={`truncate text-sm ${!email.read ? 'text-foreground' : 'text-foreground/80'}`}>
+                                    <span className={`min-w-0 flex-1 truncate text-sm ${!email.read ? 'text-foreground' : 'text-foreground/80'}`}>
                                         {senderLabel}
+                                    </span>
+                                    <span className={`shrink-0 whitespace-nowrap text-xs ${!email.read ? 'text-foreground/90' : 'text-muted-foreground'}`}>
+                                        {formatEmailDate(email.date)}
                                     </span>
                                 </span>
 
-                                <span className="flex items-center gap-2 mt-0.5">
-                                    <span className="truncate text-sm text-foreground/90">
+                                <span className="flex items-center gap-2 min-w-0 mt-0.5">
+                                    <span className="min-w-0 flex-1 truncate text-sm text-foreground/90">
                                         {email.subject}
                                     </span>
                                     {email.isThread && email.threadCount && email.threadCount > 1 && (
@@ -225,6 +230,12 @@ export function EmailList({
                                             <MessageSquare className="w-3 h-3" />
                                             {email.threadCount}
                                         </span>
+                                    )}
+                                    {email.hasAttachments && (
+                                        <Paperclip
+                                            className="w-3.5 h-3.5 shrink-0 text-muted-foreground"
+                                            aria-label="Has attachments"
+                                        />
                                     )}
                                 </span>
 
@@ -246,22 +257,10 @@ export function EmailList({
                                 )}
                             </button>
 
-                            <div className="flex-shrink-0 flex items-center gap-1">
-                                <span className={`text-xs ${!email.read ? 'text-foreground/90' : 'text-muted-foreground'}`}>
-                                    {formatEmailDate(email.date)}
-                                </span>
-
-                                {/* Paperclip: visible when not hovering */}
-                                {email.hasAttachments && (
-                                    <Paperclip
-                                        className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0 group-hover:hidden group-focus-within:hidden"
-                                        aria-label="Has attachments"
-                                    />
-                                )}
-
-                                {/* Quick actions: visible on hover or keyboard focus. Only actions that
-                                    exist in the current folder are rendered. */}
-                                <div className="hidden group-hover:flex group-focus-within:flex items-center gap-0.5">
+                            {/* Quick actions float over the date on hover/focus instead of taking row width,
+                                so the text column never shrinks when the pointer enters a row. Only actions
+                                that exist in the current folder are rendered. */}
+                            <div className="absolute right-2 top-1/2 z-10 hidden -translate-y-1/2 items-center gap-0.5 rounded-lg border border-border bg-card px-1 shadow-sm group-hover:flex group-focus-within:flex">
                                     {onToggleRead && (
                                         <button
                                             type="button"
@@ -363,7 +362,6 @@ export function EmailList({
                                         </DropdownMenu>
                                     )}
                                 </div>
-                            </div>
                         </li>
                     )
                 })}

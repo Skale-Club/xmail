@@ -5,6 +5,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { useGoToShortcuts, useKeyboardShortcutHelp } from '../../hooks/useKeyboardShortcuts'
 import { FOCUS_MAILBOX_SEARCH_EVENT } from './mailbox-navigation'
 import { findFolderByKind } from './folder-lookup'
+import { useSidebarCollapsed } from './sidebar-collapse'
 import { AppLogo } from '../AppLogo'
 import { ModeToggle } from '../mode-toggle'
 import { DeployFooter } from '../DeployFooter'
@@ -35,24 +36,6 @@ import { NotificationBell } from './NotificationBell'
 import { useCompose } from '../../hooks/useCompose'
 
 const MailLayoutContext = React.createContext(false)
-
-const SIDEBAR_COLLAPSED_STORAGE_KEY = 'xmail:mail:sidebar-collapsed'
-
-function readSidebarCollapsed(): boolean {
-    try {
-        return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
-    } catch {
-        return false
-    }
-}
-
-function writeSidebarCollapsed(collapsed: boolean) {
-    try {
-        window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0')
-    } catch {
-        // Storage blocked: the sidebar just forgets its state on reload.
-    }
-}
 
 interface MailLayoutProps {
     children: React.ReactNode
@@ -266,11 +249,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
     const { isOpen: shortcutsOpen, openHelp: openShortcuts, closeHelp: closeShortcuts } = useKeyboardShortcutHelp()
     const [location, navigate] = useLocation()
     const [sidebarOpen, setSidebarOpen] = React.useState(false)
-    const [isCollapsed, setIsCollapsedState] = React.useState(readSidebarCollapsed)
-    const setIsCollapsed = React.useCallback((value: boolean) => {
-        setIsCollapsedState(value)
-        writeSidebarCollapsed(value)
-    }, [])
+    const [isCollapsed, setIsCollapsed] = useSidebarCollapsed()
     const [searchOpen, setSearchOpen] = React.useState(false)
     const [searchQuery, setSearchQuery] = React.useState('')
 

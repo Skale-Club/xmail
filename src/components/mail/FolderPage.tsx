@@ -7,6 +7,7 @@ import { EmailDetailView, EmailDetailEmpty } from './EmailDetailView'
 import { EmailHtmlViewer } from './EmailHtmlViewer'
 import { EmailMessageHeader } from './EmailMessageHeader'
 import { ResizablePanels } from './ResizablePanels'
+import { DetailBackBar } from './DetailBackBar'
 import { ConnectMailboxDialog } from './ConnectMailboxDialog'
 import { toast } from '../ui/toaster'
 import { ConfirmDialog } from '../ui/ConfirmDialog'
@@ -681,7 +682,15 @@ export function FolderPage({ kind, title, icon, emptyMessage, emptyStateIcon }: 
                 <ResizablePanels
                     storageKey="mail-panels"
                     left={<>{headerRow}{toolbar}{listNode}</>}
-                    right={detailNode}
+                    hasRight={!!selectedEmailData}
+                    onCloseRight={() => setSelectedEmail(null)}
+                    closeOnEscape={!composeOpen}
+                    right={({ overlay, close }) => (
+                        <>
+                            {overlay && <DetailBackBar label={title} onBack={close} />}
+                            {detailNode}
+                        </>
+                    )}
                 />
             )}
             <ConfirmDialog

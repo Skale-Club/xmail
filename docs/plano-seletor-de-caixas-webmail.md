@@ -95,6 +95,7 @@ Sem migration: é só leitura cruzada. Sem mudar nada em `email_accounts`.
   `shrink-0` e a coluna de texto com `flex-1 min-w-0`).
 - Conferir em 1000, 1280, 1366 e 1920px via `javascript_tool` em produção (scrollWidth == clientWidth;
   largura real de cada coluna).
+- **Implementado (2026-10-06):** `ResizablePanels` ganhou `minLeftPx` 360, `minRightPx` 420 e `maxLeftPx` 480 (o teto vem do critério 5: lista entre 360 e 480px em 1920); abaixo de 780px vira drawer (render-prop `{ overlay, close }`, `hasRight`, `onCloseRight`, Esc fecha fora de campos/diálogos). O Back do drawer é `DetailBackBar` (espelha o do `EmailDetailPage`; o do mobile é markup dentro da página, não componente). `MailLayout` usa `useSidebarCollapsed` (`sidebar-collapse.ts`): preferência salva vence, senão colapsada abaixo de 1280px. Em `EmailList` a causa do truncamento era a soma de colunas fixas (ponto, checkbox, estrela, avatar, data, ações no hover) comendo ~220px de uma lista de ~290px: a data foi para a linha do remetente, o clipe para a linha do assunto e as ações de hover viraram overlay absoluto. Falta só a conferência em produção (1000/1280/1366/1920px).
 
 ### Fase 4 — E-mail novo aparece na hora (push por SSE)
 
