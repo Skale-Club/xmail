@@ -57,6 +57,7 @@ export const KNOWN_LOCK_NAMES: readonly string[] = [
     'reconcileOutreachEvents',
     'runDailyProspecting',
     'dmarc-reports-processor',
+    'reply-alert-sweep', // jobs/replyAlerts.ts — Telegram alerts/reminders for campaign replies
 ]
 
 /**

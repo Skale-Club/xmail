@@ -34,6 +34,7 @@ import {
 import { scheduleAutonomousFollowUp } from '../lib/inbox-ai-automation-runtime'
 import { ingestOutreachInboundExclusive } from '../lib/outreach-inbound-sources'
 import { sqlTimestamp } from '../lib/sql-timestamp'
+import { notifyReplyReceived } from '../lib/reply-alerts/hook'
 import {
     TERMINAL_CAMPAIGN_LEAD_STATUSES,
     UNDELIVERABLE_CAMPAIGN_LEAD_STATUSES,
@@ -149,9 +150,14 @@ export async function resolveReplyContextText(event: StoredProviderEvent): Promi
 const REPLY_PROCESSOR_LOCK_NAME = 'outreach-replies-processor'
 
 export async function runRepliesProcessorWithLock(): Promise<void> {
-    // jobs/index.ts schedules this every 15 minutes. 2026-09-04 (Fase 1 TASK 2): previously ran on
+    // jobs/index.ts schedules this every 5 minutes (was 15 until 2026-10-07, so a reply reaches
+    // the Telegram alert within minutes). Overlap is safe: the budget below is 305s, so a slow
+    // tick can outlive the 300s cadence by a few seconds, and the next tick then finds the
+    // advisory lock held and is skipped (runWithLock 'skipped_contention'), never run twice.
+    // 2026-09-04 (Fase 1 TASK 2): previously ran on
     // cron-lock's 10-minute default; retuned to 305s — 5x the 55-61s normal latency measured in
     // production (see JOB_TIMEOUT_BUDGETS_MS in cron-lock.ts for the rule and the full table).
+    // Production measured ~25s per run on 2026-10-07.
     await runWithLock(REPLY_PROCESSOR_LOCK_NAME, async () => {
         await processReplies()
     }, { timeoutMs: JOB_TIMEOUT_BUDGETS_MS.outreachRepliesProcessor })
@@ -252,6 +258,12 @@ async function handleReplyEvent(event: StoredProviderEvent): Promise<boolean> {
         leadId: matched.outreachEmail.leadId,
         campaignLeadId: matched.outreachEmail.campaignLeadId,
     }, 'reply matched and marked')
+
+    // Telegram alert for the operator, as soon as the reply is durably recorded. Best-effort by
+    // construction: notifyReplyReceived never throws, and the 5-minute sweep job (replyAlerts.ts)
+    // covers whatever this misses. Before the autonomous follow-up on purpose: that step can throw
+    // and retry the event, and the alert must not wait behind it.
+    await notifyReplyReceived({ id: event.id, organizationId: matched.outreachEmail.organizationId })
 
     // Phase 23 (AI-03): schedule an AUDITED, LEASED autonomous follow-up decision from the persisted
     // inbound reply — but only when effective org+campaign autonomy is enabled (idempotent, never a

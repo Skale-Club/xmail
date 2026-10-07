@@ -39,6 +39,7 @@ painel continua a ser o único sítio onde se editam as credenciais.
 | 💾 Disk is filling up | interna | `jobs/alertWatchdog.ts` | sistema de ficheiros acima de 85% |
 | 🔇 Outreach silence: `<kind>` / 🚨 idem (crítico) | interna | `jobs/alertWatchdog.ts` (regras em `lib/outreach-silence.ts`) | uma das ~12 regras de silêncio deixa de ler "operação normal" — ver secção própria abaixo |
 | 🔥 Error spike | agregada | `error-spike-alert.ts` | mais de 15 erros em 5 min |
+| 💬 Resposta nova / Lembrete / Bom dia | interna | `lib/reply-alerts/`, `jobs/replyAlerts.ts` | uma barbearia respondeu a uma campanha; repete de 2 em 2 h (08:00-20:00 NY) até haver resposta, resolução ou arquivo — ver secção própria abaixo |
 
 Cada alerta de estado tem a sua mensagem de recuperação (✅). Nenhum deles
 repete enquanto a condição se mantém — ver "Fadiga de alerta" abaixo.
@@ -509,6 +510,80 @@ de cinco — e `docker logs xmail | grep db.liveness` mostra a sequência.
 
 ---
 
+## Respostas de campanha: aviso imediato e lembretes
+
+Esta família é diferente das anteriores. Não avisa de uma falha do sistema; avisa
+que **uma barbearia respondeu** e que alguém tem de ler e responder. O Vanildo não
+está a olhar para o e-mail durante o dia, por isso o aviso não pára ao primeiro
+envio: repete até a conversa ser tratada. Vai para o mesmo chat configurado no
+painel, através do mesmo `sendTelegram()`.
+
+### O que sai, e quando
+
+| Mensagem | Quando |
+| --- | --- |
+| `Resposta nova da <barbearia>` | logo que uma resposta humana de lead de campanha fica gravada; a qualquer hora, noite incluída |
+| `Lembrete: a resposta da <barbearia> está sem leitura há 4h` ou `foi lida, mas está sem resposta há 6h` | de 2 em 2 horas depois do último aviso, só entre 08:00 e 20:00 (America/New_York) |
+| `Bom dia: N respostas esperando você` | às 08:00 (primeira varredura da janela), uma só mensagem com todas as pendentes, no lugar dos lembretes da noite |
+| `Lembrete: N respostas esperando você` | quando há mais de 3 lembretes devidos no mesmo tick, vão numa única mensagem |
+
+Nada de lembrete nem de resumo entre as 20:00 e as 08:00. O aviso imediato é a
+exceção de propósito: é o que o Vanildo pediu para ver "logo". Cada mensagem traz o
+nome da barbearia (`custom_fields.shortName`, senão o nome da empresa), quem
+respondeu, que caixa de outreach recebeu, os primeiros 300 caracteres do que a
+pessoa escreveu (sem o histórico citado), há quanto tempo espera (nos lembretes) e
+um link direto: `<FRONTEND_URL>/outreach/unified-inbox?conversation=<id>`. Respostas
+automáticas (fora do escritório), DSN/bounces e tráfego do mesh de warm-up nunca
+geram aviso.
+
+### Como decide que ainda está pendente (nenhum modelo de estado novo)
+
+Tudo é lido do Unified Inbox; a regra de "pendente" é a da fila **Needs reply**
+(`NEEDS_REPLY` em `unified-inbox/queries.ts`, exportada para este fim):
+
+- **respondida**: `outreach_conversations.last_outbound_at` passou da resposta.
+  Uma resposta enviada pelo Unified Inbox avança esse campo (`outbound.ts`);
+- **resolvida**: `outreach_conversations.status = 'closed'`;
+- **arquivada**: `outreach_conversations.archived_at` preenchido;
+- **lida**: existe linha em `outreach_conversation_reads` com
+  `last_read_at >= last_inbound_at` (de qualquer utilizador da organização, a mesma
+  regra do contador de não lidas);
+- uma resposta **nova** do lead reabre e desarquiva a conversa (`ingest.ts`), por
+  isso volta a ser pendente e gera um aviso imediato novo.
+
+Só entram conversas com `campaign_id` (lead de campanha), numa caixa que não seja
+`warmup_only`, com a última resposta nos últimos 14 dias (`MAX_PENDING_AGE_DAYS`,
+para um backlog antigo não virar lembrete eterno).
+
+O que a tabela `inbox_reply_alerts` (migration `071`) guarda é só o que nenhuma
+outra sabe: **quando** saiu o último aviso de cada conversa e **sobre qual**
+mensagem de entrada. É isso que espaça os lembretes e impede que o gancho e o cron
+avisem duas vezes a mesma resposta.
+
+### Duas portas de entrada, uma só função
+
+1. **Gancho** em `processReplies.ts`, logo depois de `markAsReplied`
+   (`lib/reply-alerts/hook.ts`). Materializa o evento no Unified Inbox na hora
+   (idempotente) para ter a conversa e o link, e corre a varredura só para ela.
+   Nunca lança: se o Telegram ou a base falharem, o processamento da resposta
+   segue e o cron apanha o resto.
+2. **Cron de 5 em 5 minutos** (`jobs/replyAlerts.ts`), que cobra lembretes, manda
+   o resumo das 08:00 e é a rede de segurança do aviso imediato. Corre sob a trava
+   `reply-alert-sweep`, a mesma do gancho, para os dois não dispararem em
+   simultâneo. É de 5 e não de 15 minutos para o resumo sair às 08:00 e para um
+   primeiro aviso perdido esperar no máximo um tick.
+
+A deteção de respostas (`outreach-replies-processor`) passou de 15 para 5
+minutos. É seguro sobrepor: o `runWithLock` salta o tick enquanto o anterior ainda
+segura a trava, e a ingestão (`outreach-inbound-ingest`) é single-flight. Medido
+em produção a 2026-10-07: ~25 s por corrida com 5 caixas Gmail.
+
+Falha de envio **não** é gravada como avisada: o próximo tick tenta de novo. Sem
+Telegram configurado no painel a varredura regista uma linha e não faz mais nada.
+Nenhuma linha de log leva o texto da resposta nem endereços.
+
+---
+
 ## Afinação
 
 Todos os valores são variáveis de ambiente com omissões razoáveis; ver
@@ -543,6 +618,9 @@ DB_LIVENESS_EXIT_AFTER_MS=300000    # falha contínua antes de o processo se rei
 | `src/server/jobs/alertWatchdog.ts` | fila, memória, disco e silêncio (`checkSilence`), de 5 em 5 minutos |
 | `src/server/lib/outreach-silence.ts` | as ~12 regras de silêncio, puras — `buildSilenceAlerts` |
 | `src/server/lib/outreach-silence-query.ts` | metade com I/O da deteção de silêncio — `computeSilenceMetrics` |
+| `src/server/lib/reply-alerts/` | alertas de resposta: `schedule.ts` (janela 08-20 NY), `plan.ts` (o que enviar), `format.ts` (texto), `sweep.ts` (leitura + envio), `hook.ts` (gancho e trava) |
+| `src/server/jobs/replyAlerts.ts` | cron de 5 em 5 min dos lembretes e do resumo |
+| `supabase/migrations/071_inbox_reply_alerts.sql` | `inbox_reply_alerts`: quando saiu o último aviso de cada conversa |
 | `scripts/telegram-notify.sh` | emissor do CI; sai sempre com 0 |
 | `scripts/resolve-alert-credentials.sh` | painel → cache → secrets |
 | `scripts/check-uptime.sh` | a sonda: HTTP + portas 587/993 |

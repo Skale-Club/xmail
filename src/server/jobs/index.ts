@@ -20,6 +20,7 @@ import { runMeasureProspectingOutcomesWithLock } from './measureProspectingOutco
 import { runDailyProspectingWithLock } from './runDailyProspecting'
 import { runAlertWatchdog } from './alertWatchdog'
 import { runDmarcReportsProcessorWithLock } from './processDmarcReports'
+import { runReplyAlertsWithLock } from './replyAlerts'
 import { runWithLock } from '../lib/cron-lock'
 
 import { dailyOutreachDigest } from './dailyOutreachDigest'
@@ -117,8 +118,11 @@ export function startJobs(): void {
         })
     }, { timezone: 'UTC' })
 
-    // Process replies every 15 minutes (advisory-locked at the DB layer)
-    cron.schedule('*/15 * * * *', () => {
+    // Process replies every 5 minutes (advisory-locked at the DB layer). Was every 15 until
+    // 2026-10-07: the cold-email campaign needs a reply to reach the Telegram alert quickly. Safe
+    // to overlap: each tick is skipped by runWithLock while the previous one holds the lock, and
+    // the shared 'outreach-inbound-ingest' lock keeps the provider scan single-flight.
+    cron.schedule('*/5 * * * *', () => {
         runRepliesProcessorWithLock().catch((err) => {
             const e = err instanceof Error ? err : new Error(String(err))
             log.error({
@@ -329,9 +333,23 @@ export function startJobs(): void {
         })
     })
 
+    // Telegram reply alerts: reminders every 2h (08:00-20:00 America/New_York), the 08:00 summary,
+    // and the safety net for the immediate alert fired from processReplies. The schedule itself is
+    // 5 minutes so the summary lands at 08:00 and a missed first alert waits at most one tick; what
+    // is actually sent is decided by lib/reply-alerts/plan.ts from the Unified Inbox state.
+    cron.schedule('*/5 * * * *', () => {
+        runReplyAlertsWithLock().catch((err) => {
+            const e = err instanceof Error ? err : new Error(String(err))
+            log.error({
+                action: 'outreach.jobs.replyAlerts_failed',
+                error: { message: e.message, stack: e.stack },
+            }, 'replyAlerts failed')
+        })
+    })
+
     log.info({
         action: 'outreach.jobs.scheduler_ready',
-        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=15min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am, amortizeSubscriptionCosts=monthly-1st-04:00-UTC, measureProspectingOutcomes=every-6h-UTC, runDailyProspecting=daily-10:00-UTC, alertWatchdog=5min, dmarcReports=15min',
+        schedule: 'processQueue=1min, processHeld=5min, cleanup=daily-3am, outreach=5min, resetLimits=daily-midnight-UTC, dailyDigest=09:00-UTC, replies=5min, bounces=30min, deliverabilityGuard=10min, approvalExpiry=5min, followups=10min, unifiedInbox=5min, inboxCommands=1min, outreachEvents=1min, eventReconciliation=5min, cleanupInboxAttachments=daily-3:30am, amortizeSubscriptionCosts=monthly-1st-04:00-UTC, measureProspectingOutcomes=every-6h-UTC, runDailyProspecting=daily-10:00-UTC, alertWatchdog=5min, dmarcReports=15min, replyAlerts=5min',
     }, 'scheduler ready')
 
     // Phase 23 (AI-03): log the GLOBAL autonomous-automation kill-control posture once at startup

@@ -2974,3 +2974,36 @@ export type DmarcReport = typeof dmarcReports.$inferSelect
 export type NewDmarcReport = typeof dmarcReports.$inferInsert
 export type DmarcReportRecord = typeof dmarcReportRecords.$inferSelect
 export type NewDmarcReportRecord = typeof dmarcReportRecords.$inferInsert
+
+// ============================================================================
+// Reply alerts (migration 071) — Telegram alerts/reminders for campaign replies
+// ============================================================================
+
+export type InboxReplyAlertKind = 'first' | 'reminder' | 'summary'
+
+/**
+ * When the last Telegram alert about a conversation went out, and about WHICH inbound reply.
+ * Deliberately holds no "pending/read/answered" state: the Unified Inbox tables already say
+ * that (outreach_conversations.status/archived_at/last_*_at, outreach_conversation_reads).
+ * One row per conversation.
+ */
+export const inboxReplyAlerts = pgTable('inbox_reply_alerts', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
+    conversationId: uuid('conversation_id').references(() => outreachConversations.id, { onDelete: 'cascade' }).notNull(),
+    /** outreach_conversation_messages.id of the inbound reply the last alert was about. */
+    replyMessageId: uuid('reply_message_id').notNull(),
+    firstAlertedAt: timestamp('first_alerted_at', { withTimezone: true }).defaultNow().notNull(),
+    lastAlertedAt: timestamp('last_alerted_at', { withTimezone: true }).defaultNow().notNull(),
+    alertCount: integer('alert_count').default(1).notNull(),
+    lastKind: text('last_kind').$type<InboxReplyAlertKind>().default('first').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    conversationUnique: uniqueIndex('inbox_reply_alerts_conversation_unique').on(table.organizationId, table.conversationId),
+    kindCheck: check('inbox_reply_alerts_kind_check', sql`${table.lastKind} IN ('first', 'reminder', 'summary')`),
+    countCheck: check('inbox_reply_alerts_count_check', sql`${table.alertCount} >= 1`),
+}))
+
+export type InboxReplyAlert = typeof inboxReplyAlerts.$inferSelect
+export type NewInboxReplyAlert = typeof inboxReplyAlerts.$inferInsert

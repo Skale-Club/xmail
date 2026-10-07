@@ -317,7 +317,8 @@ const ACTIVITY_AT: SQL = sql`COALESCE(outreach_conversations.last_message_at, ou
  * would otherwise hide a person who is still waiting on us. The cheap column comparison is kept
  * alongside the EXISTS so the planner can discard most rows before touching messages.
  */
-const NEEDS_REPLY: SQL = sql`(
+/** @internal exported so the Telegram reply alerts use the SAME definition of "pending". */
+export const NEEDS_REPLY: SQL = sql`(
     outreach_conversations.status = 'open'
     AND outreach_conversations.archived_at IS NULL
     AND outreach_conversations.last_inbound_at IS NOT NULL
