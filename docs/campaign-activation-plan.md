@@ -634,3 +634,31 @@ senha** — testado com curl de fora (HTTP 200, sem Cloudflare Access); Vanildo 
 (2) acesso dos agentes por Tailscale + SSH com chave dedicada (`~/.ssh/homelab_agent` já criada no PC do
 Vanildo, ainda não instalada no homelab); (3) provedor novo no Xcraper (criar trabalho, acompanhar, baixar,
 converter para o formato do Apify), exposto pelo túnel com autenticação; Apify fica como reserva.
+
+### Raspador permanente no homelab — 2026-10-07, noite
+
+Pedido do Vanildo: raspador disponível a qualquer hora; Hermes sem Tailscale; no Xcraper, só para o super
+admin skale.club@gmail.com. Swap do homelab bateu 100% no primeiro teste (2 abas, sem limite) → limites.
+
+**No ar:** `/DATA/AppData/gmaps-scraper/docker-compose.yml`, contêiner `gmaps-scraper`
+(`gosom/google-maps-scraper:v1.18.1`, modo web, `-c 1`), API em `http://192.168.0.92:8091` (só rede local),
+dados em `/DATA/AppData/gmaps-scraper/data`. Limites: `mem_limit 2g` + `memswap_limit 2g` (não usa swap),
+`cpus 1.5`, `pids_limit 512`, `oom_score_adj 1000` (primeiro a morrer se faltar memória),
+`restart unless-stopped`, logs 2×10 MB. Medido com 1 aba: pico de 544 MB, ≤1 núcleo; swap da máquina não
+mudou (4,3/4,8 GB, ocupado por serviços ociosos; Frigate é o maior: 2,4 GB e 62% de CPU contínuos).
+
+**Desenho combinado:** Hermes NÃO fala com o homelab; fala com o Xcraper (já usa `X-Service-Key`, que age como
+skale.club@gmail.com) e pede o provedor "homelab". Única porta: `scraper.skale.club` no túnel `zimaos`
+(remoto, `829cf84d…`), protegida por Cloudflare Access com service token usado só pelo Xcraper. No Xcraper,
+template novo visível e permitido só para o e-mail skale.club@gmail.com (não basta role admin); fila de um
+trabalho por vez; Apify continua como reserva.
+
+**Achados da Cloudflare (conta Skale Club):** 0 aplicações Access; o túnel `zimaos` publica 19 endereços,
+incluindo `terminal.skale.club` e `opencode.skale.club` (ambos → `:2222`, o ttyd root), netdata, frigate,
+qbittorrent, *arr, code (`:8080`). Mutação pela API do painel dá 403 (bloqueio de script); pedi ao Vanildo um
+token de API com escopo mínimo salvo em `C:\Users\Vanildo\.cf-homelab-token`.
+
+**Thumbscrap (pedido de remoção):** túnel `thumbscrap-hetzner` (`00031b6d…`) rodava no servidor **xkedule**
+(128.140.51.129, Coolify de outros projetos); serviço `cloudflared` lá parado e desativado (Coolify intacto).
+Faltam, com o token: apagar o túnel, os DNS `thumbscrap`/`thumbscrap-vnc.skale.club` (A → 128.140.51.129) e as
+rotas `thumbscrap.skale.club`/`vnc.thumbscrap.skale.club` no túnel `zimaos`.
