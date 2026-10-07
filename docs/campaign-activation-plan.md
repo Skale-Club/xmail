@@ -597,3 +597,14 @@ Resultado: e-mail 1 enviado às 19:30 UTC uma vez só; ao retomar, o processador
 (`duplicate`), não reenviou e avançou o lead para o passo 2 (marcado para 20:50 UTC). Chegou na **caixa de
 entrada** do Gmail (rótulos INBOX, sem aba de promoções). Efeito colateral do defeito 2: o evento "sent" desse
 primeiro envio não foi para o Xphere.
+
+**Fim do teste de envio (2026-10-07):** resposta do Vanildo às 19:52 UTC; detectada às 20:15 (atraso causado
+pelos deploys: um reiniciou o container no meio da leitura IMAP da vanildo.jr, que ganhou 30 min de castigo,
+`retry_at`); lead marcado `replied`, `next_scheduled_at` nulo, passo 2 não saiu. **Terceiro defeito** (`6544e9d`):
+o aviso imediato rodava dentro da transação de `withNextPendingEvent` (linha do evento FOR UPDATE) e
+materializava o mesmo evento por outra conexão com FOR UPDATE: espera mútua até o statement timeout (120 s;
+o tick levou 149 s). Agora o aviso roda depois que a transação libera. A varredura de 5 min cobriu a falha:
+materializador às 20:20:03, aviso no Telegram às 20:25:00 (`alert_count=1`, `first`).
+
+Lições para a operação: não fazer deploy no meio de campanha ativa sem necessidade (cada deploy pode adiar
+a leitura de uma caixa em 30 min); e o caminho de envio só se prova com envio real.
