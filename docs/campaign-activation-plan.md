@@ -482,3 +482,9 @@ O Hermes listou três bloqueios antes de ativar. Conferido em produção:
    risco dele. Descrição da campanha reescrita para registrar a pendência.
 3. **Créditos baixos.** Continua: MillionVerifier 169, NeverBounce 0. Os 25 do piloto já estão
    verificados; não bloqueia o piloto, bloqueia a próxima leva.
+
+**Resolvido no mesmo dia:** Vanildo tem caixa virtual no Anytime Mailbox. Rodapé dos três passos do
+piloto e do teste agora é "Skale Club, 74 E Glenwood Ave Unit #5650, Smyrna, DE 19977. To stop
+receiving these emails: {{unsubscribeUrl}}" (texto e HTML). `assessCampaignActivationCompliance`:
+endereço OK, descadastro em todos os passos, nenhum bloqueio; prontidão das duas campanhas OK. Backup
+dos corpos anteriores em `scratchpad/pilot-steps-backup-2026-10-07-v6.json`.
