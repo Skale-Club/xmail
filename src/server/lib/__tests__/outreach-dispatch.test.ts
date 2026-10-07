@@ -471,4 +471,22 @@ describe('SQL dispatch timestamp parameters', () => {
         expect(boundValues.flat().some((value) => value instanceof Date)).toBe(false)
         expect(boundValues.flat()).toContain(NOW.toISOString())
     })
+
+    it('casts a bound timestamp before doing interval arithmetic on it', async () => {
+        // 2026-10-07: o primeiro envio real de campanha quebrou com "operator does not exist:
+        // timestamp without time zone <= interval". O parametro de horario vai como texto; seguido
+        // de "- (... INTERVAL ...)" o Postgres o infere como interval. Todo trecho de SQL que comeca
+        // logo depois de um parametro com + ou - tem que comecar por um cast (::timestamp).
+        const segments: string[] = []
+        const sqlClient: DispatchSqlClient = async (strings) => {
+            segments.push(...strings)
+            return [{ attemptCount: 1, maxAttempts: 3 }]
+        }
+        const repo = createSqlDispatchRepository(async () => sqlClient)
+        await repo.startDispatch(claimed(), NOW, { account: ALLOWED.account, dailyLimit: 50 })
+
+        const arithmeticRightAfterParam = segments.filter((segment) => /^\s*[-+]\s*\(/.test(segment))
+        expect(arithmeticRightAfterParam).toEqual([])
+        expect(segments.some((segment) => segment.startsWith('::timestamp - ('))).toBe(true)
+    })
 })

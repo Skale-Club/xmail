@@ -511,9 +511,12 @@ export function createSqlDispatchRepository(
                       AND organization_id = ${capacity.account.organizationId}::uuid
                       AND status = 'verified'
                       AND current_daily_sent < ${capacity.dailyLimit}
+                      -- ::timestamp e obrigatorio: nowIso vai como texto (sqlTimestampValue) e, sem o
+                      -- cast, o Postgres infere o parametro como interval por causa da subtracao e falha com
+                      -- "timestamp <= interval". Foi o que impediu o primeiro envio de campanha em 2026-10-07.
                       AND (
                           last_sent_at IS NULL
-                          OR last_sent_at <= ${nowIso} - (${Math.max(0, capacity.account.minMinutesBetweenEmails)} * INTERVAL '1 minute')
+                          OR last_sent_at <= ${nowIso}::timestamp - (${Math.max(0, capacity.account.minMinutesBetweenEmails)} * INTERVAL '1 minute')
                       )
                       AND EXISTS (
                           SELECT 1 FROM outreach_emails
