@@ -189,14 +189,29 @@ export async function processReplies(): Promise<ProcessRepliesResult> {
     })
     result.errors += auto.failed
 
+    const repliedEvents: Array<{ id: string; organizationId: string }> = []
     const replies = await consumeClassifiedEvents({
         store,
         classification: 'reply',
         handle: async (event) => {
             const matched = await handleReplyEvent(event)
-            if (matched) result.replies++
+            if (matched) {
+                result.replies++
+                repliedEvents.push({ id: event.id, organizationId: event.organizationId })
+            }
         },
     })
+
+    // Telegram alert for the operator, only AFTER consumeClassifiedEvents returned. Never inside
+    // `handle`: withNextPendingEvent holds the event row FOR UPDATE for the whole handler, and
+    // notifyReplyReceived materializes the same event on another connection with its own
+    // SELECT ... FOR UPDATE. Called from inside, the two waited on each other until the statement
+    // timeout (first real campaign reply, 2026-10-07: the alert died after 120 s and the reply
+    // processor tick took 149 s). Best-effort: notifyReplyReceived never throws, and the 5-minute
+    // sweep (replyAlerts.ts) covers anything it misses.
+    for (const replied of repliedEvents) {
+        await notifyReplyReceived(replied)
+    }
     result.processed = replies.claimed
     result.errors += replies.failed
 
@@ -258,12 +273,6 @@ async function handleReplyEvent(event: StoredProviderEvent): Promise<boolean> {
         leadId: matched.outreachEmail.leadId,
         campaignLeadId: matched.outreachEmail.campaignLeadId,
     }, 'reply matched and marked')
-
-    // Telegram alert for the operator, as soon as the reply is durably recorded. Best-effort by
-    // construction: notifyReplyReceived never throws, and the 5-minute sweep job (replyAlerts.ts)
-    // covers whatever this misses. Before the autonomous follow-up on purpose: that step can throw
-    // and retry the event, and the alert must not wait behind it.
-    await notifyReplyReceived({ id: event.id, organizationId: matched.outreachEmail.organizationId })
 
     // Phase 23 (AI-03): schedule an AUDITED, LEASED autonomous follow-up decision from the persisted
     // inbound reply — but only when effective org+campaign autonomy is enabled (idempotent, never a

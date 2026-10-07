@@ -27,6 +27,22 @@ describe('Phase 18 review regressions', () => {
         expect(replies).not.toContain('await scheduleAgenticFollowUpIfEnabled(')
     })
 
+    it('alerts on a reply only after the event transaction is released (2026-10-07 self-deadlock)', () => {
+        const replies = source('src/server/jobs/processReplies.ts')
+        // handleReplyEvent runs inside withNextPendingEvent, which holds the event row FOR UPDATE;
+        // notifyReplyReceived re-locks the same row on another connection. Inside = wait until timeout.
+        const handler = replies.slice(
+            replies.indexOf('async function handleReplyEvent('),
+            replies.indexOf('async function handleAutoReplyEvent('),
+        )
+        expect(handler).not.toContain('notifyReplyReceived(')
+        const consumeAt = replies.indexOf("classification: 'reply',")
+        const notifyAt = replies.indexOf('await notifyReplyReceived(')
+        expect(consumeAt).toBeGreaterThan(-1)
+        expect(notifyAt).toBeGreaterThan(consumeAt)
+        expect(replies.slice(consumeAt, notifyAt)).toContain('for (const replied of repliedEvents)')
+    })
+
     it('uses guarded progress finalization and one conditional campaign completion update', () => {
         const processor = source('src/server/jobs/processOutreachSequences.ts')
         const campaignsRoute = source('src/server/routes/outreach/campaigns.ts')
