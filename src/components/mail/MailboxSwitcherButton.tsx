@@ -86,10 +86,11 @@ export function MailboxSwitcherButton({ collapsed, isMobile, onNavigate }: Mailb
         const onKeyDown = (event: KeyboardEvent) => {
             if (event.key.toLowerCase() !== 'k' || !(event.ctrlKey || event.metaKey)) return
             if (event.altKey || event.shiftKey) return
-            // The compose editor and other dialogs own Ctrl+K (insert link, ...). Our own panel is
-            // a popover, not a dialog, so a second Ctrl+K inside it just refocuses the search.
+            // The compose window, its editor and other dialogs own Ctrl+K (insert link, ...). Our own
+            // panel is a popover (role=dialog too), so a second Ctrl+K inside it just refocuses the search.
             const target = event.target as HTMLElement | null
-            if (target?.isContentEditable || (isInsideDialog(target) && !target?.closest('[data-mailbox-switcher]'))) return
+            if (target?.isContentEditable || target?.closest?.('[data-compose-window]')) return
+            if (isInsideDialog(target) && !target?.closest('[data-mailbox-switcher]')) return
             event.preventDefault()
             openFromKeyboard()
         }
@@ -119,13 +120,14 @@ export function MailboxSwitcherButton({ collapsed, isMobile, onNavigate }: Mailb
     }, [isMobile, onNavigate])
 
     const unreadBadge = formatUnreadBadge(selectedMailbox?.unreadCount)
+    const unreadCount = selectedMailbox?.unreadCount ?? 0
     const label = selectedMailbox
-        ? `Switch mailbox, current: ${selectedMailbox.email}`
+        ? `${selectedMailbox.email}${unreadCount > 0 ? `, ${unreadCount} unread` : ''}. Switch mailbox`
         : 'Choose mailbox'
 
     return (
         <>
-            <div className={cn('border-b border-border', collapsed ? 'px-2 py-3' : 'px-3 py-3')}>
+            <div className={cn('border-b border-border', collapsed ? 'px-2 py-2' : 'px-3 py-2')}>
                 <Popover open={open} onOpenChange={setOpen}>
                     <PopoverTrigger asChild>
                         {collapsed ? (

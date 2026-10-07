@@ -33,6 +33,7 @@ const state = vi.hoisted(() => ({
     selected: null as unknown,
     list: [] as unknown[],
     setSelected: vi.fn(),
+    refresh: vi.fn(() => Promise.resolve()),
 }))
 state.list = mailboxes
 
@@ -44,7 +45,7 @@ vi.mock('../../hooks/useMailbox', () => ({
         setSelectedMailbox: state.setSelected,
         isLoading: false,
         isRefreshing: false,
-        refreshMailboxes: () => Promise.resolve(),
+        refreshMailboxes: state.refresh,
     }),
     getProviderColor: () => 'bg-gray-600',
 }))
@@ -58,7 +59,8 @@ function renderSwitcher(collapsed = false) {
 
 function openPanel() {
     fireEvent.click(screen.getByRole('button', { name: /switch mailbox/i }))
-    return screen.findByRole('listbox')
+    // The scroll area wraps one listbox per section; hand back its parent.
+    return screen.findAllByRole('listbox').then(boxes => boxes[0].parentElement!.parentElement as HTMLElement)
 }
 
 describe('MailboxSwitcherButton and panel', () => {
@@ -66,6 +68,7 @@ describe('MailboxSwitcherButton and panel', () => {
         window.localStorage.clear()
         state.selected = mailboxes[0]
         state.setSelected.mockClear()
+        state.refresh.mockClear()
         Element.prototype.scrollIntoView = vi.fn()
         // Radix popper measures its anchor with ResizeObserver, which jsdom does not provide.
         globalThis.ResizeObserver = class {
@@ -78,7 +81,7 @@ describe('MailboxSwitcherButton and panel', () => {
 
     it('shows the current mailbox and its unread badge on the trigger', () => {
         renderSwitcher()
-        const trigger = screen.getByRole('button', { name: /switch mailbox, current: info@skale.club/i })
+        const trigger = screen.getByRole('button', { name: /info@skale.club, 7 unread\. switch mailbox/i })
         expect(within(trigger).getByText('info')).toBeTruthy()
         expect(within(trigger).getByText('@skale.club')).toBeTruthy()
         expect(within(trigger).getByLabelText('7 unread')).toBeTruthy()
@@ -86,7 +89,7 @@ describe('MailboxSwitcherButton and panel', () => {
 
     it('shows only the avatar and the badge when the sidebar is collapsed', () => {
         renderSwitcher(true)
-        const trigger = screen.getByRole('button', { name: /switch mailbox, current: info@skale.club/i })
+        const trigger = screen.getByRole('button', { name: /info@skale.club, 7 unread\. switch mailbox/i })
         expect(within(trigger).getByTestId('mailbox-avatar').textContent).toBe('I')
         expect(within(trigger).getByLabelText('7 unread')).toBeTruthy()
         expect(within(trigger).queryByText('@skale.club')).toBeNull()
@@ -97,8 +100,8 @@ describe('MailboxSwitcherButton and panel', () => {
         renderSwitcher()
         const list = await openPanel()
 
-        const headings = within(list).getAllByRole('region').map(section => section.getAttribute('aria-labelledby'))
-        expect(headings).toHaveLength(3) // work, warm-up, other organizations (nothing pinned)
+        // Only the Work rows are listed: warm-up and other organizations are collapsed.
+        expect(screen.getAllByRole('listbox')).toHaveLength(1)
 
         const options = within(list).getAllByRole('option').map(option => option.textContent)
         expect(options[0]).toContain('info@xkedule.com') // 40 unread first
@@ -169,6 +172,61 @@ describe('MailboxSwitcherButton and panel', () => {
         expect(state.setSelected.mock.calls[0][0]).toMatchObject({ email: 'dmarc@skale.club' })
     })
 
+    it('does nothing on a quick Enter when the current mailbox sits in a collapsed section', async () => {
+        state.selected = mailboxes[3] // agenda@stuscle.com, warm-up (collapsed)
+        renderSwitcher()
+        await openPanel()
+        const input = screen.getByLabelText('Search mailboxes')
+
+        fireEvent.keyDown(input, { key: 'Enter' })
+        expect(state.setSelected).not.toHaveBeenCalled()
+        expect(screen.queryByRole('option', { selected: true })).toBeNull()
+
+        // The arrows then start from the first visible row.
+        fireEvent.keyDown(input, { key: 'ArrowDown' })
+        fireEvent.keyDown(input, { key: 'Enter' })
+        expect(state.setSelected.mock.calls[0][0]).toMatchObject({ email: 'info@xkedule.com' })
+    })
+
+    it('jumps to the first and last visible row with Home and End', async () => {
+        renderSwitcher()
+        await openPanel()
+        const input = screen.getByLabelText('Search mailboxes')
+
+        fireEvent.keyDown(input, { key: 'End' })
+        expect(input.getAttribute('aria-activedescendant')).toMatch(/dmarc@skale\.club$/)
+
+        fireEvent.keyDown(input, { key: 'Home' })
+        expect(input.getAttribute('aria-activedescendant')).toMatch(/info@xkedule\.com$/)
+    })
+
+    it('keeps the listbox clean: options only, aria-selected on the active row, aria-current on the current mailbox', async () => {
+        renderSwitcher()
+        await openPanel()
+
+        for (const box of screen.getAllByRole('listbox')) {
+            expect(within(box).queryAllByRole('button')).toHaveLength(0)
+            expect(box.querySelector('section, header, [aria-busy], [aria-label="Loading mailboxes"]')).toBeNull()
+            expect(within(box).getAllByRole('option').length).toBeGreaterThan(0)
+        }
+        const current = screen.getAllByRole('option').find(option => option.textContent?.includes('info@skale.club')) as HTMLElement
+        expect(current.getAttribute('aria-current')).toBe('true')
+        // Active (keyboard) row starts on the current mailbox, then follows the arrows.
+        expect(current.getAttribute('aria-selected')).toBe('true')
+        fireEvent.keyDown(screen.getByLabelText('Search mailboxes'), { key: 'ArrowDown' })
+        expect(current.getAttribute('aria-selected')).toBe('false')
+        const dmarc = screen.getAllByRole('option').find(option => option.textContent?.includes('dmarc@skale.club')) as HTMLElement
+        expect(dmarc.getAttribute('aria-selected')).toBe('true')
+        expect(current.getAttribute('aria-current')).toBe('true')
+    })
+
+    it('refreshes the mailboxes in the background when the panel opens', async () => {
+        renderSwitcher()
+        expect(state.refresh).not.toHaveBeenCalled()
+        await openPanel()
+        expect(state.refresh).toHaveBeenCalled()
+    })
+
     it('selects with a click and closes the panel', async () => {
         renderSwitcher()
         const list = await openPanel()
@@ -203,6 +261,33 @@ describe('MailboxSwitcherButton and panel', () => {
 
         const input = await screen.findByLabelText('Search mailboxes')
         await waitFor(() => expect(document.activeElement).toBe(input))
+    })
+
+    it('leaves Ctrl+K alone inside the compose window', () => {
+        renderSwitcher()
+        const compose = document.createElement('div')
+        compose.setAttribute('data-compose-window', '')
+        const subject = document.createElement('input')
+        compose.appendChild(subject)
+        document.body.appendChild(compose)
+
+        fireEvent.keyDown(subject, { key: 'k', ctrlKey: true })
+        expect(screen.queryByRole('listbox')).toBeNull()
+        expect(screen.queryByLabelText('Search mailboxes')).toBeNull()
+        compose.remove()
+    })
+
+    it('leaves Ctrl+K alone inside any other dialog', () => {
+        renderSwitcher()
+        const dialog = document.createElement('div')
+        dialog.setAttribute('role', 'dialog')
+        const field = document.createElement('input')
+        dialog.appendChild(field)
+        document.body.appendChild(dialog)
+
+        fireEvent.keyDown(field, { key: 'k', ctrlKey: true })
+        expect(screen.queryByLabelText('Search mailboxes')).toBeNull()
+        dialog.remove()
     })
 
     it('leaves Ctrl+K alone while typing in a rich-text editor', () => {

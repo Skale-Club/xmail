@@ -196,7 +196,8 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
                 <Settings className="w-5 h-5 shrink-0" />
                 {(!isCollapsed || isMobile) && <span>Settings</span>}
             </Link>
-            {(!isCollapsed || isMobile) && <DeployFooter />}
+            {/* Hidden below xl so Compose and the folders keep their vertical room on laptops. */}
+            {(!isCollapsed || isMobile) && <div className="hidden xl:block"><DeployFooter /></div>}
         </div>
         </>
     )

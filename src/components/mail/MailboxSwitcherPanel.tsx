@@ -11,6 +11,14 @@ import {
 } from './mailbox-navigation'
 import { useMailboxPreferences } from './useMailboxPreferences'
 
+/** "⌘K" on Apple platforms, "Ctrl+K" everywhere else. */
+function shortcutHint(): string {
+    if (typeof navigator === 'undefined') return 'Ctrl+K'
+    const uaData = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData
+    const platform = uaData?.platform || navigator.platform || ''
+    return /mac|iphone|ipad|ipod/i.test(platform) ? '⌘K' : 'Ctrl+K'
+}
+
 export interface MailboxSwitcherPanelProps {
     onSelect: (mailbox: Mailbox) => void
     onAdd: () => void
@@ -39,11 +47,12 @@ function MailboxOptionRow({
     const domain = mailboxDomain(mailbox.email)
 
     return (
-        <div className="group flex min-w-0 items-center">
+        <div role="presentation" className="group flex min-w-0 items-center">
             <div
                 id={id}
                 role="option"
-                aria-selected={selected}
+                aria-selected={active}
+                aria-current={selected ? 'true' : undefined}
                 data-active={active ? 'true' : undefined}
                 title={mailbox.displayName ? `${mailbox.displayName} <${mailbox.email}>` : mailbox.email}
                 onClick={onSelect}
@@ -74,10 +83,11 @@ function MailboxOptionRow({
             <button
                 type="button"
                 tabIndex={-1}
+                // Mouse affordance only: it must not sit in the listbox's accessibility tree.
+                // Keyboard users pin the active row with Shift+Enter.
+                aria-hidden="true"
                 onClick={onTogglePin}
-                aria-pressed={pinned}
-                aria-label={pinned ? `Unpin ${mailbox.email}` : `Pin ${mailbox.email}`}
-                title={pinned ? 'Unpin' : 'Pin to top'}
+                title={pinned ? 'Unpin' : 'Pin to top (Shift+Enter)'}
                 className={cn(
                     'ml-0.5 shrink-0 rounded-md p-1.5 transition-opacity hover:bg-accent focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     pinned ? 'text-primary opacity-100' : 'text-muted-foreground opacity-0 group-hover:opacity-100',
@@ -141,7 +151,7 @@ function CollapsibleHeading({
 }
 
 export function MailboxSwitcherPanel({ onSelect, onAdd, onManage, searchInputRef }: MailboxSwitcherPanelProps) {
-    const { mailboxes, selectedMailbox, isLoading } = useMailbox()
+    const { mailboxes, selectedMailbox, isLoading, refreshMailboxes } = useMailbox()
     const { pinnedIds, togglePin, showOthers, setShowOthers, showWarmup, setShowWarmup } = useMailboxPreferences()
     const [query, setQuery] = React.useState('')
     const [activeId, setActiveId] = React.useState<string | null>(null)
@@ -159,12 +169,18 @@ export function MailboxSwitcherPanel({ onSelect, onAdd, onManage, searchInputRef
     // Render order = keyboard order.
     const visible = [...sections.pinned, ...sections.work, ...visibleWarmup, ...visibleOther]
 
-    // Without a search the arrow keys start from the current mailbox; with one, from the best match.
-    const selectedVisible = !searching && visible.some(item => item.id === selectedMailbox?.id)
-    const defaultActiveId = (selectedVisible ? selectedMailbox?.id : visible[0]?.id) ?? null
+    // With a search, Enter picks the best match. Without one, the active row is the current mailbox
+    // when it is on screen; otherwise there is none (Enter does nothing, arrows start at the top),
+    // so a quick Enter after opening can never jump to an unrelated mailbox.
+    const defaultActiveId = searching
+        ? visible[0]?.id ?? null
+        : visible.some(item => item.id === selectedMailbox?.id) ? selectedMailbox?.id ?? null : null
     const effectiveActiveId = activeId && visible.some(item => item.id === activeId) ? activeId : defaultActiveId
 
     const optionId = (mailbox: Mailbox) => `${idPrefix}-option-${mailbox.id}`
+
+    // Opening the panel refreshes the unread counts in the background (no spinner).
+    React.useEffect(() => { void refreshMailboxes() }, [refreshMailboxes])
 
     // Typing starts a new result list: forget the arrow-key position.
     React.useEffect(() => { setActiveId(null) }, [query])
@@ -185,10 +201,16 @@ export function MailboxSwitcherPanel({ onSelect, onAdd, onManage, searchInputRef
                 ? Math.min(current + 1, visible.length - 1)
                 : Math.max(current - 1, 0)
             setActiveId(visible[next].id)
+        } else if ((event.key === 'Home' || event.key === 'End') && !query) {
+            // With text in the box Home/End keep moving the caret.
+            event.preventDefault()
+            if (visible.length > 0) setActiveId(visible[event.key === 'Home' ? 0 : visible.length - 1].id)
         } else if (event.key === 'Enter') {
             event.preventDefault()
             const target = visible.find(item => item.id === effectiveActiveId)
-            if (target) onSelect(target)
+            if (!target) return
+            if (event.shiftKey) togglePin(target.id)
+            else onSelect(target)
         }
     }
 
@@ -206,7 +228,18 @@ export function MailboxSwitcherPanel({ onSelect, onAdd, onManage, searchInputRef
     )
 
     const activeMailbox = visible.find(item => item.id === effectiveActiveId)
-    const listId = `${idPrefix}-list`
+    // One listbox per section: headings and toggle buttons stay outside, so each listbox owns only options.
+    const listIds = [
+        sections.pinned.length > 0 ? `${idPrefix}-pinned-list` : null,
+        sections.work.length > 0 ? `${idPrefix}-work-list` : null,
+        visibleWarmup.length > 0 ? `${idPrefix}-warmup-list` : null,
+        visibleOther.length > 0 ? `${idPrefix}-other-list` : null,
+    ].filter((id): id is string => id !== null)
+    const renderList = (key: string, rows: Mailbox[]) => rows.length > 0 ? (
+        <div id={`${idPrefix}-${key}-list`} role="listbox" aria-labelledby={`${idPrefix}-${key}`}>
+            {rows.map(renderRow)}
+        </div>
+    ) : null
 
     return (
         <div className="flex max-h-[70vh] min-w-0 flex-col overflow-hidden">
@@ -218,7 +251,7 @@ export function MailboxSwitcherPanel({ onSelect, onAdd, onManage, searchInputRef
                         type="text"
                         role="combobox"
                         aria-expanded="true"
-                        aria-controls={listId}
+                        aria-controls={listIds.length > 0 ? listIds.join(' ') : undefined}
                         aria-activedescendant={activeMailbox ? optionId(activeMailbox) : undefined}
                         aria-autocomplete="list"
                         autoComplete="off"
@@ -240,7 +273,7 @@ export function MailboxSwitcherPanel({ onSelect, onAdd, onManage, searchInputRef
                         </button>
                     ) : (
                         <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 font-sans text-[10px] font-medium text-muted-foreground">
-                            Ctrl+K
+                            {shortcutHint()}
                         </kbd>
                     )}
                 </label>
@@ -248,9 +281,6 @@ export function MailboxSwitcherPanel({ onSelect, onAdd, onManage, searchInputRef
 
             <div
                 ref={listRef}
-                id={listId}
-                role="listbox"
-                aria-label="Mailboxes"
                 className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-2 [scrollbar-gutter:stable]"
             >
                 {isLoading ? (
@@ -262,21 +292,21 @@ export function MailboxSwitcherPanel({ onSelect, onAdd, onManage, searchInputRef
                 ) : (
                     <>
                         {sections.pinned.length > 0 ? (
-                            <section aria-labelledby={`${idPrefix}-pinned`}>
+                            <div>
                                 <SectionHeading id={`${idPrefix}-pinned`} label="Pinned" count={sections.pinned.length} />
-                                {sections.pinned.map(renderRow)}
-                            </section>
+                                {renderList('pinned', sections.pinned)}
+                            </div>
                         ) : null}
 
                         {sections.work.length > 0 ? (
-                            <section aria-labelledby={`${idPrefix}-work`}>
+                            <div>
                                 <SectionHeading id={`${idPrefix}-work`} label="Work" count={sections.work.length} />
-                                {sections.work.map(renderRow)}
-                            </section>
+                                {renderList('work', sections.work)}
+                            </div>
                         ) : null}
 
                         {sections.warmupCount > 0 ? (
-                            <section aria-labelledby={`${idPrefix}-warmup`}>
+                            <div>
                                 <CollapsibleHeading
                                     id={`${idPrefix}-warmup`}
                                     label="Warm-up"
@@ -285,12 +315,12 @@ export function MailboxSwitcherPanel({ onSelect, onAdd, onManage, searchInputRef
                                     lockedOpen={searching}
                                     onToggle={() => setShowWarmup(!showWarmup)}
                                 />
-                                {visibleWarmup.map(renderRow)}
-                            </section>
+                                {renderList('warmup', visibleWarmup)}
+                            </div>
                         ) : null}
 
                         {sections.otherCount > 0 ? (
-                            <section aria-labelledby={`${idPrefix}-other`}>
+                            <div>
                                 <CollapsibleHeading
                                     id={`${idPrefix}-other`}
                                     label="Other organizations"
@@ -299,8 +329,8 @@ export function MailboxSwitcherPanel({ onSelect, onAdd, onManage, searchInputRef
                                     lockedOpen={searching}
                                     onToggle={() => setShowOthers(!showOthers)}
                                 />
-                                {visibleOther.map(renderRow)}
-                            </section>
+                                {renderList('other', visibleOther)}
+                            </div>
                         ) : null}
 
                         {visible.length === 0 && (searching || mailboxes.length === 0) ? (

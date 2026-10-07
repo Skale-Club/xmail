@@ -657,7 +657,12 @@ export function ComposeDialog() {
             />
 
             {/* Compose Window */}
-            <div className={`${containerClass} bg-background border border-border/80 shadow-2xl sm:rounded-2xl overflow-hidden flex flex-col animate-in slide-in-from-bottom-4 fade-in duration-300`}>
+            <div
+                role="dialog"
+                aria-label="Compose"
+                data-compose-window=""
+                className={`${containerClass} bg-background border border-border/80 shadow-2xl sm:rounded-2xl overflow-hidden flex flex-col animate-in slide-in-from-bottom-4 fade-in duration-300`}
+            >
 
                 {/* Header Bar */}
                 <div className="flex items-center justify-between px-4 py-2.5 bg-muted/40 border-b border-border/50 shrink-0">
