@@ -520,3 +520,29 @@ estiver pronto.
 
 **Perguntas em aberto ao Vanildo:** o prazo de 3 dias depende do material do cliente? Para onde leva
 a placa de pagamento?
+
+### Gancho por lead: regras aprovadas e conferência do analisador — 2026-10-07
+
+Regras aprovadas pelo Vanildo depois de criticar a primeira versão ("invasivo", "cara de IA"): só
+afirmar o que a gente verificou; nenhum número (nota, quantidade de avaliações); observação e por que
+importa, sem criticar; **na dúvida, sem gancho** (o parágrafo some). Nada de supor canal ("vi que vocês
+agendam pelo Instagram" era mentira: a gente não sabe).
+
+Conferido nos 25 do piloto contra o que o analisador de sites do Xphere (`website_analyses`) registrou:
+
+| Gancho | Medida do analisador | Resultado da conferência | Decisão |
+|---|---|---|---|
+| "não se ajusta ao celular" | falta da meta `viewport` no carregamento | **4 de 4 errados**: Matt's, Boston Barber Co., District Barbers e North End Blendz aparecem certos na foto de celular | **sai** |
+| "demorou para carregar" | `loadMs` abrindo como computador, num servidor | não representa o que o dono vê no celular | **sai** |
+| "não encontrei onde marcar online" | `booking_mode='none'` | Felix e Matt's: nenhum link de agendamento na página (Matt's é Squarespace; um widget carregado por script escaparia) | **fica** |
+| "não encontrei um site de vocês" | `web_presence_type` sem site próprio | 4 análises falharam (Always Faded, Beauty and the Barber, Danny's, Quinupe) e a Danny's tem agendamento no próprio site: falha de análise **não** é "sem site" | fica, só com presença explícita sem site; 0 no piloto |
+
+No piloto o gancho sai para 2 das 25 (Felix, Matt's); as outras 23 recebem o e-mail sem ele.
+
+## Backlog
+
+- **Robô cliente oculto (ideia do Vanildo, 2026-10-07).** Uma IA liga para a barbearia como se fosse
+  marcar um corte, avalia como o telefone foi atendido (atendeu? demorou? conseguiu marcar?) e as que
+  forem mal avaliadas viram prospects para a IA de ligação. Cuidados antes de construir:
+  Massachusetts exige consentimento de todos para gravar ligação; a ligação não pode deixar horário
+  marcado de verdade na agenda de ninguém; volume baixo para não virar incômodo.
