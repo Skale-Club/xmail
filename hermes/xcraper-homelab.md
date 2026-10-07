@@ -58,7 +58,15 @@ O campo `apifyRunId` da resposta guarda o id do trabalho no Home Lab. O nome é 
 - Prefira várias buscas de 20 a 50 resultados por cidade, em sequência, a uma busca gigante.
 - Pode mandar várias de uma vez: elas entram na fila na ordem. Mas acompanhe até a última.
 - Não mande dezenas de uma vez: além de atrasar, uma fila longa demais pode estourar as 24 h.
-- Repetir cidade já raspada atualiza o que existe e quase não cria nada novo (Waltham: 10 atualizados, 0 novos). Escolha cidades novas para crescer a base.
+- **Repetir cidade é permitido, em dois casos (regra do Vanildo, 2026-10-07):**
+  1. **Cidade grande** (ex.: Boston): uma rodada não pega todas as empresas. Mas a mesma busca exata devolve
+     a mesma lista (o Google Maps tem teto de ~120 empresas por busca e ordem fixa). A rodada seguinte tem
+     que **mudar o recorte**: por bairro ("barbershop in Dorchester, MA", "barbershop in South Boston, MA")
+     ou por termo vizinho ("barber", "men's haircut"). Cada recorte traz uma lista diferente.
+  2. **Mesma cidade depois de alguns meses** (referência: 6 meses): aí repetir igual é o certo. As que já
+     existem são só atualizadas e as que abriram nesse tempo entram como novas.
+- Fora desses dois casos, repetir a mesma busca logo em seguida só atualiza o que existe (Waltham em
+  2026-10-07: 10 atualizadas, 0 novas).
 
 ## O que NÃO fazer
 
