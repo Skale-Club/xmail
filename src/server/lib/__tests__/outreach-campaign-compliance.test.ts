@@ -62,7 +62,8 @@ describe('assessCampaignActivationCompliance', () => {
         expect(result.hasPhysicalAddress).toBe(false)
         expect(result.unsubscribePresentInEveryStep).toBe(true)
         expect(result.stepsMissingAddress).toEqual([1])
-        expect(result.blockers).toEqual([
+        expect(result.blockers).toEqual([])
+        expect(result.warnings).toEqual([
             expect.objectContaining({ code: 'missing_physical_address' }),
         ])
     })
@@ -141,12 +142,13 @@ describe('assessCampaignActivationCompliance', () => {
         expect(result.blockers).toEqual([])
     })
 
-    it('reports both blockers with an explanatory message when there are no email steps at all', () => {
+    it('reports the unsubscribe blocker and the address warning when there are no email steps at all', () => {
         const result = assessCampaignActivationCompliance([])
 
         expect(result.hasPhysicalAddress).toBe(false)
         expect(result.unsubscribePresentInEveryStep).toBe(false)
-        expect(result.blockers).toHaveLength(2)
+        expect(result.blockers.map((b) => b.code)).toEqual(['missing_unsubscribe_placeholder'])
+        expect(result.warnings.map((b) => b.code)).toEqual(['missing_physical_address'])
     })
 
     it('reports only the offending step order when some steps pass and others do not', () => {
@@ -159,6 +161,7 @@ describe('assessCampaignActivationCompliance', () => {
 
         expect(result.stepsMissingAddress).toEqual([2])
         expect(result.stepsMissingUnsubscribe).toEqual([2])
-        expect(result.blockers.find((b) => b.code === 'missing_physical_address')?.message).toContain('2')
+        expect(result.warnings.find((b) => b.code === 'missing_physical_address')?.message).toContain('2')
+        expect(result.blockers.some((b) => b.code === 'missing_physical_address')).toBe(false)
     })
 })

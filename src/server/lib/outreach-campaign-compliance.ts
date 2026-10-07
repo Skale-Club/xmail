@@ -39,6 +39,13 @@ export interface CampaignComplianceAssessment {
     stepsMissingAddress: number[]
     stepsMissingUnsubscribe: number[]
     blockers: ComplianceBlocker[]
+    /**
+     * Shown to the reviewer but never blocks activation. Since 2026-10-07 the missing physical
+     * postal address lives here: Vanildo decided no physical address goes in the emails, aware of
+     * the CAN-SPAM requirement (see docs/campaign-shakedown.md). Before that it was a blocker and
+     * disabled the Activate button on the campaign page.
+     */
+    warnings: ComplianceBlocker[]
 }
 
 const STREET_SUFFIXES = [
@@ -117,8 +124,9 @@ export function assessCampaignActivationCompliance(steps: CampaignComplianceStep
     const unsubscribePresentInEveryStep = emailSteps.length > 0 && stepsMissingUnsubscribe.length === 0
 
     const blockers: ComplianceBlocker[] = []
+    const warnings: ComplianceBlocker[] = []
     if (!hasPhysicalAddress) {
-        blockers.push({
+        warnings.push({
             code: 'missing_physical_address',
             message: emailSteps.length === 0
                 ? 'Campaign has no email steps to check for a physical postal address.'
@@ -136,5 +144,5 @@ export function assessCampaignActivationCompliance(steps: CampaignComplianceStep
         })
     }
 
-    return { hasPhysicalAddress, unsubscribePresentInEveryStep, stepsMissingAddress, stepsMissingUnsubscribe, blockers }
+    return { hasPhysicalAddress, unsubscribePresentInEveryStep, stepsMissingAddress, stepsMissingUnsubscribe, blockers, warnings }
 }
