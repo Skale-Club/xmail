@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { SequenceStep } from '../../../db/schema'
 import {
+    pickDelayMinutes,
     resolveSequenceAction,
     validateSequenceForActivation,
     type SequenceSchedule,
@@ -20,6 +21,7 @@ function step(overrides: Partial<SequenceStep> = {}): SequenceStep {
         stepOrder: 1,
         type: 'email',
         delayHours: 0,
+        delayHoursMax: null,
         subject: 'Hello',
         plainBody: 'Plain body',
         htmlBody: null,
@@ -180,6 +182,67 @@ describe('resolveSequenceAction', () => {
     })
 })
 
+describe('variable delay between steps (delayHours..delayHoursMax)', () => {
+    // Open all day, every day, so the send-window roll-forward never moves the picked time.
+    const allDay: SequenceSchedule = { timezone: 'UTC', sendStartTime: '00:00', sendEndTime: '23:59', sendOnWeekends: true }
+    const now = new Date('2026-07-16T10:00:00.000Z')
+    const first = step({ id: 'email-1', stepOrder: 1 })
+
+    function nextAt(next: Partial<SequenceStep>, random: () => number, window: SequenceSchedule = allDay): Date | null {
+        const second = step({ id: 'email-2', stepOrder: 2, ...next })
+        const action = resolveSequenceAction([first, second], first, now, window, random)
+        if (action.type !== 'send_email') throw new Error('expected send_email, got ' + action.type)
+        return action.nextScheduledAt
+    }
+
+    it('picks the lower bound, the middle and the upper bound from the injected randomness', () => {
+        const range = { delayHours: 2, delayHoursMax: 10 }
+        expect(nextAt(range, () => 0)).toEqual(new Date('2026-07-16T12:00:00.000Z'))
+        expect(nextAt(range, () => 0.5)).toEqual(new Date('2026-07-16T16:00:00.000Z'))
+        expect(nextAt(range, () => 1)).toEqual(new Date('2026-07-16T20:00:00.000Z'))
+    })
+
+    it('allows fractional hours at minute precision', () => {
+        // 1h + 0.25 * 1h = 1h15m
+        expect(nextAt({ delayHours: 1, delayHoursMax: 2 }, () => 0.25)).toEqual(new Date('2026-07-16T11:15:00.000Z'))
+        // 0.123 * 60 min = 7.38 -> 7 min
+        expect(nextAt({ delayHours: 1, delayHoursMax: 2 }, () => 0.123)).toEqual(new Date('2026-07-16T11:07:00.000Z'))
+    })
+
+    it('never leaves [delayHours, delayHoursMax] over a sweep of random values', () => {
+        for (let i = 0; i <= 100; i++) {
+            const minutes = pickDelayMinutes({ delayHours: 24, delayHoursMax: 72 }, () => i / 100)
+            expect(minutes).toBeGreaterThanOrEqual(24 * 60)
+            expect(minutes).toBeLessThanOrEqual(72 * 60)
+            expect(Number.isInteger(minutes)).toBe(true)
+        }
+    })
+
+    it('a null delayHoursMax keeps the fixed delay and does not consume randomness', () => {
+        const random = vi.fn(() => 0.9)
+        expect(nextAt({ delayHours: 3, delayHoursMax: null }, random)).toEqual(new Date('2026-07-16T13:00:00.000Z'))
+        expect(random).not.toHaveBeenCalled()
+    })
+
+    it('a delayHoursMax equal to delayHours is a fixed delay', () => {
+        const random = vi.fn(() => 0.9)
+        expect(nextAt({ delayHours: 3, delayHoursMax: 3 }, random)).toEqual(new Date('2026-07-16T13:00:00.000Z'))
+        expect(random).not.toHaveBeenCalled()
+    })
+
+    it('still rolls the picked time forward to the send window', () => {
+        // 10:00 + 10h = 20:00, outside 09:00-17:00 -> next window start, Friday 09:00.
+        expect(nextAt({ delayHours: 2, delayHoursMax: 10 }, () => 1, schedule)).toEqual(new Date('2026-07-17T09:00:00.000Z'))
+    })
+
+    it('applies to an explicit delay row as well', () => {
+        const delay = step({ id: 'delay-1', type: 'delay', delayHours: 4, delayHoursMax: 8, subject: null, plainBody: null })
+        const email = step({ id: 'email-2', stepOrder: 2 })
+        const action = resolveSequenceAction([email, delay], delay, now, allDay, () => 0.5)
+        expect(action).toMatchObject({ type: 'advance_without_send', nextScheduledAt: new Date('2026-07-16T16:00:00.000Z') })
+    })
+})
+
 describe('validateSequenceForActivation', () => {
     it('returns stable issue codes for unsupported, malformed, and ambiguous steps', () => {
         const issues = validateSequenceForActivation([
@@ -243,6 +306,27 @@ describe('validateSequenceForActivation', () => {
         // No 'missing_unsubscribe_placeholder' alongside 'invalid_email_content' — the empty
         // step also has no valid email at all, hence 'sequence_missing_email' too.
         expect(issues.map((issue) => issue.code)).toEqual(['invalid_email_content', 'sequence_missing_email'])
+    })
+
+    it('flags a malformed {{#flag}} block in any template of an email step', () => {
+        const issues = validateSequenceForActivation([
+            step({ id: 'bad-plain', plainBody: 'Hi {{#nearby}}close by. {{unsubscribeUrl}}' }),
+            step({ id: 'bad-subject', stepOrder: 2, subject: 'Hi {{/nearby}}', plainBody: 'ok {{unsubscribeUrl}}' }),
+        ])
+
+        expect(issues.map((issue) => [issue.code, issue.stepId])).toEqual([
+            ['malformed_template_block', 'bad-plain'],
+            ['malformed_template_block', 'bad-subject'],
+        ])
+        expect(issues[0].message).toContain('{{#nearby}}')
+    })
+
+    it('does not flag well-formed blocks', () => {
+        const issues = validateSequenceForActivation([
+            step({ id: 'ok', plainBody: '{{#nearby}}Close by.{{/nearby}}{{^nearby}}Far.{{/nearby}} {{unsubscribeUrl}}' }),
+        ])
+
+        expect(issues).toEqual([])
     })
 
     it('requires {{unsubscribeUrl}} in BOTH A/B variants when A/B testing is enabled', () => {

@@ -1,6 +1,7 @@
 import type { CampaignLead, Lead, SequenceStep } from '../../db/schema'
 import { nextWindowStart, type SendWindow } from './outreach-send-window'
 import { assessCampaignActivationCompliance, type CampaignComplianceStep } from './outreach-campaign-compliance'
+import { validateTemplateSections } from './template-variables'
 
 /**
  * The exhaustive lead-status contract.
@@ -143,6 +144,7 @@ export type SequenceValidationIssueCode =
     | 'unsupported_condition_step'
     | 'sequence_missing_email'
     | 'missing_unsubscribe_placeholder'
+    | 'malformed_template_block'
 
 export interface SequenceValidationIssue {
     code: SequenceValidationIssueCode
@@ -151,14 +153,36 @@ export interface SequenceValidationIssue {
 }
 
 /**
- * The candidate instant `delayHours` after `now`, rolled forward to the next minute the
+ * The wait for a step, in whole minutes. A step with `delayHoursMax > delayHours` waits a uniform
+ * random time in [delayHours, delayHoursMax] (fractional hours, minute precision, both bounds
+ * reachable); otherwise it waits exactly `delayHours`, as before. `random` returns [0, 1) and is
+ * injectable so the range is testable without flakiness.
+ */
+export function pickDelayMinutes(
+    step: Pick<SequenceStep, 'delayHours' | 'delayHoursMax'>,
+    random: () => number = Math.random,
+): number {
+    const lo = Math.max(0, step.delayHours)
+    const hi = step.delayHoursMax ?? lo
+    if (hi <= lo) return lo * 60
+    const minutes = Math.round(lo * 60 + random() * (hi - lo) * 60)
+    return Math.min(hi * 60, Math.max(lo * 60, minutes))
+}
+
+/**
+ * The candidate instant after `now` (the step's delay, see `pickDelayMinutes`), rolled forward to the next minute the
  * schedule actually allows — or `'invalid'` when no minute within the search horizon (14 days)
  * satisfies the schedule at all (a misconfigured window, e.g. start >= end). The caller MUST
  * treat `'invalid'` as "do not send" (see `resolveSequenceAction` below): the previous
  * implementation returned the out-of-window candidate anyway, a silent send-window violation.
  */
-function scheduleAfterDelay(now: Date, delayHours: number, schedule: SendWindow): Date | 'invalid' {
-    const candidate = new Date(now.getTime() + Math.max(0, delayHours) * 60 * 60 * 1000)
+function scheduleAfterDelay(
+    now: Date,
+    step: Pick<SequenceStep, 'delayHours' | 'delayHoursMax'>,
+    schedule: SendWindow,
+    random: () => number,
+): Date | 'invalid' {
+    const candidate = new Date(now.getTime() + pickDelayMinutes(step, random) * 60 * 1000)
     const next = nextWindowStart(candidate, schedule, { horizonDays: 14 })
     return next ?? 'invalid'
 }
@@ -182,6 +206,7 @@ export function resolveSequenceAction(
     currentStep: SequenceStep | null,
     now: Date,
     schedule: SequenceSchedule,
+    random: () => number = Math.random,
 ): SequenceAction {
     if (!currentStep) {
         return { type: 'complete', completedAt: new Date(now) }
@@ -202,7 +227,7 @@ export function resolveSequenceAction(
             return { type: 'complete', completedAt: new Date(now) }
         }
 
-        const nextScheduledAt = scheduleAfterDelay(now, currentStep.delayHours, schedule)
+        const nextScheduledAt = scheduleAfterDelay(now, currentStep, schedule, random)
         if (nextScheduledAt === 'invalid') {
             return { type: 'quarantine', reason: 'invalid_send_window', step: currentStep }
         }
@@ -231,7 +256,7 @@ export function resolveSequenceAction(
     let nextScheduledAt: Date | null = null
     if (nextStep) {
         if (nextStep.type === 'email') {
-            const candidate = scheduleAfterDelay(now, nextStep.delayHours, schedule)
+            const candidate = scheduleAfterDelay(now, nextStep, schedule, random)
             if (candidate === 'invalid') {
                 return { type: 'quarantine', reason: 'invalid_send_window', step: currentStep }
             }
@@ -314,6 +339,18 @@ export function validateSequenceForActivation(steps: SequenceStep[]): SequenceVa
                 issues.push({
                     code: 'invalid_email_content',
                     message: 'Email steps require a non-empty subject and plain-text or HTML body.',
+                    stepId: step.id,
+                })
+            }
+        }
+        if (step.type === 'email') {
+            // A malformed {{#flag}}...{{/flag}} block is stripped at send time, but it means what
+            // goes out is not what the author wrote: refuse activation instead of guessing.
+            const templates = [step.subject, step.plainBody, step.htmlBody, step.subjectB, step.plainBodyB, step.htmlBodyB]
+            for (const problem of new Set(templates.flatMap((template) => validateTemplateSections(template)))) {
+                issues.push({
+                    code: 'malformed_template_block',
+                    message: `Email step ${step.stepOrder}: ${problem}.`,
                     stepId: step.id,
                 })
             }

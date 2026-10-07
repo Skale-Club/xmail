@@ -6,6 +6,7 @@
  */
 
 import { escapeHtml } from './html-escape'
+import { extractLeadZip, isZipNearHome } from './zip-distance'
 
 // Type for lead data available in templates
 type LeadForTemplate = {
@@ -146,6 +147,185 @@ const BUILTIN_VARIABLES: Record<string, (lead: LeadForTemplate) => string> = {
 // Regex to match {{variableName}} patterns
 const VARIABLE_REGEX = /\{\{([a-zA-Z0-9_]+)\}\}/g
 
+// ─── Conditional blocks ({{#flag}}...{{/flag}} and {{^flag}}...{{/flag}}) ────────────────────────
+//
+// Mustache-style sections, resolved BEFORE variable substitution and only ever from the template
+// string, never from lead data (a lead field containing "{{#x}}" is substituted afterwards, as
+// plain text, and is not re-scanned). Rules:
+//   - `{{#flag}}…{{/flag}}` renders its inner text only when `flag` is truthy for the lead;
+//     `{{^flag}}…{{/flag}}` only when it is falsy. Inner text may contain {{variables}}.
+//   - NO NESTING. A section opened inside another section is malformed.
+//   - A tag alone on its line (only spaces/tabs around it) takes its whole line with it, so a
+//     multi-line block leaves no blank line behind. Whatever else is left empty is cleaned up by
+//     collapseEmptyParagraphs, which runs last.
+//   - A malformed tag (unclosed, stray close, nested open, bad name) is NEVER sent: it is stripped
+//     from the output. For an unclosed section the inner text is kept, the tag removed.
+//     validateTemplateSections() reports every one of these so campaign activation can refuse.
+
+/**
+ * Built-in computed flags. They are derived per lead, inside this module, so the send path and the
+ * approval preview (both call interpolateTemplate) can never disagree. A built-in wins over a
+ * custom field of the same name.
+ */
+const BUILTIN_FLAGS: Record<string, (lead: LeadForTemplate) => boolean> = {
+    // Lead ZIP within OUTREACH_HOME_RADIUS_MILES of OUTREACH_HOME_BASE_ZIP (see zip-distance.ts).
+    nearby: (lead) => isZipNearHome(extractLeadZip(lead.location, lead.customFields)),
+    // Has its own website but no online-booking platform/URL on record.
+    hookNoOnlineBooking: (lead) => {
+        const cf = lead.customFields
+        return readBooleanField(cf?.has_owned_website) === true
+            && !hasText(cf?.booking_platform)
+            && !hasText(cf?.booking_url)
+    },
+    // Data SAYS there is no own website: has_owned_website is explicitly false AND web_presence_type
+    // is present and is not 'owned_website'. Missing data is false: a failed analysis is not "no website".
+    // Mutually exclusive with hookNoOnlineBooking by construction (has_owned_website true vs false).
+    hookNoWebsite: (lead) => {
+        const cf = lead.customFields
+        const presence = cf?.web_presence_type
+        return readBooleanField(cf?.has_owned_website) === false
+            && typeof presence === 'string'
+            && presence.trim() !== ''
+            && presence.trim() !== 'owned_website'
+    },
+}
+
+function hasText(value: unknown): boolean {
+    if (value == null) return false
+    return String(value).trim() !== ''
+}
+
+/** true / 'true' -> true, false / 'false' -> false, anything else (missing, null, '') -> null. */
+function readBooleanField(value: unknown): boolean | null {
+    if (value === true) return true
+    if (value === false) return false
+    if (typeof value === 'string') {
+        const v = value.trim().toLowerCase()
+        if (v === 'true') return true
+        if (v === 'false') return false
+    }
+    return null
+}
+
+/** Truthiness of a custom field: true, 'true', non-empty string, non-zero number, non-empty list/object. */
+function isTruthyCustomField(value: unknown): boolean {
+    if (value == null) return false
+    if (typeof value === 'boolean') return value
+    if (typeof value === 'number') return Number.isFinite(value) && value !== 0
+    if (typeof value === 'string') {
+        const v = value.trim().toLowerCase()
+        return v !== '' && v !== 'false'
+    }
+    if (Array.isArray(value)) return value.length > 0
+    if (typeof value === 'object') return Object.keys(value as object).length > 0
+    return false
+}
+
+function evaluateFlag(name: string, lead: LeadForTemplate): boolean {
+    const builtin = Object.entries(BUILTIN_FLAGS).find(([key]) => key.toLowerCase() === name.toLowerCase())
+    if (builtin) return builtin[1](lead)
+    const cf = lead.customFields
+    if (!cf || !Object.prototype.hasOwnProperty.call(cf, name)) return false
+    return isTruthyCustomField(cf[name])
+}
+
+// Any `{{#`, `{{^` or `{{/` opener. The closing `}}` is optional in the pattern so an unterminated tag is
+// still caught (and reported / stripped) instead of leaking into the email as raw text; an
+// unterminated tag stops at the end of its line.
+const SECTION_TAG = /\{\{[ \t]*([#^/])([^{}\n]*)(\}\})?/g
+const SECTION_NAME = /^[A-Za-z0-9_]+$/
+
+/**
+ * When the tag at [start, end) is alone on its line (only spaces/tabs around it), widen the range to
+ * the whole line including its newline, so removing the tag leaves no blank line or indentation.
+ */
+function widenStandaloneTag(template: string, start: number, end: number): [number, number] {
+    let s = start
+    while (s > 0 && (template[s - 1] === ' ' || template[s - 1] === '\t')) s--
+    if (s > 0 && template[s - 1] !== '\n') return [start, end]
+    let e = end
+    while (e < template.length && (template[e] === ' ' || template[e] === '\t')) e++
+    if (e < template.length && template[e] === '\r') e++
+    if (e < template.length && template[e] !== '\n') return [start, end]
+    if (e < template.length) e++
+    return [s, e]
+}
+
+/**
+ * Resolves the sections of `template`. `isTruthy` is asked once per well-formed section; pass null
+ * when only the diagnostics are wanted (validation), in which case `text` is not meaningful.
+ */
+function resolveSections(
+    template: string,
+    isTruthy: ((name: string) => boolean) | null,
+): { text: string; issues: string[] } {
+    const issues: string[] = []
+    let out = ''
+    let cursor = 0
+    let open: { name: string; inverted: boolean } | null = null
+    let inner = ''
+
+    const append = (s: string) => {
+        if (open) inner += s
+        else out += s
+    }
+
+    for (const match of template.matchAll(SECTION_TAG)) {
+        const index = match.index ?? 0
+        const [start, end] = widenStandaloneTag(template, index, index + match[0].length)
+        // Overlap guard: a previous widened range may already have consumed this tag's whitespace.
+        append(template.slice(cursor, Math.max(cursor, start)))
+        cursor = Math.max(cursor, end)
+
+        const sigil = match[1]
+        const rawName = match[2].trim()
+        const display = `{{${sigil}${rawName}}}`
+
+        if (match[3] === undefined || !SECTION_NAME.test(rawName)) {
+            issues.push(`Malformed template tag "${match[0].trim()}"`)
+            continue
+        }
+
+        if (sigil === '/') {
+            if (open && open.name === rawName) {
+                if (isTruthy && isTruthy(rawName) !== open.inverted) out += inner
+                open = null
+                inner = ''
+            } else if (open) {
+                issues.push(`Closing tag ${display} does not match the open section {{${open.inverted ? '^' : '#'}${open.name}}}`)
+            } else {
+                issues.push(`Closing tag ${display} has no opening tag`)
+            }
+            continue
+        }
+
+        if (open) {
+            issues.push(`Section ${display} is nested inside {{${open.inverted ? '^' : '#'}${open.name}}} (nesting is not supported)`)
+            continue
+        }
+        open = { name: rawName, inverted: sigil === '^' }
+        inner = ''
+    }
+
+    append(template.slice(cursor))
+    if (open) {
+        issues.push(`Section {{${open.inverted ? '^' : '#'}${open.name}}} is never closed`)
+        out += inner
+    }
+    return { text: out, issues }
+}
+
+
+/**
+ * Problems with conditional blocks in a template: unclosed, stray or mismatched closing, nested,
+ * or malformed tags. Empty means the blocks are well-formed. Used by validateTemplate and by the
+ * campaign activation readiness check.
+ */
+export function validateTemplateSections(template: string | null | undefined): string[] {
+    if (!template) return []
+    return resolveSections(template, null).issues
+}
+
 /**
  * Fase 45 / campanha "Barbershops - AI Receptionist - Pilot 01": entre 50% e 80% dos leads não
  * têm `websiteInsights`, e o passo 1 dessa campanha tem `{{websiteInsight}}` sozinho em seu
@@ -207,7 +387,11 @@ export function interpolateTemplate(
     // substitution patterns and corrupted output, and (b) re-scanned already-substituted
     // values, so a lead field containing `{{var}}` was itself expanded (template injection).
     // One functional-replacer pass fixes both, and escapes lead-derived values when asked.
-    return collapseEmptyParagraphs(template.replace(VARIABLE_REGEX, (_match, variableName: string) => {
+    // Conditional blocks first, from the template string alone: lead data is only substituted below,
+    // in the single pass that follows, so nothing a lead field contains can open or close a block.
+    const { text: withSectionsResolved } = resolveSections(template, (flag) => evaluateFlag(flag, lead))
+
+    return collapseEmptyParagraphs(withSectionsResolved.replace(VARIABLE_REGEX, (_match, variableName: string) => {
         // Context-provided values (internally generated, e.g. the unsubscribe URL) — not escaped.
         if (variableName === 'unsubscribeUrl') return context.unsubscribeUrl ?? ''
 
@@ -287,10 +471,12 @@ export function extractVariables(template: string): string[] {
 export function validateTemplate(
     template: string,
     lead: Partial<LeadForTemplate>
-): { isValid: boolean; missingVariables: string[]; warnings: string[] } {
+): { isValid: boolean; missingVariables: string[]; warnings: string[]; sectionErrors: string[] } {
     const variables = extractVariables(template)
     const missingVariables: string[] = []
     const warnings: string[] = []
+    // Malformed {{#flag}}/{{^flag}}/{{/flag}} blocks make the template invalid.
+    const sectionErrors = validateTemplateSections(template)
 
     const builtInNames = new Set(
         Object.keys(BUILTIN_VARIABLES).map(v => v.replace(/[{}]/g, '').toLowerCase())
@@ -315,9 +501,10 @@ export function validateTemplate(
     }
 
     return {
-        isValid: missingVariables.length === 0,
+        isValid: missingVariables.length === 0 && sectionErrors.length === 0,
         missingVariables,
         warnings,
+        sectionErrors,
     }
 }
 

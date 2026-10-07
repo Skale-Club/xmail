@@ -875,6 +875,9 @@ export const sequenceSteps = pgTable('sequence_steps', {
     type: sequenceStepTypeEnum('type').default('email').notNull(),
     // Delay before this step (in hours)
     delayHours: integer('delay_hours').default(0).notNull(),
+    // Optional upper bound (migration 070): when set, the wait is a uniform random time in
+    // [delay_hours, delay_hours_max]. NULL = fixed delay.
+    delayHoursMax: integer('delay_hours_max'),
     // Email content
     subject: text('subject'),
     plainBody: text('plain_body'),
@@ -897,6 +900,10 @@ export const sequenceSteps = pgTable('sequence_steps', {
     sequenceOrderUnique: uniqueIndex('sequence_step_order_unique').on(table.sequenceId, table.stepOrder),
     idxSequenceStepsSequenceId: index('idx_sequence_steps_sequence_id').on(table.sequenceId),
     sequenceStepsDelayHoursPositive: check('sequence_steps_delay_hours_positive', sql`${table.delayHours} >= 0`),
+    sequenceStepsDelayHoursMaxValid: check(
+        'sequence_steps_delay_hours_max_valid',
+        sql`${table.delayHoursMax} IS NULL OR ${table.delayHoursMax} >= ${table.delayHours}`,
+    ),
     sequenceStepsOrderPositive: check('sequence_steps_order_positive', sql`${table.stepOrder} >= 1`),
     // Phase 20 (CONS-07, migration 040): step-content and A/B invariants reconciled with Zod + SQL.
     sequenceStepsAbTestPercentageBounds: check(

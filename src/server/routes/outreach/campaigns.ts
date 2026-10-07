@@ -16,6 +16,7 @@ import {
     replaceCanonicalSequence,
     deleteSequenceStep,
     sequencePayloadSchema,
+    delayHoursMaxSchema,
     type SequencePayload,
     type SequenceStepInput,
 } from '../../lib/outreach-sequences'
@@ -152,6 +153,10 @@ const createSequenceStepSchema = z.object({
     stepOrder: z.number().int().min(1),
     type: z.enum(['email', 'delay', 'condition']).default('email'),
     delayHours: z.number().int().min(0).default(0),
+    // Optional upper bound for a random wait in [delayHours, delayHoursMax] (migration 070).
+    // The `>= delayHours` rule is enforced by assertDelayRange() in the handlers, because the
+    // update handler uses .partial() and needs the stored delayHours to compare against.
+    delayHoursMax: delayHoursMaxSchema,
     subject: z.string().optional(),
     plainBody: z.string().optional(),
     htmlBody: z.string().optional(),
@@ -161,6 +166,13 @@ const createSequenceStepSchema = z.object({
     abTestEnabled: z.boolean().default(false),
     abTestPercentage: z.number().int().min(0).max(100).default(50),
 })
+
+/** `delayHoursMax` must be null/absent or >= `delayHours`; returns an error message otherwise. */
+function delayRangeError(delayHours: number, delayHoursMax: number | null | undefined): string | null {
+    return delayHoursMax != null && delayHoursMax < delayHours
+        ? 'delayHoursMax must be greater than or equal to delayHours'
+        : null
+}
 
 // Enroll by an explicit leadIds set OR by a leadListId (the whole list is resolved server-side,
 // replacing the client's old unbounded 1,000-row scan). Exactly one source is required.
@@ -1075,6 +1087,7 @@ router.post('/:id/duplicate', async (req: Request, res: Response) => {
                             return {
                                 type: 'email',
                                 delayHours: step.delayHours,
+                                delayHoursMax: step.delayHoursMax,
                                 subject: step.subject ?? '',
                                 plainBody: step.plainBody ?? undefined,
                                 htmlBody: step.htmlBody ?? undefined,
@@ -1086,9 +1099,9 @@ router.post('/:id/duplicate', async (req: Request, res: Response) => {
                             }
                         }
                         if (step.type === 'condition') {
-                            return { type: 'condition', delayHours: step.delayHours }
+                            return { type: 'condition', delayHours: step.delayHours, delayHoursMax: step.delayHoursMax }
                         }
-                        return { type: 'delay', delayHours: step.delayHours }
+                        return { type: 'delay', delayHours: step.delayHours, delayHoursMax: step.delayHoursMax }
                     }),
             }
             const result = await replaceCanonicalSequence({
@@ -1384,6 +1397,9 @@ router.post('/sequences/:sequenceId/steps', async (req: Request, res: Response) 
 
         const validatedData = createSequenceStepSchema.parse(req.body)
 
+        const rangeError = delayRangeError(validatedData.delayHours, validatedData.delayHoursMax)
+        if (rangeError) return res.status(400).json({ error: rangeError })
+
         const [newStep] = await db.insert(sequenceSteps).values({
             sequenceId,
             ...validatedData,
@@ -1431,6 +1447,13 @@ router.put('/sequences/steps/:stepId', async (req: Request, res: Response) => {
         if (!membership) return
 
         const validatedData = createSequenceStepSchema.partial().parse(req.body)
+
+        // Compare the values the row will end up with (a partial update may change only one side).
+        const rangeError = delayRangeError(
+            validatedData.delayHours ?? step.delayHours,
+            validatedData.delayHoursMax !== undefined ? validatedData.delayHoursMax : step.delayHoursMax,
+        )
+        if (rangeError) return res.status(400).json({ error: rangeError })
 
         const [updatedStep] = await db.update(sequenceSteps)
             .set({

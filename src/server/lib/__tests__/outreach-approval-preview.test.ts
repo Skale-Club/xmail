@@ -15,7 +15,7 @@ import {
     renderCampaignPreviewSequence,
     summarizeLeadVerification,
 } from '../outreach-approval-preview'
-import type { LeadForTemplate } from '../template-variables'
+import { interpolateTemplate, type LeadForTemplate } from '../template-variables'
 
 describe('bucketRawEmailStatus', () => {
     it('buckets email_status: ok as verified', () => {
@@ -220,5 +220,49 @@ skale.club
 
 This is a business outreach from Skale Club.
 To stop receiving these emails: https://mail.skale.club/o/u/tok123`)
+    })
+})
+describe('renderCampaignPreviewSequence: conditional blocks match what the send path renders', () => {
+    const subject = 'Hi {{firstName}}{{#nearby}} (neighbor){{/nearby}}'
+    const plain = 'Hello {{firstName}},\n\n{{#nearby}}\nI am just down the road.\n{{/nearby}}\n\nUnsubscribe: {{unsubscribeUrl}}'
+    const html = '<p>Hello {{firstName}}</p>\n<p>{{#hookNoOnlineBooking}}Your site has no online booking.{{/hookNoOnlineBooking}}</p>\n<p><a href="{{unsubscribeUrl}}">Unsubscribe</a></p>'
+    const context = { unsubscribeUrl: 'https://mail.skale.club/o/u/tok123', contentLanguage: 'en' }
+    const steps = [{
+        stepOrder: 1,
+        type: 'email',
+        delayHours: 0,
+        subject,
+        plainBody: plain,
+        htmlBody: html,
+        subjectB: null,
+        plainBodyB: null,
+        htmlBodyB: null,
+        abTestEnabled: false,
+    }]
+
+    it.each([
+        ['a nearby lead with its own site and no booking', lead({ location: '8 Hyde Park Ave, Boston, MA 02116', customFields: { has_owned_website: true } })],
+        ['a far lead that has a booking platform', lead({ location: '5 Route 134, South Dennis, MA 02660', customFields: { has_owned_website: true, booking_platform: 'Booksy' } })],
+    ])('preview output equals interpolateTemplate output for %s', (_label, subjectLead) => {
+        const [rendered] = renderCampaignPreviewSequence(steps, subjectLead, context)
+
+        // The exact calls outreach-sender.ts makes: plain/subject unescaped, HTML escaped.
+        expect(rendered.variantA.subject).toBe(interpolateTemplate(subject, subjectLead, context))
+        expect(rendered.variantA.bodyPlain).toBe(interpolateTemplate(plain, subjectLead, context))
+        expect(rendered.variantA.bodyHtml).toBe(interpolateTemplate(html, subjectLead, context, { escapeHtml: true }))
+    })
+
+    it('actually renders the blocks (not just equal garbage)', () => {
+        const near = lead({ location: '8 Hyde Park Ave, Boston, MA 02116', customFields: { has_owned_website: true } })
+        const [rendered] = renderCampaignPreviewSequence(steps, near, context)
+        expect(rendered.variantA.subject).toBe('Hi Jane (neighbor)')
+        expect(rendered.variantA.bodyPlain).toBe('Hello Jane,\n\nI am just down the road.\n\nUnsubscribe: https://mail.skale.club/o/u/tok123')
+        expect(rendered.variantA.bodyHtml).toContain('Your site has no online booking.')
+
+        const far = lead({ location: '5 Route 134, South Dennis, MA 02660', customFields: { has_owned_website: true, booking_platform: 'Booksy' } })
+        const [hidden] = renderCampaignPreviewSequence(steps, far, context)
+        expect(hidden.variantA.subject).toBe('Hi Jane')
+        expect(hidden.variantA.bodyPlain).toBe('Hello Jane,\n\nUnsubscribe: https://mail.skale.club/o/u/tok123')
+        expect(hidden.variantA.bodyHtml).not.toContain('<p></p>')
     })
 })

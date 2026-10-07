@@ -227,6 +227,8 @@ jobs:
                 -e OUTLOOK_TOKEN_ENCRYPTION_KEY="$OUTLOOK_TOKEN_ENCRYPTION_KEY" \
                 -e MAIL_DOMAIN="$MAIL_DOMAIN" \
                 -e OUTREACH_PROTECTED_DOMAINS="xkedule.com,xphere.app,endenemy.com,xareable.com,stuscle.com,xtimator.com,skleanings.com,fluenverse.com" \
+                -e OUTREACH_HOME_BASE_ZIP="01702" \
+                -e OUTREACH_HOME_RADIUS_MILES="30" \
                 -e MAIL_HOST="mx.skale.club" \
                 -e MAIL_TLS_CERT_PATH="/etc/letsencrypt/live/mx.skale.club/fullchain.pem" \
                 -e MAIL_TLS_KEY_PATH="/etc/letsencrypt/live/mx.skale.club/privkey.pem" \

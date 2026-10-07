@@ -21,10 +21,17 @@ import {
  * PostgreSQL schema (migration 040) and src/db/schema.ts.
  */
 
+// Optional upper bound of the wait before a step (migration 070): the scheduler waits a uniform
+// random time in [delayHours, delayHoursMax]. Omitted / null = fixed delay. The `>= delayHours`
+// rule is checked in sequencePayloadSchema's superRefine (a refine on each step object would turn
+// it into a ZodEffects, which z.discriminatedUnion does not accept).
+export const delayHoursMaxSchema = z.number().int().min(0).nullish()
+
 const emailStepSchema = z
     .object({
         type: z.literal('email'),
         delayHours: z.number().int().min(0).default(0),
+        delayHoursMax: delayHoursMaxSchema,
         subject: z.string().trim().min(1, 'Email steps require a subject'),
         plainBody: z.string().optional(),
         htmlBody: z.string().optional(),
@@ -40,6 +47,7 @@ const delayStepSchema = z
     .object({
         type: z.literal('delay'),
         delayHours: z.number().int().min(0),
+        delayHoursMax: delayHoursMaxSchema,
     })
     .strict()
 
@@ -50,6 +58,7 @@ const conditionStepSchema = z
     .object({
         type: z.literal('condition'),
         delayHours: z.number().int().min(0).default(0),
+        delayHoursMax: delayHoursMaxSchema,
     })
     .strict()
 
@@ -70,6 +79,13 @@ export const sequencePayloadSchema = z
     })
     .superRefine((payload, ctx) => {
         payload.steps.forEach((step, index) => {
+            if (step.delayHoursMax != null && step.delayHoursMax < step.delayHours) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['steps', index, 'delayHoursMax'],
+                    message: 'delayHoursMax must be greater than or equal to delayHours',
+                })
+            }
             if (step.type === 'email') {
                 const hasBody = Boolean(step.plainBody?.trim() || step.htmlBody?.trim())
                 if (!hasBody) {
@@ -123,6 +139,7 @@ function stepToColumns(step: SequenceStepInput, order: number, now: Date) {
             stepOrder: order,
             type: 'email' as const,
             delayHours: step.delayHours,
+            delayHoursMax: step.delayHoursMax ?? null,
             subject: step.subject,
             plainBody: emptyToNull(step.plainBody),
             htmlBody: emptyToNull(step.htmlBody),
@@ -139,6 +156,7 @@ function stepToColumns(step: SequenceStepInput, order: number, now: Date) {
         stepOrder: order,
         type: step.type,
         delayHours: step.delayHours,
+        delayHoursMax: step.delayHoursMax ?? null,
         subject: null,
         plainBody: null,
         htmlBody: null,
