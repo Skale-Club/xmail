@@ -546,3 +546,21 @@ No piloto o gancho sai para 2 das 25 (Felix, Matt's); as outras 23 recebem o e-m
   forem mal avaliadas viram prospects para a IA de ligação. Cuidados antes de construir:
   Massachusetts exige consentimento de todos para gravar ligação; a ligação não pode deixar horário
   marcado de verdade na agenda de ninguém; volume baixo para não virar incômodo.
+
+### Sequência v5 gravada — 2026-10-07, fim da tarde
+
+`55f4501` em produção (blocos condicionais `{{#flag}}`/`{{^flag}}`, flags `nearby`/`hookNoOnlineBooking`/
+`hookNoWebsite`, `delay_hours_max`); migração `070` aplicada antes do deploy e registrada no ledger.
+Base da visita: `OUTREACH_HOME_BASE_ZIP=01702`, `OUTREACH_HOME_RADIUS_MILES=30` (Vanildo: "depois de
+saturar aqui, a gente aumenta"; mudar de cidade = trocar essas duas variáveis no `run_app_container`).
+
+Os quatro e-mails em inglês gravados no piloto (passos 1-3 atualizados no lugar, passo 4 novo; esperas
+0 / 72-120h / 72-120h / 72-120h) e no teste (esperas de 1h, para provar que a resposta corta o resto).
+Prontidão OK nas duas. Nos 25: gancho em 2 (Felix, Matt's), visita em 21, "reply to this email" nas 4 de
+Cape Cod, nenhuma tag sobrando. Script: `scratchpad/write-v5.js`.
+
+**Atenção:** salvar a sequência pela tela do Xmail zera `delay_hours_max` (a tela ainda não conhece o
+campo). Editar texto só por script até a tela ser ajustada.
+
+Em construção: monitor de respostas no Telegram (alerta na hora, lembrete a cada 2h das 8h às 20h de
+Boston, resumo às 8h, para quando responder ou marcar como resolvida na caixa unificada).
