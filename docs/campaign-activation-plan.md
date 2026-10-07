@@ -564,3 +564,17 @@ campo). Editar texto só por script até a tela ser ajustada.
 
 Em construção: monitor de respostas no Telegram (alerta na hora, lembrete a cada 2h das 8h às 20h de
 Boston, resumo às 8h, para quando responder ou marcar como resolvida na caixa unificada).
+
+### Monitor de respostas no Telegram — no ar em 2026-10-07
+
+`5c7c781` (migração `071_inbox_reply_alerts` aplicada antes do deploy). Resposta real de lead de campanha
+(classificação `reply`, sem auto-resposta nem warm-up) gera aviso imediato no Telegram, a qualquer hora;
+enquanto a conversa estiver na fila "needs reply" da caixa unificada, lembrete a cada 2h entre 8h e 20h
+de Boston ("sem leitura" ou "lida, mas sem resposta"), resumo às 8h; para quando há resposta enviada
+depois dela, conversa fechada ou arquivada. Pendências com mais de 14 dias deixam de ser lembradas.
+Link: `FRONTEND_URL/outreach/unified-inbox?conversation=<id>`. Leitura das caixas e varredura a cada 5 min.
+Conferido em produção: consulta de pendentes roda (0 hoje) e o upsert do registro se comporta nos três
+casos (primeiro, lembrete, resposta nova), testado em transação desfeita.
+
+**Próximo:** teste de envio com a campanha de teste (1h entre e-mails, destino skale.club@gmail.com):
+caixa de entrada x spam, Vanildo responde o primeiro, Telegram avisa, os passos 2-4 não saem.
