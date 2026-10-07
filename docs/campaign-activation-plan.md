@@ -662,3 +662,13 @@ token de API com escopo mínimo salvo em `C:\Users\Vanildo\.cf-homelab-token`.
 (128.140.51.129, Coolify de outros projetos); serviço `cloudflared` lá parado e desativado (Coolify intacto).
 Faltam, com o token: apagar o túnel, os DNS `thumbscrap`/`thumbscrap-vnc.skale.club` (A → 128.140.51.129) e as
 rotas `thumbscrap.skale.club`/`vnc.thumbscrap.skale.club` no túnel `zimaos`.
+
+**Xcraper com provedor homelab no ar (2026-10-07):** `xcraper` `15036da` (main=dev), CI e Vercel verdes. Template
+`homelab` (`ownerOnly`): listado e executável só para `SUPER_ADMIN_EMAIL` (padrão skale.club@gmail.com), e-mail vindo
+do cadastro no banco; rota do Hermes (`/api/service/scrape`) aceita `scrapeType: homelab` só se o usuário de serviço
+for o super admin; 409 se outro trabalho do homelab estiver rodando; homelab fora → busca falha com aviso, sem cair no
+Apify. Custo zero em créditos. Id do trabalho em `search_history.apify_run_id`. **Falta configurar** na Vercel:
+`HOMELAB_SCRAPER_URL`, `HOMELAB_SCRAPER_CF_CLIENT_ID`, `HOMELAB_SCRAPER_CF_CLIENT_SECRET` — dependem do endereço
+`scraper.skale.club` e do service token do Cloudflare Access. Até lá a opção responde 503 para o dono e é invisível
+para os outros. A criação do token de API da Cloudflare por mim foi bloqueada pelo classificador de permissões
+(criação de credencial); o Vanildo escolhe entre terminar o token ele mesmo ou fazer os passos no painel com guia.
