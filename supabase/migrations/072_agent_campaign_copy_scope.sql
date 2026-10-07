@@ -30,6 +30,5 @@ SET scopes = scopes || '["campaigns:copy"]'::jsonb,
 WHERE revoked_at IS NULL
   AND jsonb_typeof(scopes) = 'array'
   AND NOT jsonb_exists(scopes, 'campaigns:copy')
-  -- So o Hermes. Em 2026-10-07 havia tambem a credencial "Kai" com os mesmos escopos de campanha;
-  -- ela nao recebe a permissao de editar texto sem pedido explicito do Vanildo.
-  AND name ILIKE '%hermes%';
+  -- Hermes e Kai: o Vanildo opera os dois agentes e quer os dois com o mesmo acesso (2026-10-07).
+  AND (name ILIKE '%hermes%' OR name = 'Kai');
