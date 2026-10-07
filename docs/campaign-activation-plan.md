@@ -461,3 +461,22 @@ depois de ver na caixa.
 
 **Dispara com "vai o teste".** Depois: conferir inbox/spam no Gmail, remetente e nome exibidos,
 assinatura, link de descadastro, ordem dos três; arquivar a campanha de teste; aí sim o "vai" do piloto.
+
+### Achados do Hermes e regra de e-mail de plataforma — 2026-10-07
+
+O Hermes listou três bloqueios antes de ativar. Conferido em produção:
+
+1. **`help.us@booksy.com` nos prospects.** O piloto no Xmail estava limpo (0 dos 25; a org inteira
+   sem nenhum lead de Booksy). O problema estava no **Xphere**: 40 de 6.388 empresas com e-mail de
+   plataforma (38 Booksy, 1 Vagaro, 1 PocketSuite), 12 marcadas `ok` com crédito gasto. Regra criada
+   no Xphere (`b2beb776`): nunca verifica, nunca importa, nunca matricula; limpeza aplicada nos 40
+   (reversível, status anterior em `custom_fields.previous_email_status`). Listas de domínios do
+   Xmail, Xphere e Xcraper alinhadas em 19 domínios.
+2. **Endereço postal.** A descrição antiga da campanha (de 12/09) dizia que o endereço tinha sido
+   incluído; a reescrita de 30/09 tirou o endereço do corpo e ninguém repôs. Hoje o e-mail **não tem
+   endereço postal**, e o Xmail só avisa (não bloqueia). A lei americana de e-mail comercial
+   (CAN-SPAM) exige um. **Decisão do Vanildo:** qual endereço (o de Framingham que estava, uma caixa
+   postal, ou outro), que entraria numa linha no rodapé junto do descadastro, fora do texto do e-mail.
+   Descrição da campanha reescrita para registrar a pendência.
+3. **Créditos baixos.** Continua: MillionVerifier 169, NeverBounce 0. Os 25 do piloto já estão
+   verificados; não bloqueia o piloto, bloqueia a próxima leva.

@@ -239,8 +239,12 @@ prospecção depende destas três regras:
   `info@skale.club` → bloqueado; `vanildo.jr@tryskaleclub.com` → permitido. **Domínio novo da
   operação tem que entrar nessa lista**, senão a `info@` dele vira remetente possível.
 - E-mail de plataforma de agendamento (Booksy, Vagaro, PocketSuite…) nunca é da empresa: o Xmail
-  recusa na importação e na matrícula (`src/server/lib/platform-emails.ts`) e o Xcraper não grava
-  na origem. Caso real que motivou: `help.us@booksy.com` gravado como e-mail de 11 barbearias.
+  recusa na importação e na matrícula (`src/server/lib/platform-emails.ts`), o Xcraper não grava
+  na origem e, desde 2026-10-07, o Xphere nunca verifica (sem gastar crédito), nunca importa e
+  nunca matricula (`src/lib/prospects/platform-emails.ts`, gravado como `invalid`/`platform_rule`).
+  Caso real que motivou: `help.us@booksy.com` em 38 barbearias no Xphere, 12 delas marcadas como
+  verificadas, e o Hermes lendo isso como problema do piloto. **As três listas de domínios têm que
+  ser iguais (19 domínios em 2026-10-07): plataforma nova entra nas três.**
 
 ### Hermes Prospecting Gateway
 The LLM agent (Hermes) drives prospecting through `/api/agent/outreach/*` only — a
