@@ -578,3 +578,22 @@ casos (primeiro, lembrete, resposta nova), testado em transação desfeita.
 
 **Próximo:** teste de envio com a campanha de teste (1h entre e-mails, destino skale.club@gmail.com):
 caixa de entrada x spam, Vanildo responde o primeiro, Telegram avisa, os passos 2-4 não saem.
+
+### Teste de envio — 2026-10-07: dois defeitos que impediam QUALQUER campanha de enviar
+
+O teste fez o que devia: o caminho de envio de campanha nunca tinha rodado em produção, e quebrou duas
+vezes antes de funcionar.
+1. **`b83f901`** — `startDispatch` (reserva da conta) falhava com `timestamp without time zone <= interval`:
+   desde `a8f4c8c` (2026-08-10) o horário vai como texto e, em `$n - (m * INTERVAL ...)`, o Postgres inferia
+   `$n` como interval. Cast `::timestamp` + teste de regressão (nenhum trecho de SQL começa com +/- logo depois
+   de um parâmetro; conferido que falha sem o cast). A mensagem do commit cita `a650810c` por engano; o certo
+   é `a8f4c8c`.
+2. **`c5279b0`** — o e-mail saiu, mas `publishOutreachEvent` quebrou: com `prepare: false`, `queryClient.json()`
+   chega ao bind como objeto cru. Nenhum evento de envio era gravado e o lead não avançava. Trocado por
+   `${JSON.stringify(x)}::jsonb` (conferido contra a `outreach_event_outbox` em produção, transação desfeita).
+   O mesmo defeito quebrava a notificação dos lembretes da caixa unificada (`processInboxCommands`).
+
+Resultado: e-mail 1 enviado às 19:30 UTC uma vez só; ao retomar, o processador viu o envio já feito
+(`duplicate`), não reenviou e avançou o lead para o passo 2 (marcado para 20:50 UTC). Chegou na **caixa de
+entrada** do Gmail (rótulos INBOX, sem aba de promoções). Efeito colateral do defeito 2: o evento "sent" desse
+primeiro envio não foi para o Xphere.
