@@ -488,3 +488,35 @@ piloto e do teste agora é "Skale Club, 74 E Glenwood Ave Unit #5650, Smyrna, DE
 receiving these emails: {{unsubscribeUrl}}" (texto e HTML). `assessCampaignActivationCompliance`:
 endereço OK, descadastro em todos os passos, nenhum bloqueio; prontidão das duas campanhas OK. Backup
 dos corpos anteriores em `scratchpad/pilot-steps-backup-2026-10-07-v6.json`.
+
+### Sequência v5 aprovada pelo Vanildo — 2026-10-07
+
+Reescrita do zero em conversa, em português primeiro e depois em inglês. Regras que saíram dela
+(além das de [[texto-sem-cara-de-ia]]): tom informal e respeitoso ("Fala, tudo certo?" → "Hey, how's
+it going?"), sem abreviação que pareça erro ("tá", "pra"); **o pedido de todos os e-mails é o clique
+em skale.club/barbershops**, resposta é opcional; nunca dizer que estamos falando com outras
+barbearias da região; endereço só o do Anytime Mailbox; nome da loja sem possessivo em inglês.
+Quatro e-mails, espera **variável de 3 a 5 dias** entre eles.
+
+| # | Assunto | Conteúdo |
+|---|---|---|
+| 1 | Let's work together | quem somos, dinheiro e tempo, gancho por lead, 5 tópicos (site em 3 dias, IA de ligação com a linha de teste, IA de SMS e redes sociais, placa NFC de avaliação, chaveiros NFC), link, visita só na região |
+| 2 | [short name] on Google | dias fracos, "barber near me" em [city], anúncios + site agendando sozinho, link |
+| 3 | Your clients leaving reviews at the counter | peças 3D: placa de avaliação, placa de pagamento, chaveiros, display; link |
+| 4 | Until next time | despedida + prévia gratuita do site com agendamento; link |
+
+Texto integral em inglês: ver a conversa de 2026-10-07; vai para `sequence_steps` quando o código abaixo
+estiver pronto.
+
+**O que falta construir antes de gravar:**
+1. Espera variável de 3 a 5 dias por lead (hoje `delay_hours` é fixo).
+2. Parágrafo da visita só para barbearia dentro de um raio da base (hoje Framingham, ~60 milhas),
+   medido pelo CEP; base e raio numa configuração só, porque o Vanildo vai se mudar um dia. Fora do
+   raio entra "If you want to chat, just reply to this email."
+3. Gancho por lead, escrito por IA a partir do que se sabe da loja (nota no Google, só Instagram,
+   site sem agendamento, site com agendamento). Agendamento NÃO é o problema a apontar.
+4. Conferir se skale.club/barbershops cobre tudo o que os e-mails citam (IA de mensagens, placa de
+   pagamento, prazo de 3 dias) e corrigir o redirecionamento de /products/nfc-keychains.
+
+**Perguntas em aberto ao Vanildo:** o prazo de 3 dias depende do material do cliente? Para onde leva
+a placa de pagamento?
