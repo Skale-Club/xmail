@@ -32,6 +32,8 @@ import {
     Target
 } from 'lucide-react'
 import { useFolders } from '../../hooks/useMail'
+import { useMailboxLiveSync } from '../../hooks/useMailboxEvents'
+import { folderKindFromPath, useUnreadTitlePrefix } from '../../hooks/useUnreadTitle'
 import { NotificationBell } from './NotificationBell'
 import { useCompose } from '../../hooks/useCompose'
 
@@ -252,6 +254,13 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
     const [isCollapsed, setIsCollapsed] = useSidebarCollapsed()
     const [searchOpen, setSearchOpen] = React.useState(false)
     const [searchQuery, setSearchQuery] = React.useState('')
+
+    // The ONE live-updates subscriber for the webmail shell (keeps badges and counters current as
+    // mail arrives); folder lists attach to the same shared connection. The tab title carries the
+    // open folder's unread count, Gmail-style.
+    useMailboxLiveSync()
+    const { data: titleFolders } = useFolders()
+    useUnreadTitlePrefix(findFolderByKind(titleFolders?.folders, folderKindFromPath(location))?.unread ?? 0)
 
     const handleSignOut = async () => {
         await supabase.auth.signOut()

@@ -3,13 +3,19 @@ import React from 'react'
 import { mailApi, Message, SendEmailPayload, SaveDraftPayload, MessageListResponse } from '../lib/mail-api'
 import { useMailbox } from './useMailbox'
 import { useAuth } from './useAuth'
+import { useMailboxEvents, type MailboxChangeBatch } from './useMailboxEvents'
 
 // The API is rate limited per IP (500 requests / 15 min), so polling is deliberately cheap:
 //  - the open folder asks for ONLY its first page every 30s and refetches the loaded pages
-//    only when that first page actually changed;
+//    only when that first page actually changed. While the live SSE stream (useMailboxEvents) is
+//    connected, a pushed signal runs that same check at once and the interval relaxes to 120s;
 //  - folder counters refresh every 90s from a single observer (the sidebar);
 //  - focus/visibility checks are throttled so alt-tabbing cannot cause a request storm.
 export const MAIL_POLL_INTERVAL_MS = 30_000
+/** Poll pace while the live stream is connected: pushes do the real work, polling is only the net. */
+export const MAIL_POLL_LIVE_INTERVAL_MS = 120_000
+/** Minimum gap between two push-triggered first-page checks for flag/move changes (arrivals ignore it). */
+const PUSH_UPDATE_MIN_GAP_MS = 10_000
 export const FOLDER_POLL_INTERVAL_MS = 90_000
 const FOCUS_CHECK_MIN_GAP_MS = 20_000
 
@@ -117,6 +123,23 @@ export interface MessageFilters {
 }
 
 /**
+ * How a pushed batch affects the list the user is looking at. `folderId` is the open folder, or
+ * undefined for the cross-folder Starred view (which only cares about flag changes, since a message
+ * that has just arrived cannot be starred yet).
+ *  - 'arrival': new mail (or a reconnect that may have missed some) — check the first page at once;
+ *  - 'update':  a flag or folder change — check, but throttled, because the user's own clicks echo back;
+ *  - 'none':    nothing the open list shows.
+ */
+export function pushImpact(batch: MailboxChangeBatch, folderId: string | undefined): 'arrival' | 'update' | 'none' {
+    if (batch.resync) return 'arrival'
+    if (folderId === undefined) return batch.updatedFolders.size > 0 ? 'update' : 'none'
+    // `null` = the signal did not name a folder: assume it concerns this one.
+    if (batch.newFolders.has(folderId) || batch.newFolders.has(null)) return 'arrival'
+    if (batch.updatedFolders.has(folderId) || batch.updatedFolders.has(null)) return 'update'
+    return 'none'
+}
+
+/**
  * Infinite, server-filtered message list for a folder page. Pass `folderType`
  * undefined for a mailbox-wide listing across every folder except Trash/Spam
  * (used by the cross-folder "Starred" view) — see mailApi.getMessages().
@@ -165,19 +188,43 @@ export function useInfiniteMessages(folderType: string | undefined, limit = 30, 
         refetchOnWindowFocus: false,
     })
 
-    // New mail has to show up without a manual refresh (no push channel here).
+    // New mail has to show up without a manual refresh. Two triggers share ONE check (the first
+    // page only, compared by signature): a pushed signal from the live stream, which runs it at
+    // once, and a timer that stays underneath as the safety net (30s, or 120s while live).
     const lastCheckRef = React.useRef(0)
     const checkingRef = React.useRef(false)
+    // A signal that lands while a check is in flight may postdate what that check read: run again.
+    const recheckRef = React.useRef(false)
+    // A signal that landed while the tab was hidden: the next wake-up must not be throttled away.
+    const dirtyRef = React.useRef(false)
+    const checkRef = React.useRef<((minGapMs: number) => Promise<void>) | null>(null)
     const pollEnabled = !!mailboxId && (!folderType || !!folderId)
+
+    const handleBatch = React.useCallback((batch: MailboxChangeBatch) => {
+        const impact = pushImpact(batch, folderType ? folderId : undefined)
+        if (impact === 'none') return
+        void checkRef.current?.(impact === 'arrival' ? 0 : PUSH_UPDATE_MIN_GAP_MS)
+    }, [folderType, folderId])
+    const { status: realtimeStatus } = useMailboxEvents(mailboxId, handleBatch)
+    const pollIntervalMs = realtimeStatus === 'live' ? MAIL_POLL_LIVE_INTERVAL_MS : MAIL_POLL_INTERVAL_MS
+
     React.useEffect(() => {
         if (!pollEnabled) return
 
-        const check = async (minGapMs: number) => {
-            if (document.visibilityState !== 'visible' || checkingRef.current) return
+        const check = async (minGapMs: number): Promise<void> => {
+            if (document.visibilityState !== 'visible') {
+                if (minGapMs === 0) dirtyRef.current = true
+                return
+            }
+            if (checkingRef.current) {
+                if (minGapMs === 0) recheckRef.current = true
+                return
+            }
             if (Date.now() - lastCheckRef.current < minGapMs) return
             const state = queryClient.getQueryState(queryKey)
             if (!state || state.fetchStatus === 'fetching') return
             checkingRef.current = true
+            dirtyRef.current = false
             lastCheckRef.current = Date.now()
             try {
                 const fresh = await fetchPage(1)
@@ -189,23 +236,31 @@ export function useInfiniteMessages(folderType: string | undefined, limit = 30, 
                 // A failed poll is silent; the next one (or a manual refresh) tries again.
             } finally {
                 checkingRef.current = false
+                if (recheckRef.current) {
+                    recheckRef.current = false
+                    void check(0)
+                }
             }
         }
+        checkRef.current = check
 
-        const interval = window.setInterval(() => { void check(MAIL_POLL_INTERVAL_MS - 1000) }, MAIL_POLL_INTERVAL_MS)
-        const onWake = () => { void check(FOCUS_CHECK_MIN_GAP_MS) }
+        const interval = window.setInterval(() => { void check(pollIntervalMs - 1000) }, pollIntervalMs)
+        const onWake = () => { void check(dirtyRef.current ? 0 : FOCUS_CHECK_MIN_GAP_MS) }
         window.addEventListener('focus', onWake)
         document.addEventListener('visibilitychange', onWake)
         return () => {
+            checkRef.current = null
             window.clearInterval(interval)
             window.removeEventListener('focus', onWake)
             document.removeEventListener('visibilitychange', onWake)
         }
-    }, [pollEnabled, queryClient, queryKey, fetchPage])
+    }, [pollEnabled, queryClient, queryKey, fetchPage, pollIntervalMs])
 
     return {
         ...messagesQuery,
         isLoading: messagesQuery.isLoading || (!!folderType && foldersQuery.isLoading),
+        /** State of the live push stream for this mailbox (shown next to the refresh button). */
+        realtimeStatus,
     }
 }
 

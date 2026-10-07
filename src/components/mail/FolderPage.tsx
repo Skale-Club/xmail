@@ -104,6 +104,7 @@ export function FolderPage({ kind, title, icon, emptyMessage, emptyStateIcon }: 
         hasNextPage,
         fetchNextPage,
         refetch,
+        realtimeStatus,
     } = useInfiniteMessages(serverFolderType, PAGE_SIZE, filters)
 
     const { loadMoreRef } = useInfiniteScroll({
@@ -611,6 +612,7 @@ export function FolderPage({ kind, title, icon, emptyMessage, emptyStateIcon }: 
             spamLabel={kind === 'spam' ? 'Not Spam' : 'Mark as spam'}
             onRefresh={handleRefresh}
             isRefreshing={isFetching || syncMailbox.isPending}
+            realtimeStatus={selectedMailbox ? realtimeStatus : undefined}
         />
     )
 

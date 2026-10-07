@@ -19,6 +19,8 @@ import {
     ShieldAlert
 } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import type { MailboxRealtimeStatus } from '../../hooks/useMailboxEvents'
+import { LiveIndicator } from './LiveIndicator'
 import { formatEmailDate, getAvatarColor, getInitials } from '../../lib/utils'
 import { recipientLabel, selectRange } from './email-list-utils'
 import {
@@ -415,6 +417,8 @@ interface EmailToolbarProps {
     onSpam?: () => void
     spamLabel?: string
     isRefreshing?: boolean
+    /** Live push-stream state; when given, a small "Live" / "Reconnecting…" marker sits by the refresh button. */
+    realtimeStatus?: MailboxRealtimeStatus
 }
 
 export function EmailToolbar({
@@ -429,7 +433,8 @@ export function EmailToolbar({
     onRefresh,
     onSpam,
     spamLabel = 'Mark as spam',
-    isRefreshing
+    isRefreshing,
+    realtimeStatus
 }: EmailToolbarProps) {
     // "Select all" only reaches what is loaded; say so instead of promising the folder total.
     const loaded = loadedCount ?? 0
@@ -456,6 +461,7 @@ export function EmailToolbar({
                 )}
             </div>
             <div className="flex items-center gap-1">
+                {realtimeStatus && <LiveIndicator status={realtimeStatus} />}
                 <button
                     onClick={onRefresh}
                     className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"

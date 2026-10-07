@@ -145,6 +145,8 @@ escopado por **caixa** em vez de organização.
 
 Estimativa: ≈ 2 h de implementação + revisão. Sem migration.
 
+- **Implementado (2026-10-06):** `lib/mailbox-events.ts` (bus por caixa, teto de 6 streams por usuário e 2000 no total) e `routes/mail/events.ts` (`GET /api/mail/mailboxes/:mailboxId/events`, 429 acima do teto). Em vez de espalhar `publish` por cada gravador, `emitFolderChange` (`lib/mail-events.ts`, já chamado depois do commit pelo MX, SMTP, IMAP, `move-messages` e `deleteMessagesPermanently`) agora também publica (`new` → `message.new`; `flags`/`expunge` → `message.updated`); `recomputeFolderCounts` publica `folder.counts`; publicação direta só onde não havia `emitFolderChange` (`native-send` Sent, rascunho em `send.ts`, `mail-sync` uma vez por pasta, read/star em `messages.ts`). Cliente: `useMailboxEvents` (registro por módulo = uma conexão por caixa e aba, backoff 1s→30s com jitter, watchdog de 70 s sem heartbeat, resync ao reconectar), `useMailboxLiveSync` no `MailLayout` (selos), `useInfiniteMessages` (checagem da página 1 no `message.new`; poll 120 s se live, 30 s senão), `LiveIndicator` ao lado do refresh e `(N)` no título. Falta só a conferência em produção dos 4 critérios de aceite.
+
 ### Fora deste plano (anotado para depois)
 - "All work inboxes" (lista unificada das `info@`) — pede endpoint novo de mensagens cross-mailbox;
   o Vanildo pediu para deixar para depois.

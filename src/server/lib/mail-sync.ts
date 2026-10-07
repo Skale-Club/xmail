@@ -6,6 +6,7 @@ import { mailboxes, mailFolders, mailMessages, INBOX_ATTACHMENTS_BUCKET } from '
 import { eq, and, desc } from 'drizzle-orm'
 import { decryptSecret } from './crypto'
 import { jsonbParam } from './jsonb'
+import { publishMailboxEvent } from './mailbox-events'
 import { sanitizeAttachmentFilename } from './inbox-attachments'
 import { createObjectStorage } from './object-storage'
 
@@ -218,6 +219,12 @@ async function syncAllFolders(
                 updatedAt: new Date(),
             })
             .where(eq(mailFolders.id, dbFolder.id))
+
+        // One signal per synced folder (not per message), after the rows AND the counters are
+        // committed: the browser re-reads the folder once either way.
+        if (folderResult.newMessages > 0) {
+            publishMailboxEvent({ mailboxId, folderId: dbFolder.id, kind: 'message.new' })
+        }
     }
 }
 

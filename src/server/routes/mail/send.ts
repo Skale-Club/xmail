@@ -14,6 +14,7 @@ import { processInboundEmail, deliverViaRoutes } from '../../lib/route-matcher'
 import { relayMessage, storeMessage } from '../../lib/native-send'
 import { jsonbParam } from '../../lib/jsonb'
 import { allocateUidForNewMessage, deleteMessagesPermanently } from '../../lib/move-messages'
+import { publishMailboxEvent } from '../../lib/mailbox-events'
 import { sanitizeAttachmentFilename, InboxAttachmentError } from '../../lib/inbox-attachments'
 import { createObjectStorage } from '../../lib/object-storage'
 // nodemailer's own RFC 2047 header-word encoder — used so the manually-built native raw
@@ -719,6 +720,9 @@ router.post('/:mailboxId/save-draft', async (req: Request, res: Response) => {
                 receivedAt: new Date(),
             }).returning()
         }
+
+        // Draft row committed: refresh the Drafts folder in any other open tab (best-effort).
+        publishMailboxEvent({ mailboxId, folderId: draftsFolder.id, kind: existingDraft ? 'message.updated' : 'message.new' })
 
         res.json({
             success: true,

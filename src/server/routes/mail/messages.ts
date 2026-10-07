@@ -10,6 +10,7 @@ import { runFiltersOnMessage } from './filters'
 import { decryptSecret } from '../../lib/crypto'
 import { deleteMessagesPermanently, moveMessagesToFolder } from '../../lib/move-messages'
 import { recomputeFolderCounts } from '../../lib/folder-counts'
+import { publishMailboxEvent } from '../../lib/mailbox-events'
 import { createObjectStorage } from '../../lib/object-storage'
 import { hasSearchCriteria, parseMailSearchQuery } from '../../lib/mail-search-query'
 import { buildMailSearchConditions } from './search-conditions'
@@ -388,6 +389,7 @@ router.get('/:mailboxId/messages/:messageId', async (req: Request, res: Response
             // deleteMessagesPermanently, so the folder's unread_count would otherwise
             // drift stale until the next move/delete recomputed it.
             await recomputeFolderCounts(message.folderId)
+            publishMailboxEvent({ mailboxId, folderId: message.folderId, kind: 'message.updated' })
         }
 
         res.json({
@@ -532,6 +534,7 @@ router.put('/:mailboxId/messages/:messageId', async (req: Request, res: Response
         // enough to run for either flag rather than special-case which one changed.
         if (data.isRead !== undefined || data.isStarred !== undefined) {
             await recomputeFolderCounts(existing.folderId)
+            publishMailboxEvent({ mailboxId, folderId: existing.folderId, kind: 'message.updated' })
         }
 
         res.json({
@@ -998,6 +1001,7 @@ router.post('/:mailboxId/messages/batch', async (req: Request, res: Response) =>
             const affectedFolderIds = [...new Set(affected.map((m) => m.folderId))]
             for (const folderId of affectedFolderIds) {
                 await recomputeFolderCounts(folderId)
+                publishMailboxEvent({ mailboxId, folderId, kind: 'message.updated' })
             }
         }
 

@@ -18,6 +18,7 @@ import { db } from '../../db'
 import { mailboxes, mailFolders, mailMessages } from '../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
 import { allocateUidForNewMessage } from './move-messages'
+import { publishMailboxEvent } from './mailbox-events'
 import { getDkimConfigForEmail, toNodemailerDkim } from './dkim'
 import { shouldSkipOwnDkimForRelay } from './relay-dkim-policy'
 import { describeOutbound, describeSendFailure, isRelayConfigured, sendOutbound } from './outbound-transport'
@@ -157,6 +158,9 @@ export async function storeMessage(
         remoteDate: new Date(),
         receivedAt: new Date(),
     }).onConflictDoNothing()
+
+    // Insert committed: let an open webmail tab see the new copy (best-effort, ids only).
+    publishMailboxEvent({ mailboxId, folderId: folder.id, kind: 'message.new' })
 }
 
 /**

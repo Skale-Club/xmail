@@ -1,6 +1,7 @@
 import { db } from '../../db'
 import { mailFolders, mailMessages } from '../../db/schema'
 import { eq, and, sql } from 'drizzle-orm'
+import { publishMailboxEvent } from './mailbox-events'
 
 /**
  * Atomically allocate the next UID for a folder.
@@ -30,7 +31,13 @@ export async function recomputeFolderCounts(folderId: string): Promise<void> {
           eq(mailMessages.isDeleted, false),
       ))
     const { total = 0, unread = 0 } = rows[0] ?? {}
-    await db.update(mailFolders)
+    const updated = await db.update(mailFolders)
         .set({ totalCount: total, unreadCount: unread, updatedAt: new Date() })
         .where(eq(mailFolders.id, folderId))
+        .returning({ mailboxId: mailFolders.mailboxId })
+
+    // The write above is committed (no surrounding transaction): tell any open webmail tab that
+    // the sidebar/switcher badges changed. Signals carry ids only; see mailbox-events.ts.
+    const mailboxId = updated?.[0]?.mailboxId
+    if (mailboxId) publishMailboxEvent({ mailboxId, folderId, kind: 'folder.counts' })
 }
