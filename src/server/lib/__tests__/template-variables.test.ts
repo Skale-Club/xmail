@@ -42,6 +42,15 @@ describe('websiteInsight template variable', () => {
     })
 })
 
+describe('extractCity — endereço com o país no fim (imports do Xphere desde 2026-10-07)', () => {
+    it('ignora ", United States" e variações', () => {
+        expect(extractCity('1267 Washington St, West Newton, MA 02465, United States')).toBe('West Newton')
+        expect(extractCity('286 Centre St, Newton, MA 02458, USA')).toBe('Newton')
+        expect(extractCity('150 California St Ste 108, Newton, MA 02458, US')).toBe('Newton')
+        expect(extractCity('United States')).toBe('')
+    })
+})
+
 describe('extractCity — cidade a partir do endereço do Xcraper', () => {
     it('pega a cidade no formato postal completo dos EUA', () => {
         expect(extractCity('75 Main St, Hudson, MA 01749')).toBe('Hudson')

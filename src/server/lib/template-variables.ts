@@ -70,6 +70,10 @@ const DEFAULT_VALUES: Record<string, string> = {
 export function extractCity(location: string | null | undefined): string {
     if (!location) return ''
     const parts = location.split(',').map((p) => p.trim()).filter(Boolean)
+    // Imports do Xphere a partir de 2026-10-07 terminam em `, United States`
+    // (`1267 Washington St, West Newton, MA 02465, United States`). Sem tirar o país, a cidade
+    // saía "United States" e a frase da visita virava "around the corner from United States".
+    while (parts.length > 0 && /^(united states( of america)?|usa|us|u\.s\.a?\.?)$/i.test(parts[parts.length - 1])) parts.pop()
     if (parts.length === 0) return ''
     if (parts.length === 1) return ''
     const last = parts[parts.length - 1]
