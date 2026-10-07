@@ -50,6 +50,11 @@ const PLATFORM_EMAIL_DOMAINS = new Set<string>([
     'zenoti.com',
     'boulevard.io',
     'pocketsuite.io',
+    // 2026-10-07: alinhado com Xphere e Xcraper (as tres listas tem que ser iguais).
+    'booksy.net',
+    'getsquire.com',
+    'mytime.com',
+    'bookedin.com',
 ])
 
 /**
