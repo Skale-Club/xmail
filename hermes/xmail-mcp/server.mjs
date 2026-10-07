@@ -265,6 +265,43 @@ const tools = [
     },
   },
   {
+    name: 'outreach_campaign_sequence_get',
+    description: 'Read the email copy of an existing campaign: its status and every step (stepOrder, type, delayHours, delayHoursMax, subject, plainBody, htmlBody, A/B fields, send counters) plus copy-lint findings per step. Read-only. Use it before editing so you change the real current text, and to find out whether the campaign is draft, paused or active.',
+    inputSchema: {
+      type: 'object', required: ['campaignId'], additionalProperties: false,
+      properties: { campaignId: { type: 'string' } },
+    },
+  },
+  {
+    name: 'outreach_campaign_step_update',
+    description: 'Edit the subject, plainBody, htmlBody and/or delay of ONE step of an existing draft, paused or active campaign, whenever you or Vanildo judge the copy needs to change. Partial: send only the fields you are changing (send plainBody and htmlBody together so they do not diverge). Every change is audited and the previous text is stored, so it can be undone with outreach_campaign_step_revert. On an active or paused campaign the change applies to FUTURE sends only; mail already sent is not touched (the response says appliesTo and alreadySent). This tool cannot send email, cannot activate a campaign and cannot touch the A/B variant B fields; activation still goes through the human approval path. The edit is rejected with 422 if the step would no longer pass the activation checks (it must keep {{unsubscribeUrl}} in the sent body and well-formed {{#flag}}...{{/flag}} blocks). The response carries a warnings list (em or en dash, "Hi there", the words tech or technology, a postal street address, plain/HTML divergence, a pending activation approval). You MUST report every warning to Vanildo together with the before and after text from the response, and fix the copy yourself when a warning is a style-rule violation. delayHoursMax is only changed when you send it (null clears it).',
+    inputSchema: {
+      type: 'object', required: ['campaignId', 'stepOrder'], additionalProperties: false,
+      properties: {
+        campaignId: { type: 'string' },
+        stepOrder: { type: 'integer', minimum: 1, maximum: 1000, description: 'One-based position of the step, as returned by outreach_campaign_sequence_get.' },
+        subject: { type: 'string', minLength: 1, maxLength: 500 },
+        plainBody: { type: 'string', minLength: 1, maxLength: 100000 },
+        htmlBody: { type: 'string', minLength: 1, maxLength: 250000 },
+        delayHours: { type: 'integer', minimum: 0, maximum: 2160 },
+        delayHoursMax: { type: ['integer', 'null'], minimum: 0, maximum: 2160, description: 'Upper bound of a random wait; null makes the delay fixed. Omit to leave it untouched.' },
+        reason: { type: 'string', maxLength: 500, description: 'Why the copy is changing; stored in the audit trail.' },
+      },
+    },
+  },
+  {
+    name: 'outreach_campaign_step_revert',
+    description: 'Undo the most recent un-reverted copy edit of one campaign step, restoring the text and delays stored before it (calling it again walks back one more edit). Audited. Refuses with 409 when nobody edited the step through this gateway, or when the step was changed by someone else after the last edit, so a human change is never overwritten. Same limits as outreach_campaign_step_update: future sends only on active or paused campaigns, cannot send or activate, restored copy must still pass the activation checks. Report the result and any warnings to Vanildo with the before and after text.',
+    inputSchema: {
+      type: 'object', required: ['campaignId', 'stepOrder'], additionalProperties: false,
+      properties: {
+        campaignId: { type: 'string' },
+        stepOrder: { type: 'integer', minimum: 1, maximum: 1000 },
+        reason: { type: 'string', maxLength: 500 },
+      },
+    },
+  },
+  {
     name: 'xmail_poll_events',
     description: 'Poll durable outreach events after a cursor. Events remain until acknowledged.',
     inputSchema: {
@@ -352,6 +389,15 @@ async function callTool(name, args = {}) {
       return request(`/campaigns/${encodeURIComponent(campaignId)}/enroll-draft`, { method: 'POST', body })
     }
     case 'xmail_pause_campaign': return request(`/campaigns/${encodeURIComponent(args.campaignId)}/pause`, { method: 'POST' })
+    case 'outreach_campaign_sequence_get': return request(`/campaigns/${encodeURIComponent(args.campaignId)}/sequence`)
+    case 'outreach_campaign_step_update': {
+      const { campaignId, stepOrder, ...body } = args
+      return request(`/campaigns/${encodeURIComponent(campaignId)}/sequence/steps/${encodeURIComponent(stepOrder)}`, { method: 'PUT', body })
+    }
+    case 'outreach_campaign_step_revert': {
+      const { campaignId, stepOrder, ...body } = args
+      return request(`/campaigns/${encodeURIComponent(campaignId)}/sequence/steps/${encodeURIComponent(stepOrder)}/revert`, { method: 'POST', body })
+    }
     case 'xmail_poll_events': return request('/events', { query: args })
     case 'xmail_ack_events': return request('/events/ack', { method: 'POST', body: args })
     default: throw new Error(`Unknown tool: ${name}`)

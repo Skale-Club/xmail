@@ -58,4 +58,30 @@ describe('Hermes MCP capability contract', () => {
             expect(schema.required ?? []).not.toContain(property)
         }
     })
+
+    it('exposes campaign copy read/edit/revert, bounded, with the audit and warning duties in the description', () => {
+        const tools = listHermesTools() as Array<{
+            name: string
+            description?: string
+            inputSchema: { required?: string[]; properties: Record<string, unknown> }
+        }>
+        const byName = new Map(tools.map((tool) => [tool.name, tool]))
+        for (const name of ['outreach_campaign_sequence_get', 'outreach_campaign_step_update', 'outreach_campaign_step_revert']) {
+            expect(byName.has(name), `missing ${name}`).toBe(true)
+        }
+        const update = byName.get('outreach_campaign_step_update')!
+        expect(update.inputSchema.required).toEqual(['campaignId', 'stepOrder'])
+        // The A/B variant B columns and the step type are out of reach of the agent.
+        expect(Object.keys(update.inputSchema.properties).sort()).toEqual([
+            'campaignId', 'delayHours', 'delayHoursMax', 'htmlBody', 'plainBody', 'reason', 'stepOrder', 'subject',
+        ])
+        for (const name of ['outreach_campaign_step_update', 'outreach_campaign_step_revert']) {
+            const description = byName.get(name)!.description ?? ''
+            expect(description, name).toMatch(/audited/i)
+            expect(description, name).toMatch(/future sends only/i)
+            expect(description, name).toMatch(/cannot send/i)
+            expect(description, name).toMatch(/warnings/i)
+            expect(description, name).toMatch(/Vanildo/)
+        }
+    })
 })

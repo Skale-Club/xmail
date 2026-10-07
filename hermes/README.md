@@ -181,6 +181,23 @@ do MCP até passar por aprovação durável no Xmail.
 Não existe tool de ativação nem envio direto. O contrato completo e o rollout estão em
 `docs/outreach-hermes-architecture.md`.
 
+**Texto de campanha (escopo `campaigns:copy`, migration 072).** Três tools leem e mudam o texto de
+campanhas que já existem, em vez de criar rascunhos duplicados:
+
+| Tool | O que faz |
+|---|---|
+| `outreach_campaign_sequence_get` | Status da campanha + todos os steps (assunto, `plainBody`, `htmlBody`, atrasos, A/B, contadores) e o lint de cada um. Escopo `outreach:read` |
+| `outreach_campaign_step_update` | Edita assunto/corpo/atraso de UM step de campanha `draft`, `paused` ou `active`. Auditado, guarda a versão anterior, devolve `warnings` |
+| `outreach_campaign_step_revert` | Desfaz a última edição do agente naquele step (de novo = uma a mais para trás) |
+
+Regras que o Hermes tem que seguir: a mudança vale só para **envios futuros** (o que já saiu não
+muda; a resposta traz `appliesTo` e `alreadySent`); a tool não envia nem ativa, e ativação continua
+pela aprovação humana; se a edição tirar o `{{unsubscribeUrl}}` ou quebrar um bloco `{{#flag}}` a
+API responde 422 e nada é salvo; **todo `warnings` da resposta (travessão, "Hi there", "tech",
+endereço postal, plain/HTML divergentes, aprovação de ativação pendente) vai para o Vanildo junto
+com o texto antes e depois.** Depois de aplicar a migration 072 a credencial já existente passa a
+ter o escopo; o container do Hermes precisa receber o `server.mjs` novo (reiniciar o MCP).
+
 ## Operação
 
 ```bash

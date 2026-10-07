@@ -2354,6 +2354,8 @@ export const OUTREACH_AGENT_SCOPES = [
     'campaigns:draft',
     'campaigns:request_activation',
     'campaigns:pause',
+    // Read-modify-revert the email copy of existing campaigns (migration 072). Cannot send or activate.
+    'campaigns:copy',
     'approvals:read',
     'events:read',
 ] as const

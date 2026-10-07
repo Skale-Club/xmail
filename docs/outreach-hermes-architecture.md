@@ -71,6 +71,9 @@ its default lookback is six hours and can be changed with
 | POST | `/campaigns/drafts` | `campaigns:draft` | Idempotent draft + canonical sequence only |
 | POST | `/campaigns/:id/activation-requests` | `campaigns:request_activation` | Request human activation; never activates directly |
 | POST | `/campaigns/:id/pause` | `campaigns:pause` | Immediate, idempotent pause |
+| GET | `/campaigns/:id/sequence` | `outreach:read` | Campaign status + every step's copy, delays, A/B fields, counters and copy-lint findings |
+| PUT | `/campaigns/:id/sequence/steps/:stepOrder` | `campaigns:copy` | Partial edit of subject/plainBody/htmlBody/delay of one step of a draft, paused or active campaign; audited, versioned, 422 if the step would fail the activation checks; never sends or activates |
+| POST | `/campaigns/:id/sequence/steps/:stepOrder/revert` | `campaigns:copy` | Restore the version stored before the latest un-reverted agent edit; refuses if a human changed the step since |
 | GET | `/events` | `events:read` | Ordered event polling |
 | POST | `/events/ack` | `events:read` | Monotonic credential cursor |
 

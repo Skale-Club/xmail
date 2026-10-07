@@ -38,6 +38,7 @@ governed workflow:
   "campaigns:draft",
   "campaigns:request_activation",
   "campaigns:pause",
+  "campaigns:copy",
   "approvals:read",
   "events:read"
 ]

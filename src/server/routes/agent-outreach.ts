@@ -23,6 +23,7 @@ import { resolveLeadVerificationFields } from '../lib/email-verification-mapping
 import agentProspectingRouter from './agent-prospecting'
 import agentApprovalsRouter from './agent-approvals'
 import agentAssessmentsRouter from './agent-assessments'
+import agentCampaignCopyRouter from './agent-campaign-copy'
 import { jsonbParam } from '../lib/jsonb'
 import { withSourceRunId } from '../lib/prospecting/source-run-id'
 import { checkProtectedSendingDomains } from './outreach/campaigns'
@@ -42,6 +43,7 @@ function isUuid(value: string): boolean {
 router.use('/prospecting', agentProspectingRouter)
 router.use('/', agentApprovalsRouter)
 router.use('/', agentAssessmentsRouter)
+router.use('/', agentCampaignCopyRouter)
 
 function requireScope(req: Request, res: Response, scope: OutreachAgentScope): AgentPrincipal | null {
     const principal = getAgentPrincipal(req)

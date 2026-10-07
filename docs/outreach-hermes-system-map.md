@@ -9,7 +9,7 @@
 >
 > Última auditoria completa: **2026-08-15** (commit `159450d`); reconferência de produção em
 > **2026-09-05** (achados 1b, 13, 14 e 15 fechados; §8 atualizado). Em **2026-09-08** (Fase 37) o
-> achado 2 foi fechado. A seção "Achados abertos" tem
+> achado 2 foi fechado. Em **2026-10-07** entrou o escopo `campaigns:copy` (G11, achados 21 e 22). A seção "Achados abertos" tem
 > data — se estiver velha, refaça a rotina de reanálise no fim do doc antes de confiar nela.
 
 ## 1. O que é, em uma frase
@@ -39,12 +39,13 @@ crédito pago e toda ativação passam por aprovação humana durável.
 | Pedir aprovação de enriquecimento (≤10 candidatos) | Ver `APOLLO_API_KEY`, `DATABASE_URL`, SMTP, service-role |
 | Importar candidatos qualificados / prospects em lote (≤100) | Escapar da org à qual a credencial está presa |
 | Criar rascunho de campanha + steps, matricular ≤100 leads | Entrar em `/api/outreach/*` (rota humana/Xphere) |
+| Ler e editar/reverter o texto (assunto, corpo, atraso) de steps de campanha `draft`/`paused`/`active`, auditado (G11) | Editar variante B do A/B, tipo do step, criar/remover steps, mudar status |
 | Pausar campanha (direção segura) | Escolher a própria identidade/tenant |
 | Ler e reconhecer eventos do outbox | — |
 
 Escopos (`OUTREACH_AGENT_SCOPES` em `src/db/schema.ts`): `outreach:read`, `prospects:search`,
 `prospects:enrich`, `prospects:assess`, `prospects:write`, `campaigns:draft`,
-`campaigns:request_activation`, `campaigns:pause`, `approvals:read`, `events:read`.
+`campaigns:request_activation`, `campaigns:pause`, `campaigns:copy`, `approvals:read`, `events:read`.
 
 ## 3. Mapa de arquivos — onde cada coisa mora
 
@@ -54,6 +55,7 @@ Escopos (`OUTREACH_AGENT_SCOPES` em `src/db/schema.ts`): `outreach:read`, `prosp
 | Autenticação do agente | `src/server/lib/agent-auth.ts` | Hash SHA-256, prefixo, revogação, expiração, **e o principal ainda pertencer à org** |
 | Roteamento da auth | `src/server/lib/api-auth.ts` | `stripAgentHeaders` antes de tudo; agente só entra em `/api/agent/outreach` |
 | Gateway do agente | `src/server/routes/agent-outreach.ts` | health, campanhas, import livre, draft, enroll-draft, pause, events/ack |
+| Texto de campanha (G11) | `src/server/routes/agent-campaign-copy.ts`, `lib/agent-campaign-copy-history.ts`, `lib/campaign-copy-lint.ts` | GET sequence (`outreach:read`), PUT step e POST revert (`campaigns:copy`); validação = `validateSequenceForActivation` do step editado; auditoria na MESMA transação |
 | Prospecção | `src/server/routes/agent-prospecting.ts` | search → candidatos → enrich aprovado → import |
 | Aprovações (lado agente) | `src/server/routes/agent-approvals.ts` | Pede; nunca decide |
 | Aprovações (lado humano) | `src/server/routes/outreach/approvals.ts` | `requireInteractiveAdmin` bloqueia service-principal; approve de `campaign_activation` **ativa na hora** |
@@ -105,6 +107,7 @@ xmail_search_prospects ──G1─→ prospecting_runs + prospect_candidates (sc
 | G8 | `agent-approvals.ts` | Só de `draft`/`paused`; idempotente |
 | G9 | `outreach/approvals.ts` + `PUT /campaigns/:id` | `validateCampaignReadyForActivation` (sequência, leads com inbox, **P009**, **warm-up completo**) + ativação atômica. Único gate comum aos caminhos humano, Xphere e agente |
 | G10 | `outreach-delivery-policy.ts` | Última rede antes do envio, por destinatário |
+| G11 | `agent-campaign-copy.ts` | Edição de texto por escopo próprio `campaigns:copy`; só `draft`/`paused`/`active`; só variante A + atrasos; o step editado tem que continuar passando `invalid_email_content`, `missing_unsubscribe_placeholder` e `malformed_template_block` (422 e nada salvo); linha do step travada (`FOR UPDATE`); edição + linha de auditoria (`agent.campaign.step_copy_updated`, com before/after) na mesma transação — falhou a auditoria, a edição desfaz; `delay_hours_max` só muda se estiver no payload; revert recusa se um humano mexeu no step depois. **Não** é um gate de aprovação: o texto de campanha ativa muda sem nova aprovação (achado 21) |
 
 ## 5. Workers (todos in-process, `src/server/jobs/index.ts`)
 
@@ -124,8 +127,8 @@ O reconciliador do outbox cobre a janela de crash (lookback padrão 6h,
 Rode do root do repo. Qualquer resultado diferente do esperado é regressão de segurança.
 
 ```bash
-# 1. Nenhuma tool de envio/ativação chega ao LLM (esperado: só request_activation e pause)
-grep -n "name: 'xmail_" hermes/xmail-mcp/server.mjs
+# 1. Nenhuma tool de envio/ativação chega ao LLM (esperado: só request_activation e pause; as tools de texto — outreach_campaign_* — editam copy, não enviam nem ativam)
+grep -nE "name: '(xmail|outreach)_" hermes/xmail-mcp/server.mjs
 ```
 
 ```bash
@@ -151,6 +154,8 @@ grep -n "protected_sending_domain" src/server/routes/outreach/campaigns.ts
 ```bash
 # 6. Contrato do MCP e gateway sob teste (esperado: verde)
 npx vitest run src/server/lib/__tests__/hermes-mcp-contract.test.ts src/server/lib/__tests__/outreach-agent-gateway.db.test.ts
+# 6b. Edição de texto: escopo, isolamento por org, 422, lint, versão e revert
+npx vitest run src/server/routes/__tests__/agent-campaign-copy.test.ts src/server/lib/__tests__/campaign-copy-lint.test.ts --maxWorkers=1
 ```
 
 ```bash
@@ -169,6 +174,7 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 
 | Item | Onde | Como conferir |
 |---|---|---|
+| Migration 072 (escopo `campaigns:copy`) | banco de prod | **escrita em 2026-10-07, NÃO aplicada.** `select name, scopes from outreach_agent_credentials where revoked_at is null` — a credencial do Hermes tem que listar `campaigns:copy`. O UPDATE casa por nome (`%hermes%`) ou pelo conjunto draft+request_activation+pause; se não casar, nada muda e a concessão tem que ser feita pela API de credenciais |
 | Migrations 045–058 | banco de prod | `select * from supabase_migrations.schema_migrations` / `to_regclass('public.warmup_messages')` |
 | `APOLLO_API_KEY` | **`run_app_container()` do `.github/workflows/build-deploy.yml`** *e* o secret existir | `gh secret list \| grep APOLLO` — **o grep no workflow NÃO basta**: ele confirma a fiação, e um `${{ secrets.X }}` inexistente resolve para string vazia sem erro. Foi assim que este item passou por resolvido em 2026-08-15 estando quebrado |
 | Credencial do agente | `POST /api/outreach/agent-credentials?organizationId=…` (sessão admin) | `select id, name, scopes, revoked_at from outreach_agent_credentials` |
@@ -203,6 +209,8 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 | 17 | Info | Rampa de warm-up em 0/14 nas 7 caixas em 2026-08-15 (1/14 em 2026-08-16 — avançou). O mesh envia; o contador avança na virada UTC. Ativação de campanha destravada em ~14 dias, ou com `OUTREACH_ALLOW_UNWARMED_ACTIVATION=true` | tempo, não bug |
 | 18 | ~~Alta~~ | ~~Groom cego na direção native→Gmail~~ — **resolvido em 2026-08-16**. O relay Brevo das caixas nativas reescreve o `Message-ID` (`<uuid@smtp-relay.sendinblue.com>`) e o groom só procurava pelo nosso `w.…@dominio`: 7/7 mensagens native→Gmail presas em `sent`, as de `info@xkedule.com` 100% na pasta Spam sem resgate, e o audit dizendo "spam 0%". Agora `lib/warmup/detect.ts` casa também por envelope (remetente + assunto exato + janela); `groomed` no log conta só o que foi localizado e há `undetected`; o audit mostra "aguardando detecção". Ver §9 | `jobs/processWarmup.ts`, `lib/warmup/detect.ts` |
 | 19 | ~~Média~~ | ~~`runWithLock` com lock de sessão através do pooler transaction-mode~~ — **resolvido em 2026-08-16**: `pg_try_advisory_xact_lock` dentro de `BEGIN…COMMIT` na conexão reservada (o pooler pina o backend durante a transação). Antes, ~50% dos ticks de **todos** os jobs logavam `already running … skipping` (851 em 6h) sem nada rodando. Validado contra o pooler de prod com chave descartável: lock visto ocupado durante o corpo, 20/20 livre após o COMMIT | `src/server/lib/cron-lock.ts` |
+| 21 | Média | **Texto de campanha ativa muda sem nova aprovação humana** (decisão do dono em 2026-10-07: o Hermes ajusta o texto quando ele ou o Vanildo julgarem necessário). Consequências abertas: (a) a aprovação de ativação não é amarrada a um hash do texto — o humano aprova o que existir quando clicar, e a rota só avisa (`pending_activation_approval`) se houver aprovação pendente; (b) o texto passa por lint (avisos, não bloqueio) e pelos checks de ativação, mas ninguém lê a mudança antes de sair — o freio é a regra do Hermes de reportar `warnings` + antes/depois ao Vanildo e o `revert`. Se isso incomodar: gravar o hash do texto na aprovação e recusar o approve se divergir | `agent-campaign-copy.ts`, `outreach/approvals.ts` |
+| 22 | Baixa | O lint de cópia avisa sobre endereço postal (decisão de 2026-10-07: nenhum endereço físico nos e-mails), mas o card de aprovação (`outreach-campaign-compliance.ts`, Fase 37) ainda lista `missing_physical_address` como blocker informativo — os dois dizem o contrário. Reconciliar quando a política de rodapé estiver fechada. Também: o histórico de versões fica em `outreach_agent_audit_log` (`metadata.before/after`), validado só contra um banco falso nos testes, não contra Postgres real (filtro jsonb `metadata->>'stepOrder'`, `FOR UPDATE`) | `outreach-campaign-compliance.ts`, `agent-campaign-copy-history.ts` |
 | 20 | ~~Alta~~ | ~~A regra "campanha só sai das contas Icemail" não é garantida pelo código~~ — **resolvido em 2026-09-30** (`63982a9`, `OUTREACH_PROTECTED_DOMAINS` no deploy, provado no container). Registro original: (medido 2026-09-30) As nove `info@` têm `warmup_only=false`, então passam no filtro de remetente de `agent-outreach.ts` e de `campaigns.ts`; o único bloqueio por domínio, `checkProtectedSendingDomains`, lê `MAIL_DOMAIN` + `OUTREACH_PROTECTED_DOMAINS`, e em produção só `skale.club` está protegido (`OUTREACH_PROTECTED_DOMAINS` nem chega ao container). Uma `info@xkedule.com` poderia ser matriculada como remetente; hoje só não envia porque `sending_inbox_not_warmed` a barra por acidente. Conserto: os oito outros domínios da operação em `OUTREACH_PROTECTED_DOMAINS`, passado no `run_app_container`. Regra completa no `CLAUDE.md`, seção *Regras do processo de prospecção*. | `routes/outreach/campaigns.ts` (`getProtectedSendingDomains`) + `.github/workflows/build-deploy.yml` |
 
 ### Correções aplicadas em 2026-08-15
@@ -430,7 +438,7 @@ WHERE jsonb_typeof(<coluna>) = 'string';
 
 1. `git log --oneline -15 -- src/server/routes/agent-*.ts src/server/lib/prospecting hermes/` — o que mudou desde a última auditoria.
 2. Rodar os 7 comandos de invariante da §6.
-3. `npx vitest run src/server/lib/__tests__/hermes-mcp-contract.test.ts` — o contrato de capacidade.
+3. `npx vitest run src/server/lib/__tests__/hermes-mcp-contract.test.ts` — o contrato de capacidade (inclui as três tools de texto).
 4. Conferir a §7 (pré-requisitos) contra o estado real de prod.
 5. `GET /api/admin/outreach/health` → campo `agentOps`; alertar se `stuckExecutingApprovals > 0`.
 6. Em prod: `docker logs xmail --since 24h 2>&1 | grep -E 'agent-auth|prospecting|outreach\.(approvals|events)'`.
