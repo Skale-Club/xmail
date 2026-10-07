@@ -265,9 +265,9 @@ export async function processDueReminders(deps: {
             const reminder = rows[0]
             if (!reminder) return false
 
-            // sql.json() serializes the object ONCE into a jsonb object. Passing JSON.stringify()
-            // instead would double-encode it into a jsonb string scalar (postgres-js re-serializes
-            // the string), and metadata->>'reminderId' would then be NULL.
+            // JSON como texto com cast ::jsonb: grava um objeto jsonb (conferido em producao em
+            // 2026-10-07). NAO usar tx.json(): com prepare: false ele chega ao bind como objeto cru e
+            // quebra ('The "string" argument must be of type string'), ver xphere-events.ts.
             await tx`
                 INSERT INTO user_notifications (user_id, type, title, message, metadata)
                 VALUES (
@@ -275,11 +275,11 @@ export async function processDueReminders(deps: {
                     'inbox_reminder',
                     'Inbox reminder',
                     ${reminder.note ?? 'You have a reminder on a conversation'},
-                    ${tx.json({
+                    ${JSON.stringify({
                         reminderId: reminder.id,
                         conversationId: reminder.conversation_id,
                         organizationId: reminder.organization_id,
-                    })}
+                    })}::jsonb
                 )
             `
             await tx`

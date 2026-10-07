@@ -23,9 +23,12 @@ export async function publishOutreachEvent(input: PublishOutreachEventInput): Pr
     if (!payload || Array.isArray(payload) || typeof payload !== 'object') {
         throw new Error('Outreach event payload must be a JSON object')
     }
-    // postgres-js owns JSON serialization here. Passing a JSON.stringify() result through
-    // Drizzle's jsonb mapper and then postgres-js can encode the value twice as a JSON string
-    // scalar, which the outbox's object-only constraint correctly rejects.
+    // JSON vai como TEXTO com cast explicito ::jsonb, direto no postgres-js (sem o mapper jsonb do
+    // Drizzle, que era o que codificava duas vezes). NAO usar queryClient.json(): com a configuracao
+    // deste cliente (prepare: false) ele chega ao bind como objeto cru e quebra com 'The "string"
+    // argument must be of type string ... Received an instance of Object'. Foi isso que impediu o
+    // registro do primeiro envio real de campanha em 2026-10-07; conferido no Postgres de producao
+    // que ${JSON.stringify(x)}::jsonb grava um objeto (jsonb_typeof = 'object').
     await queryClient`
         INSERT INTO outreach_event_outbox (
             organization_id, deduplication_key, event_type, schema_version,
@@ -37,7 +40,7 @@ export async function publishOutreachEvent(input: PublishOutreachEventInput): Pr
             1,
             ${input.aggregateType},
             ${input.aggregateId},
-            ${queryClient.json(payload)},
+            ${JSON.stringify(payload)}::jsonb,
             ${input.deliverToXphere ?? false},
             NOW()
         )
