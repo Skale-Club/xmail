@@ -235,6 +235,47 @@ export async function sendTelegram(title: string, body = ''): Promise<SendResult
     }
 }
 
+/** The resolved bot config (panel row, else env), or null when Telegram is not set up. */
+export async function getTelegramConfig(): Promise<TelegramConfig | null> {
+    return getConfig()
+}
+
+/**
+ * Calls one Bot API method with a JSON body. Resolves `{ ok: false }` instead of throwing, like
+ * sendTelegram. Used by the approval buttons (lib/telegram-approvals.ts) for sendMessage with an
+ * inline keyboard, editMessageText, answerCallbackQuery and setWebhook.
+ */
+export async function callTelegramApi<T = unknown>(
+    method: string,
+    payload: Record<string, unknown>,
+): Promise<{ ok: true; result: T } | { ok: false; detail: string }> {
+    try {
+        const config = await getConfig()
+        if (!config) return { ok: false, detail: 'unconfigured' }
+        const abort = new AbortController()
+        const timer = setTimeout(() => abort.abort(), 20_000)
+        try {
+            const response = await fetch(`https://api.telegram.org/bot${config.token}/${method}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: abort.signal,
+            })
+            const parsed = await response.json().catch(() => ({})) as TelegramErrorBody & { ok?: boolean; result?: T }
+            if (parsed.ok) return { ok: true, result: parsed.result as T }
+            const detail = describeFailure(parsed)
+            console.error(`[telegram] ${method} rejected — ${detail}`)
+            return { ok: false, detail }
+        } finally {
+            clearTimeout(timer)
+        }
+    } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        console.error(`[telegram] ${method} failed — ${detail}`)
+        return { ok: false, detail }
+    }
+}
+
 /** True when an alert would actually go somewhere. Used to skip building bodies. */
 export async function isTelegramConfigured(): Promise<boolean> {
     return (await getConfig()) !== null

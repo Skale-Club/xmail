@@ -13,6 +13,7 @@ import { agentHasScope, getAgentPrincipal, type AgentPrincipal } from '../lib/ag
 import { writeAgentAudit } from '../lib/agent-audit'
 import { MAX_APOLLO_CREDITS_PER_PERSON } from '../lib/prospecting/apollo'
 import { publishOutreachEvent } from '../lib/xphere-events'
+import { notifyApprovalRequested } from '../lib/telegram-approvals'
 
 const router = Router()
 
@@ -63,7 +64,11 @@ async function findOrCreateApproval(input: {
             outreachActionApprovals.idempotencyKey,
         ],
     }).returning()
-    if (created) return { approval: created, idempotentReplay: false }
+    if (created) {
+        // Card with Approve/Reject buttons on the owner's Telegram (best effort, never blocks).
+        void notifyApprovalRequested(created.id)
+        return { approval: created, idempotentReplay: false }
+    }
     const existing = await db.query.outreachActionApprovals.findFirst({
         where: and(
             eq(outreachActionApprovals.organizationId, input.principal.organizationId),

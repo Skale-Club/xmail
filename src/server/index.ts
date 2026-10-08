@@ -15,7 +15,7 @@ ${remoteDbRefusal}
 `)
     process.exit(1)
 }
-import express, { type Request } from 'express'
+import express, { type Request, type Response } from 'express'
 import cors from 'cors'
 import { join } from 'path'
 import { timingSafeEqual } from 'node:crypto'
@@ -55,6 +55,7 @@ import { getMailTLSOptions } from './lib/mail-tls'
 import { createApiAuthMiddleware } from './lib/api-auth'
 import { describeServiceAuthState } from './lib/service-auth'
 import { installAlerting } from './lib/install-alerting'
+import { ensureTelegramWebhook, handleTelegramUpdate, telegramWebhookPath } from './lib/telegram-approvals'
 import { startDbLivenessWatchdog, type DbLivenessWatchdog } from './lib/db-liveness'
 import { alertOps } from './lib/ops-alert'
 import { escapeHtml } from './lib/telegram'
@@ -368,6 +369,20 @@ app.use('/o/u', unsubscribeRoutes)
 
 app.use('/t', trackRoutes)
 
+// Telegram approval buttons (lib/telegram-approvals.ts). Outside /api: Telegram cannot send a JWT.
+// The secret header derived from the bot token plus the configured chat id are the auth.
+app.post(telegramWebhookPath(), async (req: Request, res: Response) => {
+    try {
+        const header = req.headers['x-telegram-bot-api-secret-token']
+        const status = await handleTelegramUpdate(req.body ?? {}, typeof header === 'string' ? header : undefined)
+        res.sendStatus(status)
+    } catch (error) {
+        console.error('[telegram-approvals] webhook failed:', error instanceof Error ? error.message : error)
+        // 200 so Telegram does not redeliver a tap that may already have been acted on.
+        res.sendStatus(200)
+    }
+})
+
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('Error:', err.message)
     console.error('Stack:', err.stack)
@@ -429,6 +444,9 @@ app.listen(PORT, async () => {
     } catch { /* ignore */ }
 
     import('./jobs/index').then((jobs) => jobs.startJobs())
+
+    // Approval buttons on Telegram: register this server as the ops bot's webhook (production only).
+    void ensureTelegramWebhook().catch((error) => console.error('[telegram-approvals] setWebhook failed:', error))
 
     // Start native SMTP + IMAP + MX servers (always on in production; set
     // ENABLE_MAIL_SERVER=false to disable for dev/CI runs).
