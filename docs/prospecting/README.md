@@ -6,7 +6,9 @@ system can understand the whole pipeline without rebuilding it from the code. It
 systems in four repositories plus one home server.
 
 - **Source of truth:** this file, in the `xmail` repository (`docs/prospecting/README.md`).
-  Notion holds a read-only mirror for comfortable reading; when the two differ, this file wins.
+  Notion holds a read-only mirror for comfortable reading
+  ([Prospecting System (mirror)](https://app.notion.com/p/3f3b7a6861218178bf2af6e6c4e33a72), under
+  Projects / Active Prospect System); when the two differ, this file wins.
 - **Keep it current:** any change to prospecting behavior (a rule, a limit, a new tool, a new
   step, a host move) updates this file **in the same commit** as the code. The other repos'
   `CLAUDE.md` files point here with the same rule. After updating, refresh the Notion mirror.
