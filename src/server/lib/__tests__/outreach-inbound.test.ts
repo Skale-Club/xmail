@@ -6,8 +6,12 @@ import {
     classifyInboundMessage,
     consumeClassifiedEvents,
     imapProviderMessageId,
+    INGEST_FAILURE_BACKOFF_MINUTES,
+    classifyIngestFailure,
+    consecutiveTransientFailures,
     ingestInboundPage,
     nativeProviderMessageId,
+    recordIngestFailure,
     resolveImapCursor,
     resolveInboundPageSize,
     type InboundEventStore,
@@ -44,6 +48,7 @@ function message(overrides: Partial<NormalizedInboundMessage> = {}): NormalizedI
 function createFakeStore(seed: StoredProviderEvent[] = []) {
     const events = new Map<string, StoredProviderEvent>()
     let cursor: ProviderCursorState | null = null
+    let lastError: string | null = null
     let sequence = 0
     const cursorSaves: ProviderCursorState[] = []
     const retries: { error: string; retryAt: Date | null }[] = []
@@ -85,9 +90,15 @@ function createFakeStore(seed: StoredProviderEvent[] = []) {
         async saveCursor(_account, _provider, next) {
             cursor = { ...next }
             cursorSaves.push({ ...next })
+            // Mirrors the SQL store: a successful save clears the failure bookkeeping.
+            lastError = null
         },
         async recordCursorRetry(_account, _provider, input) {
             retries.push({ ...input })
+            lastError = input.error
+        },
+        async loadCursorLastError() {
+            return lastError
         },
         // Mirrors the SQL store's lease: pick the oldest pending row of this
         // classification, run the handler, and only then mark it processed. A failure
@@ -635,5 +646,117 @@ describe('ingestInboundPage - isExcluded (warm-up mesh traffic)', () => {
             isExcluded: () => false,
         })
         expect(result.excluded).toBeUndefined()
+    })
+})
+
+describe('classifyIngestFailure', () => {
+    const coded = (message: string, code: string) => Object.assign(new Error(message), { code })
+
+    it.each([
+        ['ETIMEDOUT', coded('connect ETIMEDOUT 142.250.0.1:993', 'ETIMEDOUT')],
+        ['ECONNRESET', coded('read ECONNRESET', 'ECONNRESET')],
+        ['ECONNREFUSED', coded('connect ECONNREFUSED 127.0.0.1:993', 'ECONNREFUSED')],
+        ['EPIPE', coded('write EPIPE', 'EPIPE')],
+        ['imapflow socket timeout', coded('Command failed', 'ETIMEOUT')],
+        ['imapflow connection not available', coded('Connection not available', 'NoConnection')],
+        ['imapflow greeting timeout', coded('Server did not send a greeting', 'GREETING_TIMEOUT')],
+        ['socket closed by message only', new Error('Socket closed unexpectedly')],
+        ['postgres pool closing', coded('write CONNECTION_CLOSED', 'CONNECTION_CLOSED')],
+        ['our own per-account deadline', Object.assign(new Error('IMAP overall_deadline timed out for account x'), { name: 'ImapInboundTimeoutError' })],
+        ['wrapped cause', Object.assign(new Error('fetch failed'), { cause: coded('read ECONNRESET', 'ECONNRESET') })],
+    ])('treats %s as transient', (_label, error) => {
+        expect(classifyIngestFailure(error)).toBe('transient')
+    })
+
+    it.each([
+        ['imapflow auth flag', Object.assign(new Error('Command failed'), { authenticationFailed: true })],
+        ['invalid credentials text', new Error('Invalid credentials (Failure)')],
+        ['credential key mismatch', Object.assign(new Error('Stored credential could not be decrypted'), { name: 'CredentialKeyMismatchError' })],
+        ['mailbox missing', new Error('Mailbox does not exist: INBOX')],
+        ['unknown failure', new Error('something nobody has seen before')],
+        ['non-error throw', 'boom'],
+        ['auth failure that follows a reset', Object.assign(new Error('Authentication failed after connection reset'), { code: 'ECONNRESET' })],
+    ])('treats %s as persistent', (_label, error) => {
+        expect(classifyIngestFailure(error)).toBe('persistent')
+    })
+})
+
+describe('recordIngestFailure', () => {
+    const NOW = new Date('2026-10-07T12:00:00.000Z')
+    const minutesAhead = (date: Date | null) => date && Math.round((date.getTime() - NOW.getTime()) / 60_000)
+    const account = { id: ACCOUNT, provider: 'smtp' as const }
+    const timeout = Object.assign(new Error('Command failed'), { code: 'ETIMEOUT' })
+    const authFailure = Object.assign(new Error('Invalid credentials (Failure)'), { authenticationFailed: true })
+    const run = (store: InboundEventStore, error: unknown, shuttingDown = false) =>
+        recordIngestFailure({ store, account, error, now: () => NOW, isShuttingDown: () => shuttingDown })
+
+    it('backs a first transient failure off for 5 minutes', async () => {
+        const store = createFakeStore()
+        const outcome = await run(store, timeout)
+
+        expect(outcome).toMatchObject({ kind: 'transient', attempt: 1, ignoredForShutdown: false })
+        expect(minutesAhead(outcome.retryAt)).toBe(5)
+        expect(store.retries()).toHaveLength(1)
+        expect(store.retries()[0].error).toBe('[transient#1] Command failed')
+        expect(minutesAhead(store.retries()[0].retryAt)).toBe(5)
+    })
+
+    it('escalates consecutive transient failures 5 -> 15 -> 30 and stays at 30', async () => {
+        const store = createFakeStore()
+        const waits: (number | null)[] = []
+        for (let i = 0; i < 5; i++) waits.push(minutesAhead((await run(store, timeout)).retryAt))
+
+        expect(waits).toEqual([5, 15, INGEST_FAILURE_BACKOFF_MINUTES, INGEST_FAILURE_BACKOFF_MINUTES, INGEST_FAILURE_BACKOFF_MINUTES])
+    })
+
+    it('starts the ladder over once a page succeeds in between', async () => {
+        const store = createFakeStore()
+        await run(store, timeout)
+        await run(store, timeout)
+        // A successful ingest saves the cursor, which clears last_error.
+        await store.saveCursor(ACCOUNT, 'smtp', EMPTY_CURSOR)
+
+        expect(minutesAhead((await run(store, timeout)).retryAt)).toBe(5)
+    })
+
+    it('backs a persistent failure off for the full 30 minutes, every time', async () => {
+        const store = createFakeStore()
+        const first = await run(store, authFailure)
+        const second = await run(store, authFailure)
+
+        expect(first).toMatchObject({ kind: 'persistent', attempt: 0 })
+        expect(minutesAhead(first.retryAt)).toBe(30)
+        expect(minutesAhead(second.retryAt)).toBe(30)
+        expect(store.retries()[0].error).toBe('Invalid credentials (Failure)')
+    })
+
+    it('does not carry a transient streak across a persistent failure', async () => {
+        const store = createFakeStore()
+        await run(store, timeout)
+        await run(store, timeout)
+        await run(store, authFailure)
+
+        expect(minutesAhead((await run(store, timeout)).retryAt)).toBe(5)
+    })
+
+    it('records no backoff at all while the process is shutting down', async () => {
+        const store = createFakeStore()
+        const outcome = await run(store, timeout, true)
+
+        expect(outcome).toMatchObject({ ignoredForShutdown: true, retryAt: null })
+        expect(store.retries()).toEqual([])
+    })
+
+    it('does not let a failing bookkeeping write replace the error being reported', async () => {
+        const store = createFakeStore()
+        store.recordCursorRetry = async () => { throw new Error('db down') }
+
+        await expect(run(store, timeout)).resolves.toMatchObject({ kind: 'transient', attempt: 1 })
+    })
+
+    it('reads the streak back from the stored marker', () => {
+        expect(consecutiveTransientFailures('[transient#2] Command failed')).toBe(2)
+        expect(consecutiveTransientFailures('provider_throttled')).toBe(0)
+        expect(consecutiveTransientFailures(null)).toBe(0)
     })
 })

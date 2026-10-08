@@ -31,6 +31,7 @@ import type {
     OutreachProviderName,
 } from '../../db/schema'
 import { sqlTimestampValue } from './sql-timestamp'
+import { isShuttingDown } from './shutdown'
 
 // ============================================================
 // Normalized message
@@ -356,6 +357,16 @@ export interface InboundEventStore {
         provider: OutreachProviderName,
         input: { error: string; retryAt: Date | null },
     ): Promise<void>
+    /**
+     * The `last_error` of the account's cursor row, or null when there is none (never failed,
+     * or the last attempt succeeded: saveCursor clears it). It is what lets the failure
+     * backoff escalate across consecutive transient failures without a column of its own.
+     * Optional like recordCursorRetry; a store without it always backs off from the first step.
+     */
+    loadCursorLastError?(
+        emailAccountId: string,
+        provider: OutreachProviderName,
+    ): Promise<string | null>
 }
 
 export interface InboundSourcePage {
@@ -426,11 +437,161 @@ export interface IngestResult {
 export const CURSOR_CHECKPOINT_INTERVAL = 25
 
 /**
- * Backoff persisted when ingestion of an account throws. Must exceed the shortest
- * caller cadence (replies run every 15 minutes) or the failed account is retried at
- * full weight on the very next tick anyway.
+ * Backoff persisted when ingestion of an account throws for a PERSISTENT reason (bad
+ * credentials, a missing mailbox, a key mismatch, anything we cannot name), and the ceiling
+ * the transient ladder climbs to. It must exceed the shortest caller cadence (replies run
+ * every 15 minutes) or a failing account is retried at full weight on the very next tick
+ * anyway — that is the 2026-08 incident: an account that failed on every tick, for a month.
  */
 export const INGEST_FAILURE_BACKOFF_MINUTES = 30
+
+/**
+ * Backoff for a TRANSIENT failure (timeout, reset socket, connection closed, DB pool going
+ * away), by consecutive failure: 5, then 15, then the 30 above. A flat 30 turned every deploy
+ * into replies invisible for up to ~45 minutes: the blue-green rollout restarts the container,
+ * a tick dies mid-connection, and every account it was holding got benched for half an hour
+ * although the mailbox was fine. The first step is short because one network blip is the likely
+ * case; the climb to 30 keeps the 2026-08 invariant, since an account that keeps failing is no
+ * longer retried at full weight (transient failures are also cheap: connect, greeting, socket
+ * and per-account bounds are 10 to 20 seconds).
+ */
+export const INGEST_TRANSIENT_BACKOFF_STEPS_MINUTES = [5, 15, INGEST_FAILURE_BACKOFF_MINUTES] as const
+
+export type IngestFailureKind = 'transient' | 'persistent'
+
+// Node/socket/imapflow/postgres.js error codes that mean "the connection failed", not "the
+// mailbox refused us". ETIMEOUT / CONNECT_TIMEOUT / GREETING_TIMEOUT are imapflow's own bounds;
+// NoConnection is its "Connection not available"; ClosedAfterConnect* is a socket dropped
+// during the handshake.
+const TRANSIENT_ERROR_CODES = new Set([
+    'ETIMEDOUT', 'ETIMEOUT', 'CONNECT_TIMEOUT', 'GREETING_TIMEOUT', 'UPGRADE_TIMEOUT',
+    'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',
+    'ENETDOWN', 'ENOTFOUND', 'EAI_AGAIN', 'NoConnection', 'ClosedAfterConnectTLS',
+    'ClosedAfterConnectText', 'CONNECTION_CLOSED', 'CONNECTION_ENDED', 'CONNECTION_DESTROYED',
+])
+
+const PERSISTENT_MESSAGE =
+    /authentication ?fail|auth(entication)? failure|invalid credentials|invalid login|login fail|username and password not accepted|unauthori[sz]ed|could not be decrypted|mailbox.{0,40}(not found|does ?n.t exist|nonexistent)|nonexistent|no such mailbox|unknown mailbox/i
+
+const TRANSIENT_MESSAGE =
+    /time[d ]?-?out|etimedout|econnreset|econnrefused|econnaborted|epipe|ehostunreach|enetunreach|enotfound|eai_again|socket (hang up|closed|disconnected|is already closed)|connection (closed|not available|reset|lost|terminated|ended|refused)|closed unexpectedly|unexpected close|greeting|shutting down|network/i
+
+/** The error plus its `cause` chain (bounded), because wrappers hide the code that matters. */
+function errorChain(error: unknown): Record<string, unknown>[] {
+    const chain: Record<string, unknown>[] = []
+    let current: unknown = error
+    for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth++) {
+        chain.push(current as Record<string, unknown>)
+        current = (current as { cause?: unknown }).cause
+    }
+    return chain
+}
+
+/**
+ * Transient: the connection failed and a retry in minutes is likely to work. Persistent: a
+ * retry will fail the same way until someone changes something, so it gets the full 30.
+ * Anything unrecognised is persistent on purpose: an unknown failure must back off, not
+ * be hammered.
+ */
+export function classifyIngestFailure(error: unknown): IngestFailureKind {
+    const chain = errorChain(error)
+    if (chain.length === 0) {
+        return typeof error === 'string' && TRANSIENT_MESSAGE.test(error) && !PERSISTENT_MESSAGE.test(error)
+            ? 'transient'
+            : 'persistent'
+    }
+
+    const texts = chain.map((entry) =>
+        [entry.message, entry.responseText].filter((value) => typeof value === 'string').join(' '))
+
+    // Persistent wins over transient anywhere in the chain: "authentication failed after a
+    // connection reset" is still a credentials problem.
+    for (const [index, entry] of chain.entries()) {
+        if (entry.name === 'CredentialKeyMismatchError') return 'persistent'
+        if (entry.authenticationFailed === true || entry.code === 'AUTHENTICATIONFAILED') return 'persistent'
+        if (PERSISTENT_MESSAGE.test(texts[index])) return 'persistent'
+    }
+    for (const [index, entry] of chain.entries()) {
+        if (entry.name === 'ImapInboundTimeoutError') return 'transient'
+        if (typeof entry.code === 'string' && TRANSIENT_ERROR_CODES.has(entry.code)) return 'transient'
+        if (TRANSIENT_MESSAGE.test(texts[index])) return 'transient'
+    }
+    return 'persistent'
+}
+
+const TRANSIENT_MARKER = /^\[transient#(\d+)\] /
+
+/**
+ * How many consecutive transient failures the stored `last_error` records (0 when it records
+ * none). The marker is written by recordIngestFailure; saveCursor clears `last_error` on any
+ * successful page, so a marker that is still there is by construction an unbroken streak.
+ */
+export function consecutiveTransientFailures(lastError: string | null | undefined): number {
+    const match = lastError ? TRANSIENT_MARKER.exec(lastError) : null
+    return match ? Number(match[1]) : 0
+}
+
+export interface IngestFailureOutcome {
+    kind: IngestFailureKind
+    /** 1-based position in the consecutive-transient streak; 0 for a persistent failure. */
+    attempt: number
+    /** Null when nothing was recorded (shutdown). */
+    retryAt: Date | null
+    /** True when the failure was caused by the process shutting down and no backoff was written. */
+    ignoredForShutdown: boolean
+}
+
+/**
+ * Persists the backoff for one account whose ingestion threw. Runs AFTER any partial-progress
+ * saveCursor inside ingestInboundPage, which is required: saveCursor clears the retry bookkeeping.
+ *
+ * During a graceful shutdown it records nothing: the error came from us leaving, and a backoff
+ * written now would bench a healthy mailbox until after the replacement container is up.
+ * Best-effort like the rest of the bookkeeping: a failing write never replaces the error the
+ * caller is about to log.
+ */
+export async function recordIngestFailure(deps: {
+    store: InboundEventStore
+    account: { id: string; provider: OutreachProviderName }
+    error: unknown
+    now?: () => Date
+    isShuttingDown?: () => boolean
+}): Promise<IngestFailureOutcome> {
+    const kind = classifyIngestFailure(deps.error)
+
+    if ((deps.isShuttingDown ?? isShuttingDown)()) {
+        return { kind, attempt: 0, retryAt: null, ignoredForShutdown: true }
+    }
+
+    const message = deps.error instanceof Error ? deps.error.message : String(deps.error)
+
+    let attempt = 0
+    let minutes = INGEST_FAILURE_BACKOFF_MINUTES
+    if (kind === 'transient') {
+        let previous = 0
+        try {
+            previous = consecutiveTransientFailures(
+                await deps.store.loadCursorLastError?.(deps.account.id, deps.account.provider),
+            )
+        } catch {
+            // Unreadable streak: start the ladder over rather than skip the backoff.
+        }
+        attempt = previous + 1
+        const steps = INGEST_TRANSIENT_BACKOFF_STEPS_MINUTES
+        minutes = steps[Math.min(attempt, steps.length) - 1]
+    }
+
+    const retryAt = new Date((deps.now?.() ?? new Date()).getTime() + minutes * 60_000)
+    try {
+        await deps.store.recordCursorRetry?.(deps.account.id, deps.account.provider, {
+            error: (kind === 'transient' ? `[transient#${attempt}] ${message}` : message).slice(0, 500),
+            retryAt,
+        })
+    } catch {
+        // Backoff bookkeeping is best-effort; the caller still logs the error.
+    }
+    return { kind, attempt, retryAt, ignoredForShutdown: false }
+}
 
 export async function ingestInboundPage(deps: {
     store: InboundEventStore
@@ -839,6 +1000,17 @@ export function createSqlInboundEventStore(
 
                 return { status: 'processed', event } as ClaimOutcome
             })
+        },
+
+        async loadCursorLastError(emailAccountId, provider) {
+            const sql = await getClient()
+            const result = await sql`
+                SELECT last_error
+                FROM outreach_provider_cursors
+                WHERE email_account_id = ${emailAccountId} AND provider = ${provider}
+                LIMIT 1
+            `
+            return rows<{ last_error: string | null }>(result)[0]?.last_error ?? null
         },
 
         async recordCursorRetry(emailAccountId, provider, input) {

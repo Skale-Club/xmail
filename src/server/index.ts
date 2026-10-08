@@ -58,6 +58,7 @@ import { installAlerting } from './lib/install-alerting'
 import { startDbLivenessWatchdog, type DbLivenessWatchdog } from './lib/db-liveness'
 import { alertOps } from './lib/ops-alert'
 import { escapeHtml } from './lib/telegram'
+import { markShuttingDown } from './lib/shutdown'
 
 const app = express()
 const PORT = process.env.PORT || 9001
@@ -315,6 +316,8 @@ let dbLiveness: DbLivenessWatchdog | null = null
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
         console.log(`[shutdown] Received ${signal}, closing mail servers and DB...`)
+        // First, so in-flight cron work that fails from here on is not recorded as a mailbox fault.
+        markShuttingDown()
         dbLiveness?.stop()
         const closers: Promise<void>[] = []
         if (runningSmtpServer) closers.push(runningSmtpServer.close().catch(() => undefined))

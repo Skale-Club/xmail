@@ -26,6 +26,7 @@ import { createImapClient } from './imap-client'
 import { sqlTimestamp } from './sql-timestamp'
 import { createLogger } from './logger'
 import { runWithLock } from './cron-lock'
+import { isShuttingDown } from './shutdown'
 import { getNativeMailboxForOrganization } from './native-send'
 import { fetchOutlookInboxDelta } from './outlook'
 import { nativeEventFromMailRow } from './unified-inbox/providers/native'
@@ -33,7 +34,7 @@ import { imapEventFromParsedMail } from './unified-inbox/providers/imap'
 import { outlookEventFromGraphMessage } from './unified-inbox/providers/outlook'
 import { createWarmupExclusion, isMeshAccount } from './unified-inbox/warmup-traffic'
 import {
-    INGEST_FAILURE_BACKOFF_MINUTES,
+    recordIngestFailure,
     ingestInboundPage,
     resolveImapCursor,
     type InboundEventStore,
@@ -619,6 +620,8 @@ export async function ingestOutreachInbound(deps: {
     const meshExclusion = createWarmupExclusion(await loadMeshAddressSet())
 
     for (const account of accounts) {
+        // Leaving: the rest of the tick would only fail against closing connections.
+        if (isShuttingDown()) break
         try {
             const source = account.provider === 'native'
                 ? await createNativeInboundSource({
@@ -659,33 +662,41 @@ export async function ingestOutreachInbound(deps: {
                 .set({ lastSyncAt: new Date() })
                 .where(eq(emailAccounts.id, account.id))
         } catch (error) {
-            result.errors++
             const err = error instanceof Error ? error : new Error(String(error))
 
             // Persist the failure as a backoff. Without this, a repeatedly failing account
             // was retried at full page weight by BOTH calling jobs on every tick — for a
             // month, in the 2026-08 incident. recordCursorRetry upserts, so it also works
             // for an account that failed before its first successful page (no cursor row).
-            // Runs AFTER any partial-progress saveCursor inside ingestInboundPage, which is
-            // required: saveCursor clears the retry bookkeeping.
-            const retryAt = new Date(
-                (deps.now?.() ?? new Date()).getTime() + INGEST_FAILURE_BACKOFF_MINUTES * 60_000,
-            )
-            try {
-                await deps.store.recordCursorRetry?.(
-                    account.id,
-                    account.provider,
-                    { error: err.message.slice(0, 500), retryAt },
-                )
-            } catch {
-                // Backoff bookkeeping is best-effort; the error below is still logged.
+            // How long depends on the kind of failure (5/15/30 for a transient one, 30 for
+            // a persistent one) and nothing is recorded at all while the process shuts down;
+            // see recordIngestFailure.
+            const outcome = await recordIngestFailure({
+                store: deps.store,
+                account: { id: account.id, provider: account.provider },
+                error,
+                now: deps.now,
+            })
+
+            if (outcome.ignoredForShutdown) {
+                // Not a mailbox fault and not counted: the connection died because we are leaving.
+                log.warn({
+                    action: 'outreach.inbound.account_error_shutdown',
+                    emailAccountId: account.id,
+                    provider: account.provider,
+                    error: { message: err.message },
+                }, 'inbound ingestion interrupted by shutdown; no backoff recorded')
+                break
             }
 
+            result.errors++
             log.error({
                 action: 'outreach.inbound.account_error',
                 emailAccountId: account.id,
                 provider: account.provider,
-                retryAt: retryAt.toISOString(),
+                failureKind: outcome.kind,
+                attempt: outcome.attempt,
+                retryAt: outcome.retryAt?.toISOString(),
                 error: { message: err.message, stack: err.stack },
             }, 'inbound ingestion failed for account; backing off')
         }
