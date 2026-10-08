@@ -23,14 +23,16 @@ problema que aparecer antes de aumentar o volume. Cada linha diz o que aconteceu
 | 14 | Leitura das caixas ficava 30 min de castigo depois de qualquer erro de IMAP (era o aberto D) | Um deploy reinicia o container, o tick morre no meio da conexão e toda resposta fica invisível por até ~45 min | `b634a58`: erro transitório (timeout, reset, conexão fechada) castiga 5 min e sobe 15 e 30 nas falhas seguidas; credencial, caixa inexistente, chave errada e erro desconhecido seguem em 30. Durante o shutdown nenhum castigo é gravado. A contagem vai no prefixo de `last_error`, sem migration |
 | 15 | Follow-ups saíam sem `In-Reply-To`/`References` (era o aberto E) | E-mail 2 chegava como conversa nova, não como continuação | `7c297f6`: passo 2+ leva o Message-ID do último e-mail enviado ao lead na campanha e a cadeia (últimos 10). Assunto em branco depois do primeiro passo vira `Re: <assunto anterior>`; assunto escrito fica como está (texto aprovado intacto). Migration 074 (**escrita, não aplicada**) deixa o banco aceitar assunto vazio em `step_order > 1` |
 | 16 | Limite diário fixo em 15 por caixa Icemail (era o aberto I) | Teto de volume sem critério para subir | `6ee5dd7`: `rampRecommendation` em `GET /email-accounts` (e na tool `outreach_email_accounts_list`): 20+ envios em 7 dias, bounce < 2%, descadastro < 3% e zero reclamação sugerem + 3 (teto 30); bounce ≥ 5% ou reclamação sugerem − 3 (piso 5). Só recomenda, nunca aplica |
+| 17 | Link de descadastro nunca tinha sido clicado num teste real (era o aberto G) | Descadastro quebrado = problema legal e de reputação | Provado em produção em 2026-10-07 com lead descartável: página abre, POST one-click (como o Gmail) descadastra, lead e campanha marcados, supressão `unsubscribe` gravada, POST repetido ok, token adulterado 400. Teste apagado depois |
+| 18 | Fila do homelab só andava quando alguém consultava (era o aberto H) | Busca parada se ninguém acompanhar | Xcraper `c3ff00c`: `POST /api/service/homelab/tick`; cron de 2 em 2 min no Hetzner (`/etc/cron.d/xcraper-tick`, script `/opt/hermes/xcraper-tick.sh`, chave lida do container do Hermes) |
+| 19 | Gancho "sem agendamento" saía sem ninguém conferir (parte do aberto A) | Afirmação falsa ao dono | `51bc24d`: só aparece com `booking_verified_none: true`, que o Hermes marca depois de abrir o site |
+| 20 | Aprovação só pelo painel do Xmail | Vanildo tinha que entrar no Xmail para cada campanha | `0ab60fd`/`dbfb05c`: cartão com Aprovar/Recusar no Telegram (bot xmailoppsbot), com confirmação em dois toques; mesma lógica do painel |
 
 ## Abertos
 
 | # | Achado | Risco | Próximo passo |
 |---|---|---|---|
-| A | Gancho "sem agendamento" depende do analisador do Xphere, que erra em sites Squarespace/Wix | Afirmação falsa ao dono | Conferir o site antes de ligar o gancho, ou deixar o gancho desligado nos leads novos até o analisador melhorar |
-| G | Link de descadastro nunca foi clicado num teste real | Descadastro quebrado = problema legal e de reputação | Clicar no link do e-mail de teste e conferir supressão |
-| H | Fila do homelab só anda quando alguém consulta | Busca parada se ninguém acompanhar | Hermes instruído a acompanhar até a última; avaliar um relógio no Xcraper |
+| A | Analisador do Xphere erra agendamento em sites Squarespace/Wix | Lead com `booking_platform` errado | O gancho já não depende dele (#19). Detecção melhor em construção no Xphere |
 
 ## Testes de envio reais
 
