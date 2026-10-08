@@ -174,10 +174,15 @@ const VARIABLE_REGEX = /\{\{([a-zA-Z0-9_]+)\}\}/g
 const BUILTIN_FLAGS: Record<string, (lead: LeadForTemplate) => boolean> = {
     // Lead ZIP within OUTREACH_HOME_RADIUS_MILES of OUTREACH_HOME_BASE_ZIP (see zip-distance.ts).
     nearby: (lead) => isZipNearHome(extractLeadZip(lead.location, lead.customFields)),
-    // Has its own website but no online-booking platform/URL on record.
+    // Has its own website, no online-booking platform/URL on record, AND someone looked at the site
+    // and confirmed there is no booking (`booking_verified_none: true`, set by Hermes through
+    // outreach_lead_update). The analyzer alone is not enough: on 2026-10-07 it missed Squire and
+    // Booksy on two Newton shops, and an absent analysis looked exactly like "no booking". Rule
+    // from Vanildo: a hook only goes out when verified. A booking signal on record still wins.
     hookNoOnlineBooking: (lead) => {
         const cf = lead.customFields
         return readBooleanField(cf?.has_owned_website) === true
+            && readBooleanField(cf?.booking_verified_none) === true
             && !hasText(cf?.booking_platform)
             && !hasText(cf?.booking_url)
     },

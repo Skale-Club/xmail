@@ -374,7 +374,7 @@ const tools = [
   },
   {
     name: 'outreach_lead_update',
-    description: 'Partially update the personalization fields of a lead: firstName, lastName, companyName, industry, title, website, phone, location ({{city}} is read from location), shortName (the greeting name), and customFields (merged key by key; hook flags such as has_owned_website) plus removeCustomFields. null clears a field. It CANNOT change email, status, unsubscribe state, verification status, list or campaign membership, and the customFields keys email_status, email_verification*, source_run_id, xcraper_run_id, outcome_* and unsubscribe* are refused. Audited with before and after.',
+    description: 'Partially update the personalization fields of a lead: firstName, lastName, companyName, industry, title, website, phone, location ({{city}} is read from location), shortName (the greeting name), and customFields (merged key by key; hook flags such as has_owned_website) plus removeCustomFields. The no-online-booking hook only renders when customFields.booking_verified_none is true: set it ONLY after you opened the shop website yourself and confirmed there is no online booking (no Squire, Booksy, Vagaro, Fresha, Square, GlossGenius or similar link, button or embed). If you find a booking system, set booking_platform instead. null clears a field. It CANNOT change email, status, unsubscribe state, verification status, list or campaign membership, and the customFields keys email_status, email_verification*, source_run_id, xcraper_run_id, outcome_* and unsubscribe* are refused. Audited with before and after.',
     inputSchema: {
       type: 'object', required: ['leadId'], additionalProperties: false,
       properties: {

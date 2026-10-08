@@ -139,20 +139,28 @@ describe('nearby flag: moving cities is an env change only', () => {
 })
 
 describe('hookNoOnlineBooking', () => {
-    it('is true for an owned website with no booking platform and no booking URL', () => {
-        expect(hook('hookNoOnlineBooking', { has_owned_website: true })).toBe(true)
-        expect(hook('hookNoOnlineBooking', { has_owned_website: 'true' })).toBe(true)
-        expect(hook('hookNoOnlineBooking', { has_owned_website: true, booking_platform: null, booking_url: '' })).toBe(true)
-        expect(hook('hookNoOnlineBooking', { has_owned_website: true, booking_platform: '  ' })).toBe(true)
+    const verified = { has_owned_website: true, booking_verified_none: true }
+
+    it('is true for an owned website someone verified has no online booking', () => {
+        expect(hook('hookNoOnlineBooking', verified)).toBe(true)
+        expect(hook('hookNoOnlineBooking', { has_owned_website: 'true', booking_verified_none: 'true' })).toBe(true)
+        expect(hook('hookNoOnlineBooking', { ...verified, booking_platform: null, booking_url: '' })).toBe(true)
+        expect(hook('hookNoOnlineBooking', { ...verified, booking_platform: '  ' })).toBe(true)
     })
 
-    it('is false when either booking signal is present', () => {
-        expect(hook('hookNoOnlineBooking', { has_owned_website: true, booking_platform: 'Booksy' })).toBe(false)
-        expect(hook('hookNoOnlineBooking', { has_owned_website: true, booking_url: 'https://x.test/book' })).toBe(false)
+    it('is false without the verification, even when the analyzer found nothing (2026-10-07 Newton)', () => {
+        expect(hook('hookNoOnlineBooking', { has_owned_website: true })).toBe(false)
+        expect(hook('hookNoOnlineBooking', { has_owned_website: true, booking_detected: false })).toBe(false)
+        expect(hook('hookNoOnlineBooking', { has_owned_website: true, booking_verified_none: false })).toBe(false)
+    })
+
+    it('is false when either booking signal is present, verified or not', () => {
+        expect(hook('hookNoOnlineBooking', { ...verified, booking_platform: 'Booksy' })).toBe(false)
+        expect(hook('hookNoOnlineBooking', { ...verified, booking_url: 'https://x.test/book' })).toBe(false)
     })
 
     it('is false without an owned website, or with missing data', () => {
-        expect(hook('hookNoOnlineBooking', { has_owned_website: false })).toBe(false)
+        expect(hook('hookNoOnlineBooking', { has_owned_website: false, booking_verified_none: true })).toBe(false)
         expect(hook('hookNoOnlineBooking', { has_owned_website: 'false' })).toBe(false)
         expect(hook('hookNoOnlineBooking', {})).toBe(false)
         expect(hook('hookNoOnlineBooking', null)).toBe(false)

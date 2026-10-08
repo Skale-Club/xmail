@@ -241,7 +241,7 @@ describe('renderCampaignPreviewSequence: conditional blocks match what the send 
     }]
 
     it.each([
-        ['a nearby lead with its own site and no booking', lead({ location: '8 Hyde Park Ave, Boston, MA 02116', customFields: { has_owned_website: true } })],
+        ['a nearby lead with its own site and no booking', lead({ location: '8 Hyde Park Ave, Boston, MA 02116', customFields: { has_owned_website: true, booking_verified_none: true } })],
         ['a far lead that has a booking platform', lead({ location: '5 Route 134, South Dennis, MA 02660', customFields: { has_owned_website: true, booking_platform: 'Booksy' } })],
     ])('preview output equals interpolateTemplate output for %s', (_label, subjectLead) => {
         const [rendered] = renderCampaignPreviewSequence(steps, subjectLead, context)
@@ -253,7 +253,7 @@ describe('renderCampaignPreviewSequence: conditional blocks match what the send 
     })
 
     it('actually renders the blocks (not just equal garbage)', () => {
-        const near = lead({ location: '8 Hyde Park Ave, Boston, MA 02116', customFields: { has_owned_website: true } })
+        const near = lead({ location: '8 Hyde Park Ave, Boston, MA 02116', customFields: { has_owned_website: true, booking_verified_none: true } })
         const [rendered] = renderCampaignPreviewSequence(steps, near, context)
         expect(rendered.variantA.subject).toBe('Hi Jane (neighbor)')
         expect(rendered.variantA.bodyPlain).toBe('Hello Jane,\n\nI am just down the road.\n\nUnsubscribe: https://mail.skale.club/o/u/tok123')
