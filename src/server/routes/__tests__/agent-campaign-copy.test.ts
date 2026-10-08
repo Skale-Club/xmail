@@ -285,6 +285,15 @@ describe('PUT /campaigns/:id/sequence/steps/:stepOrder', () => {
         expect(state.audits).toHaveLength(0)
     })
 
+    it('rejects removing {{unsubscribeUrl}} from one body while the other still has it (prod 2026-10-07)', async () => {
+        const original = currentStep(2).plainBody
+        const result = await call('PUT', stepPath(2), { plainBody: 'Hey {{firstName}}, no link in this one.' })
+        expect(result.status).toBe(422)
+        expect(result.body.issues.map((issue: Row) => issue.code)).toContain('missing_unsubscribe_placeholder')
+        expect(currentStep(2).plainBody).toBe(original)
+        expect(state.audits).toHaveLength(0)
+    })
+
     it('rejects a malformed template block with 422', async () => {
         const result = await call('PUT', stepPath(1), { plainBody: 'Hello {{firstName}} {{/nearby}}\n\n{{unsubscribeUrl}}' })
         expect(result.status).toBe(422)

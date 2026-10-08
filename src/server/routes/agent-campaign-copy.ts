@@ -196,6 +196,23 @@ function assertEditedStepStillValid(steps: SequenceStep[], edited: SequenceStep)
             issues: issues.map((issue) => ({ code: issue.code, message: issue.message })),
         })
     }
+    // validateSequenceForActivation looks at plain + HTML together, so a link left in only one of
+    // them passes. Found in production on 2026-10-07: an edit that dropped {{unsubscribeUrl}} from the
+    // plain body of a step whose HTML still had it was saved. Every non-empty body must carry it.
+    const missing = (['plainBody', 'htmlBody'] as const).filter((field) => {
+        const body = edited[field]?.trim()
+        return Boolean(body) && !body!.includes(UNSUBSCRIBE_TOKEN)
+    })
+    if (missing.length > 0) {
+        throw new CopyEditError(422, {
+            error: `Step ${edited.stepOrder} would lose the unsubscribe link in ${missing.join(' and ')}; nothing was saved`,
+            code: 'step_validation_failed',
+            issues: missing.map((field) => ({
+                code: 'missing_unsubscribe_placeholder',
+                message: `${field} must render {{unsubscribeUrl}} (CAN-SPAM).`,
+            })),
+        })
+    }
 }
 
 const UNSUBSCRIBE_TOKEN = '{{unsubscribeUrl}}'
