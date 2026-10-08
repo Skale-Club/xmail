@@ -1,6 +1,13 @@
-# Xcraper pelo Home Lab — o que o Hermes precisa saber
+# Xcraper pelo Home Lab — o que o Hermes e o Kai precisam saber
 
-Atualizado em 2026-10-07. Substitui o que o `xcraper-access-pattern.md` diz sobre Apify ser o caminho padrão.
+Atualizado em 2026-10-07. Vale igual para o Hermes e para o Kai. Substitui o que o `xcraper-access-pattern.md` diz sobre Apify ser o caminho padrão.
+
+## Hermes e Kai: cada um com a sua chave
+
+- O Hermes usa a chave de sempre (`XCRAPER_SERVICE_KEY` no Xcraper).
+- O Kai tem uma chave só dele (`kai=` em `XCRAPER_SERVICE_KEYS` no Xcraper). Mesmo endereço, mesmas regras, mesma fila.
+- O Xcraper registra no log quem chamou (`caller=hermes` ou `caller=kai`). Dá para cortar um sem cortar o outro.
+- A fila do Home Lab é uma só. Se o Hermes estiver raspando, a busca do Kai entra na fila, e vice-versa. Ninguém reenvia; os dois só acompanham.
 
 ## A regra em uma frase
 
