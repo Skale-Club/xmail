@@ -9,7 +9,7 @@
 >
 > Última auditoria completa: **2026-08-15** (commit `159450d`); reconferência de produção em
 > **2026-09-05** (achados 1b, 13, 14 e 15 fechados; §8 atualizado). Em **2026-09-08** (Fase 37) o
-> achado 2 foi fechado. Em **2026-10-07** entraram o escopo `campaigns:copy` (G11, achados 21 e 22) e o escopo `outreach:manage` (G12, achados 23 e 24; auditoria em 2026-10-07). Na mesma data: castigo de leitura da caixa por tipo de erro (§5), follow-ups na mesma conversa (§3, migration 074 não aplicada) e `rampRecommendation` das caixas (§3). A seção "Achados abertos" tem
+> achado 2 foi fechado. Em **2026-10-07** entraram os escopos `campaigns:copy` e `outreach:manage`; as migrations 072-075 estão aplicadas. Em **2026-10-08**, a fronteira foi fechada no sistema inteiro: Xphere só matricula em campanha inativa, não ativa nem envia mensagem direta; a migration 076 reduz o Kai a `campaigns:copy`. A seção "Achados abertos" tem
 > data — se estiver velha, refaça a rotina de reanálise no fim do doc antes de confiar nela.
 
 ## 1. O que é, em uma frase
@@ -21,14 +21,10 @@ crédito pago e toda ativação passam por aprovação humana durável.
 
 ## 2. Modelo de autoridade
 
-> ⚠️ **A tabela abaixo vale para o gateway do Xmail, não para o Hermes como um todo.** O Hermes
-> tem 4 MCPs conectados; pelo MCP do **Xphere** (`prospects_enroll_in_campaign`) ele consegue
-> **enrolar e ativar campanha**. Lá o gate é `confirmed: true` + aprovação no chat — comportamento,
-> não capability. Ou seja: "o agente não ativa campanha" é verdade sobre esta API e falso sobre o
-> sistema. Ver `hermes/README.md` § "Papel: orquestrador do Active Prospect System".
-> O que continua valendo para os dois caminhos é o gate de ativação do §4 (G9), porque a rota
-> `PUT /api/outreach/campaigns/:id` roda `validateCampaignReadyForActivation` para qualquer
-> chamador — humano, service key do Xphere ou aprovação de agente.
+> **Esta tabela agora vale para o Hermes como um todo.** O MCP do Xphere pode preparar e
+> matricular uma audiência apenas em campanha `draft`/`paused`; recusa campanha ativa, não possui
+> cliente de ativação e não expõe envio 1:1 por email/SMS. Primeira ativação existe somente no
+> ledger `outreach_action_approvals`, executado por admin interativo no Telegram ou painel.
 
 | O Hermes PODE (via gateway do Xmail) | O Hermes NÃO PODE (via gateway do Xmail) |
 |---|---|
@@ -51,7 +47,7 @@ Escopos (`OUTREACH_AGENT_SCOPES` em `src/db/schema.ts`): `outreach:read`, `prosp
 `prospects:enrich`, `prospects:assess`, `prospects:write`, `campaigns:draft`,
 `campaigns:request_activation`, `campaigns:pause`, `campaigns:copy`, `outreach:manage`, `approvals:read`, `events:read`.
 
-`outreach:manage` (migration 073, escrita em 2026-10-07, **não aplicada**) é concedido **somente à credencial do Hermes** (`name ILIKE '%hermes%'`). O Kai ficou de fora por decisão do dono: a 072 já deu a ele `campaigns:copy`, e nada além disso. Leituras do G12 usam `outreach:read`.
+`outreach:manage` (migration 073, aplicada) é concedido **somente à credencial do Hermes**. A migration 076 normaliza a credencial do Kai para exatamente `campaigns:copy`; a leitura da sequência também exige esse escopo mínimo. Leituras do G12 continuam usando `outreach:read` e permanecem fora do alcance do Kai.
 
 ## 3. Mapa de arquivos — onde cada coisa mora
 
@@ -61,7 +57,7 @@ Escopos (`OUTREACH_AGENT_SCOPES` em `src/db/schema.ts`): `outreach:read`, `prosp
 | Autenticação do agente | `src/server/lib/agent-auth.ts` | Hash SHA-256, prefixo, revogação, expiração, **e o principal ainda pertencer à org** |
 | Roteamento da auth | `src/server/lib/api-auth.ts` | `stripAgentHeaders` antes de tudo; agente só entra em `/api/agent/outreach` |
 | Gateway do agente | `src/server/routes/agent-outreach.ts` | health, campanhas, import livre, draft, enroll-draft, pause, events/ack |
-| Texto de campanha (G11) | `src/server/routes/agent-campaign-copy.ts`, `lib/agent-campaign-copy-history.ts`, `lib/campaign-copy-lint.ts` | GET sequence (`outreach:read`), PUT step e POST revert (`campaigns:copy`); validação = `validateSequenceForActivation` do step editado; auditoria na MESMA transação |
+| Texto de campanha (G11) | `src/server/routes/agent-campaign-copy.ts`, `lib/agent-campaign-copy-history.ts`, `lib/campaign-copy-lint.ts` | GET sequence, PUT step e POST revert (`campaigns:copy`); validação = `validateSequenceForActivation` do step editado; auditoria na MESMA transação |
 | Operação do dia a dia (G12) | `routes/agent-campaign-manage.ts`, `agent-leads.ts`, `agent-accounts.ts`, `agent-inbox.ts`, `agent-analytics.ts`, `agent-suppressions.ts`; `lib/agent-manage.ts` (escopo, `confirm`, auditoria), `lib/agent-account-view.ts` (lista de colunas permitidas de `email_accounts`), `lib/sending-domain-guard.ts`, `lib/campaign-settings.ts` | Rotas na tabela do G12 abaixo. Org sempre do principal; id de outra org = 404; escrita + linha de auditoria na MESMA transação; destrutivo exige `confirm: true` (senão 409 com o que aconteceria) |
 | Prospecção | `src/server/routes/agent-prospecting.ts` | search → candidatos → enrich aprovado → import |
 | Aprovações (lado agente) | `src/server/routes/agent-approvals.ts` | Pede; nunca decide |
@@ -225,9 +221,8 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 
 | Item | Onde | Como conferir |
 |---|---|---|
-| Migration 072 (escopo `campaigns:copy`) | banco de prod | **escrita em 2026-10-07, NÃO aplicada.** `select name, scopes from outreach_agent_credentials where revoked_at is null` — a credencial do Hermes tem que listar `campaigns:copy`. O UPDATE casa por nome (`%hermes%`) ou pelo conjunto draft+request_activation+pause; se não casar, nada muda e a concessão tem que ser feita pela API de credenciais |
-| Migration 073 (escopo `outreach:manage`) | banco de prod | **escrita em 2026-10-07, NÃO aplicada; só Hermes.** Mesma conferência da 072: `select name, scopes from outreach_agent_credentials where revoked_at is null` — só a credencial do Hermes lista `outreach:manage`; a do Kai não. Depois de aplicar, o container do Hermes precisa receber o `server.mjs` novo (43 tools) |
-| Migration 074 (assunto em branco em follow-up) | banco de prod | **escrita em 2026-10-07, NÃO aplicada.** Afrouxa `sequence_steps_content_valid` para aceitar assunto vazio em `step_order > 1`. Enquanto não for aplicada, salvar um follow-up com assunto em branco (tela ou Hermes) falha na constraint antiga com 500 e nada é gravado; sequências com assunto em todo passo seguem normais. Conferir: `select pg_get_constraintdef(oid) from pg_constraint where conname = 'sequence_steps_content_valid'` tem que conter `step_order > 1` |
+| Migrations 072-075 | banco de prod | **Aplicadas e conferidas em 2026-10-08.** Incluem copy do agente, `outreach:manage`, assunto vazio em follow-up e canal separado de outreach no Telegram. |
+| Migration 076 (Kai least privilege) | banco de prod | Define a credencial ativa `Kai` exatamente como `["campaigns:copy"]`; conferir depois do deploy com `select name, scopes from outreach_agent_credentials where revoked_at is null`. |
 | Migrations 045–058 | banco de prod | `select * from supabase_migrations.schema_migrations` / `to_regclass('public.warmup_messages')` |
 | `APOLLO_API_KEY` | **`run_app_container()` do `.github/workflows/build-deploy.yml`** *e* o secret existir | `gh secret list \| grep APOLLO` — **o grep no workflow NÃO basta**: ele confirma a fiação, e um `${{ secrets.X }}` inexistente resolve para string vazia sem erro. Foi assim que este item passou por resolvido em 2026-08-15 estando quebrado |
 | Credencial do agente | `POST /api/outreach/agent-credentials?organizationId=…` (sessão admin) | `select id, name, scopes, revoked_at from outreach_agent_credentials` |
@@ -243,7 +238,7 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 | # | Severidade | Achado | Onde |
 |---|---|---|---|
 | 1 | Alta | `APOLLO_API_KEY` **não existe nos secrets do repo**. O workflow referencia `${{ secrets.APOLLO_API_KEY }}`, que resolve para string vazia, e `apollo.ts` lança `APOLLO_API_KEY is required` → search responde 503. Só afeta o caminho Apollo; o xcraper não usa | GitHub Secrets |
-| 1b | ~~Alta~~ | ~~`XPHERE_EVENTS_API_KEY` ausente; entrega de eventos ao Xphere desligada~~ — **resolvido em 2026-09-05**: secret criado (`gh secret list` mostra os dois), o container em produção recebe o par, e o Xphere autentica pelo escopo dedicado `xmail:events`. **Ainda não exercitado de ponta a ponta**: `outreach_event_outbox` tem zero linhas na história inteira (nenhum e-mail de campanha em 30 dias, nenhuma ação do agente em 7). A primeira rodada real é a prova — olhe `xphere_delivered_at`/`xphere_attempts` no outbox depois dela | — |
+| 1b | ~~Alta~~ | **Resolvido e exercitado.** Os secrets existem, o Xphere autentica por `xmail:events` e, em 2026-10-08, o outbox tinha 10 eventos, nenhum pendente ou esgotado e 5 entregues ao Xphere (os demais não exigiam entrega remota). | — |
 | 2 | ~~Alta~~ | ~~Card do "Human gate" aprova ativação sem mostrar campanha, assunto, corpo, nº de leads ou inbox — e o approve ativa direto~~ — **resolvido em 2026-09-08** (Fase 37): `GET /api/outreach/approvals` agora anexa `campaignPreview` a toda solicitação `campaign_activation` pendente — nome/id/status da campanha, caixa de envio com limite diário e quanto já foi usado hoje, a sequência inteira renderizada com um lead real matriculado (variantes A/B identificadas), contagem de leads verified/catch-all/unknown, e um bloco de compliance (endereço postal físico, `{{unsubscribeUrl}}` em todo step). O approve continua fazendo exatamente o que fazia antes — isto é só visibilidade, não um novo veto. O bloqueador de endereço postal da campanha piloto — antes só uma frase na descrição ("COMPLIANCE BLOCKER") que ninguém via na hora de aprovar — agora aparece como blocker explícito no card, e o teste de contrato prova que ele falha para a campanha piloto hoje (sem endereço na sequência) e passaria se o endereço fosse adicionado. `src/server/lib/outreach-approval-preview.ts` e `outreach-campaign-compliance.ts` | `AgentOpsPage.tsx` (seção Human gate) + `outreach/approvals.ts` |
 | 3 | Alta | O agente auto-certifica verificação: `customFields.email_status:'ok'` → `verified`, e o enroll só exige `verified/likely` | `email-verification-mapping.ts` + `agent-outreach.ts` `/prospects/import` |
 | 4 | Média | Sem filtro para o placeholder `email_not_unlocked@…` do Apollo no import | `prospecting/apollo.ts` `normalizeEmailStatus` |

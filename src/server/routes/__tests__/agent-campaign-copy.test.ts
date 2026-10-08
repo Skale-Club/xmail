@@ -239,15 +239,21 @@ describe('GET /campaigns/:id/sequence', () => {
         expect(result.body.steps[1].lint.map((warning: Row) => warning.code)).toContain('greeting_hi_there')
     })
 
-    it('needs outreach:read', async () => {
+    it('allows a copy-only credential to read the sequence it may edit', async () => {
         principalMock.mockReturnValue({ credentialId: 'c', organizationId: ORG, principalUserId: 'u', scopes: ['campaigns:copy'] })
         const result = await call('GET', `/campaigns/${CAMPAIGN}/sequence`)
+        expect(result.status).toBe(200)
+    })
+
+    it('refuses a credential without campaigns:copy', async () => {
+        principalMock.mockReturnValue({ credentialId: 'c', organizationId: ORG, principalUserId: 'u', scopes: ['outreach:read'] })
+        const result = await call('GET', `/campaigns/${CAMPAIGN}/sequence`)
         expect(result.status).toBe(403)
-        expect(result.body.error).toContain('outreach:read')
+        expect(result.body.error).toContain('campaigns:copy')
     })
 
     it('does not show another organization\'s campaign', async () => {
-        principalMock.mockReturnValue({ credentialId: 'c', organizationId: OTHER_ORG, principalUserId: 'u', scopes: ['outreach:read'] })
+        principalMock.mockReturnValue({ credentialId: 'c', organizationId: OTHER_ORG, principalUserId: 'u', scopes: ['campaigns:copy'] })
         const result = await call('GET', `/campaigns/${CAMPAIGN}/sequence`)
         expect(result.status).toBe(404)
     })

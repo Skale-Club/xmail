@@ -35,12 +35,12 @@ Phases 33–40 are the daily prospecting engine, planned in
 executed between 2026-09-08 and 2026-09-12. Each phase there is anchored to something that broke
 or needed a human in those runs.
 
-**O que "Complete" ainda não quer dizer, medido em produção em 2026-09-12:**
+**Historical production notes from 2026-09-12 (superseded where noted on 2026-10-08):**
 
 - `prospecting_runs.verified_ok_count` é **NULL nas dez runs existentes**. A fase 34 está no
   código e nunca rodou de verdade — nenhuma run passou pelo passo de verificação ainda.
-- `outreach_event_outbox` tem **zero linhas na história**. A entrega Xmail→Xphere continua sem
-  nunca ter sido exercitada, exatamente como o plano já registrava.
+- `outreach_event_outbox` was later exercised: on 2026-10-08 it had 10 rows, no pending or
+  exhausted delivery, and 5 rows delivered to Xphere. This original gap is closed.
 - A fila tem **30 territórios `queued` sem nenhuma tentativa** e processa um por dia: um mês de
   fila no ritmo atual.
 - Hudson (11/09) e Maynard (12/09) ficaram presos em `running` porque o Xcraper só entrega
@@ -49,8 +49,9 @@ or needed a human in those runs.
   virada do território para `done` acontece no tick seguinte, por desenho — o passo 1 (join)
   roda antes do passo 1b (poll) no mesmo tick.
 
-**Production migrations: done.** As of 2026-09-12 the production ledger is reconciled through
-`067_dmarc_aggregate_reports.sql`. The Journey schema, cost ledger, outcome measurement,
+**Production migrations:** as of the 2026-10-08 audit the production ledger is reconciled through
+`075_telegram_outreach_channel.sql`; migration 076 is the next least-privilege change for Kai.
+The Journey schema, cost ledger, outcome measurement,
 external Xcraper run registration, attribution fields, run verification (`064`), the territory
 queue (`065`) and DMARC aggregate report ingestion (`067`) are present in production.
 

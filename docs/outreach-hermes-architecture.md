@@ -21,16 +21,12 @@ There is no agent endpoint to activate a campaign or dispatch mail. Human activa
 send continue through the existing campaign validation, suppression, idempotency and dispatcher
 policy gates.
 
-> **Scope of this boundary (production reality, verified 2026-08-13).** Everything above
-> describes the **Xmail agent gateway only**. In production Hermes also carries three other
-> MCPs (`xphere`, `skaleclub`, `notion`) plus direct xcraper service credentials, and acts as
-> the orchestrator of the whole prospecting pipeline (see `hermes/README.md`). In particular,
-> Xphere's MCP tool `prospects_enroll_in_campaign` **can enroll prospects and activate an
-> Xmail campaign** through Xphere's service-key path — its gate is a `confirmed:true`
-> parameter granted after explicit human approval in chat (dry-run otherwise), not a missing
-> capability. The invariant that holds across all paths is narrower than this document
-> originally implied: Hermes never talks to SMTP or the dispatcher directly, and every send
-> still passes Xmail's campaign validation, suppression and verification gates.
+> **Whole-system boundary (verified 2026-10-08).** Hermes also carries the Xphere,
+> Skale Club and Notion MCPs plus direct Xcraper service credentials. Xphere may import and
+> enrol an approved audience only into a `draft` or `paused` Xmail campaign; it refuses an
+> active campaign and no longer has an activation client. The immediate 1:1 email/SMS tool was
+> removed from the Xphere MCP registry. Across every Hermes path, first activation now exists
+> only as a durable Xmail approval executed by an interactive admin in Telegram or the panel.
 
 ## Event flow
 
@@ -71,7 +67,7 @@ its default lookback is six hours and can be changed with
 | POST | `/campaigns/drafts` | `campaigns:draft` | Idempotent draft + canonical sequence only |
 | POST | `/campaigns/:id/activation-requests` | `campaigns:request_activation` | Request human activation; never activates directly |
 | POST | `/campaigns/:id/pause` | `campaigns:pause` | Immediate, idempotent pause |
-| GET | `/campaigns/:id/sequence` | `outreach:read` | Campaign status + every step's copy, delays, A/B fields, counters and copy-lint findings |
+| GET | `/campaigns/:id/sequence` | `campaigns:copy` | Campaign status + every step's copy, delays, A/B fields, counters and copy-lint findings |
 | PUT | `/campaigns/:id/sequence/steps/:stepOrder` | `campaigns:copy` | Partial edit of subject/plainBody/htmlBody/delay of one step of a draft, paused or active campaign; audited, versioned, 422 if the step would fail the activation checks; never sends or activates |
 | POST | `/campaigns/:id/sequence/steps/:stepOrder/revert` | `campaigns:copy` | Restore the version stored before the latest un-reverted agent edit; refuses if a human changed the step since |
 | GET | `/campaigns/:id` | `outreach:read` | Settings, lifecycle, step schedule, linked inboxes (no secrets), stats |

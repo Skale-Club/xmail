@@ -1,5 +1,10 @@
 # Motor diário de prospecção — plano de fases
 
+> **Historical planning artifact.** Statements below describe the measured state on
+> 2026-09-08 and are not current production status. For current rules and evidence use
+> [`prospecting/README.md`](prospecting/README.md),
+> [`outreach-hermes-system-map.md`](outreach-hermes-system-map.md) and the active Hermes skill.
+
 > Continuação do [`outreach-hermes-roadmap.md`](outreach-hermes-roadmap.md) (fases 24–32).
 > Escrito em 2026-09-08 a partir de três runs reais feitos no mesmo dia, à mão, com o
 > ciclo inteiro operado por uma pessoa. Cada fase abaixo nasce de algo que quebrou, custou

@@ -28,7 +28,7 @@ import { validateSequenceForActivation, type SequenceValidationIssueCode } from 
 /**
  * Hermes "read and edit campaign copy" capability.
  *
- *   GET  /campaigns/:id/sequence                                 scope outreach:read
+ *   GET  /campaigns/:id/sequence                                 scope campaigns:copy
  *   PUT  /campaigns/:id/sequence/steps/:stepOrder                scope campaigns:copy
  *   POST /campaigns/:id/sequence/steps/:stepOrder/revert         scope campaigns:copy
  *
@@ -344,7 +344,7 @@ function beforeAfter(current: StepRow, patch: StepSnapshot) {
 
 router.get('/campaigns/:id/sequence', async (req, res) => {
     try {
-        const principal = requireScope(req, res, 'outreach:read')
+        const principal = requireScope(req, res, 'campaigns:copy')
         if (!principal) return
         if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Campaign not found' })
         const loaded = await loadCampaignWithSteps(principal.organizationId, req.params.id)
