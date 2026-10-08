@@ -55,8 +55,8 @@ phone backlog for a future call campaign.
 | **Xmail ops bot** | Telegram bot `xmailoppsbot`: approval cards with buttons, reply alerts, ops alerts | Part of Xmail | `docs/TELEGRAM-ALERTS.md`, `src/server/lib/telegram-approvals.ts` |
 | **Icemail inboxes** | The only addresses that send cold campaigns: 5 Google Workspace accounts on `tryskaleclub.com` | Google (`smtp.gmail.com`) | Registered in Xmail as outreach inboxes |
 
-Kai is a second agent with limited Xmail access (campaign copy editing only). Its homelab access is
-not set up yet; see section 9.
+Kai is a second agent with limited Xmail access (exactly `campaigns:copy`, enforced by migration
+076). Its homelab access is not set up yet; see section 9.
 
 ---
 
@@ -81,7 +81,9 @@ not set up yet; see section 9.
    Xmail refuses platform emails again on import.
 6. **Build the campaign.** Hermes creates a draft campaign, copies the **approved sequence**
    (section 5), enrolls the leads, and fixes per-lead personalization (`shortName`, city, hook
-   flags) with its lead tools. Senders can only be Icemail inboxes (section 4, rule 1).
+   flags) with its lead tools. Xphere can stage prospects only into an inactive (`draft` or
+   `paused`) campaign; it cannot activate a campaign or send a direct prospect message. Senders
+   can only be Icemail inboxes (section 4, rule 1).
 7. **Approve.** Hermes requests activation. Xmail posts a card on Vanildo's Telegram (bot
    `xmailoppsbot`, outreach chat) with lead counts, sender, sequence and blockers. **Approve** then
    **Yes, start** activates the campaign at once. The admin panel button does the same thing.
@@ -149,7 +151,9 @@ analysis is wrong.
 7. **Copy comes from the approved sequence.** Hermes edits it, shows before and after, and never
    writes new copy from scratch. No em dashes, no "Hi there", nothing that says we are talking to
    other shops in the area.
-8. **Approvals stay with Vanildo.** Hermes cannot activate a campaign or reply to a prospect. It
+8. **Approvals stay with Vanildo.** Hermes cannot activate a campaign or reply to a prospect.
+   Xphere has no direct prospect-send tool and its enrolment tool refuses active, completed or
+   archived campaigns. Activation exists only as Xmail's durable approval request: Hermes
    requests; Vanildo approves on Telegram or in the panel. Meta audience sync is not an approval
    item (step 11). Resume works only for a campaign Hermes
    itself paused after an approved activation.
@@ -226,7 +230,7 @@ analysis is wrong.
   - Xphere deploys by GitHub Actions on push to `main`: the image is built on GitHub, pushed to
     GHCR, and Coolify rolls it out with zero downtime (`.github/workflows/build-deploy.yml`).
 - **Migrations (Xmail):** hand-written SQL in `supabase/migrations/`, applied by hand with a
-  ledger row. See `CLAUDE.md`.
+  ledger row. Production is verified through 076; the next free number is 077. See `CLAUDE.md`.
 
 ---
 
