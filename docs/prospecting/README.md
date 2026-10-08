@@ -12,7 +12,8 @@ systems in four repositories plus one home server.
 - **Keep it current:** any change to prospecting behavior (a rule, a limit, a new tool, a new
   step, a host move) updates this file **in the same commit** as the code. The other repos'
   `CLAUDE.md` files point here with the same rule. After updating, refresh the Notion mirror.
-- **Last reviewed:** 2026-10-07.
+- **Last reviewed:** 2026-10-08.
+- **Taking over?** Read [`handoff-2026-10-08.md`](handoff-2026-10-08.md) first: story, access, current state, open items.
 
 ---
 
