@@ -249,10 +249,12 @@ export async function recordReplyAlert(row: PendingReply, kind: InboxReplyAlertK
 export async function runReplyAlertSweep(filter: SweepFilter = {}, deps: SweepDeps = {}): Promise<SweepResult> {
     const now = (deps.now ?? (() => new Date()))()
     const baseUrl = deps.baseUrl ?? process.env.FRONTEND_URL ?? 'http://localhost:9000'
-    const isConfigured = deps.isConfigured ?? isTelegramConfigured
+    // Respostas de prospects vão para o canal de outreach (cai no chat de operação enquanto não
+    // houver um chat de outreach configurado).
+    const isConfigured = deps.isConfigured ?? (() => isTelegramConfigured('outreach'))
     const loadPending = deps.loadPending ?? loadPendingReplies
     const recordAlert = deps.recordAlert ?? recordReplyAlert
-    const send = deps.send ?? sendTelegram
+    const send = deps.send ?? ((title: string, body: string) => sendTelegram(title, body, 'outreach'))
 
     const result: SweepResult = { considered: 0, first: 0, reminders: 0, summaries: 0, failed: 0 }
 

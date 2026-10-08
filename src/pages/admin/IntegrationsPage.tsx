@@ -12,6 +12,8 @@ import { apiFetch } from './helpers'
 interface IntegrationsData {
     telegramBotToken: string | null
     telegramChatId: string | null
+    telegramOutreachChatId: string | null
+    telegramOutreachThreadId: string | null
     telegramEnabled: boolean
     updatedAt: string | null
 }
@@ -19,6 +21,8 @@ interface IntegrationsData {
 interface FormState {
     telegramBotToken: string
     telegramChatId: string
+    telegramOutreachChatId: string
+    telegramOutreachThreadId: string
     telegramEnabled: boolean
 }
 
@@ -26,15 +30,19 @@ export default function IntegrationsPage() {
     const [form, setForm] = useState<FormState>({
         telegramBotToken: '',
         telegramChatId: '',
+        telegramOutreachChatId: '',
+        telegramOutreachThreadId: '',
         telegramEnabled: false,
     })
     const [maskedToken, setMaskedToken] = useState<string | null>(null)
     const [isLoading, setIsLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
     const [isSaving, setIsSaving] = useState(false)
-    const [isTesting, setIsTesting] = useState(false)
+    const [isTesting, setIsTesting] = useState<'ops' | 'outreach' | null>(null)
     const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null)
     const [isConfigured, setIsConfigured] = useState(false)
+    // Saved state, not the field: the test endpoint uses what is stored.
+    const [hasOutreachChat, setHasOutreachChat] = useState(false)
 
     useEffect(() => {
         void loadIntegrations()
@@ -47,9 +55,12 @@ export default function IntegrationsPage() {
             const data = await apiFetch<IntegrationsData>('/api/admin/integrations')
             setMaskedToken(data.telegramBotToken)
             setIsConfigured(!!data.telegramBotToken && !!data.telegramChatId)
+            setHasOutreachChat(!!data.telegramOutreachChatId)
             setForm({
                 telegramBotToken: '',  // never pre-fill the token field
                 telegramChatId: data.telegramChatId ?? '',
+                telegramOutreachChatId: data.telegramOutreachChatId ?? '',
+                telegramOutreachThreadId: data.telegramOutreachThreadId ?? '',
                 telegramEnabled: data.telegramEnabled,
             })
         } catch (err) {
@@ -65,6 +76,9 @@ export default function IntegrationsPage() {
         try {
             const payload: Partial<FormState> = {
                 telegramChatId: form.telegramChatId,
+                // Empty clears the field: outreach alerts then go to the ops chat.
+                telegramOutreachChatId: form.telegramOutreachChatId.trim(),
+                telegramOutreachThreadId: form.telegramOutreachThreadId.trim(),
                 telegramEnabled: form.telegramEnabled,
             }
             // Only include token if the user typed something new
@@ -80,6 +94,7 @@ export default function IntegrationsPage() {
 
             setMaskedToken(data.telegramBotToken)
             setIsConfigured(!!data.telegramBotToken && !!data.telegramChatId)
+            setHasOutreachChat(!!data.telegramOutreachChatId)
             setForm((f) => ({ ...f, telegramBotToken: '' }))
             toast({ title: 'Integrations saved successfully', variant: 'success' })
         } catch (error) {
@@ -89,19 +104,19 @@ export default function IntegrationsPage() {
         }
     }
 
-    async function handleTest() {
-        setIsTesting(true)
+    async function handleTest(channel: 'ops' | 'outreach') {
+        setIsTesting(channel)
         setTestResult(null)
         try {
             const result = await apiFetch<{ success: boolean; error?: string }>(
-                '/api/admin/integrations/test',
+                `/api/admin/integrations/test${channel === 'outreach' ? '?channel=outreach' : ''}`,
                 { method: 'POST' }
             )
             setTestResult(result)
         } catch (error) {
             setTestResult({ success: false, error: error instanceof Error ? error.message : 'Unknown error' })
         } finally {
-            setIsTesting(false)
+            setIsTesting(null)
         }
     }
 
@@ -218,7 +233,7 @@ export default function IntegrationsPage() {
 
                         {/* Chat ID */}
                         <div className="space-y-2">
-                            <Label htmlFor="telegramChatId">Chat ID</Label>
+                            <Label htmlFor="telegramChatId">Ops alerts chat ID</Label>
                             <Input
                                 id="telegramChatId"
                                 type="text"
@@ -228,7 +243,7 @@ export default function IntegrationsPage() {
                                 disabled={isLoading || isSaving}
                             />
                             <p className="text-xs text-muted-foreground">
-                                The numeric ID of the chat or group that will receive alerts.
+                                The numeric ID of the private chat that receives server, deploy and error alerts. Keep it a private chat: its ID is also how the owner is recognised when approving from Telegram.
                                 Add{' '}
                                 <a
                                     href="https://t.me/userinfobot"
@@ -244,21 +259,55 @@ export default function IntegrationsPage() {
                         </div>
                     </div>
 
+                    {/* Outreach chat */}
+                    <div className="grid gap-5 sm:grid-cols-2">
+                        <div className="space-y-2">
+                            <Label htmlFor="telegramOutreachChatId">Outreach alerts chat ID (optional, falls back to the ops chat)</Label>
+                            <Input
+                                id="telegramOutreachChatId"
+                                type="text"
+                                placeholder="-1001234567890"
+                                value={form.telegramOutreachChatId}
+                                onChange={(e) => setForm((f) => ({ ...f, telegramOutreachChatId: e.target.value }))}
+                                disabled={isLoading || isSaving}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Prospect replies and campaign approval cards go here. Easiest setup: add the bot to a group and tap
+                                &quot;Usar para outreach&quot; on the card it sends to the ops chat. Leave empty to keep everything in the ops chat.
+                            </p>
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="telegramOutreachThreadId">Outreach topic ID (optional)</Label>
+                            <Input
+                                id="telegramOutreachThreadId"
+                                type="text"
+                                placeholder="Only for groups with Topics"
+                                value={form.telegramOutreachThreadId}
+                                onChange={(e) => setForm((f) => ({ ...f, telegramOutreachThreadId: e.target.value }))}
+                                disabled={isLoading || isSaving}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Message thread ID inside the outreach group. Choosing a different group through the Telegram button resets it.
+                            </p>
+                        </div>
+                    </div>
+
                     {/* Test section */}
                     <div className="flex flex-col gap-3 rounded-lg border border-dashed p-4 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                             <p className="text-sm font-medium">Test connection</p>
                             <p className="text-xs text-muted-foreground">
-                                Sends a test message to verify the Bot Token and Chat ID are correct.
+                                Sends a test message to verify the Bot Token and the chat IDs are correct. Save first: the test uses the saved values.
                             </p>
                         </div>
+                        <div className="flex flex-col gap-2 sm:flex-row">
                         <Button
                             type="button"
                             variant="outline"
-                            onClick={handleTest}
-                            disabled={isLoading || isSaving || isTesting || !isConfigured}
+                            onClick={() => void handleTest('ops')}
+                            disabled={isLoading || isSaving || isTesting !== null || !isConfigured}
                         >
-                            {isTesting ? (
+                            {isTesting === 'ops' ? (
                                 <>
                                     <FlaskConical className="mr-2 h-4 w-4 animate-pulse" />
                                     Testing...
@@ -266,10 +315,29 @@ export default function IntegrationsPage() {
                             ) : (
                                 <>
                                     <Zap className="mr-2 h-4 w-4" />
-                                    Test Telegram
+                                    Test ops chat
                                 </>
                             )}
                         </Button>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void handleTest('outreach')}
+                            disabled={isLoading || isSaving || isTesting !== null || !isConfigured || !hasOutreachChat}
+                        >
+                            {isTesting === 'outreach' ? (
+                                <>
+                                    <FlaskConical className="mr-2 h-4 w-4 animate-pulse" />
+                                    Testing...
+                                </>
+                            ) : (
+                                <>
+                                    <Zap className="mr-2 h-4 w-4" />
+                                    Test outreach chat
+                                </>
+                            )}
+                        </Button>
+                        </div>
                     </div>
 
                     {testResult && (

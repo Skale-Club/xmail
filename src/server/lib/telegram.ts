@@ -45,22 +45,79 @@ const MAX_TEXT_LENGTH = 4096
  */
 const CONFIG_TTL_MS = 60_000
 
+/**
+ * Two destinations share one bot:
+ *  - 'ops'      server, deploy, error, watchdog and uptime alerts (the original chat);
+ *  - 'outreach' prospect replies and approval cards. Falls back to the ops chat until an outreach
+ *               chat is configured, so nothing is lost before the second chat exists.
+ */
+export type TelegramChannel = 'ops' | 'outreach'
+
 export interface TelegramConfig {
     token: string
+    /** Where this channel sends: the outreach chat when set (outreach channel), else the ops chat. */
     chatId: string
     /** Only set for a group with Topics enabled; omitted from the request otherwise. */
     threadId?: string
+    source: 'panel' | 'env'
+    channel: TelegramChannel
+    /** The ops chat, whichever channel was asked for. Its owner is the only user who may approve. */
+    opsChatId: string
+    /** The dedicated outreach chat, or undefined while outreach shares the ops chat. */
+    outreachChatId?: string
+}
+
+/** What is stored, before a channel is picked. */
+interface BaseTelegramConfig {
+    token: string
+    opsChatId: string
+    opsThreadId?: string
+    outreachChatId?: string
+    outreachThreadId?: string
     source: 'panel' | 'env'
 }
 
 /** How long the panel row may take to load before the env fallback is used instead. */
 const CONFIG_READ_TIMEOUT_MS = 5_000
 
-let cached: { value: TelegramConfig | null; at: number } | null = null
+let cached: { value: BaseTelegramConfig | null; at: number } | null = null
 
 /** Test seam — the cache is module-global, so tests must be able to clear it. */
 export function __resetTelegramConfigCache(): void {
     cached = null
+}
+
+/** Makes a changed chat id take effect now instead of after the 60 s TTL. */
+export function invalidateTelegramConfigCache(): void {
+    cached = null
+}
+
+/**
+ * The optional outreach chat, read on its own so that a missing column (code deployed before
+ * migration 075 ran) or a slow read costs only the outreach routing: outreach alerts then use the
+ * ops chat, and every ops alert is untouched. Never throws.
+ */
+async function loadOutreachRoute(): Promise<{ chatId?: string; threadId?: string }> {
+    try {
+        const row = await withTimeout(
+            db.query.systemIntegrations.findFirst({
+                where: eq(systemIntegrations.id, INTEGRATIONS_ID),
+                columns: { telegramOutreachChatId: true, telegramOutreachThreadId: true },
+            }),
+            CONFIG_READ_TIMEOUT_MS,
+            'system_integrations outreach read',
+        )
+        return {
+            chatId: row?.telegramOutreachChatId?.trim() || undefined,
+            threadId: row?.telegramOutreachThreadId?.trim() || undefined,
+        }
+    } catch (err) {
+        console.warn(
+            '[telegram] could not read the outreach chat (is migration 075 applied?); outreach alerts use the ops chat:',
+            err instanceof Error ? err.message : String(err),
+        )
+        return {}
+    }
 }
 
 /**
@@ -70,7 +127,7 @@ export function __resetTelegramConfigCache(): void {
  * missing token or chat id, an undecryptable token, or an unreachable database.
  * The caller treats null as "not configured" and stays quiet.
  */
-async function loadConfig(): Promise<TelegramConfig | null> {
+async function loadConfig(): Promise<BaseTelegramConfig | null> {
     try {
         // Bounded: the alert most worth delivering is "the database is unreachable", and a
         // read that hangs on that same database would swallow it. On timeout this falls
@@ -78,6 +135,8 @@ async function loadConfig(): Promise<TelegramConfig | null> {
         const row = await withTimeout(
             db.query.systemIntegrations.findFirst({
                 where: eq(systemIntegrations.id, INTEGRATIONS_ID),
+                // Only the original columns: the ops alerts must not depend on migration 075.
+                columns: { telegramBotToken: true, telegramChatId: true, telegramEnabled: true },
             }),
             CONFIG_READ_TIMEOUT_MS,
             'system_integrations read',
@@ -85,10 +144,14 @@ async function loadConfig(): Promise<TelegramConfig | null> {
 
         if (row?.telegramEnabled && row.telegramBotToken && row.telegramChatId) {
             try {
+                const token = decryptSecret(row.telegramBotToken, 'system_integrations.telegram_bot_token')
+                const outreach = await loadOutreachRoute()
                 return {
-                    token: decryptSecret(row.telegramBotToken, 'system_integrations.telegram_bot_token'),
-                    chatId: row.telegramChatId,
-                    threadId: process.env.TELEGRAM_THREAD_ID || undefined,
+                    token,
+                    opsChatId: row.telegramChatId,
+                    opsThreadId: process.env.TELEGRAM_THREAD_ID || undefined,
+                    outreachChatId: outreach.chatId,
+                    outreachThreadId: outreach.threadId,
                     source: 'panel',
                 }
             } catch (err) {
@@ -113,18 +176,29 @@ async function loadConfig(): Promise<TelegramConfig | null> {
     const token = process.env.TELEGRAM_BOT_TOKEN
     const chatId = process.env.TELEGRAM_CHAT_ID
     if (token && chatId) {
-        return { token, chatId, threadId: process.env.TELEGRAM_THREAD_ID || undefined, source: 'env' }
+        return { token, opsChatId: chatId, opsThreadId: process.env.TELEGRAM_THREAD_ID || undefined, source: 'env' }
     }
 
     return null
 }
 
-async function getConfig(): Promise<TelegramConfig | null> {
+async function getBaseConfig(): Promise<BaseTelegramConfig | null> {
     const now = Date.now()
     if (cached && now - cached.at < CONFIG_TTL_MS) return cached.value
     const value = await loadConfig()
     cached = { value, at: now }
     return value
+}
+
+async function getConfig(channel: TelegramChannel = 'ops'): Promise<TelegramConfig | null> {
+    const base = await getBaseConfig()
+    if (!base) return null
+    const common = { token: base.token, source: base.source, opsChatId: base.opsChatId, outreachChatId: base.outreachChatId }
+    if (channel === 'outreach' && base.outreachChatId) {
+        // The ops thread belongs to the ops chat and must never leak into another one.
+        return { ...common, chatId: base.outreachChatId, threadId: base.outreachThreadId, channel }
+    }
+    return { ...common, chatId: base.opsChatId, threadId: base.opsThreadId, channel }
 }
 
 // Re-exported so callers can keep importing it from here; the implementation
@@ -186,10 +260,13 @@ export interface SendResult {
  *
  * `title` and `body` are inserted into HTML parse mode verbatim, so callers
  * compose them from literal markup plus escapeHtml()-ed fragments.
+ *
+ * `channel` defaults to 'ops', so every existing caller is unchanged. Outreach callers pass
+ * 'outreach', which lands in the dedicated chat when one is set and in the ops chat otherwise.
  */
-export async function sendTelegram(title: string, body = ''): Promise<SendResult> {
+export async function sendTelegram(title: string, body = '', channel: TelegramChannel = 'ops'): Promise<SendResult> {
     try {
-        const config = await getConfig()
+        const config = await getConfig(channel)
         if (!config) return { ok: false, reason: 'unconfigured' }
 
         let text = body ? `${title}\n\n${body}` : title
@@ -236,8 +313,21 @@ export async function sendTelegram(title: string, body = ''): Promise<SendResult
 }
 
 /** The resolved bot config (panel row, else env), or null when Telegram is not set up. */
-export async function getTelegramConfig(): Promise<TelegramConfig | null> {
-    return getConfig()
+export async function getTelegramConfig(channel: TelegramChannel = 'ops'): Promise<TelegramConfig | null> {
+    return getConfig(channel)
+}
+
+/**
+ * Stores (or clears, with null) the dedicated outreach chat. A new chat starts without a thread:
+ * the old thread id belonged to the old chat. Throws if the database write fails, so the caller
+ * can tell the owner instead of confirming something that did not happen.
+ */
+export async function setTelegramOutreachChat(chatId: string | null): Promise<void> {
+    await db
+        .update(systemIntegrations)
+        .set({ telegramOutreachChatId: chatId, telegramOutreachThreadId: null, updatedAt: new Date() })
+        .where(eq(systemIntegrations.id, INTEGRATIONS_ID))
+    invalidateTelegramConfigCache()
 }
 
 /**
@@ -277,8 +367,8 @@ export async function callTelegramApi<T = unknown>(
 }
 
 /** True when an alert would actually go somewhere. Used to skip building bodies. */
-export async function isTelegramConfigured(): Promise<boolean> {
-    return (await getConfig()) !== null
+export async function isTelegramConfigured(channel: TelegramChannel = 'ops'): Promise<boolean> {
+    return (await getConfig(channel)) !== null
 }
 
 /**

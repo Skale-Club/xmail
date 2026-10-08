@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { encryptSecret, decryptSecret } from '../lib/crypto'
 import { isPlatformAdmin } from '../lib/admin'
 import crypto from 'crypto'
+import { invalidateTelegramConfigCache } from '../lib/telegram'
 
 const router = Router()
 const INTEGRATIONS_ID = 'default'
@@ -22,6 +23,20 @@ function maskToken(token: string | null | undefined): string | null {
     } catch {
         // If decryption fails (e.g. legacy plaintext stored), still mask safely
         return '****'
+    }
+}
+
+type IntegrationsRow = Awaited<ReturnType<typeof readIntegrations>>
+
+/** What the admin page gets: the token masked, everything else as stored. */
+function publicView(row: IntegrationsRow) {
+    return {
+        telegramBotToken: maskToken(row?.telegramBotToken),
+        telegramChatId: row?.telegramChatId ?? null,
+        telegramOutreachChatId: row?.telegramOutreachChatId ?? null,
+        telegramOutreachThreadId: row?.telegramOutreachThreadId ?? null,
+        telegramEnabled: row?.telegramEnabled ?? false,
+        updatedAt: row?.updatedAt ?? null,
     }
 }
 
@@ -57,12 +72,7 @@ router.get('/', async (req: Request, res: Response) => {
 
         const row = await readIntegrations()
 
-        res.json({
-            telegramBotToken: maskToken(row?.telegramBotToken),
-            telegramChatId: row?.telegramChatId ?? null,
-            telegramEnabled: row?.telegramEnabled ?? false,
-            updatedAt: row?.updatedAt ?? null,
-        })
+        res.json(publicView(row))
     } catch (error) {
         console.error('Error fetching integrations:', error)
         res.status(500).json({ error: 'Internal server error' })
@@ -74,6 +84,9 @@ router.get('/', async (req: Request, res: Response) => {
 const patchSchema = z.object({
     telegramBotToken: z.string().optional(),
     telegramChatId: z.string().optional(),
+    // Empty string clears the field (outreach alerts then share the ops chat).
+    telegramOutreachChatId: z.string().max(64).optional(),
+    telegramOutreachThreadId: z.string().max(32).optional(),
     telegramEnabled: z.boolean().optional(),
 })
 
@@ -88,7 +101,7 @@ router.patch('/', async (req: Request, res: Response) => {
             return res.status(400).json({ error: parseResult.error.errors })
         }
 
-        const { telegramBotToken, telegramChatId, telegramEnabled } = parseResult.data
+        const { telegramBotToken, telegramChatId, telegramOutreachChatId, telegramOutreachThreadId, telegramEnabled } = parseResult.data
         const current = await readIntegrations()
 
         // Build update payload — only overwrite fields that were explicitly sent
@@ -106,6 +119,14 @@ router.patch('/', async (req: Request, res: Response) => {
             payload.telegramChatId = telegramChatId
         }
 
+        if (telegramOutreachChatId !== undefined) {
+            payload.telegramOutreachChatId = telegramOutreachChatId.trim() || null
+        }
+
+        if (telegramOutreachThreadId !== undefined) {
+            payload.telegramOutreachThreadId = telegramOutreachThreadId.trim() || null
+        }
+
         if (telegramEnabled !== undefined) {
             payload.telegramEnabled = telegramEnabled
         }
@@ -118,14 +139,12 @@ router.patch('/', async (req: Request, res: Response) => {
                 set: payload,
             })
 
+        // The sender caches the resolved config for 60 s; a changed chat id should apply now.
+        invalidateTelegramConfigCache()
+
         const updated = await readIntegrations()
 
-        res.json({
-            telegramBotToken: maskToken(updated?.telegramBotToken),
-            telegramChatId: updated?.telegramChatId ?? null,
-            telegramEnabled: updated?.telegramEnabled ?? false,
-            updatedAt: updated?.updatedAt ?? null,
-        })
+        res.json(publicView(updated))
     } catch (error) {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: error.errors })
@@ -159,14 +178,22 @@ router.post('/test', async (req: Request, res: Response) => {
             return res.status(500).json({ success: false, error: 'Failed to decrypt Bot Token' })
         }
 
-        const chatId = row.telegramChatId
-        const text = `[Xmail] Test message from admin panel — integrations are working correctly.`
+        // ?channel=outreach tests the dedicated outreach chat instead of the ops chat.
+        const outreach = req.query.channel === 'outreach'
+        const chatId = outreach ? row.telegramOutreachChatId?.trim() : row.telegramChatId
+        if (!chatId) {
+            return res.status(400).json({ success: false, error: 'Outreach chat ID not configured (outreach alerts use the ops chat)' })
+        }
+        const threadId = outreach ? row.telegramOutreachThreadId?.trim() : undefined
+        const text = outreach
+            ? `[Xmail] Test message from admin panel — outreach alerts will arrive in this chat.`
+            : `[Xmail] Test message from admin panel — integrations are working correctly.`
 
         const telegramUrl = `https://api.telegram.org/bot${token}/sendMessage`
         const response = await fetch(telegramUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, text }),
+            body: JSON.stringify(threadId ? { chat_id: chatId, text, message_thread_id: threadId } : { chat_id: chatId, text }),
         })
 
         const body = await response.json() as { ok: boolean; description?: string }

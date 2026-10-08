@@ -391,6 +391,10 @@ export const systemIntegrations = pgTable('system_integrations', {
     id: text('id').primaryKey().$defaultFn(() => 'default'),
     telegramBotToken: text('telegram_bot_token'),       // encrypted
     telegramChatId: text('telegram_chat_id'),           // plaintext
+    // Migration 075: optional second chat for outreach alerts (prospect replies + approval cards).
+    // NULL = outreach alerts go to telegram_chat_id. The thread id only applies to this chat.
+    telegramOutreachChatId: text('telegram_outreach_chat_id'),
+    telegramOutreachThreadId: text('telegram_outreach_thread_id'),
     telegramEnabled: boolean('telegram_enabled').default(false).notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 })

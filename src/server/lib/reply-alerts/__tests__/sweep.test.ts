@@ -27,6 +27,7 @@ import { notifyReplyReceived, runReplyAlertSweepWithLock, REPLY_ALERT_LOCK_NAME 
 import type { PendingReply } from '../plan'
 import { __resetUnconfiguredWarning, MAX_FIRST_ALERTS_PER_TICK, runReplyAlertSweep, type SweepDeps } from '../sweep'
 import { runWithLock } from '../../cron-lock'
+import { isTelegramConfigured, sendTelegram } from '../../telegram'
 
 const at = (iso: string) => new Date(iso)
 const NOON = at('2026-07-15T16:00:00Z') // 12:00 EDT
@@ -72,6 +73,16 @@ beforeEach(() => {
 })
 
 describe('runReplyAlertSweep', () => {
+    it('sends through the OUTREACH Telegram channel by default (ops alerts stay on the ops chat)', async () => {
+        const loadPending = vi.fn(async () => [row()])
+        const result = await runReplyAlertSweep({}, { now: () => NOON, baseUrl: 'https://mail.skale.club', loadPending, recordAlert: vi.fn(async () => {}) })
+
+        expect(result.first).toBe(1)
+        expect(isTelegramConfigured).toHaveBeenCalledWith('outreach')
+        expect(sendTelegram).toHaveBeenCalledTimes(1)
+        expect(vi.mocked(sendTelegram).mock.calls[0][2]).toBe('outreach')
+    })
+
     it('sends the first alert and records it', async () => {
         const fresh = row()
         const { merged, send, recordAlert } = deps([fresh])
