@@ -20,17 +20,17 @@ problema que aparecer antes de aumentar o volume. Cada linha diz o que aconteceu
 | 11 | A edição do Hermes aceitava tirar o `{{unsubscribeUrl}}` do texto puro quando o HTML ainda tinha | E-mail sem descadastro para quem lê em texto puro | Achado no teste real das ferramentas; agora cada corpo preenchido tem que ter o link, senão 422 e nada é salvo |
 | 12 | Salvar a sequência pela tela zerava a espera variável (3 a 5 dias) (era o aberto F) | Follow-ups com espera fixa | `85ee773`: as telas carregam, mostram ("Up to") e enviam `delayHoursMax` |
 | 13 | Hermes sem acesso para operar o dia a dia (campanha, leads, caixas, caixa de entrada, métricas, supressões) | Tudo passava pelo Claude ou pela tela | `c29d910`..`1b7b648`: escopo `outreach:manage` (só Hermes, migration 073 aplicada), 20 ferramentas, 43 no total. Ativação e resposta a prospect seguem na aprovação; limite diário pelo agente no máximo 30 por caixa. Provado em produção: só as 5 contas Icemail aparecem como remetente, nenhum segredo sai |
+| 14 | Leitura das caixas ficava 30 min de castigo depois de qualquer erro de IMAP (era o aberto D) | Um deploy reinicia o container, o tick morre no meio da conexão e toda resposta fica invisível por até ~45 min | `b634a58`: erro transitório (timeout, reset, conexão fechada) castiga 5 min e sobe 15 e 30 nas falhas seguidas; credencial, caixa inexistente, chave errada e erro desconhecido seguem em 30. Durante o shutdown nenhum castigo é gravado. A contagem vai no prefixo de `last_error`, sem migration |
+| 15 | Follow-ups saíam sem `In-Reply-To`/`References` (era o aberto E) | E-mail 2 chegava como conversa nova, não como continuação | `7c297f6`: passo 2+ leva o Message-ID do último e-mail enviado ao lead na campanha e a cadeia (últimos 10). Assunto em branco depois do primeiro passo vira `Re: <assunto anterior>`; assunto escrito fica como está (texto aprovado intacto). Migration 074 (**escrita, não aplicada**) deixa o banco aceitar assunto vazio em `step_order > 1` |
+| 16 | Limite diário fixo em 15 por caixa Icemail (era o aberto I) | Teto de volume sem critério para subir | `6ee5dd7`: `rampRecommendation` em `GET /email-accounts` (e na tool `outreach_email_accounts_list`): 20+ envios em 7 dias, bounce < 2%, descadastro < 3% e zero reclamação sugerem + 3 (teto 30); bounce ≥ 5% ou reclamação sugerem − 3 (piso 5). Só recomenda, nunca aplica |
 
 ## Abertos
 
 | # | Achado | Risco | Próximo passo |
 |---|---|---|---|
 | A | Gancho "sem agendamento" depende do analisador do Xphere, que erra em sites Squarespace/Wix | Afirmação falsa ao dono | Conferir o site antes de ligar o gancho, ou deixar o gancho desligado nos leads novos até o analisador melhorar |
-| D | Leitura das caixas fica 30 min de castigo depois de um erro de IMAP (ex.: reinício no deploy) | Resposta demora até 35 min para ser vista | Evitar deploy com campanha rodando; avaliar castigo menor para erro de tempo esgotado |
-| E | Follow-ups saem sem `In-Reply-To` | E-mail 2 chega como conversa nova, não "Re:" | Decidir se quer encadear |
 | G | Link de descadastro nunca foi clicado num teste real | Descadastro quebrado = problema legal e de reputação | Clicar no link do e-mail de teste e conferir supressão |
 | H | Fila do homelab só anda quando alguém consulta | Busca parada se ninguém acompanhar | Hermes instruído a acompanhar até a última; avaliar um relógio no Xcraper |
-| I | Limite diário: 15 por caixa Icemail, 5 caixas = 75/dia | Teto de volume | Subir aos poucos conforme reputação |
 
 ## Testes de envio reais
 

@@ -9,7 +9,7 @@
 >
 > Última auditoria completa: **2026-08-15** (commit `159450d`); reconferência de produção em
 > **2026-09-05** (achados 1b, 13, 14 e 15 fechados; §8 atualizado). Em **2026-09-08** (Fase 37) o
-> achado 2 foi fechado. Em **2026-10-07** entraram o escopo `campaigns:copy` (G11, achados 21 e 22) e o escopo `outreach:manage` (G12, achados 23 e 24; auditoria em 2026-10-07). A seção "Achados abertos" tem
+> achado 2 foi fechado. Em **2026-10-07** entraram o escopo `campaigns:copy` (G11, achados 21 e 22) e o escopo `outreach:manage` (G12, achados 23 e 24; auditoria em 2026-10-07). Na mesma data: castigo de leitura da caixa por tipo de erro (§5), follow-ups na mesma conversa (§3, migration 074 não aplicada) e `rampRecommendation` das caixas (§3). A seção "Achados abertos" tem
 > data — se estiver velha, refaça a rotina de reanálise no fim do doc antes de confiar nela.
 
 ## 1. O que é, em uma frase
@@ -72,6 +72,8 @@ Escopos (`OUTREACH_AGENT_SCOPES` em `src/db/schema.ts`): `outreach:read`, `prosp
 | Auditoria | `src/server/lib/agent-audit.ts` → `outreach_agent_audit_log` | Toda ação e todo `scope.denied` |
 | Eventos | `src/server/lib/xphere-events.ts` → `outreach_event_outbox` | Dedup por org+chave; Hermes e Xphere têm cursores independentes |
 | Gate de envio | `src/server/lib/outreach-delivery-policy.ts` | Org habilitada, campanha ativa, inbox verificada, unsub, supressão, janela, limite diário, warmup, espaçamento |
+| Encadeamento dos follow-ups | `src/server/lib/outreach-threading.ts` (puro), `jobs/processOutreachSequences.ts` (busca o e-mail anterior), `lib/outreach-sequence-state.ts` (`firstEmailStep`) | Passo de e-mail depois do primeiro sai com `In-Reply-To` = Message-ID do último e-mail enviado ao lead na campanha e `References` = cadeia dele + o id (últimos 10). Assunto em branco vira `Re: <assunto anterior>` (sem `Re: Re:`); assunto escrito no passo fica como está. Os cabeçalhos congelam na linha de `outreach_emails` (`in_reply_to`, `message_references`), então retry mantém a conversa; SMTP, nativo e Outlook mandam o mesmo MIME, todos levam os cabeçalhos. `processReplies` casa por `In-Reply-To` e depois por `References`: uma resposta ao passo 2 aponta para o passo 2, e os dois caminhos acham o mesmo `campaign_lead` |
+| Rampa de volume das caixas | `src/server/lib/sending-ramp.ts` (puro), `lib/sending-ramp-stats.ts` (contagens), `lib/agent-account-view.ts` | `rampRecommendation` em cada item de `GET /email-accounts`. **Só recomenda, nunca aplica.** Pronta com 20+ envios em 7 dias, bounce < 2%, descadastro < 3% e zero reclamação: sugere limite + 3 (teto 30 = `AGENT_MAX_DAILY_SEND_LIMIT`). Bounce ≥ 5% ou qualquer reclamação: sugere − 3 (piso 5). Resto: mantém. Reclamação = supressão `complaint` de um endereço que a caixa mandou na janela (não há ingestão de feedback loop, então zero = "nenhuma registrada") |
 | Gate de ativação | `src/server/routes/outreach/campaigns.ts` → `validateCampaignReadyForActivation` | Sequência válida, leads com inbox, **P009 domínio protegido** |
 | Workers | `src/server/jobs/index.ts` | Cadências e locks (ver §5) |
 | UI do operador | `src/pages/outreach/AgentOpsPage.tsx` | Fila de aprovação, runs, evidência dos candidatos |
@@ -115,7 +117,7 @@ xmail_search_prospects ──G1─→ prospecting_runs + prospect_candidates (sc
 | G9 | `outreach/approvals.ts` + `PUT /campaigns/:id` | `validateCampaignReadyForActivation` (sequência, leads com inbox, **P009**, **warm-up completo**) + ativação atômica. Único gate comum aos caminhos humano, Xphere e agente |
 | G10 | `outreach-delivery-policy.ts` | Última rede antes do envio, por destinatário |
 | G11 | `agent-campaign-copy.ts` | Edição de texto por escopo próprio `campaigns:copy`; só `draft`/`paused`/`active`; só variante A + atrasos; o step editado tem que continuar passando `invalid_email_content`, `missing_unsubscribe_placeholder` e `malformed_template_block` (422 e nada salvo); linha do step travada (`FOR UPDATE`); edição + linha de auditoria (`agent.campaign.step_copy_updated`, com before/after) na mesma transação — falhou a auditoria, a edição desfaz; `delay_hours_max` só muda se estiver no payload; revert recusa se um humano mexeu no step depois. **Não** é um gate de aprovação: o texto de campanha ativa muda sem nova aprovação (achado 21) |
-| G12 | `agent-campaign-manage.ts` e irmãos | Escopo `outreach:manage` (só Hermes). **Nenhuma rota envia e-mail, ativa campanha ou responde prospect.** A única que põe campanha em `active` é `resume`, e só passa com: status `paused`; `activation_approval_id` apontando para aprovação `campaign_activation` **executada** desta campanha e desta org; `paused_reason = 'agent'`; e `validateCampaignReadyForActivation` de novo (sequência, leads com caixa, domínio protegido/`info@`, caixa `warmup_only`, rampa de warm-up). Senão 409/422 e o caminho é `xmail_request_campaign_activation`. PATCH de campanha é parcial, `.strict()` (sem `status`, `replyToEmail`, flags de autonomia) e valida a janela contra o valor gravado. Duplicar cria rascunho com a cadência inteira (`delay_hours_max` incluído), sem leads, sem herdar autonomia. Remover lead / levantar supressão: `confirm: true` ou 409; lead já enviado só é **parado** (histórico de `outreach_emails` não é apagado). Supressão: o agente só levanta `source = 'manual'`. Caixas: schema `.strict()`, nenhuma coluna de segredo é selecionada, `warmupDays` só sobe, `warmupEnabled` só liga, limite diário máx. 30 (caixa aquecida recebe o valor no mesmo dia; acima de 30 é decisão do Vanildo, pela tela), `status` só `paused`. Inbox: leitura, corpo em texto puro, marcado `untrustedContent`. Cada escrita grava `agent.*` em `outreach_agent_audit_log` na mesma transação (falhou a auditoria, a mudança desfaz) |
+| G12 | `agent-campaign-manage.ts` e irmãos | Escopo `outreach:manage` (só Hermes). **Nenhuma rota envia e-mail, ativa campanha ou responde prospect.** A única que põe campanha em `active` é `resume`, e só passa com: status `paused`; `activation_approval_id` apontando para aprovação `campaign_activation` **executada** desta campanha e desta org; `paused_reason = 'agent'`; e `validateCampaignReadyForActivation` de novo (sequência, leads com caixa, domínio protegido/`info@`, caixa `warmup_only`, rampa de warm-up). Senão 409/422 e o caminho é `xmail_request_campaign_activation`. PATCH de campanha é parcial, `.strict()` (sem `status`, `replyToEmail`, flags de autonomia) e valida a janela contra o valor gravado. Duplicar cria rascunho com a cadência inteira (`delay_hours_max` incluído), sem leads, sem herdar autonomia. Remover lead / levantar supressão: `confirm: true` ou 409; lead já enviado só é **parado** (histórico de `outreach_emails` não é apagado). Supressão: o agente só levanta `source = 'manual'`. Caixas: schema `.strict()`, nenhuma coluna de segredo é selecionada, `warmupDays` só sobe, `warmupEnabled` só liga, limite diário máx. 30 (caixa aquecida recebe o valor no mesmo dia; acima de 30 é decisão do Vanildo, pela tela), `status` só `paused`; `GET /email-accounts` traz `rampRecommendation` (conselho de limite pelos últimos 7 dias, nunca aplicado). Inbox: leitura, corpo em texto puro, marcado `untrustedContent`. Cada escrita grava `agent.*` em `outreach_agent_audit_log` na mesma transação (falhou a auditoria, a mudança desfaz) |
 
 ### Rotas do G12 (`/api/agent/outreach`)
 
@@ -153,6 +155,21 @@ Não existem como campos de campanha: limite diário (é da caixa) e "parar ao r
 
 O reconciliador do outbox cobre a janela de crash (lookback padrão 6h,
 `OUTREACH_EVENT_RECONCILE_LOOKBACK_HOURS`).
+
+**Leitura das caixas (`ingestOutreachInbound`, chamada por replies e bounces).** Quando a leitura de
+uma conta lança, o erro vira castigo gravado em `outreach_provider_cursors.retry_at`, e a conta sai
+do tick até lá. O tamanho depende do tipo (`classifyIngestFailure` em `lib/outreach-inbound.ts`):
+erro **transitório** (timeout, ETIMEDOUT/ECONNRESET/ECONNREFUSED/EPIPE, conexão fechada ou
+indisponível, timeout de greeting, pool do banco fechando) castiga **5 min** na primeira falha, **15**
+na segunda seguida e **30** da terceira em diante; erro **persistente** (credencial inválida,
+`CredentialKeyMismatchError`, caixa inexistente) e qualquer erro que não reconhecemos castigam **30
+min** sempre. Antes era 30 fixo, e um deploy (o container reinicia, o tick morre no meio da conexão)
+deixava toda resposta invisível por até ~45 min. A contagem de falhas seguidas não tem coluna:
+vai no prefixo `[transient#N]` de `last_error`, que `saveCursor` apaga em qualquer página lida com
+sucesso. Durante o shutdown (`SIGTERM`/`SIGINT` liga `lib/shutdown.ts` antes de fechar as conexões)
+**nenhum castigo é gravado** e o tick para: o erro veio de nós saindo, não da caixa. A invariante do
+incidente de 2026-08 se mantém: conta que continua falhando nunca volta a ser lida em peso total,
+porque a escada sempre chega a 30.
 
 ## 6. Invariantes — e como provar cada uma
 
@@ -210,6 +227,7 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 |---|---|---|
 | Migration 072 (escopo `campaigns:copy`) | banco de prod | **escrita em 2026-10-07, NÃO aplicada.** `select name, scopes from outreach_agent_credentials where revoked_at is null` — a credencial do Hermes tem que listar `campaigns:copy`. O UPDATE casa por nome (`%hermes%`) ou pelo conjunto draft+request_activation+pause; se não casar, nada muda e a concessão tem que ser feita pela API de credenciais |
 | Migration 073 (escopo `outreach:manage`) | banco de prod | **escrita em 2026-10-07, NÃO aplicada; só Hermes.** Mesma conferência da 072: `select name, scopes from outreach_agent_credentials where revoked_at is null` — só a credencial do Hermes lista `outreach:manage`; a do Kai não. Depois de aplicar, o container do Hermes precisa receber o `server.mjs` novo (43 tools) |
+| Migration 074 (assunto em branco em follow-up) | banco de prod | **escrita em 2026-10-07, NÃO aplicada.** Afrouxa `sequence_steps_content_valid` para aceitar assunto vazio em `step_order > 1`. Enquanto não for aplicada, salvar um follow-up com assunto em branco (tela ou Hermes) falha na constraint antiga com 500 e nada é gravado; sequências com assunto em todo passo seguem normais. Conferir: `select pg_get_constraintdef(oid) from pg_constraint where conname = 'sequence_steps_content_valid'` tem que conter `step_order > 1` |
 | Migrations 045–058 | banco de prod | `select * from supabase_migrations.schema_migrations` / `to_regclass('public.warmup_messages')` |
 | `APOLLO_API_KEY` | **`run_app_container()` do `.github/workflows/build-deploy.yml`** *e* o secret existir | `gh secret list \| grep APOLLO` — **o grep no workflow NÃO basta**: ele confirma a fiação, e um `${{ secrets.X }}` inexistente resolve para string vazia sem erro. Foi assim que este item passou por resolvido em 2026-08-15 estando quebrado |
 | Credencial do agente | `POST /api/outreach/agent-credentials?organizationId=…` (sessão admin) | `select id, name, scopes, revoked_at from outreach_agent_credentials` |
@@ -492,6 +510,13 @@ WHERE jsonb_typeof(<coluna>) = 'string';
 - **Eventos do agente não vão ao Xphere:** `publishOutreachEvent` usa `deliverToXphere: false` por
   padrão; só `sendXphereOutreachEvent` marca `true`.
 - **O score ICP sem critério devolve 50/`tier c`** — é baseline neutro, não bug.
+- **Follow-up com assunto em branco é válido** (só depois do primeiro passo de e-mail; o primeiro
+  exige assunto na validação de ativação, no Zod de sequências, nas telas e na edição do agente).
+  O texto aprovado usa assuntos distintos de propósito e continua intacto: só quem deixa o assunto
+  vazio ganha o `Re:`. O assunto anterior vem de `outreach_emails.subject`, que guarda o template
+  (a interpolação acontece no envio); o `Re: <template>` é interpolado com os mesmos dados do lead.
+- **A rampa de volume é conselho, não ação.** `rampRecommendation` nunca altera `daily_send_limit`.
+  Subir é um PATCH que o Hermes decide fazer (teto 30) e reporta, ou o Vanildo faz na tela.
 
 ## 12. Manutenção deste doc
 
