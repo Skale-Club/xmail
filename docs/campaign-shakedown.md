@@ -27,12 +27,14 @@ problema que aparecer antes de aumentar o volume. Cada linha diz o que aconteceu
 | 18 | Fila do homelab só andava quando alguém consultava (era o aberto H) | Busca parada se ninguém acompanhar | Xcraper `c3ff00c`: `POST /api/service/homelab/tick`; cron de 2 em 2 min no Hetzner (`/etc/cron.d/xcraper-tick`, script `/opt/hermes/xcraper-tick.sh`, chave lida do container do Hermes) |
 | 19 | Gancho "sem agendamento" saía sem ninguém conferir (parte do aberto A) | Afirmação falsa ao dono | `51bc24d`: só aparece com `booking_verified_none: true`, que o Hermes marca depois de abrir o site |
 | 20 | Aprovação só pelo painel do Xmail | Vanildo tinha que entrar no Xmail para cada campanha | `0ab60fd`/`dbfb05c`: cartão com Aprovar/Recusar no Telegram (bot xmailoppsbot), com confirmação em dois toques; mesma lógica do painel |
+| 21 | Analisador do Xphere não via Squire/Booksy em sites Squarespace/Wix (resto do aberto A) | `booking_platform` errado no lead | Xphere `b10b020a`: lista única de provedores, lê scripts, iframes, `data-*`, JSON inline, segue uma subpágina `/book`; CTA externo desconhecido conta como agendamento (`unknown`). Na dúvida, "tem agendamento" |
 
 ## Abertos
 
+Nenhum em 2026-10-07. Achado novo entra aqui antes de subir o volume.
+
 | # | Achado | Risco | Próximo passo |
 |---|---|---|---|
-| A | Analisador do Xphere erra agendamento em sites Squarespace/Wix | Lead com `booking_platform` errado | O gancho já não depende dele (#19). Detecção melhor em construção no Xphere |
 
 ## Testes de envio reais
 

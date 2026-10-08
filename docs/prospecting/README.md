@@ -230,8 +230,10 @@ analysis is wrong.
 
 ## 9. Known gaps
 
-- **Booking detection in Xphere** misses some Squarespace and Wix sites. The hook no longer
-  depends on it (rule 6). Better detection is in progress.
+- **Booking detection in Xphere** was rebuilt on 2026-10-07 (provider list, scripts, iframes,
+  `data-*`, inline JSON, one hop to an own-site `/book` page; an unknown off-site "Book now" counts
+  as booking). It still cannot see a booking system that loads only after login or a click. The
+  hook does not depend on it (rule 6).
 - **Kai** has no homelab access and no outreach management scope yet, by decision on 2026-10-07.
 - **Complaints** have no feedback-loop source. "Zero complaints" means none recorded.
 - **Open defects:** the current list is in `docs/campaign-shakedown.md`.
