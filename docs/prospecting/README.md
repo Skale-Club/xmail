@@ -82,7 +82,7 @@ not set up yet; see section 9.
    (section 5), enrolls the leads, and fixes per-lead personalization (`shortName`, city, hook
    flags) with its lead tools. Senders can only be Icemail inboxes (section 4, rule 1).
 7. **Approve.** Hermes requests activation. Xmail posts a card on Vanildo's Telegram (bot
-   `xmailoppsbot`) with lead counts, sender, sequence and blockers. **Approve** then
+   `xmailoppsbot`, outreach chat) with lead counts, sender, sequence and blockers. **Approve** then
    **Yes, start** activates the campaign at once. The admin panel button does the same thing.
 8. **Send.** Xmail sends inside the campaign window, spaced per inbox, within each inbox's daily
    limit. Follow-ups wait a random 3 to 5 days and carry `In-Reply-To`/`References`, so they
@@ -183,9 +183,18 @@ analysis is wrong.
 
 ## 6. Operating it day to day
 
-- **Approve a campaign:** tap the card from `xmailoppsbot` on Telegram (Approve, then Yes, start).
-  If the card says it is blocked, it lists why.
-- **Replies:** Telegram alerts arrive by themselves. The unified inbox in Xmail shows threads.
+- **Where Telegram messages arrive:** `xmailoppsbot` has two destinations. The private ops chat
+  gets server, deploy and error alerts. Approval cards and reply alerts go to the **outreach
+  chat**, a group where the bot was added; until that group is set they come to the ops chat.
+  To set it: add the bot to a group, then tap "Usar para outreach" on the card it sends to the
+  ops chat (or paste the chat ID in the admin panel, Integrations). Only Vanildo's taps count in
+  the group. Details in `docs/TELEGRAM-ALERTS.md`.
+- **Approve a campaign:** tap the card from `xmailoppsbot` on Telegram, in the outreach chat
+  (Approve, then Yes, start). If the card says it is blocked, it lists why.
+- **Replies:** Telegram alerts arrive by themselves, in the outreach chat. Each one says who
+  replied (name, company, email), the reply subject, the campaign, which sequence email they
+  answered (step number and subject) and the first lines of what they wrote. The unified inbox
+  in Xmail shows threads.
 - **What Hermes can do:** 43 MCP tools.
   - Read and edit the copy.
   - Campaigns: settings, duplicate, resume.

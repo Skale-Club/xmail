@@ -301,6 +301,15 @@ floor moves** — read a day of `error_spike.baseline` log lines, and fix a new 
 rather than raising the threshold past it, which would mute everything else too. Full rationale,
 setup and troubleshooting in [`docs/TELEGRAM-ALERTS.md`](docs/TELEGRAM-ALERTS.md).
 
+**Two Telegram channels, one bot.** `sendTelegram(title, body, channel)` defaults to `'ops'`
+(server, deploy, errors, watchdog, uptime: the private owner chat). Prospect reply alerts and
+approval cards pass `'outreach'`, which goes to `system_integrations.telegram_outreach_chat_id`
+(migration 075) and falls back to the ops chat while that is unset. Any new outreach-domain
+Telegram message must pass `'outreach'`; anything about the server stays on the default. The
+owner for approval taps is the ops chat id, valid only while that chat is private; a tap must come
+from the owner AND from the outreach or ops chat (`authorizeTap` in `lib/telegram-approvals.ts`).
+Adding the bot to a group makes it offer that group as the outreach chat via a button in the ops chat.
+
 See `.env.example` for full list.
 
 ## Database
@@ -326,7 +335,7 @@ All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql
 - **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/archive/0000_dear_wolverine.sql` (the original genesis DDL — moved into `drizzle/archive/` because it targets the pre-`organization_id`, server-scoped schema and must never be applied against the current database; see `drizzle/archive/README.md`). The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
 - **Do NOT add Drizzle relations / constraints expecting them to apply automatically.** The TS-side schema is for type information; the DB side comes from the SQL migration.
 
-**Numbering convention:** Migrations are sequential integers. As of 2026-10-07 the files run through `074_sequence_step_blank_subject_followup.sql` (`070` to `074` all applied in production on 2026-10-07, each with its ledger row); the next free number is `075`. `072`, `073` and `074` are the most recent additions — re-verify what is actually applied against `supabase_migrations.schema_migrations` before assuming. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+**Numbering convention:** Migrations are sequential integers. As of 2026-10-08 the files run through `075_telegram_outreach_channel.sql` (`070` to `074` applied in production on 2026-10-07, each with its ledger row; `075` is written but NOT yet applied, apply it before deploying the code that reads it); the next free number is `076`. `073`, `074` and `075` are the most recent additions — re-verify what is actually applied against `supabase_migrations.schema_migrations` before assuming. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
 
 > **Resolved collision (2026-08-15):** `051_warmup_engine.sql` shared its prefix with the
 > already-applied `051_prospecting_journey_and_costs.sql`. Because the ledger keys on the numeric

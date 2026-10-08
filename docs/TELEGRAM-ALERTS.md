@@ -7,6 +7,11 @@ erros a subirem acima do normal.
 Bot: **@xmailoppsbot** ("Xmail | Opps"). É um bot dedicado a este projeto — não
 partilha token com nenhum outro.
 
+Há **dois canais** no mesmo bot (desde a migration `075`): o chat de **operação**
+(servidor, deploy, erros, vigilância, uptime) e um chat de **outreach** (respostas
+de prospects e cartões de aprovação). Enquanto o chat de outreach não estiver
+configurado, tudo continua a chegar ao chat de operação. Ver "Dois canais" abaixo.
+
 ---
 
 ## Antes de mais: isto não é um sistema novo
@@ -39,7 +44,9 @@ painel continua a ser o único sítio onde se editam as credenciais.
 | 💾 Disk is filling up | interna | `jobs/alertWatchdog.ts` | sistema de ficheiros acima de 85% |
 | 🔇 Outreach silence: `<kind>` / 🚨 idem (crítico) | interna | `jobs/alertWatchdog.ts` (regras em `lib/outreach-silence.ts`) | uma das ~12 regras de silêncio deixa de ler "operação normal" — ver secção própria abaixo |
 | 🔥 Error spike | agregada | `error-spike-alert.ts` | mais de 15 erros em 5 min |
-| 💬 Resposta nova / Lembrete / Bom dia | interna | `lib/reply-alerts/`, `jobs/replyAlerts.ts` | uma barbearia respondeu a uma campanha; repete de 2 em 2 h (08:00-20:00 NY) até haver resposta, resolução ou arquivo — ver secção própria abaixo |
+| 💬 Resposta nova / Lembrete / Bom dia | interna, **canal outreach** | `lib/reply-alerts/`, `jobs/replyAlerts.ts` | uma barbearia respondeu a uma campanha; repete de 2 em 2 h (08:00-20:00 NY) até haver resposta, resolução ou arquivo — ver secção própria abaixo |
+| 🟢 Pedido de ativação / 🟡 Pedido de enriquecimento | interna, **canal outreach** | `lib/telegram-approvals.ts` | o Hermes pede aprovação; o cartão traz os botões Aprovar/Recusar |
+| Fui adicionado ao grupo `<título>` | interna, chat de operação | `lib/telegram-approvals.ts` | o bot foi adicionado a um grupo; botão "Usar para outreach" |
 
 Cada alerta de estado tem a sua mensagem de recuperação (✅). Nenhum deles
 repete enquanto a condição se mantém — ver "Fadiga de alerta" abaixo.
@@ -435,6 +442,70 @@ no link de uma mensagem do tópico). Sem ele, o parâmetro é omitido por comple
 
 ---
 
+## Dois canais: operação e outreach
+
+Um bot, dois destinos. A escolha é feita por quem envia, não por filtro:
+
+| Canal | O que recebe | Quem envia |
+| --- | --- | --- |
+| **ops** (omissão) | 🚨/✅ uptime, deploy, crash, rejeições, base de dados, fila, memória, disco, silêncio, pico de erros, "adicionado a um grupo" | `ops-alert.ts`, `error-spike-alert.ts`, `db-liveness.ts`, `alertWatchdog.ts`, `install-alerting.ts`, GitHub Actions: `sendTelegram(title, body)` sem terceiro argumento |
+| **outreach** | respostas de prospects (aviso imediato, lembretes, resumo) e cartões de aprovação com botões | `reply-alerts/sweep.ts` e `notifyApprovalRequested`: `sendTelegram(title, body, 'outreach')`, `getTelegramConfig('outreach')` |
+
+**Antes de existir um chat de outreach, o canal outreach cai no chat de operação**
+(`telegram.ts` resolve isto numa linha: sem `telegram_outreach_chat_id`, usa o
+`telegram_chat_id`). Por isso nada se perde entre fazer deploy e configurar o grupo, e
+quem envia para `ops` não mudou um byte do pedido. O tópico (`telegram_outreach_thread_id`)
+só vale para o chat de outreach; o `TELEGRAM_THREAD_ID` da env só vale para operação.
+
+Duas colunas novas em `system_integrations` (migration `075`):
+`telegram_outreach_chat_id` e `telegram_outreach_thread_id`, ambas opcionais. A leitura
+delas é separada da leitura das credenciais de operação: se o código subir antes de a `075`
+ser aplicada, o outreach cai no chat de operação e os alertas de operação nem notam.
+**Mesmo assim, aplica a `075` antes do deploy** (o painel de Integrations lê a linha toda).
+
+### Configurar: adicionar o bot a um grupo (um toque)
+
+1. Cria um grupo (ou usa um existente) e adiciona **@xmailoppsbot**.
+2. O bot manda ao chat **privado de operação**: "Fui adicionado ao grupo `<título>`
+   (id `<id>`). Usar este grupo para os avisos de outreach?" com o botão
+   **Usar para outreach**. Se quem adicionou não foi o dono, o cartão avisa
+   (`⚠️ não é você`).
+3. Toca no botão. O Xmail confirma que o bot ainda está no grupo (`getChat`), grava o id
+   em `telegram_outreach_chat_id`, limpa a cache de credenciais (vale já, sem esperar os
+   60 s), troca o cartão por uma confirmação e escreve no grupo: "A partir de agora os
+   avisos de outreach do Xmail chegam aqui."
+
+Isto depende de o webhook receber `my_chat_member`: `ensureTelegramWebhook` passou a pedir
+`allowed_updates: ['callback_query', 'my_chat_member']` e corre a cada arranque em
+produção, portanto o primeiro deploy já subscreve. O painel (`/admin/integrations`,
+"Outreach alerts chat ID") continua a poder editar o id e o tópico à mão, e a esvaziá-lo
+(volta ao chat de operação). Há um botão de teste para cada chat.
+
+Se o bot for **removido** do grupo de outreach, o Xmail limpa o id sozinho (as mensagens
+para um grupo que o bot deixou só falhariam) e avisa o chat de operação: "Fui removido do
+grupo … Os avisos de outreach voltaram para este chat." Remoção de outros grupos é ignorada.
+Adicionar o bot a um grupo ou promovê-lo a administrador não muda nada até o toque no botão.
+
+### Quem pode aprovar (segurança)
+
+Num grupo qualquer membro vê os botões, por isso a regra deixou de ser "o chat é o
+certo" e passou a ser:
+
+- o cabeçalho secreto do webhook (derivado do token) tem de bater, como antes;
+- quem tocou (`from.id`) tem de ser o **dono**. O dono é o id do chat de operação, que é
+  também o id de utilizador **enquanto esse chat for privado** (id positivo, como em
+  produção). Se o chat de operação for um grupo (id negativo), não há como saber quem é o
+  dono: todo o toque é recusado, com o motivo na própria resposta do botão
+  ("o chat de ops não é privado…");
+- o chat onde se tocou (`message.chat.id`) tem de ser o chat de outreach configurado **ou**
+  o chat de operação (cartões enviados antes de o grupo existir continuam a funcionar);
+- `Usar para outreach` é mais estrito: só vale tocado no próprio chat de operação, nunca de
+  dentro de um grupo, e só aceita ids de grupo (negativos).
+
+Um membro do grupo que toque num botão recebe "Sem permissão." e nada acontece.
+
+---
+
 ## Testar
 
 **A ponta externa, de ponta a ponta** — dispara o workflow com falha forçada:
@@ -516,7 +587,8 @@ Esta família é diferente das anteriores. Não avisa de uma falha do sistema; a
 que **uma barbearia respondeu** e que alguém tem de ler e responder. O Vanildo não
 está a olhar para o e-mail durante o dia, por isso o aviso não pára ao primeiro
 envio: repete até a conversa ser tratada. Vai para o mesmo chat configurado no
-painel, através do mesmo `sendTelegram()`.
+painel, através do mesmo `sendTelegram()`, mas pelo **canal outreach** (o grupo de
+outreach quando existe; senão o chat de operação, como antes).
 
 ### O que sai, e quando
 
@@ -528,11 +600,35 @@ painel, através do mesmo `sendTelegram()`.
 | `Lembrete: N respostas esperando você` | quando há mais de 3 lembretes devidos no mesmo tick, vão numa única mensagem |
 
 Nada de lembrete nem de resumo entre as 20:00 e as 08:00. O aviso imediato é a
-exceção de propósito: é o que o Vanildo pediu para ver "logo". Cada mensagem traz o
-nome da barbearia (`custom_fields.shortName`, senão o nome da empresa), quem
-respondeu, que caixa de outreach recebeu, os primeiros 300 caracteres do que a
-pessoa escreveu (sem o histórico citado), há quanto tempo espera (nos lembretes) e
-um link direto: `<FRONTEND_URL>/outreach/unified-inbox?conversation=<id>`. Respostas
+exceção de propósito: é o que o Vanildo pediu para ver "logo". O título traz o
+nome da barbearia (`custom_fields.shortName`, senão o nome da empresa). O aviso imediato
+e o lembrete trazem o mesmo bloco:
+
+```text
+De: David Costa, Boston Blendz LLC — david.c@bostonblendz.com
+Para: vanildo.skale@tryskaleclub.com
+Assunto: "Re: quick question about bookings"
+Campanha: Barbearias MA · respondeu o e-mail 2 ("Following up on bookings")
+
+Sounds good, send me the details.
+
+Abrir a conversa no Unified Inbox
+```
+
+ou seja: quem escreveu (nome do lead, senão o do cabeçalho `From`; mais a empresa), o
+e-mail, o assunto da resposta, a campanha, **qual e-mail da sequência a pessoa respondeu**
+(passo N e o assunto que foi enviado) e os primeiros 300 caracteres do que escreveu (sem o
+histórico citado), mais o tempo de espera nos lembretes e o link direto
+`<FRONTEND_URL>/outreach/unified-inbox?conversation=<id>`. O e-mail respondido vem do
+`outreach_email_id` que o Unified Inbox atribuiu à resposta e, na falta, do último e-mail
+de campanha enviado na conversa. Se não houver vínculo (thread manual) a linha da campanha
+simplesmente não aparece; nada é inventado.
+
+No resumo cada pendente é uma linha:
+`• nome, empresa (sem leitura, há 15h) — e-mail — "assunto" — campanha · e-mail N — trecho de ~140 caracteres abrir`,
+com as partes cortadas antes de escapar e a linha só entra se couber inteira (o resumo é
+limitado por `SUMMARY_MAX_LINES`, por ~3300 caracteres e pelo limite de 4096 do Telegram,
+nunca corta uma tag `<a>`; o resto vira "… e mais N"). Respostas
 automáticas (fora do escritório), DSN/bounces e tráfego do mesh de warm-up nunca
 geram aviso.
 
@@ -607,7 +703,8 @@ DB_LIVENESS_EXIT_AFTER_MS=300000    # falha contínua antes de o processo se rei
 
 | Ficheiro | Papel |
 | --- | --- |
-| `src/server/lib/telegram.ts` | o único sítio que fala com a API do Telegram; lê o painel |
+| `src/server/lib/telegram.ts` | o único sítio que fala com a API do Telegram; lê o painel; resolve o canal (`ops` / `outreach`) e `setTelegramOutreachChat` |
+| `src/server/lib/telegram-approvals.ts` | cartões de aprovação, webhook (`callback_query`, `my_chat_member`), regra de quem pode tocar, configuração do grupo em um toque |
 | `src/server/lib/ops-alert.ts` | transições, dedup e recuperações da camada interna |
 | `src/server/lib/error-spike-alert.ts` | camada agregada; mede a própria linha de base |
 | `src/server/lib/error-taps.ts` | costura sem dependências entre o logger e o detetor |
@@ -621,6 +718,7 @@ DB_LIVENESS_EXIT_AFTER_MS=300000    # falha contínua antes de o processo se rei
 | `src/server/lib/reply-alerts/` | alertas de resposta: `schedule.ts` (janela 08-20 NY), `plan.ts` (o que enviar), `format.ts` (texto), `sweep.ts` (leitura + envio), `hook.ts` (gancho e trava) |
 | `src/server/jobs/replyAlerts.ts` | cron de 5 em 5 min dos lembretes e do resumo |
 | `supabase/migrations/071_inbox_reply_alerts.sql` | `inbox_reply_alerts`: quando saiu o último aviso de cada conversa |
+| `supabase/migrations/075_telegram_outreach_channel.sql` | `telegram_outreach_chat_id` e `telegram_outreach_thread_id` em `system_integrations` |
 | `scripts/telegram-notify.sh` | emissor do CI; sai sempre com 0 |
 | `scripts/resolve-alert-credentials.sh` | painel → cache → secrets |
 | `scripts/check-uptime.sh` | a sonda: HTTP + portas 587/993 |
