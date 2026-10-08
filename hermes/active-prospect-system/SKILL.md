@@ -294,6 +294,26 @@ unsubscribed, email-suppressed, identifier-less, and duplicate-identifier rows.
 An opt-out dirties configured audiences so the next reconciliation removes the
 member from Meta.
 
+## Niches: one Meta audience per business type (Vanildo, 2026-10-08)
+
+Every scrape carries the niche it is for, so each business type gets its own Meta audience and
+ads for one niche never reach another.
+
+- Send `niche` on every `POST /scrape`: a slug, lowercase, singular English, e.g. `barbershop`,
+  `nail_salon`, `hair_salon`. Xcraper refuses an invalid slug with 400; it never guesses.
+- Xphere stamps it on every business of the run (`custom_fields.niches`, the union across
+  scrapes), so a shop found by two niche scrapes belongs to both.
+- A scrape for one niche also brings neighbours: the barbershop scrapes of 2026-10-07 brought 208
+  hair salons and 71 beauty salons among 1,724 businesses. The niche audience therefore also
+  filters on the Google Maps category. `Skale Club - Prospects - Barbershops` = niche `barbershop`
+  AND category `Barber shop` (1,243 members on 2026-10-08).
+- New niche: scrape with the new `niche`, then call `meta_audience_create_niche` with the niche and
+  the exact Google categories that define it (check `prospects_list` with `niche` first; it returns
+  `by_niche`). Then `meta_audience_sync` with `confirmed:true`. No approval needed.
+- The old `Skale Club - Xcraper Prospects` audience stays as the "everyone scraped" bag. Do not use
+  it for niche-specific ads.
+- Report email and phone backlogs per niche (`prospects_list` with `niche`).
+
 ## Failure rules
 
 - Xcraper `not configured`: report the missing integration; do not bypass it by

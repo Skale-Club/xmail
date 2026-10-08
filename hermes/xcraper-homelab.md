@@ -13,13 +13,15 @@ Apify (`standard`, `enriched`) só com pedido explícito do Vanildo naquele mome
 - O Apify cobra por resultado. O crédito gratuito acabou: em 2026-10-07 restavam US$ 0,002 no ciclo, que renova em 12/10. Uma chamada sem `scrapeType` cai em `standard` (Apify) e falha com "Your remaining usage of $0.002205 this billing cycle...".
 - O Home Lab já traz o e-mail do site de cada empresa. Não existe motivo para pedir `enriched`.
 
-## Como chamar (não mudou nada além do `scrapeType`)
+## Como chamar
 
 ```
 POST $XCRAPER_SERVICE_URL/scrape
 X-Service-Key: $XCRAPER_SERVICE_KEY
-{"query": "barbershops", "location": "Waltham, MA", "maxResults": 30, "scrapeType": "homelab"}
+{"query": "barbershops", "location": "Waltham, MA", "maxResults": 30, "scrapeType": "homelab", "niche": "barbershop"}
 ```
+
+`niche` é obrigatório na prática desde 2026-10-08: é o tipo de negócio da busca (slug minúsculo, inglês, singular: `barbershop`, `nail_salon`). É ele que separa os públicos do Meta por nicho. Slug inválido volta 400.
 
 Respostas possíveis:
 
