@@ -19,6 +19,7 @@ problema que aparecer antes de aumentar o volume. Cada linha diz o que aconteceu
 | 10 | Xcraper caía no Apify quando o `scrapeType` não vinha (era o aberto C) | Raspagem falhava sem crédito | Xcraper `a175626`: sem `scrapeType`, super admin vai para o homelab |
 | 11 | A edição do Hermes aceitava tirar o `{{unsubscribeUrl}}` do texto puro quando o HTML ainda tinha | E-mail sem descadastro para quem lê em texto puro | Achado no teste real das ferramentas; agora cada corpo preenchido tem que ter o link, senão 422 e nada é salvo |
 | 12 | Salvar a sequência pela tela zerava a espera variável (3 a 5 dias) (era o aberto F) | Follow-ups com espera fixa | `85ee773`: as telas carregam, mostram ("Up to") e enviam `delayHoursMax` |
+| 13 | Hermes sem acesso para operar o dia a dia (campanha, leads, caixas, caixa de entrada, métricas, supressões) | Tudo passava pelo Claude ou pela tela | `c29d910`..`1b7b648`: escopo `outreach:manage` (só Hermes, migration 073 aplicada), 20 ferramentas, 43 no total. Ativação e resposta a prospect seguem na aprovação; limite diário pelo agente no máximo 30 por caixa. Provado em produção: só as 5 contas Icemail aparecem como remetente, nenhum segredo sai |
 
 ## Abertos
 
