@@ -57,6 +57,8 @@ beforeEach(() => {
         ],
     })
     principalMock.mockReturnValue(principal(['outreach:read', 'outreach:manage']))
+    // The list reads the 7-day send counts with one raw statement; no rows = nothing sent yet.
+    state.executeHandler = () => []
 })
 
 describe('GET /email-accounts', () => {
@@ -85,6 +87,36 @@ describe('GET /email-accounts', () => {
             'info@xkedule.com': false,
             'contato@tryskaleclub.com': false,
         })
+    })
+
+    it('adds a read-only ramp recommendation per inbox from the real 7-day counts', async () => {
+        state.executeHandler = () => [{ id: GOOD, sent: 40, bounces: 0, complaints: 0, unsubscribes: 1 }]
+        const result = await server.call('GET', '/email-accounts')
+
+        const good = result.body.emailAccounts.find((entry: Row) => entry.id === GOOD)
+        expect(good.rampRecommendation).toMatchObject({
+            recommendedDailyLimit: 18,
+            ready: true,
+            basis: { windowDays: 7, sent: 40, bounces: 0, complaints: 0, unsubscribes: 1, unsubscribeRatePercent: 2.5 },
+        })
+        expect(good.rampRecommendation.reason).toContain('15 to 18')
+
+        // Inboxes with no sends in the window get zeros, and an ineligible one is never ramped.
+        const info = result.body.emailAccounts.find((entry: Row) => entry.id === INFO)
+        expect(info.rampRecommendation).toMatchObject({ recommendedDailyLimit: 15, ready: false, basis: { sent: 0 } })
+
+        // Advice only: nothing was written, so the limit is untouched.
+        expect(stored(GOOD).dailySendLimit).toBe(15)
+    })
+
+    it('scopes the counts to the credential\'s organization and its inboxes', async () => {
+        await server.call('GET', '/email-accounts')
+
+        const query = state.executed.at(-1)!
+        expect(query.sql).toMatch(/e\.organization_id = \$\d+::uuid/)
+        expect(query.params).toContain(ORG)
+        expect(query.params).toContain(GOOD)
+        expect(query.params).not.toContain(FOREIGN)
     })
 
     it('never selects a credential column from the database', async () => {

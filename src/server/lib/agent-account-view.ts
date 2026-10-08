@@ -1,6 +1,8 @@
 import { emailAccounts } from '../../db/schema'
 import { effectiveDailyLimit } from './outreach-delivery-policy'
 import { isCampaignSenderEligible } from './sending-domain-guard'
+import { RAMP_WINDOW_DAYS, recommendDailyLimit } from './sending-ramp'
+import type { SendingRampStats } from './sending-ramp-stats'
 
 /**
  * What the agent gateway is allowed to know about an outreach inbox.
@@ -67,8 +69,19 @@ export type AgentAccountRow = {
 const percent = (numerator: number, denominator: number): number =>
     denominator > 0 ? Math.round((numerator / denominator) * 1000) / 10 : 0
 
+/**
+ * The 7-day numbers and the ceiling behind a ramp recommendation. Passed only by callers that
+ * loaded the counts (the inbox list); without it the view carries no `rampRecommendation`.
+ */
+export interface AgentAccountRamp {
+    stats: SendingRampStats
+    /** Highest limit a raise may propose (the agent's own cap, AGENT_MAX_DAILY_SEND_LIMIT). */
+    ceiling: number
+}
+
 /** The shape returned to the agent: no secrets, plus the derived numbers it actually needs. */
-export function toAgentAccountView(account: AgentAccountRow) {
+export function toAgentAccountView(account: AgentAccountRow, ramp?: AgentAccountRamp) {
+    const campaignSenderEligible = isCampaignSenderEligible(account)
     return {
         id: account.id,
         email: account.email,
@@ -112,6 +125,31 @@ export function toAgentAccountView(account: AgentAccountRow) {
         },
         // The three-mailbox rule, stated by the server: only a verified, non-warm-up-only inbox
         // outside the operation's own domains can carry cold campaign traffic.
-        campaignSenderEligible: isCampaignSenderEligible(account),
+        campaignSenderEligible,
+        // Read-only advice on the daily limit from the last 7 days of sending. NEVER applied by
+        // the server: raising the limit is a PATCH the agent chooses to make (capped at the agent
+        // ceiling) or the owner makes in the UI. `complaints` counts `complaint` suppressions only;
+        // there is no feedback-loop ingestion, so zero here means "none recorded".
+        ...(ramp
+            ? {
+                rampRecommendation: {
+                    ...recommendDailyLimit({
+                        eligible: campaignSenderEligible,
+                        dailySendLimit: account.dailySendLimit,
+                        ...ramp.stats,
+                        ceiling: ramp.ceiling,
+                    }),
+                    basis: {
+                        windowDays: RAMP_WINDOW_DAYS,
+                        sent: ramp.stats.sent,
+                        bounces: ramp.stats.bounces,
+                        complaints: ramp.stats.complaints,
+                        unsubscribes: ramp.stats.unsubscribes,
+                        bounceRatePercent: percent(ramp.stats.bounces, ramp.stats.sent),
+                        unsubscribeRatePercent: percent(ramp.stats.unsubscribes, ramp.stats.sent),
+                    },
+                },
+            }
+            : {}),
     }
 }

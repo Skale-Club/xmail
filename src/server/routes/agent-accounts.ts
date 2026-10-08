@@ -16,11 +16,13 @@ import {
     requireScope,
 } from '../lib/agent-manage'
 import { AGENT_ACCOUNT_COLUMNS, toAgentAccountView, type AgentAccountRow } from '../lib/agent-account-view'
+import { loadSendingRampStats } from '../lib/sending-ramp-stats'
 
 /**
  * Hermes / Kai view of the organization's outreach inboxes.
  *
- *   GET   /email-accounts        outreach:read    status, limits, warm-up, health (no secrets, ever)
+ *   GET   /email-accounts        outreach:read    status, limits, warm-up, health, `rampRecommendation`
+ *                                                 (no secrets, ever; the recommendation is advice, never applied)
  *   PATCH /email-accounts/:id    outreach:manage  pacing and warm-up length, never identity
  *
  * What the PATCH cannot do, by construction (the schema is `.strict()`, so these are 400s):
@@ -80,8 +82,13 @@ router.get('/email-accounts', async (req, res) => {
             .orderBy(asc(emailAccounts.email))
             .limit(query.limit)
             .offset((query.page - 1) * query.limit)
+        const accounts = rows as AgentAccountRow[]
+        const rampStats = await loadSendingRampStats(principal.organizationId, accounts.map((row) => row.id))
         res.json({
-            emailAccounts: (rows as AgentAccountRow[]).map(toAgentAccountView),
+            emailAccounts: accounts.map((row) => toAgentAccountView(row, {
+                stats: rampStats.get(row.id) ?? { sent: 0, bounces: 0, complaints: 0, unsubscribes: 0 },
+                ceiling: AGENT_MAX_DAILY_SEND_LIMIT,
+            })),
             pagination: paginationMeta(query.page, query.limit, Number(total)),
         })
     } catch (error) {

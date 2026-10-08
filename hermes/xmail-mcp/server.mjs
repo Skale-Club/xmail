@@ -443,7 +443,7 @@ const tools = [
   },
   {
     name: 'outreach_email_accounts_list',
-    description: 'The organization outreach inboxes: provider, status, daily limit and the effective limit today, sent today, spacing, warm-up (enabled, day, source, warmupOnly), health rates and campaignSenderEligible. Never returns credentials. Rule to respect: info@ boxes and warmupOnly boxes never carry a cold campaign (campaignSenderEligible=false); only the Google accounts bought for outreach do. Read-only.',
+    description: 'The organization outreach inboxes: provider, status, daily limit and the effective limit today, sent today, spacing, warm-up (enabled, day, source, warmupOnly), health rates, campaignSenderEligible and rampRecommendation. Never returns credentials. Rule to respect: info@ boxes and warmupOnly boxes never carry a cold campaign (campaignSenderEligible=false); only the Google accounts bought for outreach do. rampRecommendation is advice on the daily limit from the last 7 days of real sending ({ recommendedDailyLimit, ready, reason, basis }): ready only with 20+ sends, bounce under 2%, unsubscribe under 3% and no complaints, then +3 up to 30; it recommends -3 (floor 5) on a bounce rate of 5% or more or any complaint. It is never applied for you: raising the limit is a deliberate outreach_email_account_update call that you report to the owner with the reason, and anything above 30 is for the owner to decide in the UI. Read-only.',
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {
