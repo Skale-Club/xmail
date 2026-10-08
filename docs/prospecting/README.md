@@ -102,6 +102,16 @@ not set up yet; see section 9.
     `phone_only` (Meta and future call backlog), and `has_phone: true` lists them. SMS and cold
     calls are planned but **not authorized** yet: the first call or text needs Vanildo's explicit
     order and a compliance review.
+13. **Niches.** Every scrape carries a `niche` slug (`barbershop`, `nail_salon`; lowercase,
+    singular English) that Hermes sends to Xcraper. Xphere stamps it on every business of the run
+    (`custom_fields.niches`, the union across scrapes). Each niche has its own Meta audience,
+    created with the Xphere MCP tool `meta_audience_create_niche` and filtered by niche and by the
+    exact Google Maps category, because a niche scrape also brings neighbours (the barbershop
+    scrapes brought 208 hair salons and 71 beauty salons among 1,724 businesses).
+    `Skale Club - Prospects - Barbershops` = niche `barbershop` AND category `Barber shop` (1,243
+    members on 2026-10-08). `Skale Club - Xcraper Prospects` stays as the everyone-scraped bag.
+    `prospects_list` filters by `niche` and returns `by_niche`. Old data is tagged with the Xphere
+    workflow `backfill-prospect-niche` (manual, dry run by default).
 
 ---
 
