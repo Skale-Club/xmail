@@ -343,3 +343,54 @@ describe('validateSequenceForActivation', () => {
         expect(issues.map((issue) => issue.code)).toEqual(['missing_unsubscribe_placeholder'])
     })
 })
+
+describe('blank subject on follow-up steps (sent as a reply in the same thread)', () => {
+    const now = new Date('2026-07-16T10:00:00.000Z')
+    const first = step({ id: 'email-1', stepOrder: 1, plainBody: 'Hi {{unsubscribeUrl}}' })
+    const followUp = step({ id: 'email-2', stepOrder: 2, subject: '', plainBody: 'Bumping this {{unsubscribeUrl}}' })
+
+    it('validation accepts a blank subject on an email step after the first', () => {
+        expect(validateSequenceForActivation([first, followUp])).toEqual([])
+    })
+
+    it('validation still requires a subject on the first email step', () => {
+        const issues = validateSequenceForActivation([
+            step({ id: 'email-1', stepOrder: 1, subject: '  ', plainBody: 'Hi {{unsubscribeUrl}}' }),
+            followUp,
+        ])
+
+        expect(issues.map((issue) => [issue.code, issue.stepId])).toEqual([['invalid_email_content', 'email-1']])
+    })
+
+    it('treats the first EMAIL step as the first, even behind a leading delay', () => {
+        const delay = step({ id: 'delay-1', stepOrder: 1, type: 'delay', delayHours: 2, subject: null, plainBody: null })
+        const opener = step({ id: 'email-2', stepOrder: 2, subject: '', plainBody: 'Hi {{unsubscribeUrl}}' })
+
+        expect(validateSequenceForActivation([delay, opener]).map((issue) => issue.code))
+            .toEqual(['invalid_email_content', 'sequence_missing_email'])
+    })
+
+    it('still requires a body on a follow-up', () => {
+        const issues = validateSequenceForActivation([
+            first,
+            step({ id: 'email-2', stepOrder: 2, subject: '', plainBody: ' ', htmlBody: null }),
+        ])
+
+        expect(issues.map((issue) => [issue.code, issue.stepId])).toEqual([['invalid_email_content', 'email-2']])
+    })
+
+    it('sends a follow-up with a blank subject instead of quarantining it', () => {
+        const action = resolveSequenceAction([first, followUp], followUp, now, schedule)
+
+        expect(action).toMatchObject({ type: 'send_email', step: { id: 'email-2' }, content: { subject: '' } })
+    })
+
+    it('still quarantines a blank subject on the first email step', () => {
+        const blankFirst = step({ id: 'email-1', stepOrder: 1, subject: '' })
+
+        expect(resolveSequenceAction([blankFirst, followUp], blankFirst, now, schedule)).toMatchObject({
+            type: 'quarantine',
+            reason: 'invalid_email_content',
+        })
+    })
+})

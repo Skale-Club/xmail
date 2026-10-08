@@ -309,9 +309,15 @@ function NewSequenceDialog({
             return
         }
 
-        const hasInvalidEmailStep = steps.some(step => step.type === 'email' && (!step.subject.trim() || !step.htmlBody.trim()))
-        if (hasInvalidEmailStep) {
-            toast({ title: 'Each email step needs a subject and message', variant: 'destructive' })
+        // Only the first email step needs a subject: a follow-up with an empty one goes out as a
+        // reply in the same thread ("Re: <previous subject>").
+        const firstEmailStepId = steps.find(step => step.type === 'email')?.id
+        if (steps.some(step => step.type === 'email' && step.id === firstEmailStepId && !step.subject.trim())) {
+            toast({ title: 'The first email step needs a subject', variant: 'destructive' })
+            return
+        }
+        if (steps.some(step => step.type === 'email' && !step.htmlBody.trim())) {
+            toast({ title: 'Each email step needs a message', variant: 'destructive' })
             return
         }
         const hasInvalidVariant = steps.some(step => step.type === 'email' && step.abTestEnabled
@@ -487,9 +493,12 @@ function NewSequenceDialog({
                                                     <input
                                                         value={step.subject}
                                                         onChange={(e) => updateStep(step.id, { subject: e.target.value })}
-                                                        placeholder="Quick question about {{companyName}}"
+                                                        placeholder={step.id === steps.find(s => s.type === 'email')?.id ? 'Quick question about {{companyName}}' : 'Leave empty to reply in the same thread'}
                                                         className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
                                                     />
+                                                    {step.id !== steps.find(s => s.type === 'email')?.id && (
+                                                        <p className="mt-1 text-xs text-muted-foreground">Leave the subject empty to send as a reply in the same thread.</p>
+                                                    )}
                                                 </div>
                                                 <div>
                                                     <label className="mb-1 block text-sm font-medium text-foreground">HTML Body</label>

@@ -62,6 +62,9 @@ export function createCampaignDispatchProvider(
             trackingToken: input.trackingToken ?? context.trackingToken,
             abVariant: 'a',
             stableMessageId: input.stableMessageId,
+            // The frozen claim's chain (null for step 1): a retried follow-up stays in its thread.
+            inReplyTo: input.inReplyTo,
+            references: input.references,
         })),
     }
 }

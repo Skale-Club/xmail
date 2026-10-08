@@ -184,9 +184,15 @@ export function NewSequencePage() {
             toast({ title: 'Add at least one step', variant: 'destructive' })
             return
         }
-        const invalidEmail = steps.some(s => s.type === 'email' && (!s.subject.trim() || !s.htmlBody.trim()))
-        if (invalidEmail) {
-            toast({ title: 'Each email step needs a subject and a message body', variant: 'destructive' })
+        // Only the first email step needs a subject: a follow-up with an empty one goes out as a
+        // reply in the same thread ("Re: <previous subject>").
+        const firstEmailStepId = steps.find(s => s.type === 'email')?.id
+        if (steps.some(s => s.type === 'email' && s.id === firstEmailStepId && !s.subject.trim())) {
+            toast({ title: 'The first email step needs a subject', variant: 'destructive' })
+            return
+        }
+        if (steps.some(s => s.type === 'email' && !s.htmlBody.trim())) {
+            toast({ title: 'Each email step needs a message body', variant: 'destructive' })
             return
         }
         const invalidVariant = steps.some(s => s.type === 'email' && s.abTestEnabled && (!s.subjectB.trim() || !s.htmlBodyB.trim()))
@@ -356,9 +362,12 @@ export function NewSequencePage() {
                                                 type="text"
                                                 value={step.subject}
                                                 onChange={(e) => updateStep(step.id, { subject: e.target.value })}
-                                                placeholder="e.g., Quick question about {{companyName}}"
+                                                placeholder={step.id === steps.find(s => s.type === 'email')?.id ? 'e.g., Quick question about {{companyName}}' : 'Leave empty to reply in the same thread'}
                                                 className="w-full rounded-lg border border-border bg-background px-4 py-2 focus:border-primary focus:outline-none"
                                             />
+                                            {step.id !== steps.find(s => s.type === 'email')?.id && (
+                                                <p className="mt-1 text-xs text-muted-foreground">Leave the subject empty to send as a reply in the same thread.</p>
+                                            )}
                                         </div>
                                         <div>
                                             <label className="mb-1 block text-sm font-medium text-foreground">Variant A message</label>

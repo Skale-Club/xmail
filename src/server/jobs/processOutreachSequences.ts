@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import { db } from '../../db'
-import { campaignLeads, emailAccounts, leads, sequenceSteps } from '../../db/schema'
+import { campaignLeads, emailAccounts, leads, outreachEmails, sequenceSteps } from '../../db/schema'
 import { runWithLock } from '../lib/cron-lock'
 import type { DeliveryPolicyCode } from '../lib/outreach-delivery-policy'
 import { dispatchOutreachMessage, type DispatchResult } from '../lib/outreach-dispatch'
@@ -10,10 +10,12 @@ import { createCampaignDispatchProvider } from '../lib/outreach-dispatch-provide
 import { createLogger, OUTREACH_PROCESSOR_SLOW_MS } from '../lib/logger'
 import { sqlTimestamp } from '../lib/sql-timestamp'
 import {
+    firstEmailStep,
     resolveSequenceAction,
     TERMINAL_CAMPAIGN_LEAD_STATUSES,
     finalizeCampaignDispatchProgress,
 } from '../lib/outreach-sequence-state'
+import { planStepThreading, type PreviousSentEmail } from '../lib/outreach-threading'
 import { incrementCampaignStats } from '../lib/outreach-sender'
 import { generateOutreachToken } from '../lib/outreach-tokens'
 import { sendXphereOutreachEvent } from '../lib/xphere-events'
@@ -55,6 +57,35 @@ function selectAbVariant(step: SequenceStep, leadId: string): 'a' | 'b' {
     const hash = createHash('md5').update(leadId + step.id).digest('hex')
     const threshold = step.abTestPercentage ?? 50
     return (parseInt(hash.slice(0, 8), 16) % 100) < threshold ? 'a' : 'b'
+}
+
+/**
+ * The lead's most recent campaign email that actually went out, for threading the next step under
+ * it. Keyed by campaign_lead_id, which already means "this lead in this campaign". `sent_at` and
+ * `message_id` rather than `status = 'sent'`: a later bounce or open rewrites the status, but the
+ * email was still sent and its Message-ID is still the one the prospect's client threads on.
+ */
+async function loadPreviousSentCampaignEmail(
+    campaignLeadId: string,
+    currentStepId: string,
+): Promise<PreviousSentEmail | null> {
+    const [previous] = await db
+        .select({
+            messageId: outreachEmails.messageId,
+            messageReferences: outreachEmails.messageReferences,
+            subject: outreachEmails.subject,
+        })
+        .from(outreachEmails)
+        .where(and(
+            eq(outreachEmails.campaignLeadId, campaignLeadId),
+            eq(outreachEmails.origin, 'campaign'),
+            ne(outreachEmails.sequenceStepId, currentStepId),
+            isNotNull(outreachEmails.sentAt),
+            isNotNull(outreachEmails.messageId),
+        ))
+        .orderBy(desc(outreachEmails.sentAt))
+        .limit(1)
+    return previous?.messageId ? { ...previous, messageId: previous.messageId } : null
 }
 
 async function selectDueCampaignLeadIds(now: Date, limit: number): Promise<string[]> {
@@ -292,6 +323,32 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
             const frozenSubject = abVariant === 'b' && emailStep.subjectB ? emailStep.subjectB : sequenceAction.content.subject
             const frozenText = abVariant === 'b' && emailStep.plainBodyB ? emailStep.plainBodyB : sequenceAction.content.plainBody
             const frozenHtml = abVariant === 'b' && emailStep.htmlBodyB ? emailStep.htmlBodyB : sequenceAction.content.htmlBody
+
+            // Follow-ups (every email step after the first) go out in the same thread as the lead's
+            // previous email: In-Reply-To/References from it, and a blank subject becomes
+            // `Re: <previous subject>`. Frozen into the dispatch claim with the rest of the payload.
+            const isFollowUp = firstEmailStep(steps)?.id !== emailStep.id
+            const previousSent = isFollowUp
+                ? await loadPreviousSentCampaignEmail(campaignLead.id, emailStep.id)
+                : null
+            const threading = planStepThreading({ subject: frozenSubject, previous: previousSent })
+            if (!threading.subject.trim()) {
+                // A blank subject with nothing to reply to (the previous email is gone or never
+                // went out): sending "no subject" is worse than not sending, so park the lead.
+                await db.update(campaignLeads)
+                    .set({ nextScheduledAt: null, updatedAt: new Date() })
+                    .where(eq(campaignLeads.id, campaignLead.id))
+                log.error({
+                    action: 'outreach.processor.sequence_configuration_error',
+                    reason: 'blank_subject_without_previous_email',
+                    campaignId: campaign.id,
+                    campaignLeadId: campaignLead.id,
+                    sequenceStepId: emailStep.id,
+                }, 'follow-up has a blank subject and no previous email to reply to; lead parked')
+                result.errors++
+                continue
+            }
+
             const dispatchResult = await dispatchOutreachMessage({
                 origin: 'campaign',
                 organizationId: campaign.organizationId,
@@ -303,9 +360,11 @@ export async function processOutreachSequences(): Promise<{ processed: number; s
                 trackingToken,
                 idempotencyKey: `campaign:${campaignLead.id}:${emailStep.id}`,
                 to: lead.email,
-                subject: frozenSubject,
+                subject: threading.subject,
                 text: frozenText,
                 html: frozenHtml,
+                inReplyTo: threading.inReplyTo,
+                references: threading.references,
                 abVariant,
             }, {
                 provider: createCampaignDispatchProvider({

@@ -444,7 +444,17 @@ describe('PUT /campaigns/:id/sequence/steps/:stepOrder', () => {
         expect((await call('PUT', stepPath(1), { subjectB: 'x' })).status).toBe(400)
         expect((await call('PUT', stepPath(1), { type: 'delay' })).status).toBe(400)
         expect((await call('PUT', stepPath(1), {})).status).toBe(400)
-        expect((await call('PUT', stepPath(1), { subject: '   ' })).status).toBe(400)
+    })
+
+    it('refuses a blank subject on the first email step, but lets a follow-up go blank (sent as a reply)', async () => {
+        const first = await call('PUT', stepPath(1), { subject: '   ' })
+        expect(first.status).toBe(422)
+        expect(first.body.code).toBe('step_validation_failed')
+        expect(state.audits).toHaveLength(0)
+
+        const followUp = await call('PUT', stepPath(2), { subject: '   ' })
+        expect(followUp.status).toBe(200)
+        expect(currentStep(2).subject).toBe('')
     })
 
     it('answers 404 for a step that does not exist or a bad step number', async () => {

@@ -187,10 +187,24 @@ function scheduleAfterDelay(
     return next ?? 'invalid'
 }
 
-function isValidEmailStep(step: SequenceStep): boolean {
-    const hasSubject = Boolean(step.subject?.trim())
+/**
+ * The first email step of a sequence: the one that opens the thread. Every email step after it
+ * is a follow-up and may leave its subject blank, which sends it as a reply in the same thread
+ * (`Re: <previous subject>`, see outreach-threading.ts). The first one never may: it has no
+ * thread to reply into.
+ */
+export function firstEmailStep<T extends Pick<SequenceStep, 'type' | 'stepOrder'>>(steps: T[]): T | null {
+    return [...steps]
+        .filter((step) => step.type === 'email')
+        .sort((left, right) => left.stepOrder - right.stepOrder)[0] ?? null
+}
+
+function isValidEmailStep(step: SequenceStep, steps: SequenceStep[]): boolean {
     const hasBody = Boolean(step.plainBody?.trim() || step.htmlBody?.trim())
-    return step.type === 'email' && hasSubject && hasBody
+    if (step.type !== 'email' || !hasBody) return false
+    // Compared by id, not by position: a leading delay step must not make step 2 a "first" email.
+    const isFirstEmail = firstEmailStep(steps)?.id === step.id
+    return !isFirstEmail || Boolean(step.subject?.trim())
 }
 
 function orderedSteps(steps: SequenceStep[]): SequenceStep[] {
@@ -240,7 +254,7 @@ export function resolveSequenceAction(
         }
     }
 
-    if (!isValidEmailStep(currentStep)) {
+    if (!isValidEmailStep(currentStep, steps)) {
         return { type: 'quarantine', reason: 'invalid_email_content', step: currentStep }
     }
 
@@ -323,7 +337,7 @@ export function validateSequenceForActivation(steps: SequenceStep[]): SequenceVa
         }
 
         if (step.type === 'email') {
-            if (isValidEmailStep(step)) {
+            if (isValidEmailStep(step, steps)) {
                 hasValidEmail = true
                 // Only checked once the step already has real content — an empty step is
                 // already flagged by invalid_email_content above and would trivially "miss" the
@@ -338,7 +352,7 @@ export function validateSequenceForActivation(steps: SequenceStep[]): SequenceVa
             } else {
                 issues.push({
                     code: 'invalid_email_content',
-                    message: 'Email steps require a non-empty subject and plain-text or HTML body.',
+                    message: 'Email steps require a plain-text or HTML body, and the first email step a non-empty subject (later steps may leave it empty to send as a reply in the same thread).',
                     stepId: step.id,
                 })
             }

@@ -102,6 +102,30 @@ describe('shared dispatch providers', () => {
         }))
     })
 
+    it('forwards the frozen follow-up threading to campaign delivery, so a retry stays in the thread', async () => {
+        sendOutreachEmail.mockResolvedValue({ success: true, acceptance: 'accepted' })
+        const provider = createCampaignDispatchProvider({
+            account: { id: 'account' },
+            lead: { id: 'lead' },
+            campaign: { id: 'campaign' },
+            step: { id: 'step' },
+            campaignLeadId: 'campaign-lead',
+            trackingToken: 'token',
+        } as never)
+
+        await provider.send({
+            subject: 'Re: hello',
+            inReplyTo: '<first@example.com>',
+            references: '<first@example.com>',
+            stableMessageId: '<stable@outreach.local>',
+        } as never)
+
+        expect(sendOutreachEmail).toHaveBeenCalledWith(expect.objectContaining({
+            inReplyTo: '<first@example.com>',
+            references: '<first@example.com>',
+        }))
+    })
+
     it('forwards content, threading, and the stable message id for manual or agentic delivery', async () => {
         sendThreadedReply.mockResolvedValue({ success: true, acceptance: 'accepted' })
         const provider = createThreadedDispatchProvider({

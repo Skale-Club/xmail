@@ -910,11 +910,13 @@ export const sequenceSteps = pgTable('sequence_steps', {
         'sequence_steps_ab_test_percentage_bounds',
         sql`${table.abTestPercentage} IS NULL OR (${table.abTestPercentage} >= 0 AND ${table.abTestPercentage} <= 100)`,
     ),
+    // Migration 074: a follow-up (step_order > 1) may leave the subject blank to be sent as a reply in
+    // the same thread. Whether a blank one is the FIRST email step is checked in code.
     sequenceStepsContentValid: check(
         'sequence_steps_content_valid',
         sql`(
             ${table.type} = 'email'
-            AND ${table.subject} IS NOT NULL AND btrim(${table.subject}) <> ''
+            AND ${table.subject} IS NOT NULL AND (btrim(${table.subject}) <> '' OR ${table.stepOrder} > 1)
             AND (
                 (${table.plainBody} IS NOT NULL AND btrim(${table.plainBody}) <> '')
                 OR (${table.htmlBody} IS NOT NULL AND btrim(${table.htmlBody}) <> '')

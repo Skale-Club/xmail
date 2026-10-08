@@ -16,8 +16,9 @@ import {
  *
  * A campaign has exactly ONE sequence (enforced by sequences_campaign_id_unique). The public write
  * contract replaces the entire ordered step set transactionally: step order is derived from array
- * position (one-based, contiguous), email steps require a subject and at least one body, and
- * non-email steps cannot carry sendable content. These invariants are mirrored in the running
+ * position (one-based, contiguous), email steps require at least one body, the FIRST email step
+ * also requires a subject (a later one may leave it blank to send as a reply in the same thread,
+ * see outreach-threading.ts), and non-email steps cannot carry sendable content. These invariants are mirrored in the running
  * PostgreSQL schema (migration 040) and src/db/schema.ts.
  */
 
@@ -32,7 +33,9 @@ const emailStepSchema = z
         type: z.literal('email'),
         delayHours: z.number().int().min(0).default(0),
         delayHoursMax: delayHoursMaxSchema,
-        subject: z.string().trim().min(1, 'Email steps require a subject'),
+        // Required for the first email step only; that rule needs the other steps, so it is checked
+        // in sequencePayloadSchema's superRefine. A blank subject is stored as '' (never null).
+        subject: z.string().trim(),
         plainBody: z.string().optional(),
         htmlBody: z.string().optional(),
         subjectB: z.string().optional(),
@@ -78,6 +81,7 @@ export const sequencePayloadSchema = z
             .max(50, 'A sequence cannot exceed 50 steps'),
     })
     .superRefine((payload, ctx) => {
+        const firstEmailIndex = payload.steps.findIndex((step) => step.type === 'email')
         payload.steps.forEach((step, index) => {
             if (step.delayHoursMax != null && step.delayHoursMax < step.delayHours) {
                 ctx.addIssue({
@@ -87,6 +91,13 @@ export const sequencePayloadSchema = z
                 })
             }
             if (step.type === 'email') {
+                if (index === firstEmailIndex && !step.subject.trim()) {
+                    ctx.addIssue({
+                        code: z.ZodIssueCode.custom,
+                        path: ['steps', index, 'subject'],
+                        message: 'The first email step requires a subject',
+                    })
+                }
                 const hasBody = Boolean(step.plainBody?.trim() || step.htmlBody?.trim())
                 if (!hasBody) {
                     ctx.addIssue({

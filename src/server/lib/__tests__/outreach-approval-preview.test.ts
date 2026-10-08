@@ -266,3 +266,33 @@ describe('renderCampaignPreviewSequence: conditional blocks match what the send 
         expect(hidden.variantA.bodyHtml).not.toContain('<p></p>')
     })
 })
+
+describe('renderCampaignPreviewSequence reply subjects', () => {
+    const emailStep = (stepOrder: number, subject: string) => ({
+        stepOrder,
+        type: 'email',
+        delayHours: stepOrder === 1 ? 0 : 72,
+        subject,
+        plainBody: 'Hello {{firstName}} {{unsubscribeUrl}}',
+        htmlBody: null,
+        subjectB: null,
+        plainBodyB: null,
+        htmlBodyB: null,
+        abTestEnabled: false,
+    })
+
+    it('shows a blank follow-up subject as Re: <previous subject>, and keeps an explicit one', () => {
+        const rendered = renderCampaignPreviewSequence(
+            [emailStep(1, 'Quick question, {{firstName}}'), emailStep(2, ''), emailStep(3, ''), emailStep(4, 'Last note')],
+            lead(),
+            { unsubscribeUrl: 'https://mail.skale.club/o/u/tok123', contentLanguage: 'en' },
+        )
+
+        expect(rendered.map((step) => step.variantA.subject)).toEqual([
+            'Quick question, Jane',
+            'Re: Quick question, Jane',
+            'Re: Quick question, Jane',
+            'Last note',
+        ])
+    })
+})

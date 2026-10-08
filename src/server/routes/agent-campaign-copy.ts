@@ -80,10 +80,12 @@ const EDITABLE_STATUSES = new Set(['draft', 'paused', 'active'])
 type CopyField = 'subject' | 'plainBody' | 'htmlBody'
 const COPY_FIELDS: readonly CopyField[] = ['subject', 'plainBody', 'htmlBody']
 
-// Body edits are partial and need a real value: nothing here clears a body or the subject (the
-// sequence_steps_content_valid check forbids an email step without them anyway).
+// Body edits are partial and need a real value: nothing here clears a body (the
+// sequence_steps_content_valid check forbids an email step without one anyway). The subject may be
+// '' on a follow-up, which sends it as a reply in the same thread (`Re: <previous subject>`);
+// assertEditedStepStillValid still refuses a blank subject on the FIRST email step.
 const updateStepSchema = z.object({
-    subject: z.string().trim().min(1).max(500).optional(),
+    subject: z.string().trim().max(500).optional(),
     plainBody: z.string().trim().min(1).max(100_000).optional(),
     htmlBody: z.string().trim().min(1).max(250_000).optional(),
     delayHours: z.number().int().min(0).max(24 * 90).optional(),

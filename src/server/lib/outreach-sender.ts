@@ -44,6 +44,13 @@ interface SendOutreachEmailParams {
     trackingBaseUrl?: string
     abVariant?: 'a' | 'b'
     stableMessageId?: string
+    /**
+     * Threading for a follow-up step: the lead's previous campaign email. Frozen on the dispatch
+     * claim (outreach_emails.in_reply_to / message_references), so a retried attempt keeps the
+     * thread. Absent for the first email of a sequence.
+     */
+    inReplyTo?: string | null
+    references?: string | null
     /** Test seam forwarded to the provider adapter. Production callers omit it. */
     providerDependencies?: OutreachProviderDependencies
 }
@@ -243,7 +250,7 @@ export function calculateNextScheduledAt(step: typeof sequenceSteps.$inferSelect
 }
 
 export async function sendOutreachEmail(params: SendOutreachEmailParams): Promise<SendResult> {
-    const { account, lead, campaign, step, campaignLeadId, trackingToken, trackOpens, trackClicks, trackingBaseUrl, abVariant, stableMessageId } = params
+    const { account, lead, campaign, step, campaignLeadId, trackingToken, trackOpens, trackClicks, trackingBaseUrl, abVariant, stableMessageId, inReplyTo, references } = params
 
     try {
         const subjectTemplate = abVariant === 'b' && step.subjectB ? step.subjectB : step.subject
@@ -305,6 +312,8 @@ export async function sendOutreachEmail(params: SendOutreachEmailParams): Promis
             html,
             replyTo: campaign.replyToEmail || null,
             messageId: stableMessageId,
+            inReplyTo,
+            references,
             unsubscribe,
         }, params.providerDependencies)
 

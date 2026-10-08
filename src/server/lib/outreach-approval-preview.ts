@@ -14,6 +14,7 @@ import { campaigns, campaignLeads, leads, emailAccounts } from '../../db/schema'
 import { getCanonicalSequence } from './outreach-sequences'
 import { generateUnsubscribeLink } from '../routes/outreach/unsubscribe'
 import { interpolateTemplate, type LeadForTemplate } from './template-variables'
+import { replySubjectFor } from './outreach-threading'
 import {
     assessCampaignActivationCompliance,
     type CampaignComplianceAssessment,
@@ -83,6 +84,31 @@ interface RenderableStep extends CampaignComplianceStep {
     delayHours: number
 }
 
+/**
+ * A follow-up with a blank subject is sent as a reply in the same thread, so the reviewer sees the
+ * subject it will actually have (`Re: <previous email's subject>`) instead of an empty line.
+ * Variant B falls back to variant A's previous subject when B has no predecessor of its own.
+ */
+function withReplySubjects(steps: CampaignPreviewStep[]): CampaignPreviewStep[] {
+    const resolved: CampaignPreviewStep[] = []
+    for (const step of steps) {
+        const previous = resolved.at(-1)
+        if (!previous) {
+            resolved.push(step)
+            continue
+        }
+        // Chained off the already-resolved previous step, as at send time (step 3 replies to step 2).
+        const reply = (variant: CampaignPreviewVariant): CampaignPreviewVariant =>
+            variant.subject.trim() ? variant : { ...variant, subject: replySubjectFor(previous.variantA.subject) }
+        resolved.push({
+            ...step,
+            variantA: reply(step.variantA),
+            variantB: step.variantB ? reply(step.variantB) : null,
+        })
+    }
+    return resolved
+}
+
 /** Steps shown un-rendered (raw template text) when no lead is enrolled yet to substitute. */
 function rawStepPreview(step: RenderableStep): CampaignPreviewStep {
     return {
@@ -102,7 +128,7 @@ export function renderCampaignPreviewSequence(
     lead: LeadForTemplate,
     context: { unsubscribeUrl: string; contentLanguage: string },
 ): CampaignPreviewStep[] {
-    return steps
+    return withReplySubjects(steps
         .filter((step) => step.type === 'email')
         .map((step) => ({
             stepOrder: step.stepOrder,
@@ -120,7 +146,7 @@ export function renderCampaignPreviewSequence(
                     bodyHtml: step.htmlBodyB ? interpolateTemplate(step.htmlBodyB, lead, context, { escapeHtml: true }) : null,
                 }
                 : null,
-        }))
+        })))
 }
 
 /**
@@ -212,7 +238,7 @@ export async function buildCampaignActivationPreview(
     } else {
         // No enrolled lead yet: show the raw template text rather than guessing at a fake
         // substitution — a fabricated preview would be worse than an honest "no lead yet".
-        sequence = steps.filter((step) => step.type === 'email').map(rawStepPreview)
+        sequence = withReplySubjects(steps.filter((step) => step.type === 'email').map(rawStepPreview))
     }
 
     const accountIds = [...new Set(
