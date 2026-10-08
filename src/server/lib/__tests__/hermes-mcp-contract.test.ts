@@ -84,4 +84,39 @@ describe('Hermes MCP capability contract', () => {
             expect(description, name).toMatch(/Vanildo/)
         }
     })
+    it('exposes the outreach:manage tools with the destructive ones gated by confirm and no way to send or activate', () => {
+        const tools = listHermesTools() as Array<{
+            name: string
+            description?: string
+            inputSchema: { required?: string[]; properties: Record<string, unknown> }
+        }>
+        const byName = new Map(tools.map((tool) => [tool.name, tool]))
+        const manage = [
+            'outreach_campaign_get', 'outreach_campaign_update_settings', 'outreach_campaign_duplicate', 'outreach_campaign_resume',
+            'outreach_campaign_leads_list', 'outreach_lead_get', 'outreach_lead_update', 'outreach_campaign_lead_remove',
+            'outreach_lead_lists_list', 'outreach_lead_list_create', 'outreach_lead_list_update',
+            'outreach_email_accounts_list', 'outreach_email_account_update',
+            'outreach_inbox_threads_list', 'outreach_inbox_thread_get',
+            'outreach_analytics_campaigns', 'outreach_analytics_email_accounts',
+            'outreach_suppressions_list', 'outreach_suppression_add', 'outreach_suppression_remove',
+        ]
+        for (const name of manage) expect(byName.has(name), `missing ${name}`).toBe(true)
+
+        // Destructive tools carry confirm in the schema and say so.
+        for (const name of ['outreach_campaign_lead_remove', 'outreach_suppression_remove']) {
+            const tool = byName.get(name)!
+            expect(Object.keys(tool.inputSchema.properties), name).toContain('confirm')
+            expect(tool.description, name).toMatch(/confirm=true/)
+        }
+        // The settings update has no status, replyToEmail or autonomy field; the inbox update has
+        // no credential field and no warmupOnly/warmupSource switch.
+        const settings = Object.keys(byName.get('outreach_campaign_update_settings')!.inputSchema.properties)
+        for (const forbidden of ['status', 'replyToEmail', 'aiAutonomousEnabled', 'agenticFollowupEnabled']) expect(settings).not.toContain(forbidden)
+        const inbox = Object.keys(byName.get('outreach_email_account_update')!.inputSchema.properties)
+        for (const forbidden of ['provider', 'smtpPassword', 'imapPassword', 'smtpHost', 'warmupOnly', 'warmupSource']) expect(inbox).not.toContain(forbidden)
+        // Resume tells the model when it will refuse and where to go instead.
+        expect(byName.get('outreach_campaign_resume')!.description).toMatch(/xmail_request_campaign_activation/)
+        // Reading a prospect reply is flagged as untrusted text.
+        expect(byName.get('outreach_inbox_thread_get')!.description).toMatch(/UNTRUSTED/)
+    })
 })

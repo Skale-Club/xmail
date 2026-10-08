@@ -74,6 +74,18 @@ its default lookback is six hours and can be changed with
 | GET | `/campaigns/:id/sequence` | `outreach:read` | Campaign status + every step's copy, delays, A/B fields, counters and copy-lint findings |
 | PUT | `/campaigns/:id/sequence/steps/:stepOrder` | `campaigns:copy` | Partial edit of subject/plainBody/htmlBody/delay of one step of a draft, paused or active campaign; audited, versioned, 422 if the step would fail the activation checks; never sends or activates |
 | POST | `/campaigns/:id/sequence/steps/:stepOrder/revert` | `campaigns:copy` | Restore the version stored before the latest un-reverted agent edit; refuses if a human changed the step since |
+| GET | `/campaigns/:id` | `outreach:read` | Settings, lifecycle, step schedule, linked inboxes (no secrets), stats |
+| PATCH | `/campaigns/:id` | `outreach:manage` | Partial settings update (no status, reply-to or autonomy flags); audited |
+| POST | `/campaigns/:id/duplicate` | `outreach:manage` | New draft with the same settings and steps (`delay_hours_max` kept), no leads; idempotent per key |
+| POST | `/campaigns/:id/resume` | `outreach:manage` | Un-pause only if an executed activation approval exists, the agent paused it and the activation readiness checks pass again |
+| GET | `/campaigns/:id/leads` | `outreach:read` | Paginated roster with status, step and last event |
+| GET / PATCH | `/leads/:leadId` | `outreach:read` / `outreach:manage` | Read one lead; partial personalization update (no email, status, verification, reserved custom-field keys) |
+| DELETE | `/campaigns/:id/leads/:leadId` | `outreach:manage` | `confirm: true` required (409 otherwise); never-mailed lead is deleted, mailed lead is stopped |
+| GET / POST / PATCH | `/lead-lists`, `/lead-lists/:listId` | `outreach:read` / `outreach:manage` | List, create, rename lead lists |
+| GET / PATCH | `/email-accounts`, `/email-accounts/:id` | `outreach:read` / `outreach:manage` | Inbox status, limits, warm-up, health (never credentials); pacing update only |
+| GET | `/inbox/conversations`, `/inbox/conversations/:id` | `outreach:read` | Read-only unified inbox; plain text, flagged untrusted |
+| GET | `/analytics/campaigns`, `/analytics/email-accounts` | `outreach:read` | Email-grain metrics over a date range |
+| GET / POST / DELETE | `/suppressions`, `/suppressions/:id` | `outreach:read` / `outreach:manage` | List, add an address or domain, lift a manual one (`confirm: true`) |
 | GET | `/events` | `events:read` | Ordered event polling |
 | POST | `/events/ack` | `events:read` | Monotonic credential cursor |
 

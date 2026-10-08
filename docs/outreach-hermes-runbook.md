@@ -39,6 +39,7 @@ governed workflow:
   "campaigns:request_activation",
   "campaigns:pause",
   "campaigns:copy",
+  "outreach:manage",
   "approvals:read",
   "events:read"
 ]
