@@ -18,6 +18,7 @@ problema que aparecer antes de aumentar o volume. Cada linha diz o que aconteceu
 | 9 | Hermes não lia nem editava texto de campanha existente (era o aberto B) | Campanhas duplicadas com texto improvisado | `85d2921`: escopo `campaigns:copy` (Hermes e Kai, migração 072), ler/editar/reverter passo, auditoria, aviso de travessão/"Hi there"/endereço |
 | 10 | Xcraper caía no Apify quando o `scrapeType` não vinha (era o aberto C) | Raspagem falhava sem crédito | Xcraper `a175626`: sem `scrapeType`, super admin vai para o homelab |
 | 11 | A edição do Hermes aceitava tirar o `{{unsubscribeUrl}}` do texto puro quando o HTML ainda tinha | E-mail sem descadastro para quem lê em texto puro | Achado no teste real das ferramentas; agora cada corpo preenchido tem que ter o link, senão 422 e nada é salvo |
+| 12 | Salvar a sequência pela tela zerava a espera variável (3 a 5 dias) (era o aberto F) | Follow-ups com espera fixa | `85ee773`: as telas carregam, mostram ("Up to") e enviam `delayHoursMax` |
 
 ## Abertos
 
@@ -26,7 +27,6 @@ problema que aparecer antes de aumentar o volume. Cada linha diz o que aconteceu
 | A | Gancho "sem agendamento" depende do analisador do Xphere, que erra em sites Squarespace/Wix | Afirmação falsa ao dono | Conferir o site antes de ligar o gancho, ou deixar o gancho desligado nos leads novos até o analisador melhorar |
 | D | Leitura das caixas fica 30 min de castigo depois de um erro de IMAP (ex.: reinício no deploy) | Resposta demora até 35 min para ser vista | Evitar deploy com campanha rodando; avaliar castigo menor para erro de tempo esgotado |
 | E | Follow-ups saem sem `In-Reply-To` | E-mail 2 chega como conversa nova, não "Re:" | Decidir se quer encadear |
-| F | Salvar a sequência pela tela do Xmail zera a espera variável (3 a 5 dias) | Follow-ups com espera fixa | Ajustar a tela ou só editar por script/Hermes |
 | G | Link de descadastro nunca foi clicado num teste real | Descadastro quebrado = problema legal e de reputação | Clicar no link do e-mail de teste e conferir supressão |
 | H | Fila do homelab só anda quando alguém consulta | Busca parada se ninguém acompanhar | Hermes instruído a acompanhar até a última; avaliar um relógio no Xcraper |
 | I | Limite diário: 15 por caixa Icemail, 5 caixas = 75/dia | Teto de volume | Subir aos poucos conforme reputação |
