@@ -51,11 +51,11 @@ async function readBranding() {
 // branding bucket, so the URL carries only the object path; the Supabase fallback keeps
 // the historical /storage/v1/object/public/<bucket>/<path> shape until cutover.
 function getDefaultLogoUrl(): string {
-    return '/brand-mark.svg'
+    return '/brand-mark.png'
 }
 
 function getDefaultFaviconUrl(): string {
-    return '/favicon.svg'
+    return '/favicon.png'
 }
 
 function getPublicUrl(storage: string | null): string {

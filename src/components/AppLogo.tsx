@@ -7,7 +7,7 @@ interface AppLogoProps {
 }
 
 const loadedLogoSources = new Set<string>()
-const FALLBACK_LOGO_SOURCE = '/brand-mark.svg'
+const FALLBACK_LOGO_SOURCE = '/brand-mark.png'
 
 export const AppLogo = memo(function AppLogo({ className = '', alt }: AppLogoProps) {
     const { branding } = useBranding()

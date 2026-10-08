@@ -26,8 +26,8 @@ function appConfigPlugin(config: {
         transformIndexHtml(html) {
             return html
                 .replace(
-                    '<link rel="icon" href="/brand-mark.svg" type="image/svg+xml" />',
-                    `<link rel="icon" href="${config.faviconUrl}" type="image/svg+xml" />`
+                    '<link rel="icon" href="/favicon.png" type="image/png" />',
+                    `<link rel="icon" href="${config.faviconUrl}" type="image/png" />`
                 )
                 .replace(
                     '<link rel="apple-touch-icon" href="/apple-touch-icon.png" />',
@@ -47,8 +47,8 @@ export default defineConfig(({ mode }) => {
     // Built-in icons are bundled with every release. Custom runtime branding may
     // still come from R2, but the install metadata must not depend on a remote
     // storage bucket being provisioned correctly.
-    const faviconUrl = '/favicon.svg'
-    const appleTouchIcon = '/brand-mark.svg'
+    const faviconUrl = '/favicon.png'
+    const appleTouchIcon = '/apple-touch-icon.png'
 
     return {
         plugins: [
@@ -56,7 +56,7 @@ export default defineConfig(({ mode }) => {
             appConfigPlugin({ supabaseUrl, supabaseAnonKey, appName, faviconUrl, appleTouchIconUrl: appleTouchIcon }),
             VitePWA({
                 registerType: 'autoUpdate',
-                includeAssets: ['brand-mark.svg', 'favicon.svg'],
+                includeAssets: ['brand-mark.png', 'favicon.png', 'apple-touch-icon.png', 'pwa-icon-192.png', 'pwa-icon-512.png'],
                 manifest: {
                     name: appName,
                     short_name: 'Mail',
@@ -69,10 +69,22 @@ export default defineConfig(({ mode }) => {
                     start_url: '/',
                     icons: [
                         {
-                            src: '/brand-mark.svg',
-                            sizes: 'any',
-                            type: 'image/svg+xml',
-                            purpose: 'any maskable',
+                            src: '/pwa-icon-192.png',
+                            sizes: '192x192',
+                            type: 'image/png',
+                            purpose: 'any',
+                        },
+                        {
+                            src: '/pwa-icon-512.png',
+                            sizes: '512x512',
+                            type: 'image/png',
+                            purpose: 'any',
+                        },
+                        {
+                            src: '/pwa-icon-512.png',
+                            sizes: '512x512',
+                            type: 'image/png',
+                            purpose: 'maskable',
                         },
                     ],
                 },
