@@ -222,7 +222,7 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 | Item | Onde | Como conferir |
 |---|---|---|
 | Migrations 072-075 | banco de prod | **Aplicadas e conferidas em 2026-10-08.** Incluem copy do agente, `outreach:manage`, assunto vazio em follow-up e canal separado de outreach no Telegram. |
-| Migration 076 (Kai least privilege) | banco de prod | Define a credencial ativa `Kai` exatamente como `["campaigns:copy"]`; conferir depois do deploy com `select name, scopes from outreach_agent_credentials where revoked_at is null`. |
+| Migration 076 (Kai least privilege) | banco de prod | **Aplicada e conferida em 2026-10-08.** A credencial ativa `Kai` ficou exatamente como `["campaigns:copy"]`; o ledger registra `076_restrict_kai_to_campaign_copy`. |
 | Migrations 045–058 | banco de prod | `select * from supabase_migrations.schema_migrations` / `to_regclass('public.warmup_messages')` |
 | `APOLLO_API_KEY` | **`run_app_container()` do `.github/workflows/build-deploy.yml`** *e* o secret existir | `gh secret list \| grep APOLLO` — **o grep no workflow NÃO basta**: ele confirma a fiação, e um `${{ secrets.X }}` inexistente resolve para string vazia sem erro. Foi assim que este item passou por resolvido em 2026-08-15 estando quebrado |
 | Credencial do agente | `POST /api/outreach/agent-credentials?organizationId=…` (sessão admin) | `select id, name, scopes, revoked_at from outreach_agent_credentials` |

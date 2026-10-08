@@ -50,7 +50,7 @@ or needed a human in those runs.
   roda antes do passo 1b (poll) no mesmo tick.
 
 **Production migrations:** as of the 2026-10-08 audit the production ledger is reconciled through
-`075_telegram_outreach_channel.sql`; migration 076 is the next least-privilege change for Kai.
+`076_restrict_kai_to_campaign_copy.sql`; migration 076 was applied and verified in production on 2026-10-08, and 077 is the next free number.
 The Journey schema, cost ledger, outcome measurement,
 external Xcraper run registration, attribution fields, run verification (`064`), the territory
 queue (`065`) and DMARC aggregate report ingestion (`067`) are present in production.
