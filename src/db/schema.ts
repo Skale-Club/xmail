@@ -2356,6 +2356,9 @@ export const OUTREACH_AGENT_SCOPES = [
     'campaigns:pause',
     // Read-modify-revert the email copy of existing campaigns (migration 072). Cannot send or activate.
     'campaigns:copy',
+    // Day-to-day operation of existing outreach (migration 073): campaign settings, leads, inbox limits,
+    // suppressions, plus read-only inbox and analytics. Cannot send, activate or touch credentials.
+    'outreach:manage',
     'approvals:read',
     'events:read',
 ] as const

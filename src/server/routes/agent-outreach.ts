@@ -24,6 +24,12 @@ import agentProspectingRouter from './agent-prospecting'
 import agentApprovalsRouter from './agent-approvals'
 import agentAssessmentsRouter from './agent-assessments'
 import agentCampaignCopyRouter from './agent-campaign-copy'
+import agentCampaignManageRouter from './agent-campaign-manage'
+import agentLeadsRouter from './agent-leads'
+import agentAccountsRouter from './agent-accounts'
+import agentInboxRouter from './agent-inbox'
+import agentAnalyticsRouter from './agent-analytics'
+import agentSuppressionsRouter from './agent-suppressions'
 import { jsonbParam } from '../lib/jsonb'
 import { withSourceRunId } from '../lib/prospecting/source-run-id'
 import { checkProtectedSendingDomains } from './outreach/campaigns'
@@ -44,6 +50,13 @@ router.use('/prospecting', agentProspectingRouter)
 router.use('/', agentApprovalsRouter)
 router.use('/', agentAssessmentsRouter)
 router.use('/', agentCampaignCopyRouter)
+// Scope `outreach:manage` (migration 073): day-to-day operation of existing outreach.
+router.use('/', agentCampaignManageRouter)
+router.use('/', agentLeadsRouter)
+router.use('/', agentAccountsRouter)
+router.use('/', agentInboxRouter)
+router.use('/', agentAnalyticsRouter)
+router.use('/', agentSuppressionsRouter)
 
 function requireScope(req: Request, res: Response, scope: OutreachAgentScope): AgentPrincipal | null {
     const principal = getAgentPrincipal(req)

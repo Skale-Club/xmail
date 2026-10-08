@@ -46,6 +46,7 @@ const SCOPE_DESCRIPTIONS: Record<string, string> = {
     'campaigns:request_activation': 'Request activation (a human approves)',
     'campaigns:pause': 'Pause campaigns',
     'campaigns:copy': 'Edit and revert campaign email copy (audited, cannot send or activate)',
+    'outreach:manage': 'Operate existing outreach: campaign settings, leads, inbox limits, suppressions (audited, cannot send or activate)',
     'approvals:read': 'View pending approvals',
     'events:read': 'Read agent events and audit trail',
 }
