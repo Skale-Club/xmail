@@ -41,7 +41,9 @@ vi.mock('../../../lib/outreach-access', () => ({
     requireOutreachRead: vi.fn(),
 }))
 
-vi.mock('../../../lib/outreach-sequences', () => ({
+vi.mock('../../../lib/outreach-sequences', async (importOriginal) => ({
+    // campaigns.ts builds its step schema from the real delayHoursMaxSchema at import time.
+    delayHoursMaxSchema: (await importOriginal<typeof import('../../../lib/outreach-sequences')>()).delayHoursMaxSchema,
     getCanonicalSequence: getCanonicalSequenceMock,
     replaceCanonicalSequence: vi.fn(),
     deleteSequenceStep: vi.fn(),

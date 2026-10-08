@@ -30,7 +30,7 @@ const principal = (scopes: string[], organizationId = ORG) => ({ credentialId: '
 function account(id: string, email: string, overrides: Row = {}): Row {
     return {
         id, organizationId: ORG, email, displayName: null, provider: 'smtp', mailboxProvider: 'icemail', status: 'verified', lastError: null,
-        dailySendLimit: 50, currentDailySent: 4, minMinutesBetweenEmails: 5, maxMinutesBetweenEmails: 30,
+        dailySendLimit: 15, currentDailySent: 4, minMinutesBetweenEmails: 5, maxMinutesBetweenEmails: 30,
         warmupEnabled: true, warmupDays: 14, warmupCurrentDay: 7, warmupSource: 'internal', warmupOnly: false, warmupSentToday: 2,
         verifiedAt: null, lastSentAt: null, totalSent: 100, totalOpens: 40, totalClicks: 5, totalReplies: 10, totalBounces: 2,
         smtpHost: 'smtp.gmail.com', smtpUsername: 'secret-user@gmail.test', smtpPassword: 'ENCRYPTED-SMTP-SECRET',
@@ -69,7 +69,7 @@ describe('GET /email-accounts', () => {
         const good = result.body.emailAccounts.find((entry: Row) => entry.id === GOOD)
         expect(good).toMatchObject({
             provider: 'smtp', status: 'verified', campaignSenderEligible: true,
-            limits: { dailySendLimit: 50, sentToday: 4 },
+            limits: { dailySendLimit: 15, sentToday: 4 },
             warmup: { enabled: true, currentDay: 7, source: 'internal', warmupOnly: false },
             health: { totalSent: 100, bounceRatePercent: 2, replyRatePercent: 10 },
         })
@@ -108,29 +108,29 @@ describe('GET /email-accounts', () => {
 describe('PATCH /email-accounts/:id', () => {
     it('is refused without outreach:manage, and the denial is audited', async () => {
         principalMock.mockReturnValue(principal(['outreach:read']))
-        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 80 })).status).toBe(403)
-        expect(stored(GOOD).dailySendLimit).toBe(50)
+        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 25 })).status).toBe(403)
+        expect(stored(GOOD).dailySendLimit).toBe(15)
         expect(state.deniedAudits).toHaveLength(1)
     })
 
     it('treats another organization\'s inbox as not found and changes nothing', async () => {
-        expect((await server.call('PATCH', `/email-accounts/${FOREIGN}`, { dailySendLimit: 80 })).status).toBe(404)
-        expect(stored(FOREIGN).dailySendLimit).toBe(50)
+        expect((await server.call('PATCH', `/email-accounts/${FOREIGN}`, { dailySendLimit: 25 })).status).toBe(404)
+        expect(stored(FOREIGN).dailySendLimit).toBe(15)
         principalMock.mockReturnValue(principal(['outreach:manage'], OTHER_ORG))
-        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 80 })).status).toBe(404)
-        expect(stored(GOOD).dailySendLimit).toBe(50)
+        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 25 })).status).toBe(404)
+        expect(stored(GOOD).dailySendLimit).toBe(15)
         expect(state.audits).toHaveLength(0)
     })
 
     it('changes the daily limit and spacing, partially, auditing before/after through the transaction', async () => {
-        const result = await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 80, minMinutesBetweenEmails: 8, reason: 'ramp is healthy' })
+        const result = await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 25, minMinutesBetweenEmails: 8, reason: 'ramp is healthy' })
         expect(result.status).toBe(200)
         expect(result.body.changedFields.sort()).toEqual(['dailySendLimit', 'minMinutesBetweenEmails'])
-        expect(stored(GOOD)).toMatchObject({ dailySendLimit: 80, minMinutesBetweenEmails: 8, maxMinutesBetweenEmails: 30, warmupDays: 14, warmupOnly: false, warmupSource: 'internal' })
+        expect(stored(GOOD)).toMatchObject({ dailySendLimit: 25, minMinutesBetweenEmails: 8, maxMinutesBetweenEmails: 30, warmupDays: 14, warmupOnly: false, warmupSource: 'internal' })
         expect(state.audits[0]).toMatchObject({
             action: 'agent.email_account.updated',
             resourceId: GOOD,
-            metadata: { reason: 'ramp is healthy', before: { dailySendLimit: 50, minMinutesBetweenEmails: 5 }, after: { dailySendLimit: 80, minMinutesBetweenEmails: 8 } },
+            metadata: { reason: 'ramp is healthy', before: { dailySendLimit: 15, minMinutesBetweenEmails: 5 }, after: { dailySendLimit: 25, minMinutesBetweenEmails: 8 } },
         })
         expect(state.audits[0].executor.isTransaction).toBe(true)
         expect(JSON.stringify(result.body)).not.toMatch(/ENCRYPTED|smtpPassword|imapPassword/)
@@ -140,8 +140,8 @@ describe('PATCH /email-accounts/:id', () => {
 
     it('rolls the change back when the audit row cannot be written', async () => {
         state.failNextAudit = true
-        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 80 })).status).toBe(500)
-        expect(stored(GOOD).dailySendLimit).toBe(50)
+        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 25 })).status).toBe(500)
+        expect(stored(GOOD).dailySendLimit).toBe(15)
     })
 
     it('cannot change provider, credentials, hosts, warmupOnly, warmupSource or verification (strict schema)', async () => {
@@ -157,9 +157,10 @@ describe('PATCH /email-accounts/:id', () => {
         expect(state.audits).toHaveLength(0)
     })
 
-    it('caps the daily limit the agent can set', async () => {
+    it('caps the daily limit the agent can set at 30 (warmed boxes get the column the same day)', async () => {
         expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 5000 })).status).toBe(400)
-        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 200 })).status).toBe(200)
+        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 31 })).status).toBe(400)
+        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 30 })).status).toBe(200)
     })
 
     it('cannot weaken the warm-up gate: no shorter warm-up, no switching it off', async () => {
@@ -189,7 +190,7 @@ describe('PATCH /email-accounts/:id', () => {
     })
 
     it('treats an identical payload as a no-op without an audit row', async () => {
-        const result = await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 50 })
+        const result = await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 15 })
         expect(result.body.changed).toBe(false)
         expect(state.audits).toHaveLength(0)
         expect((await server.call('PATCH', `/email-accounts/${GOOD}`, {})).status).toBe(400)

@@ -35,9 +35,12 @@ import { AGENT_ACCOUNT_COLUMNS, toAgentAccountView, type AgentAccountRow } from 
 
 const router = Router()
 
-// A ceiling on what the agent may set. The ramp and the delivery policy still cap the real
-// volume, but a prompt-injected "raise it to 10000" must not reach the column at all.
-export const AGENT_MAX_DAILY_SEND_LIMIT = 200
+// A ceiling on what the agent may set. The ramp only slows a box that is still warming up: once
+// warmupCurrentDay reaches warmupDays, effectiveDailyLimit() returns the column as is, so on the
+// Icemail Google boxes the agent's number would apply the same day. 30/day per box is the safe
+// band for those accounts (2026-10-07, 15/day in use); anything above is the owner's call, made
+// in the UI. Hermes reads prospect replies, so a prompt-injected "raise it" must stop here.
+export const AGENT_MAX_DAILY_SEND_LIMIT = 30
 
 const MAX_SPACING_MINUTES = 24 * 60
 

@@ -455,12 +455,12 @@ const tools = [
   },
   {
     name: 'outreach_email_account_update',
-    description: 'Adjust the pacing of one outreach inbox: dailySendLimit (1 to 200), minMinutesBetweenEmails and maxMinutesBetweenEmails (max >= min), warmupDays (can only be RAISED), warmupEnabled (can only be turned ON), status "paused" (stops the inbox; only a person can un-pause). It CANNOT change provider, host, username, password, warmupOnly, warmupSource or verification, and cannot attach an inbox to a campaign. Audited with before and after.',
+    description: 'Adjust the pacing of one outreach inbox: dailySendLimit (1 to 30; above 30 only the owner decides, ask him), minMinutesBetweenEmails and maxMinutesBetweenEmails (max >= min), warmupDays (can only be RAISED), warmupEnabled (can only be turned ON), status "paused" (stops the inbox; only a person can un-pause). It CANNOT change provider, host, username, password, warmupOnly, warmupSource or verification, and cannot attach an inbox to a campaign. Audited with before and after.',
     inputSchema: {
       type: 'object', required: ['emailAccountId'], additionalProperties: false,
       properties: {
         emailAccountId: { type: 'string' },
-        dailySendLimit: { type: 'integer', minimum: 1, maximum: 200 },
+        dailySendLimit: { type: 'integer', minimum: 1, maximum: 30 },
         minMinutesBetweenEmails: { type: 'integer', minimum: 1, maximum: 1440 },
         maxMinutesBetweenEmails: { type: 'integer', minimum: 1, maximum: 1440 },
         warmupDays: { type: 'integer', minimum: 1, maximum: 60 },
