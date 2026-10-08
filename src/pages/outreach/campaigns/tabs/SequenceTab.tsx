@@ -9,6 +9,7 @@ interface Step {
     stepOrder: number
     type: 'email' | 'delay' | 'condition'
     delayHours: number
+    delayHoursMax?: number | null
     subject: string | null
     abTestEnabled: boolean
     totalSent: number
@@ -106,7 +107,9 @@ export default function SequenceTab({ campaignId, organizationId }: SequenceTabP
                                     <Clock className="w-3 h-3" />
                                     {step.delayHours === 0
                                         ? 'Immediate'
-                                        : `Wait ${step.delayHours}h`}
+                                        : step.delayHoursMax != null && step.delayHoursMax > step.delayHours
+                                            ? `Wait ${step.delayHours}-${step.delayHoursMax}h`
+                                            : `Wait ${step.delayHours}h`}
                                 </span>
                                 <span className="text-xs text-muted-foreground capitalize">
                                     {step.type}

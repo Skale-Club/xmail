@@ -10,6 +10,7 @@ interface Step {
     type: 'email' | 'delay'
     order: number
     delayHours: number
+    delayHoursMax: number | null
     subject: string
     htmlBody: string
     plainBody: string
@@ -25,6 +26,7 @@ interface CanonicalStep {
     stepOrder: number
     type: 'email' | 'delay' | 'condition'
     delayHours: number
+    delayHoursMax: number | null
     subject: string | null
     htmlBody: string | null
     plainBody: string | null
@@ -49,6 +51,7 @@ function makeEmptyStep(order: number): Step {
         type: 'email',
         order,
         delayHours: 0,
+        delayHoursMax: null,
         subject: '',
         htmlBody: '',
         plainBody: '',
@@ -88,6 +91,7 @@ export function NewSequencePage() {
                 type: step.type === 'delay' ? 'delay' : 'email',
                 order: index + 1,
                 delayHours: step.delayHours,
+                delayHoursMax: step.delayHoursMax ?? null,
                 subject: step.subject ?? '',
                 htmlBody: step.htmlBody ?? step.plainBody ?? '',
                 plainBody: step.plainBody ?? '',
@@ -108,6 +112,7 @@ export function NewSequencePage() {
                 type,
                 order: prev.length + 1,
                 delayHours: type === 'delay' ? 72 : 0,
+                delayHoursMax: null,
                 subject: '',
                 htmlBody: '',
                 plainBody: '',
@@ -137,10 +142,11 @@ export function NewSequencePage() {
                 name: payload.name || undefined,
                 steps: payload.steps.map((step) =>
                     step.type === 'delay'
-                        ? { type: 'delay' as const, delayHours: step.delayHours }
+                        ? { type: 'delay' as const, delayHours: step.delayHours, delayHoursMax: step.delayHoursMax }
                         : {
                             type: 'email' as const,
                             delayHours: step.delayHours,
+                            delayHoursMax: step.delayHoursMax,
                             subject: step.subject,
                             htmlBody: step.htmlBody,
                             plainBody: step.plainBody || undefined,
@@ -186,6 +192,10 @@ export function NewSequencePage() {
         const invalidVariant = steps.some(s => s.type === 'email' && s.abTestEnabled && (!s.subjectB.trim() || !s.htmlBodyB.trim()))
         if (invalidVariant) {
             toast({ title: 'Each enabled B variant needs a subject and message body', variant: 'destructive' })
+            return
+        }
+        if (steps.some(s => s.delayHoursMax != null && s.delayHoursMax < s.delayHours)) {
+            toast({ title: 'The "up to" wait must be at least the minimum wait', variant: 'destructive' })
             return
         }
         saveMutation.mutate({ name, steps })
@@ -269,6 +279,15 @@ export function NewSequencePage() {
                                             onChange={(e) => updateStep(step.id, { delayHours: Math.max(0, parseInt(e.target.value) || 0) })}
                                             className="w-20 rounded-lg border border-border bg-background px-3 py-1.5 text-sm"
                                         />
+                                        <span className="text-sm text-foreground">to</span>
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            value={step.delayHoursMax ?? ''}
+                                            placeholder="-"
+                                            onChange={(e) => updateStep(step.id, { delayHoursMax: e.target.value === '' ? null : Math.max(0, parseInt(e.target.value) || 0) })}
+                                            className="w-20 rounded-lg border border-border bg-background px-3 py-1.5 text-sm"
+                                        />
                                         <span className="text-sm text-foreground">hours</span>
                                     </div>
                                 ) : (
@@ -282,6 +301,18 @@ export function NewSequencePage() {
                                                 onChange={(e) => updateStep(step.id, { delayHours: Math.max(0, parseInt(e.target.value) || 0) })}
                                                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                                             />
+                                        </div>
+                                        <div className="max-w-xs">
+                                            <label className="mb-1 block text-sm font-medium text-foreground">Up to (hours, optional)</label>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                value={step.delayHoursMax ?? ''}
+                                                placeholder="Fixed wait"
+                                                onChange={(e) => updateStep(step.id, { delayHoursMax: e.target.value === '' ? null : Math.max(0, parseInt(e.target.value) || 0) })}
+                                                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                                            />
+                                            <p className="mt-1 text-xs text-muted-foreground">Set this to wait a random time between the two values.</p>
                                         </div>
                                         {index === firstEmailIndex && (
                                             <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">

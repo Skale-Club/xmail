@@ -37,6 +37,7 @@ interface SequenceStep {
     stepOrder: number
     type: 'email' | 'delay' | 'condition'
     delayHours: number
+    delayHoursMax: number | null
     subject: string | null
     htmlBody: string | null
     plainBody: string | null
@@ -88,6 +89,7 @@ interface DraftStep {
     type: 'email' | 'delay'
     stepOrder: number
     delayHours: number
+    delayHoursMax: number | null
     subject: string
     htmlBody: string
     plainBody: string
@@ -103,6 +105,7 @@ const createDraftStep = (stepOrder: number, type: 'email' | 'delay' = 'email'): 
     type,
     stepOrder,
     delayHours: type === 'delay' ? 72 : 0,
+    delayHoursMax: null,
     subject: '',
     htmlBody: '',
     plainBody: '',
@@ -126,10 +129,11 @@ async function saveCampaignSequence(params: {
         description: params.description || undefined,
         steps: params.steps.map((step) =>
             step.type === 'delay'
-                ? { type: 'delay' as const, delayHours: step.delayHours }
+                ? { type: 'delay' as const, delayHours: step.delayHours, delayHoursMax: step.delayHoursMax }
                 : {
                     type: 'email' as const,
                     delayHours: step.delayHours,
+                    delayHoursMax: step.delayHoursMax,
                     subject: step.subject,
                     htmlBody: step.htmlBody,
                     plainBody: step.plainBody || undefined,
@@ -245,6 +249,7 @@ function NewSequenceDialog({
                     type: step.type === 'delay' ? 'delay' : 'email',
                     stepOrder: index + 1,
                     delayHours: step.delayHours,
+                    delayHoursMax: step.delayHoursMax ?? null,
                     subject: step.subject ?? '',
                     htmlBody: step.htmlBody ?? '',
                     plainBody: step.plainBody ?? '',
@@ -313,6 +318,11 @@ function NewSequenceDialog({
             && (!step.subjectB.trim() || (!step.htmlBodyB.trim() && !step.plainBodyB.trim())))
         if (hasInvalidVariant) {
             toast({ title: 'Each enabled B variant needs a subject and message', variant: 'destructive' })
+            return
+        }
+
+        if (steps.some(step => step.delayHoursMax != null && step.delayHoursMax < step.delayHours)) {
+            toast({ title: 'The "up to" wait must be at least the minimum wait', variant: 'destructive' })
             return
         }
 
@@ -424,15 +434,29 @@ function NewSequenceDialog({
 
                                     <div className="space-y-4 p-4">
                                         {step.type === 'delay' ? (
-                                            <div className="max-w-xs">
-                                                <label className="mb-1 block text-sm font-medium text-foreground">Delay in Hours</label>
-                                                <input
-                                                    type="number"
-                                                    min={0}
-                                                    value={step.delayHours}
-                                                    onChange={(e) => updateStep(step.id, { delayHours: Math.max(0, Number(e.target.value) || 0) })}
-                                                    className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
-                                                />
+                                            <div className="space-y-4">
+                                                <div className="max-w-xs">
+                                                    <label className="mb-1 block text-sm font-medium text-foreground">Delay in Hours</label>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        value={step.delayHours}
+                                                        onChange={(e) => updateStep(step.id, { delayHours: Math.max(0, Number(e.target.value) || 0) })}
+                                                        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
+                                                    />
+                                                </div>
+                                                <div className="max-w-xs">
+                                                    <label className="mb-1 block text-sm font-medium text-foreground">Up to (hours, optional)</label>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        value={step.delayHoursMax ?? ''}
+                                                        placeholder="Fixed wait"
+                                                        onChange={(e) => updateStep(step.id, { delayHoursMax: e.target.value === '' ? null : Math.max(0, Number(e.target.value) || 0) })}
+                                                        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
+                                                    />
+                                                    <p className="mt-1 text-xs text-muted-foreground">Set this to wait a random time between the two values.</p>
+                                                </div>
                                             </div>
                                         ) : (
                                             <>
@@ -445,6 +469,18 @@ function NewSequenceDialog({
                                                         onChange={(e) => updateStep(step.id, { delayHours: Math.max(0, Number(e.target.value) || 0) })}
                                                         className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
                                                     />
+                                                </div>
+                                                <div className="max-w-xs">
+                                                    <label className="mb-1 block text-sm font-medium text-foreground">Up to (hours, optional)</label>
+                                                    <input
+                                                        type="number"
+                                                        min={0}
+                                                        value={step.delayHoursMax ?? ''}
+                                                        placeholder="Fixed wait"
+                                                        onChange={(e) => updateStep(step.id, { delayHoursMax: e.target.value === '' ? null : Math.max(0, Number(e.target.value) || 0) })}
+                                                        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-foreground"
+                                                    />
+                                                    <p className="mt-1 text-xs text-muted-foreground">Set this to wait a random time between the two values.</p>
                                                 </div>
                                                 <div>
                                                     <label className="mb-1 block text-sm font-medium text-foreground">Subject</label>
