@@ -83,15 +83,27 @@ interface PendingRow {
     reply_message_id: string
     replied_at: Date
     from_address: string | null
+    from_name: string | null
+    reply_subject: string | null
     plain_body: string | null
     html_body: string | null
     inbox_address: string
     lead_email: string | null
+    lead_first_name: string | null
+    lead_last_name: string | null
     company_name: string | null
     custom_fields: unknown
+    campaign_name: string | null
+    step_order: number | null
+    sent_subject: string | null
     is_read: boolean
     alert_reply_message_id: string | null
     alert_last_alerted_at: Date | null
+}
+
+function personName(first: string | null, last: string | null): string | null {
+    const full = [first, last].map((part) => part?.trim()).filter(Boolean).join(' ')
+    return full || null
 }
 
 function rowsOf<T>(result: unknown): T[] {
@@ -130,12 +142,19 @@ export async function loadPendingReplies(filter: SweepFilter, now: Date): Promis
             rm.id AS reply_message_id,
             (COALESCE(rm.received_at, rm.sent_at, rm.created_at) AT TIME ZONE 'UTC') AS replied_at,
             rm.from_address AS from_address,
+            rm.from_name AS from_name,
+            left(rm.subject, 300) AS reply_subject,
             left(rm.plain_body, 8000) AS plain_body,
             CASE WHEN btrim(COALESCE(rm.plain_body, '')) = '' THEN left(rm.html_body, 40000) END AS html_body,
             ea.email AS inbox_address,
             l.email AS lead_email,
+            l.first_name AS lead_first_name,
+            l.last_name AS lead_last_name,
             l.company_name AS company_name,
             l.custom_fields AS custom_fields,
+            c.name AS campaign_name,
+            sent.step_order AS step_order,
+            left(sent.subject, 300) AS sent_subject,
             EXISTS (
                 SELECT 1 FROM outreach_conversation_reads r
                 WHERE r.organization_id = outreach_conversations.organization_id
@@ -146,7 +165,8 @@ export async function loadPendingReplies(filter: SweepFilter, now: Date): Promis
             a.last_alerted_at AS alert_last_alerted_at
         FROM outreach_conversations
         JOIN LATERAL (
-            SELECT m.id, m.received_at, m.sent_at, m.created_at, m.from_address, m.plain_body, m.html_body
+            SELECT m.id, m.received_at, m.sent_at, m.created_at, m.from_address, m.from_name, m.subject,
+                   m.outreach_email_id, m.plain_body, m.html_body
             FROM outreach_conversation_messages m
             WHERE m.organization_id = outreach_conversations.organization_id
               AND m.conversation_id = outreach_conversations.id
@@ -161,6 +181,33 @@ export async function loadPendingReplies(filter: SweepFilter, now: Date): Promis
         LEFT JOIN leads l
             ON l.id = outreach_conversations.lead_id
            AND l.organization_id = outreach_conversations.organization_id
+        LEFT JOIN campaigns c
+            ON c.id = outreach_conversations.campaign_id
+           AND c.organization_id = outreach_conversations.organization_id
+        -- O e-mail de campanha que a pessoa respondeu: o que o Unified Inbox atribuiu à própria
+        -- resposta (outreach_email_id) e, na falta, o último e-mail de campanha enviado nesta
+        -- conversa. Sem nenhum dos dois (thread manual) as colunas ficam NULL e o aviso omite
+        -- a linha em vez de inventá-la.
+        LEFT JOIN LATERAL (
+            SELECT oe.subject, ss.step_order
+            FROM outreach_emails oe
+            LEFT JOIN sequence_steps ss ON ss.id = oe.sequence_step_id
+            WHERE oe.organization_id = outreach_conversations.organization_id
+              AND oe.id = COALESCE(
+                  rm.outreach_email_id,
+                  (
+                      SELECT m2.outreach_email_id
+                      FROM outreach_conversation_messages m2
+                      WHERE m2.organization_id = outreach_conversations.organization_id
+                        AND m2.conversation_id = outreach_conversations.id
+                        AND m2.direction = 'outbound'
+                        AND m2.outreach_email_id IS NOT NULL
+                      ORDER BY COALESCE(m2.sent_at, m2.received_at, m2.created_at) DESC, m2.id DESC
+                      LIMIT 1
+                  )
+              )
+            LIMIT 1
+        ) sent ON true
         LEFT JOIN inbox_reply_alerts a
             ON a.organization_id = outreach_conversations.organization_id
            AND a.conversation_id = outreach_conversations.id
@@ -204,8 +251,14 @@ export async function loadPendingReplies(filter: SweepFilter, now: Date): Promis
                 companyName: row.company_name,
                 email: row.lead_email,
             }),
+            contactName: personName(row.lead_first_name, row.lead_last_name) ?? row.from_name?.trim() ?? null,
+            companyName: row.company_name?.trim() || null,
             fromAddress: row.from_address ?? row.lead_email ?? 'remetente desconhecido',
             inboxAddress: row.inbox_address,
+            replySubject: row.reply_subject?.trim() || null,
+            campaignName: row.campaign_name?.trim() || null,
+            stepOrder: row.step_order === null || row.step_order === undefined ? null : Number(row.step_order),
+            stepSubject: row.sent_subject?.trim() || null,
             plainBody: row.plain_body,
             htmlBody: row.html_body,
         })

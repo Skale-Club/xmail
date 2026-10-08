@@ -17,6 +17,15 @@ export const SUMMARY_MAX_LINES = 15
 
 const NAME_MAX_CHARS = 80
 
+/** Trecho da resposta em cada linha do resumo (a mensagem toda cabe em 4096 caracteres). */
+export const SUMMARY_SNIPPET_CHARS = 140
+
+const SUBJECT_MAX_CHARS = 120
+const SUMMARY_SUBJECT_MAX_CHARS = 60
+const SUMMARY_NAME_MAX_CHARS = 50
+const CAMPAIGN_MAX_CHARS = 80
+const SUMMARY_CAMPAIGN_MAX_CHARS = 40
+
 // ---------------------------------------------------------------------------------------------
 // Nome da barbearia
 // ---------------------------------------------------------------------------------------------
@@ -157,15 +166,56 @@ export interface FormattedAlert {
     body: string
 }
 
+/** Uma linha só, no máximo `max` caracteres (sem cortar um par substituto ao meio). */
+function clip(value: string, max: number): string {
+    const text = value.replace(/\s+/g, ' ').trim()
+    const chars = Array.from(text)
+    return chars.length <= max ? text : `${chars.slice(0, max).join('').trimEnd()}…`
+}
+
+/** "David Costa, Boston Blendz": a pessoa e a empresa, sem repetir quando são o mesmo texto. */
+function whoText(row: PendingReply, max: number): string {
+    const parts: string[] = []
+    for (const part of [row.contactName, row.companyName]) {
+        const text = part?.trim()
+        if (text && !parts.some((p) => p.toLowerCase() === text.toLowerCase())) parts.push(text)
+    }
+    return clip(parts.length > 0 ? parts.join(', ') : row.leadName, max)
+}
+
+/**
+ * Qual e-mail da campanha a pessoa respondeu. Só entra o que se sabe: sem campanha ou sem passo
+ * (thread manual, vínculo perdido) a parte correspondente some, nunca vira um valor inventado.
+ * Devolve HTML já escapado.
+ */
+function campaignText(row: PendingReply, mode: 'full' | 'short'): string | null {
+    const campaign = row.campaignName
+        ? escapeHtml(clip(row.campaignName, mode === 'full' ? CAMPAIGN_MAX_CHARS : SUMMARY_CAMPAIGN_MAX_CHARS))
+        : null
+    const step = row.stepOrder !== null ? `e-mail ${row.stepOrder}` : null
+    if (mode === 'short') return [campaign, step].filter(Boolean).join(' · ') || null
+    const stepSubject = step && row.stepSubject ? ` ("${escapeHtml(clip(row.stepSubject, SUBJECT_MAX_CHARS))}")` : ''
+    if (campaign && step) return `${campaign} · respondeu o ${step}${stepSubject}`
+    if (campaign) return campaign
+    if (step) return `respondeu o ${step}${stepSubject}`
+    return null
+}
+
 function replyBlock(row: PendingReply, baseUrl: string): string {
     const snippet = replySnippet(row.plainBody, row.htmlBody)
+    const campaign = campaignText(row, 'full')
     const lines = [
-        `De: ${escapeHtml(row.fromAddress)}, para ${escapeHtml(row.inboxAddress)}`,
+        `De: ${escapeHtml(whoText(row, NAME_MAX_CHARS))} — ${escapeHtml(row.fromAddress)}`,
+        `Para: ${escapeHtml(row.inboxAddress)}`,
+    ]
+    if (row.replySubject) lines.push(`Assunto: "${escapeHtml(clip(row.replySubject, SUBJECT_MAX_CHARS))}"`)
+    if (campaign) lines.push(`Campanha: ${campaign}`)
+    lines.push(
         '',
         snippet ? escapeHtml(snippet) : '(sem texto na resposta)',
         '',
         anchor(conversationLink(baseUrl, row.conversationId), 'Abrir a conversa no Unified Inbox'),
-    ]
+    )
     return lines.join('\n')
 }
 
@@ -185,6 +235,25 @@ export function formatReminder(row: PendingReply, baseUrl: string, now: Date): F
         title: `<b>Lembrete: a resposta da ${escapeHtml(row.leadName)} ${state}</b>`,
         body: replyBlock(row, baseUrl),
     }
+}
+
+/**
+ * nome (estado, há X) — e-mail — "assunto" — campanha · e-mail N — trecho  abrir
+ *
+ * Cada parte é cortada ANTES de escapar e o link entra por último e inteiro: o corte de linhas do
+ * resumo é por linha completa, nunca no meio de uma tag <a>. Partes sem dado somem.
+ */
+function summaryLine(row: PendingReply, state: string, waited: string, baseUrl: string): string {
+    const snippet = replySnippet(row.plainBody, row.htmlBody, SUMMARY_SNIPPET_CHARS)
+    const campaign = campaignText(row, 'short')
+    const parts = [
+        `${escapeHtml(whoText(row, SUMMARY_NAME_MAX_CHARS))} (${state}, há ${waited})`,
+        escapeHtml(row.fromAddress),
+    ]
+    if (row.replySubject) parts.push(`"${escapeHtml(clip(row.replySubject, SUMMARY_SUBJECT_MAX_CHARS))}"`)
+    if (campaign) parts.push(campaign)
+    if (snippet) parts.push(escapeHtml(snippet))
+    return `• ${parts.join(' — ')} ${anchor(conversationLink(baseUrl, row.conversationId), 'abrir')}`
 }
 
 /**
@@ -212,7 +281,7 @@ export function formatSummary(
         if (lines.length >= SUMMARY_MAX_LINES) break
         const waited = formatWaiting(now.getTime() - row.repliedAt.getTime())
         const state = waitingState(row) === 'unread' ? 'sem leitura' : 'lida, sem resposta'
-        const line = `• ${escapeHtml(row.leadName)} (${state}, há ${waited}) ${anchor(conversationLink(baseUrl, row.conversationId), 'abrir')}`
+        const line = summaryLine(row, state, waited, baseUrl)
         if (used + line.length > 3300) break
         lines.push(line)
         used += line.length + 1

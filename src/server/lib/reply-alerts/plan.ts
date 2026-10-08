@@ -29,8 +29,22 @@ export interface PendingReply {
     alert: { replyMessageId: string; lastAlertedAt: Date } | null
     /** Campos de exibição, já resolvidos (ver format.ts). */
     leadName: string
+    /** Nome da pessoa (lead, senão o nome do cabeçalho From da resposta). */
+    contactName: string | null
+    companyName: string | null
     fromAddress: string
     inboxAddress: string
+    /** Assunto da resposta como chegou (costuma ser "Re: ..."). */
+    replySubject: string | null
+    /** Nome da campanha da conversa. null só se a campanha não for encontrada. */
+    campaignName: string | null
+    /**
+     * Qual e-mail da sequência a pessoa respondeu: o passo (1, 2, 3...) e o assunto que foi
+     * enviado. null quando a resposta não liga a um e-mail de campanha (thread manual, vínculo
+     * perdido); a mensagem então mostra só o que se sabe.
+     */
+    stepOrder: number | null
+    stepSubject: string | null
     /** Texto bruto da resposta; o recorte de 300 caracteres é feito na formatação. */
     plainBody: string | null
     htmlBody: string | null
