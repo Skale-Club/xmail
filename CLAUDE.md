@@ -246,6 +246,12 @@ prospecção depende destas três regras:
   verificadas, e o Hermes lendo isso como problema do piloto. **As três listas de domínios têm que
   ser iguais (19 domínios em 2026-10-07): plataforma nova entra nas três.**
 
+### Prospecting system documentation (read first, keep current)
+The whole prospecting pipeline (homelab scraper, Xcraper, Xphere, Xmail, Hermes, the rules and
+limits) is described in ONE place: [`docs/prospecting/README.md`](docs/prospecting/README.md),
+in English. **Any change to prospecting behavior updates that file in the same commit** (a rule, a
+limit, a tool, a step, a host). Notion holds a read-only mirror; refresh it after updating.
+
 ### Hermes Prospecting Gateway
 The LLM agent (Hermes) drives prospecting through `/api/agent/outreach/*` only — a
 capability-scoped, org-bound credential with no send and no activation capability.
