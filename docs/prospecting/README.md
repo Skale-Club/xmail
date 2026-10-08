@@ -175,6 +175,7 @@ analysis is wrong.
   later at random (`delay_hours` to `delay_hours_max`). Live Pilot 01 and Live Pilot 02 carry it
   exactly. Every new campaign starts from it.
 - **Call to action:** every email points to `skale.club/barbershops`. Replying is optional.
+- **Examples (2026-10-08):** email 1 shows the demo shop `https://demo.xkedule.com` ("Visit our demo shop and try booking a cut") and the AI demo line `(224) 551-6131` ("Call our demo line"); email 2 links the demo shop as the kind of page people land on. Say "demo", never "test" or "not a real shop". Paragraphs are short, one idea each, with a blank line between list items.
 - **Tone:** informal and respectful. The greeting uses the short shop name. Services go in
   bullets.
 - **Variables:** `{{firstName}}`, `{{shortName}}` (the greeting name), `{{companyName}}`,
