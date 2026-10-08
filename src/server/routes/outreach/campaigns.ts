@@ -22,7 +22,16 @@ import {
 } from '../../lib/outreach-sequences'
 import { buildCampaignActivationPreview } from '../../lib/outreach-approval-preview'
 import { isPlatformEmail } from '../../lib/platform-emails'
-import { getOperationDomains } from '../../lib/operation-domains'
+import {
+    CONTENT_LANGUAGE_PATTERN,
+    SEND_TIME_PATTERN,
+    buildDuplicateCampaignValues,
+    timeToMinutes as timeToMinutesShared,
+} from '../../lib/campaign-settings'
+import {
+    checkProtectedSendingDomains as checkProtectedSendingDomainsShared,
+    type ProtectedSendingDomainViolation as ProtectedSendingDomainViolationShared,
+} from '../../lib/sending-domain-guard'
 
 const router = Router()
 
@@ -68,10 +77,7 @@ const campaignLeadsQuerySchema = paginationQuerySchema.extend({
 // HH:mm -> minutes-since-midnight, for the send-window ordering check below. Exported so
 // settings.ts can apply the identical ordering rule to its general.defaultSendStartTime/
 // defaultSendEndTime pair without re-implementing the parse.
-export function timeToMinutes(value: string): number {
-    const [hours, minutes] = value.split(':').map(Number)
-    return hours * 60 + (minutes || 0)
-}
+export const timeToMinutes = timeToMinutesShared
 
 // A campaign whose window is omitted on both ends inherits the organization's stored default
 // (resolveOutreachSettings), which is itself validated the same way (see settings.ts) — so this
@@ -93,13 +99,13 @@ function refineSendWindow<T extends { sendStartTime?: string; sendEndTime?: stri
 const createCampaignSchema = z.object({
     name: z.string().min(1, 'Name is required').max(100),
     description: z.string().optional(),
-    contentLanguage: z.string().regex(/^[a-z]{2}(?:-[A-Z]{2})?$/).optional(),
+    contentLanguage: z.string().regex(CONTENT_LANGUAGE_PATTERN).optional(),
     fromName: z.string().optional(),
     replyToEmail: z.string().email().optional(),
     timezone: z.string().optional(),
     sendOnWeekends: z.boolean().optional(),
-    sendStartTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/).optional(),
-    sendEndTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/).optional(),
+    sendStartTime: z.string().regex(SEND_TIME_PATTERN).optional(),
+    sendEndTime: z.string().regex(SEND_TIME_PATTERN).optional(),
     trackOpens: z.boolean().optional(),
     trackClicks: z.boolean().optional(),
 }).superRefine(refineSendWindow)
@@ -107,13 +113,13 @@ const createCampaignSchema = z.object({
 const updateCampaignSchema = z.object({
     name: z.string().min(1).max(100).optional(),
     description: z.string().optional(),
-    contentLanguage: z.string().regex(/^[a-z]{2}(?:-[A-Z]{2})?$/).optional(),
+    contentLanguage: z.string().regex(CONTENT_LANGUAGE_PATTERN).optional(),
     fromName: z.string().optional(),
     replyToEmail: z.string().email().optional(),
     timezone: z.string().optional(),
     sendOnWeekends: z.boolean().optional(),
-    sendStartTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/).optional(),
-    sendEndTime: z.string().regex(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/).optional(),
+    sendStartTime: z.string().regex(SEND_TIME_PATTERN).optional(),
+    sendEndTime: z.string().regex(SEND_TIME_PATTERN).optional(),
     trackOpens: z.boolean().optional(),
     trackClicks: z.boolean().optional(),
     status: z.enum(CAMPAIGN_STATUSES).optional(),
@@ -185,12 +191,6 @@ const addLeadsToCampaignSchema = z.object({
     { message: 'Provide a non-empty leadIds array or a leadListId' },
 )
 
-// P009 — the domains cold outreach must NOT send from (primary transactional domain).
-// Sourced from MAIL_DOMAIN plus an optional OUTREACH_PROTECTED_DOMAINS (comma-separated) override.
-function getProtectedSendingDomains(): Set<string> {
-    return getOperationDomains()
-}
-
 // A mailbox that never completed its warm-up ramp must not start cold outreach. The counter is
 // send-based (see resetDailyLimits), so "day N of M" now means N days on which this inbox actually
 // sent — not N days on the calendar. Set OUTREACH_ALLOW_UNWARMED_ACTIVATION=true to bypass while
@@ -200,15 +200,13 @@ function allowsUnwarmedActivation(): boolean {
     return process.env.OUTREACH_ALLOW_UNWARMED_ACTIVATION === 'true'
 }
 
-export interface ProtectedSendingDomainViolation {
-    code: 'protected_sending_domain'
-    message: string
-}
+export type ProtectedSendingDomainViolation = ProtectedSendingDomainViolationShared
 
 /**
  * P009 — reputation isolation: cold outreach must never send from the primary transactional
  * domain (mx.skale.club / MAIL_DOMAIN), which would burn its reputation. Use a disposable
- * provider (IceMail/Primeforge) inbox instead.
+ * provider (IceMail/Primeforge) inbox instead. The rule itself lives in
+ * lib/sending-domain-guard.ts so the agent gateway can apply it without loading this router.
  *
  * Previously only checked inside `validateCampaignReadyForActivation` — i.e. at activation time,
  * which means a human or the agent could enroll leads onto a protected-domain inbox and not find
@@ -216,22 +214,7 @@ export interface ProtectedSendingDomainViolation {
  * /:campaignId/leads` below and from `agent-outreach.ts`'s `POST /campaigns/:id/enroll-draft` so
  * the violation surfaces at enroll time (system map §8 finding #7).
  */
-export function checkProtectedSendingDomains(
-    accounts: Array<{ email: string }>,
-): ProtectedSendingDomainViolation | null {
-    const protectedDomains = getProtectedSendingDomains()
-    if (protectedDomains.size === 0 || accounts.length === 0) return null
-    const offending = accounts.filter((a) => {
-        const domain = a.email.split('@')[1]?.toLowerCase()
-        return domain != null && protectedDomains.has(domain)
-    })
-    if (offending.length === 0) return null
-    return {
-        code: 'protected_sending_domain',
-        message: `Cold outreach cannot send from the primary domain (${offending.map((a) => a.email).join(', ')}). ` +
-            'Assign a disposable/provider inbox instead.',
-    }
-}
+export const checkProtectedSendingDomains = checkProtectedSendingDomainsShared
 
 type CampaignActivationIssue = SequenceValidationIssue | {
     code:
@@ -1056,22 +1039,8 @@ router.post('/:id/duplicate', async (req: Request, res: Response) => {
 
         const newCampaign = await db.transaction(async (tx) => {
             const [created] = await tx.insert(campaigns).values({
-                organizationId: source.organizationId,
+                ...buildDuplicateCampaignValues(source),
                 name: duplicateName,
-                description: source.description,
-                contentLanguage: source.contentLanguage,
-                fromName: source.fromName,
-                replyToEmail: source.replyToEmail,
-                timezone: source.timezone,
-                sendOnWeekends: source.sendOnWeekends,
-                sendStartTime: source.sendStartTime,
-                sendEndTime: source.sendEndTime,
-                trackOpens: source.trackOpens,
-                trackClicks: source.trackClicks,
-                agenticFollowupEnabled: source.agenticFollowupEnabled,
-                maxFollowUps: source.maxFollowUps,
-                aiAutonomousEnabled: source.aiAutonomousEnabled,
-                status: 'draft',
             }).returning()
             return created
         })

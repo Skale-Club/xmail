@@ -20,7 +20,7 @@ import {
 import { createDrizzleInboundEventStore } from '../../lib/outreach-inbound'
 import { syncOutlookInboundOnce } from '../../lib/outreach-inbound-sources'
 import { createLogger } from '../../lib/logger'
-import { checkProtectedSendingDomains } from './campaigns'
+import { isCampaignSenderEligible } from '../../lib/sending-domain-guard'
 
 const log = createLogger('outreach.email-accounts')
 
@@ -283,13 +283,7 @@ const updateEmailAccountSchema = z.object({
 // checkProtectedSendingDomains rather than re-implementing the domain check — one source of
 // truth. Warm-up-*incompleteness* (sending_inbox_not_warmed) is NOT folded in here: that is a
 // separate, overridable activation gate (OUTREACH_ALLOW_UNWARMED_ACTIVATION), not a permanent
-// unsuitability of the inbox.
-function isCampaignSenderEligible(account: { email: string; status: string; warmupOnly: boolean | null }): boolean {
-    if (account.status !== 'verified') return false
-    if (account.warmupOnly) return false
-    if (checkProtectedSendingDomains([{ email: account.email }])) return false
-    return true
-}
+// unsuitability of the inbox. The rule lives in lib/sending-domain-guard.ts (isCampaignSenderEligible).
 
 // List email accounts for organization
 router.get('/', async (req: Request, res: Response) => {
