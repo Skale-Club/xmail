@@ -123,21 +123,23 @@ export async function notifyApprovalRequested(approvalId: string): Promise<boole
 }
 
 /**
- * The Xmail user recorded as reviewer: an admin of the approval's organization who is also a
- * platform admin. TELEGRAM_APPROVER_EMAIL picks one when there are several.
+ * The Xmail user recorded as reviewer, picked by the same rule the panel applies
+ * (checkOutreachAccess): a platform admin, or an admin of the approval's organization.
+ * TELEGRAM_APPROVER_EMAIL picks one when there are several; with exactly one candidate it is
+ * used. In production (2026-10-07) that is the single platform admin, who is not an org member.
  */
 export async function resolveTelegramReviewer(organizationId: string): Promise<string | null> {
-    const rows = await db.select({ id: users.id, email: users.email })
+    const platformAdmins = await db.select({ id: users.id, email: users.email })
+        .from(users)
+        .where(eq(users.isAdmin, true))
+    const orgAdmins = await db.select({ id: users.id, email: users.email })
         .from(organizationUsers)
         .innerJoin(users, eq(users.id, organizationUsers.userId))
-        .where(and(
-            eq(organizationUsers.organizationId, organizationId),
-            eq(organizationUsers.role, 'admin'),
-            eq(users.isAdmin, true),
-        ))
+        .where(and(eq(organizationUsers.organizationId, organizationId), eq(organizationUsers.role, 'admin')))
+    const candidates = [...new Map([...platformAdmins, ...orgAdmins].map((row) => [row.id, row])).values()]
     const wanted = process.env.TELEGRAM_APPROVER_EMAIL?.trim().toLowerCase()
-    if (wanted) return rows.find((r) => r.email.toLowerCase() === wanted)?.id ?? null
-    return rows.length === 1 ? rows[0].id : null
+    if (wanted) return candidates.find((row) => row.email.toLowerCase() === wanted)?.id ?? null
+    return candidates.length === 1 ? candidates[0].id : null
 }
 
 interface CallbackQuery {
