@@ -31,14 +31,17 @@ problema que aparecer antes de aumentar o volume. Cada linha diz o que aconteceu
 
 ## Abertos
 
-Nenhum em 2026-10-07. Achado novo entra aqui antes de subir o volume.
+Achado novo entra aqui antes de subir o volume.
 
 | # | Achado | Risco | Próximo passo |
 |---|---|---|---|
+| J | Hermes não voltou a janela da Pilot 02 depois do primeiro envio (passo 4 da mensagem 5) | Follow-up no sábado às 23h | Corrigido à mão em 08/10; lembrar o Hermes que é dele |
+| K | IMAP do Gmail estoura o prazo total de vez em quando (7 vezes em 12h, 4 caixas) | Resposta vista até ~20 min depois | Castigo de 5 min já segura; olhar o prazo se aumentar |
+| L | Relatório da rodada noturna do Hermes diz 37 créditos gastos, mas o MillionVerifier caiu de 163 para 84 (79) | Conta de crédito errada | Pedir ao Hermes que reconcilie |
 
 ## Testes de envio reais
 
 | Data | Campanha | Destino | Resultado |
 |---|---|---|---|
 | 2026-10-07 | Teste (1 lead) | skale.club@gmail.com | Caixa de entrada; resposta detectada; passo 2 cancelado; Telegram avisou (pela varredura) |
-| 2026-10-07 | Live Pilot 02 (3 leads, Newton) | 3 barbearias reais | Pronta, aguardando "vai" |
+| 2026-10-07 | Live Pilot 02 (3 leads, Newton) | 3 barbearias reais | Aprovada pelo Telegram às 22:26 ET; e-mail 1 saiu às 22:30, 22:50 e 23:10 ET (espaço de 15 a 30 min da caixa), sem erro. Janela voltou para 09:30-16:30 dias úteis em 08/10 de manhã (o Hermes não tinha ajustado). Follow-ups a partir de segunda 13/10 |
