@@ -25,7 +25,8 @@ website. Businesses with a valid email are imported into Xmail, where Hermes bui
 from the approved copy. Vanildo approves the activation with one tap on Telegram. Xmail sends a
 4-email sequence through the Icemail Google inboxes, watches for replies, and alerts Vanildo on
 Telegram as soon as someone answers. A positive reply is what we call a **lead**. Businesses
-without an email stay in Xphere for other channels (Meta audiences today).
+without an email stay in Xphere: every scraped phone goes to the Meta audience and waits in the
+phone backlog for a future call campaign.
 
 ```
  Vanildo (Telegram) ──▶ Hermes ──▶ Xcraper ──▶ Homelab scraper (Google Maps)
@@ -91,9 +92,16 @@ not set up yet; see section 9.
    between 8:00 and 20:00 ET until handled, plus a morning summary.
 10. **Lead.** A positive reply (`status='interested'`) is a lead. Replies to prospects are sent
     only with Vanildo's approval.
-11. **No email.** Businesses without email stay in Xphere for Meta custom audiences. SMS and
-    cold calls are planned but **not authorized**; each needs Vanildo's explicit order and a
-    compliance review first.
+11. **Meta audience, automatically.** Every scraped business with a phone or email goes up to
+    the Meta custom audience `Skale Club - Xcraper Prospects`. Xphere reconciles it by itself
+    every hour (GitHub Actions `meta-audience-sync`, minute 15), and Hermes may also sync right
+    after a scrape. **No approval is needed** (Vanildo, 2026-10-08). The sync both adds and
+    removes members: opt-outs, DND and deleted rows come out.
+12. **Phone backlog.** Every scraped business is kept in Xphere with its phone, email or not.
+    `prospects_list` reports `with_email` (campaign backlog) next to `with_phone` and
+    `phone_only` (Meta and future call backlog), and `has_phone: true` lists them. SMS and cold
+    calls are planned but **not authorized** yet: the first call or text needs Vanildo's explicit
+    order and a compliance review.
 
 ---
 
@@ -114,8 +122,11 @@ analysis is wrong.
    - Xmail `src/server/lib/platform-emails.ts`;
    - Xcraper (at the source);
    - Xphere `src/lib/prospects/platform-emails.ts`.
-3. **Email is a channel, not a filter.** Low email coverage does not make a run bad. Report email
-   coverage and business coverage as two separate numbers.
+3. **Email is a channel, not a filter.** Low email coverage does not make a run bad. Email goes
+   only to those with a verified email; everyone with a phone is kept for Meta and future calls.
+   Report the email backlog and the phone backlog as two separate numbers after every run.
+   Nothing in the pipeline may drop a business for lacking an email (Xcraper pushes every row,
+   phone-only rows carry `recommended_channel: "call"`).
 4. **No physical address in emails.** Vanildo's decision, aware of CAN-SPAM. The compliance check
    shows a missing address as a warning only. His home address must never appear anywhere.
 5. **Every email body carries `{{unsubscribeUrl}}`.** Plain and HTML both. Activation and
@@ -128,7 +139,8 @@ analysis is wrong.
    writes new copy from scratch. No em dashes, no "Hi there", nothing that says we are talking to
    other shops in the area.
 8. **Approvals stay with Vanildo.** Hermes cannot activate a campaign or reply to a prospect. It
-   requests; Vanildo approves on Telegram or in the panel. Resume works only for a campaign Hermes
+   requests; Vanildo approves on Telegram or in the panel. Meta audience sync is not an approval
+   item (step 11). Resume works only for a campaign Hermes
    itself paused after an approved activation.
 9. **Volume.**
    - Each Icemail inbox sends 15 a day today (5 inboxes, 75 a day).

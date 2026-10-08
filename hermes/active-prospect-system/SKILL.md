@@ -51,15 +51,16 @@ skill defines the procedure and authority boundaries, not mutable business data.
 - Hermes starts a scrape only after Vanildo explicitly asks for that niche/region.
 - Hermes never promotes a prospect to lead without explicit approval.
 - Hermes never generates a site preview without explicit approval.
-- Hermes never uses `confirmed:true` for campaign enrollment, direct message, or
-  Meta audience sync without approval for that exact preview and target.
+- Hermes never uses `confirmed:true` for campaign enrollment or direct message
+  without approval for that exact preview and target. Meta audience sync is the
+  exception: it needs no approval (see the Meta protocol).
 - Email is the default initial outreach channel. SMS/calls require a separate,
   explicit command and compliance review.
 - The direct Xmail agent gateway can draft/enroll but cannot activate or send.
   The Xphere tool `prospects_enroll_in_campaign` can enroll and activate after
   `confirmed:true`; treat that flag as an immediate-send approval boundary.
-- A Meta sync can ADD and REMOVE remote members. Treat `confirmed:true` as a
-  write approval even though reconciliation is idempotent.
+- A Meta sync can ADD and REMOVE remote members. That is expected and needs no
+  approval: scraped prospects always go to the Meta audience (Vanildo, 2026-10-08).
 
 ## Mandatory preflight
 
@@ -164,9 +165,8 @@ It **stays in Xphere**, which is its home and not a waiting room. Two destinatio
 are planned for it, and neither depends on an email ever appearing:
 
 1. **Meta/Facebook Custom Audiences — available today.** Xphere projects locally
-   hashed identifiers; a phone number alone is enough to match. Follow the Meta
-   protocol below: aggregate preview first, explicit approval, then `confirmed:true`
-   only with the audience enabled and Customer List terms accepted.
+   hashed identifiers; a phone number alone is enough to match. Every scrape goes
+   up to the Meta audience with no approval: follow the Meta protocol below.
 2. **SMS and cold call — planned, NOT yet authorized.** Phone coverage from Google
    Maps is high, which makes these the natural second and third channels. They do
    **not** exist as an approved motion yet: each one needs its own explicit command
@@ -177,6 +177,13 @@ are planned for it, and neither depends on an email ever appearing:
 So a run with poor email coverage still produces two usable outputs: Website/Xkedule
 opportunities and Meta audience members. Say that plainly instead of describing the
 no-email portion as loss.
+
+**Phone backlog (Vanildo, 2026-10-08).** Every scraped business is kept, email or not. Email
+goes only to those with a verified email; every business with a phone is a member of the Meta
+audience and of the backlog for the future call campaign. After every run, report both numbers
+from `prospects_list`: `with_email` (campaign backlog) and `with_phone` / `phone_only` (Meta and
+call backlog); `has_phone: true` lists them. Never describe a run as weak only because email
+coverage is low, and never drop or skip a business for lacking an email.
 
 ### The funnel, in the platform's own words
 
@@ -266,18 +273,21 @@ approval with `confirmed:true`.
 
 ## Meta/Facebook Custom Audiences protocol
 
-Meta audiences are a first-class destination for scraped prospects, not an
-automatic side effect of scraping.
+Meta audiences are a first-class destination for scraped prospects. **Rule from
+Vanildo (2026-10-08): whoever scrapes uploads to Meta. Syncing the audience never needs
+approval.** Xphere also reconciles every enabled audience by itself every hour (GitHub
+Actions `meta-audience-sync`, at minute 15), so a scrape reaches Meta within the hour even
+if nobody calls the tool.
 
-1. Call `meta_audiences_status` and choose the exact configured audience.
-2. Call `meta_audience_sync` with `audience_id` and no confirmation. Report only
-   aggregate `eligible`, `with_email`, `with_phone`, `suppressed`, and `invalid`.
-3. Explain that reconciliation performs remote ADD and REMOVE operations.
-4. Wait for explicit approval of that audience and preview.
-5. Call again with `confirmed:true` only when the audience is enabled, Customer
-   List terms are accepted, and the tenant Meta connection is active.
-6. Report aggregate results and any safe error code. Never expose identifiers,
-   hashes, tokens, or raw Graph payloads.
+1. Call `meta_audiences_status` and choose the exact configured audience (today
+   `Skale Club - Xcraper Prospects`).
+2. After a scrape lands in Xphere, call `meta_audience_sync` with `audience_id` and
+   `confirmed:true`. No preview and no approval step. ADD and REMOVE are both expected:
+   REMOVE takes out opt-outs, DND and deleted rows.
+3. Report aggregate results (added, removed, unchanged) and any safe error code. Never
+   expose identifiers, hashes, tokens, or raw Graph payloads.
+4. If the audience is disabled, the Customer List terms are not accepted, or the Meta
+   connection is expired, the tool refuses: tell Vanildo, do not work around it.
 
 Projection excludes source-mismatched, deleted, archived-duplicate, DND,
 unsubscribed, email-suppressed, identifier-less, and duplicate-identifier rows.
