@@ -148,3 +148,31 @@ describe('parseMailtoUrl', () => {
         expect(parseMailtoUrl('https://x.com')).toBeNull()
     })
 })
+
+describe('processEmailHtml own-color detection', () => {
+    const colors = (html: string) => processEmailHtml(html, { blockRemote: true }).hasOwnColors
+
+    it('treats plain HTML with no colors as theme-able', () => {
+        // The MSHTML body that rendered black-on-dark: fonts only, no colors.
+        expect(colors('<HTML><HEAD><META name=GENERATOR content="MSHTML 11.00"></HEAD><BODY><P><FONT face="Georgia">Hey there,</FONT></P></BODY></HTML>')).toBe(false)
+        expect(colors('<div dir="ltr">Hi<br><blockquote class="gmail_quote">old</blockquote></div>')).toBe(false)
+    })
+
+    it('ignores declarations that paint nothing', () => {
+        expect(colors('<p style="color: inherit; background: transparent; border-color: red">x</p>')).toBe(false)
+        expect(colors('<style>p { background-color: none !important }</style><p>x</p>')).toBe(false)
+    })
+
+    it('detects colors set by attributes, inline styles and <style> blocks', () => {
+        expect(colors('<table bgcolor="#ffffff"><tr><td>x</td></tr></table>')).toBe(true)
+        expect(colors('<font color="#333">x</font>')).toBe(true)
+        expect(colors('<body text="#000000">x</body>')).toBe(true)
+        expect(colors('<span style="color:#000000">x</span>')).toBe(true)
+        expect(colors('<div style="background: #f4f4f4">x</div>')).toBe(true)
+        expect(colors('<style>.wrap{background-color:#fff}</style><div class="wrap">x</div>')).toBe(true)
+    })
+
+    it('still sees a remote background attribute that blocking removes', () => {
+        expect(colors('<table background="https://t.example/bg.png"><tr><td>x</td></tr></table>')).toBe(true)
+    })
+})

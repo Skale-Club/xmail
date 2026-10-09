@@ -465,11 +465,11 @@ function SingleEmailView({
     onDelete: () => void
     onStar: () => void
 }) {
-    const [emailDarkMode, setEmailDarkMode] = useState(false)
+    const [invertColors, setInvertColors] = useState(false)
     const openMailto = useMailtoHandler()
 
     useEffect(() => {
-        setEmailDarkMode(false)
+        setInvertColors(false)
     }, [message.id])
 
     return (
@@ -493,8 +493,8 @@ function SingleEmailView({
                         isSpam={isSpam}
                         onDelete={onDelete}
                         onStar={onStar}
-                        emailDarkMode={emailDarkMode}
-                        onToggleEmailDarkMode={() => setEmailDarkMode(!emailDarkMode)}
+                        invertColors={invertColors}
+                        onToggleInvertColors={() => setInvertColors(!invertColors)}
                         authStatus={getSenderAuthStatus(message.headers)}
                     />
 
@@ -502,7 +502,7 @@ function SingleEmailView({
                         <EmailHtmlViewer
                             html={message.htmlBody}
                             plainText={message.body || message.snippet}
-                            emailDarkMode={emailDarkMode}
+                            invertColors={invertColors}
                             senderEmail={message.from.email}
                             onMailto={openMailto}
                         />

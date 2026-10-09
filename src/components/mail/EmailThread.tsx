@@ -16,8 +16,7 @@ import {
     Forward,
     Paperclip,
     Download,
-    Sun,
-    Moon
+    Contrast
 } from 'lucide-react'
 
 interface EmailThreadProps {
@@ -171,10 +170,10 @@ function ThreadMessageCard({
     const initials = getInitials(message.from.name || message.from.email)
     const authStatus = getSenderAuthStatus(message.headers)
     const openMailto = useMailtoHandler()
-    const [emailDarkMode, setEmailDarkMode] = useState(false)
+    const [invertColors, setInvertColors] = useState(false)
 
     useEffect(() => {
-        setEmailDarkMode(false)
+        setInvertColors(false)
     }, [message.id])
 
     return (
@@ -245,19 +244,20 @@ function ThreadMessageCard({
                 <div className="px-4 pb-4">
                     <div className="flex items-center justify-end mb-2 pl-13">
                         <button
-                            onClick={() => setEmailDarkMode(!emailDarkMode)}
+                            onClick={() => setInvertColors(!invertColors)}
                             className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                            title={emailDarkMode ? 'Light mode' : 'Dark mode'}
+                            title={invertColors ? 'Show original colors' : 'Invert colors'}
+                            aria-pressed={invertColors}
                         >
-                            {emailDarkMode ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-                            {emailDarkMode ? 'Light' : 'Dark'}
+                            <Contrast className="w-3.5 h-3.5" />
+                            {invertColors ? 'Original colors' : 'Invert colors'}
                         </button>
                     </div>
                     <div className="pl-13">
                         <EmailHtmlViewer
                             html={message.htmlBody}
                             plainText={message.body || message.snippet}
-                            emailDarkMode={emailDarkMode}
+                            invertColors={invertColors}
                             senderEmail={message.from.email}
                             onMailto={openMailto}
                         />

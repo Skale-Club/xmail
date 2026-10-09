@@ -135,3 +135,45 @@ describe('TrustedImageDomainsCard', () => {
         expect(screen.getByText('b.com')).toBeTruthy()
     })
 })
+
+describe('EmailHtmlViewer surfaces', () => {
+    const PLAIN = '<P><FONT face="Georgia">Hey there,</FONT></P>'
+    const DESIGNED = '<table bgcolor="#f4f4f4"><tr><td style="color:#222">Newsletter</td></tr></table>'
+    const iframeFilter = () => (screen.getByTitle('Email content') as HTMLIFrameElement).style.filter
+
+    beforeEach(() => {
+        document.documentElement.classList.remove('dark', 'light')
+    })
+
+    it('paints a plain message in the app foreground when the app is dark', async () => {
+        document.documentElement.classList.add('dark')
+        renderViewer({ html: PLAIN })
+        await waitFor(() => expect(iframeDoc()).toContain('html { background: transparent; }'))
+        // jsdom has no --foreground, so the dark fallback is what lands in the document.
+        expect(iframeDoc()).toContain('color: #fafafa;')
+        expect(iframeDoc()).not.toContain('color: inherit')
+        expect(iframeFilter()).toBe('')
+    })
+
+    it('gives a message with its own colors a white sheet in a dark app', async () => {
+        document.documentElement.classList.add('dark')
+        renderViewer({ html: DESIGNED })
+        await waitFor(() => expect(iframeDoc()).toContain('html { background: #ffffff; }'))
+        expect(iframeFilter()).toBe('')
+    })
+
+    it('inverting a plain message in a dark app moves it to the white sheet, without a filter', async () => {
+        document.documentElement.classList.add('dark')
+        renderViewer({ html: PLAIN, invertColors: true })
+        await waitFor(() => expect(iframeDoc()).toContain('html { background: #ffffff; }'))
+        expect(iframeFilter()).toBe('')
+    })
+
+    it('inverting a designed message flips an opaque sheet and flips media back', async () => {
+        document.documentElement.classList.add('dark')
+        renderViewer({ html: DESIGNED, invertColors: true })
+        await waitFor(() => expect(iframeDoc()).toContain('img, video, picture, svg { filter: invert(1)'))
+        expect(iframeDoc()).toContain('html { background: #ffffff; }')
+        expect(iframeFilter()).toContain('invert(1)')
+    })
+})

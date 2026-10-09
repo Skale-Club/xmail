@@ -1,4 +1,4 @@
-import { Archive, Inbox, Mail, MailOpen, ShieldAlert, Star, Trash2, Sun, Moon } from 'lucide-react'
+import { Archive, Inbox, Mail, MailOpen, ShieldAlert, Star, Trash2, Contrast } from 'lucide-react'
 import { cn, getAvatarColor, getInitials } from '../../lib/utils'
 import { SenderAuthBadge } from './SenderAuthBadge'
 import type { SenderAuthStatus } from '../../lib/mail-auth-status'
@@ -24,8 +24,8 @@ interface EmailMessageHeaderProps {
     archiveTitle?: string
     archiveAriaLabel?: string
     archiveIcon?: 'archive' | 'inbox'
-    emailDarkMode?: boolean
-    onToggleEmailDarkMode?: () => void
+    invertColors?: boolean
+    onToggleInvertColors?: () => void
     authStatus?: SenderAuthStatus
 }
 
@@ -45,14 +45,14 @@ export function EmailMessageHeader({
     archiveTitle = 'Archive',
     archiveAriaLabel = 'Archive',
     archiveIcon = 'archive',
-    emailDarkMode,
-    onToggleEmailDarkMode,
+    invertColors,
+    onToggleInvertColors,
     authStatus,
 }: EmailMessageHeaderProps) {
     const avatarColor = getAvatarColor(from.email)
     const initials = getInitials(from.name || from.email)
     const recipientLabel = to.map((recipient) => recipient.name || recipient.email).join(', ')
-    const hasActions = Boolean(onToggleRead || onArchive || onSpam || onDelete || onStar || onToggleEmailDarkMode)
+    const hasActions = Boolean(onToggleRead || onArchive || onSpam || onDelete || onStar || onToggleInvertColors)
     const ArchiveActionIcon = archiveIcon === 'inbox' ? Inbox : Archive
 
     return (
@@ -138,15 +138,16 @@ export function EmailMessageHeader({
                             <Star className={`h-4 w-4 ${starred ? 'fill-current' : ''}`} />
                         </button>
                     )}
-                    {onToggleEmailDarkMode && (
+                    {onToggleInvertColors && (
                         <button
                             type="button"
-                            onClick={onToggleEmailDarkMode}
+                            onClick={onToggleInvertColors}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                            title={emailDarkMode ? 'Light mode' : 'Dark mode'}
-                            aria-label={emailDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                            title={invertColors ? 'Show original colors' : 'Invert colors'}
+                            aria-label={invertColors ? 'Show original colors' : 'Invert colors'}
+                            aria-pressed={invertColors}
                         >
-                            {emailDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                            <Contrast className={`h-4 w-4 ${invertColors ? 'text-foreground' : ''}`} />
                         </button>
                     )}
                 </div>

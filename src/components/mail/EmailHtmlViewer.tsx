@@ -5,12 +5,14 @@ import { parseMailtoUrl, type MailtoTarget } from '../../lib/mailto'
 import { processEmailHtml, QUOTE_ATTRIBUTE } from './email-html'
 import { senderRegistrableDomain } from '../../lib/sender-domain'
 import { useTrustedImageDomains } from '../../hooks/useTrustedImageDomains'
+import { useIsDarkTheme } from '../../hooks/useIsDarkTheme'
 import { toast } from '../ui/toaster'
 
 interface EmailHtmlViewerProps {
     html?: string | null
     plainText?: string | null
-    emailDarkMode?: boolean
+    /** Swap to the other reading of the message (see resolveSurface). */
+    invertColors?: boolean
     expandable?: boolean
     isLoading?: boolean
     /** Sender address. Its registrable domain drives the per-user "always show images from this
@@ -21,7 +23,53 @@ interface EmailHtmlViewerProps {
     onMailto?: (target: MailtoTarget) => void
 }
 
-function buildEmailDoc(html: string, showQuoted: boolean) {
+/**
+ * How the message is painted. The iframe document does not inherit anything from the app, so
+ * every surface sets its own text color; leaving it to the browser default is what made plain
+ * messages black-on-dark.
+ * - `theme`: no page color, text in the app foreground. Only for messages that set no colors of
+ *   their own (plain replies, MSHTML/Outlook bodies), which read fine on any background.
+ * - `paper`: a white sheet, as the message was designed. Messages that set colors assume one.
+ * - `inverted`: the white sheet flipped dark by the iframe filter (opaque, so the flip always
+ *   lands on a readable page); media is flipped back so photos keep their real colors.
+ */
+type EmailSurface = 'theme' | 'paper' | 'inverted'
+
+interface SurfaceStyle {
+    text: string
+    background: string
+    link: string
+    quoteBorder: string
+    quoteText: string
+    padding: string
+}
+
+const PAPER: Omit<SurfaceStyle, 'padding'> = {
+    text: '#111827',
+    background: '#ffffff',
+    link: '#2563eb',
+    quoteBorder: '#d1d5db',
+    quoteText: '#6b7280',
+}
+
+function appForeground(fallback: string): string {
+    try {
+        const value = getComputedStyle(document.documentElement).getPropertyValue('--foreground').trim()
+        return value ? `hsl(${value})` : fallback
+    } catch {
+        return fallback
+    }
+}
+
+function surfaceStyle(surface: EmailSurface, isDarkTheme: boolean): SurfaceStyle {
+    if (surface !== 'theme') return { ...PAPER, padding: '16px 20px' }
+    return isDarkTheme
+        ? { text: appForeground('#fafafa'), background: 'transparent', link: '#60a5fa', quoteBorder: '#3f3f46', quoteText: '#a1a1aa', padding: '0' }
+        : { text: appForeground('#09090b'), background: 'transparent', link: '#2563eb', quoteBorder: '#d1d5db', quoteText: '#6b7280', padding: '0' }
+}
+
+function buildEmailDoc(html: string, showQuoted: boolean, surface: EmailSurface, isDarkTheme: boolean) {
+    const style = surfaceStyle(surface, isDarkTheme)
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -29,27 +77,29 @@ function buildEmailDoc(html: string, showQuoted: boolean) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
     * { box-sizing: border-box; }
+    html { background: ${style.background}; }
     body {
         margin: 0;
-        padding: 0;
+        padding: ${style.padding};
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         font-size: 14px;
         line-height: 1.6;
         word-wrap: break-word;
         overflow-wrap: break-word;
-        color: inherit;
+        color: ${style.text};
         background: transparent;
     }
     img { max-width: 100%; height: auto; }
-    a { color: #3b82f6; }
+    a { color: ${style.link}; }
     pre, code { white-space: pre-wrap; word-wrap: break-word; }
     table { max-width: 100%; border-collapse: collapse; }
     blockquote {
         margin: 8px 0;
         padding: 4px 12px;
-        border-left: 3px solid #d1d5db;
-        color: #6b7280;
+        border-left: 3px solid ${style.quoteBorder};
+        color: ${style.quoteText};
     }
+    ${surface === 'inverted' ? 'img, video, picture, svg { filter: invert(1) hue-rotate(180deg); }' : ''}
     ${showQuoted ? '' : `[${QUOTE_ATTRIBUTE}] { display: none !important; }`}
 </style>
 </head>
@@ -58,11 +108,22 @@ function buildEmailDoc(html: string, showQuoted: boolean) {
 }
 
 /**
+ * The default follows the message: plain HTML takes the app theme, designed HTML gets its white
+ * sheet. "Invert colors" swaps to the other reading: a themed message in a dark app goes to the
+ * white sheet, anything else goes to the inverted (dark) sheet.
+ */
+function resolveSurface(hasOwnColors: boolean, isDarkTheme: boolean, invert: boolean): EmailSurface {
+    const base: EmailSurface = hasOwnColors ? 'paper' : 'theme'
+    if (!invert) return base
+    return base === 'theme' && isDarkTheme ? 'paper' : 'inverted'
+}
+
+/**
  * Renders email HTML content in a sandboxed iframe.
  * Falls back to plain text if no HTML is available.
  * The iframe auto-resizes to fit its content.
  */
-export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = true, isLoading = false, senderEmail, onMailto }: EmailHtmlViewerProps) {
+export function EmailHtmlViewer({ html, plainText, invertColors, expandable = true, isLoading = false, senderEmail, onMailto }: EmailHtmlViewerProps) {
     const iframeRef = useRef<HTMLIFrameElement>(null)
     const [height, setHeight] = useState(200)
     const [isExpanded, setIsExpanded] = useState(false)
@@ -93,11 +154,13 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
     )
     const hasRemoteImages = processed?.hadRemoteContent ?? false
     const hasQuotedText = processed?.hasQuotedText ?? false
+    const isDarkTheme = useIsDarkTheme()
+    const surface = resolveSurface(processed?.hasOwnColors ?? true, isDarkTheme, Boolean(invertColors))
 
     useEffect(() => {
         if (!processed) return
-        setSrcdoc(buildEmailDoc(processed.html, showQuoted))
-    }, [processed, showQuoted])
+        setSrcdoc(buildEmailDoc(processed.html, showQuoted, surface, isDarkTheme))
+    }, [processed, showQuoted, surface, isDarkTheme])
 
     const handleShowOnce = () => setShowOnce(true)
 
@@ -269,7 +332,8 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
                         border: 'none',
                         overflow: 'hidden',
                         display: 'block',
-                        filter: emailDarkMode ? 'invert(1) hue-rotate(180deg)' : undefined,
+                        borderRadius: surface === 'theme' ? undefined : '8px',
+                        filter: surface === 'inverted' ? 'invert(1) hue-rotate(180deg)' : undefined,
                         transition: 'filter 0.2s ease',
                     }}
                 />
@@ -293,7 +357,7 @@ export function EmailHtmlViewer({ html, plainText, emailDarkMode, expandable = t
                             <EmailHtmlViewer
                                 html={html}
                                 plainText={plainText}
-                                emailDarkMode={emailDarkMode}
+                                invertColors={invertColors}
                                 expandable={false}
                                 senderEmail={senderEmail}
                                 onMailto={onMailto}

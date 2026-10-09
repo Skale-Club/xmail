@@ -824,7 +824,7 @@ function SpamDetailPanel({
     const openMailto = useMailtoHandler()
     const { data: messageData, isLoading } = useMessage(email.id)
     const fullMessage = messageData?.message
-    const [emailDarkMode, setEmailDarkMode] = useState(false)
+    const [invertColors, setInvertColors] = useState(false)
 
     return (
         <div className="flex-1 overflow-y-auto">
@@ -840,15 +840,15 @@ function SpamDetailPanel({
                         authStatus={getSenderAuthStatus(fullMessage?.headers)}
                         onSpam={() => onNotSpam(email.id)}
                         onDelete={() => onDelete(email.id)}
-                        emailDarkMode={emailDarkMode}
-                        onToggleEmailDarkMode={() => setEmailDarkMode(!emailDarkMode)}
+                        invertColors={invertColors}
+                        onToggleInvertColors={() => setInvertColors(!invertColors)}
                     />
                     <h2 className="text-sm font-bold text-foreground mb-3">{email.subject}</h2>
                     <div className="mt-4">
                         <EmailHtmlViewer
                             html={fullMessage?.bodyHtml || fullMessage?.htmlBody}
                             plainText={fullMessage?.bodyText || fullMessage?.plainBody || email.snippet}
-                            emailDarkMode={emailDarkMode}
+                            invertColors={invertColors}
                             isLoading={isLoading}
                             senderEmail={email.from.email}
                             onMailto={openMailto}

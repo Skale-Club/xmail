@@ -17,6 +17,10 @@ export interface ProcessedEmailHtml {
     hadRemoteContent: boolean
     /** True when at least one quoted block was marked with `data-xmail-quote`. */
     hasQuotedText: boolean
+    /** True when the message sets text or background colors of its own, i.e. it was designed
+     *  against a page color and must keep one. False for plain HTML that leaves colors to the
+     *  reader, which can then follow the app theme. */
+    hasOwnColors: boolean
 }
 
 function baseUrl(): string {
@@ -181,6 +185,31 @@ function blockRemoteContent(doc: Document): boolean {
     return blocked
 }
 
+// A declaration with one of these values does not paint anything, so it does not commit the
+// message to a page color.
+const NEUTRAL_COLOR_VALUE_RE = /^(?:inherit|initial|unset|revert|transparent|none|currentcolor)?$/i
+const COLOR_DECLARATION_RE = /(?:^|[;{\s])(?:color|background(?:-color|-image)?)\s*:\s*([^;}]*)/gi
+
+function cssSetsColors(css: string): boolean {
+    for (const match of css.matchAll(COLOR_DECLARATION_RE)) {
+        const value = match[1].replace(/!important/i, '').trim()
+        if (!NEUTRAL_COLOR_VALUE_RE.test(value)) return true
+    }
+    return false
+}
+
+/** Must run before remote blocking, which strips `background` attributes. */
+function declaresOwnColors(doc: Document): boolean {
+    if (doc.querySelector('[bgcolor], [background], font[color], body[text]')) return true
+    for (const el of Array.from(doc.querySelectorAll('[style]'))) {
+        if (cssSetsColors(el.getAttribute('style') || '')) return true
+    }
+    for (const styleTag of Array.from(doc.querySelectorAll('style'))) {
+        if (cssSetsColors(styleTag.textContent || '')) return true
+    }
+    return false
+}
+
 // Only these are ever treated as a quoted reply. A <blockquote> in the middle of a message is
 // content (a pull quote, a cited paragraph) and must stay visible.
 const QUOTE_SELECTOR = [
@@ -281,10 +310,11 @@ function markQuotedText(doc: Document): boolean {
 
 export function processEmailHtml(html: string, options: { blockRemote: boolean }): ProcessedEmailHtml {
     if (typeof DOMParser === 'undefined') {
-        return { html, hadRemoteContent: false, hasQuotedText: false }
+        return { html, hadRemoteContent: false, hasQuotedText: false, hasOwnColors: true }
     }
 
     const doc = new DOMParser().parseFromString(html, 'text/html')
+    const hasOwnColors = declaresOwnColors(doc)
     const hadRemoteContent = options.blockRemote ? blockRemoteContent(doc) : false
 
     const hasQuotedText = markQuotedText(doc)
@@ -294,5 +324,6 @@ export function processEmailHtml(html: string, options: { blockRemote: boolean }
         html: `${doc.head ? doc.head.innerHTML : ''}${doc.body ? doc.body.innerHTML : ''}`,
         hadRemoteContent,
         hasQuotedText,
+        hasOwnColors,
     }
 }

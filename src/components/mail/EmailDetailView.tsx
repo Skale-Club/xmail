@@ -57,10 +57,10 @@ export function EmailDetailView({
             })
         })
     }
-    const [emailDarkMode, setEmailDarkMode] = useState(false)
+    const [invertColors, setInvertColors] = useState(false)
 
     useEffect(() => {
-        setEmailDarkMode(false)
+        setInvertColors(false)
     }, [email.id])
 
     return (
@@ -86,8 +86,8 @@ export function EmailDetailView({
                         archiveTitle={archiveTitle}
                         archiveAriaLabel={archiveAriaLabel}
                         archiveIcon={archiveIcon}
-                        emailDarkMode={emailDarkMode}
-                        onToggleEmailDarkMode={() => setEmailDarkMode(!emailDarkMode)}
+                        invertColors={invertColors}
+                        onToggleInvertColors={() => setInvertColors(!invertColors)}
                         authStatus={getSenderAuthStatus(fullMessage?.headers)}
                     />
 
@@ -108,7 +108,7 @@ export function EmailDetailView({
                         <EmailHtmlViewer
                             html={fullMessage?.bodyHtml || fullMessage?.htmlBody}
                             plainText={fullMessage?.bodyText || fullMessage?.plainBody || email.snippet}
-                            emailDarkMode={emailDarkMode}
+                            invertColors={invertColors}
                             isLoading={isMessageLoading}
                             senderEmail={email.from.email}
                             onMailto={openMailto}
