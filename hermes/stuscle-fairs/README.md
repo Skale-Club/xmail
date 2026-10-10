@@ -17,14 +17,14 @@ in Portuguese by the owner's workspace.
 
 ```
 cron (Mon and Thu, 08:00 ET)
-  └─ fairs-precheck.py        cheap, no LLM: fetches the 15 sources, strips text that changes daily, diffs against
+  └─ fairs-precheck.py        cheap, no LLM: fetches the 18 sources, strips text that changes daily, diffs against
        │                      the last read and keeps only the NEW lines; also lists confirmed fairs that already
        │                      happened and still have no result
        ├─ nothing new, no source broken, weekly search not due, no result to ask for → {"wakeAgent": false}  (silence, zero cost)
        └─ something to do → Markdown report + {"wakeAgent": true}
             └─ Hermes agent (skill stuscle-fairs)
                  ├─ reads the report, extracts the facts of each new fair (web_extract for fee, deadline, contact)
-                 ├─ weekly search: web_search with the queries from the report
+                 ├─ weekly search: web_search with the generic queries and the town queries of the report (about 40 in all)
                  ├─ stuscle_fairs.py upsert-batch  one call for all fairs (shell loops are blocked in cron); code validates, scores and decides
                  │       ├─ Google Calendar   "Fair Opportunities" (score >= 55) + a deadline event
                  │       └─ Notion            "Feiras" database (everything except `skip`)
@@ -43,14 +43,15 @@ The LLM only **extracts facts**; the score (0 to 100) is computed in code, so it
 | Booth fee: up to US$ 75 / 76 to 150 / above | 20 / 8 / 0 |
 | Booth fee unknown: 1-day fair / 2+ days (flag `taxa_desconhecida`) | 5 / 0 |
 | Competition: juried / up to 40 vendors / more than 100 / the rest | 10 / 7 / 2 / 5 |
-| Distance beyond 30 miles | −15 (town not in the list: 0 and flag `distancia_desconhecida`) |
+| Distance beyond 30 miles, core zone only | −15 (town not in the list: 0 and flag `distancia_desconhecida`; coastal zone: always 0) |
 
 Decision: **55 or more** = `opportunity` (goes to the calendar); **40 to 54** = `maybe` (reported only);
 **below 40** = `skip` (kept in the registry so it is not re-evaluated every week, never created in Notion).
-An opportunity with a known fee above US$ 75 or farther than 30 miles gets the flag `excecao` (⚠️ in the title).
-An unknown fee also counts as "outside target": it needs `EXCEPTION_MIN_SCORE` (75) to stay an opportunity, otherwise it
-becomes `maybe` (listings rarely show the fee, and the big expensive shows are the ones that hide it). The unknown-fee
-case is signalled by `taxa_desconhecida`, not `excecao`.
+An opportunity with a known fee above US$ 75 or in a core town farther than 30 miles gets the flag `excecao` (⚠️ in the title).
+An unknown fee on a fair of 2+ days also counts as "outside target": it needs `EXCEPTION_MIN_SCORE` (75) to stay an
+opportunity, otherwise it becomes `maybe` (the big expensive multi-day shows are the ones that hide their prices). On a
+one-day fair an unknown fee only costs points (5 instead of 20), because small local fairs rarely publish a fee.
+The unknown-fee case is signalled by `taxa_desconhecida`, not `excecao`.
 Weights and cut-offs live in a constants block at the top of `scripts/stuscle_fairs.py`.
 
 Caps (they only ever lower a decision, never raise one):
@@ -66,6 +67,42 @@ organizer or application page. An incoming `unknown` or `null` never erases a st
 
 Example of the design: a juried US$ 300 fair in Wellesley scores 80 and becomes an opportunity with ⚠️, because
 type, town and competition make up for the fee. Requiring more for exceptions is one more constant in the code.
+
+### Zones: core radius and the coast
+
+`references/towns.json` has 129 towns, each with `zone` and, for coastal towns, `region`:
+
+| Zone | Towns | Distance | Flag |
+|---|---|---|---|
+| `core` | 104 towns within about 30 driving miles of Framingham (estimates up to 31, a few border towns) | beyond 30 miles: −15 points and `excecao` when it is an opportunity | none |
+| `coast` | 25 coastal towns: `region` `north_shore` (15: Lynn, Nahant, Swampscott, Marblehead, Salem, Beverly, Manchester-by-the-Sea, Gloucester, Rockport, Essex, Ipswich, Rowley, Newbury, Newburyport, Salisbury) and `south_shore` (10: Quincy, Weymouth, Hull, Hingham, Cohasset, Scituate, Marshfield, Duxbury, Kingston, Plymouth) | never penalized, never `excecao` because of distance (a fee above US$ 75 still is one) | `litoral` |
+
+Coastal towns keep their own income tier and score like any other town; only the distance rule changes. A town in neither
+list (Cape Cod, the Berkshires, other states) is still skipped by the agent. `stuscle_fairs.py town "<name>"` prints `zone`,
+`region`, tier and miles, and `within_radius` is true for every coastal town. Fairs in coastal towns carry the flag `litoral`
+(Notion `Alertas` option `Litoral`, calendar line "Litoral (North Shore)" or "Litoral (South Shore)", Telegram "praia").
+Sources, method and caveats for the coastal additions are in [`references/sources.md`](references/sources.md).
+
+### Rotating per-town discovery
+
+The directories do not list the small local fairs (town, church, school, PTO, Rotary/Lions, library). Those show up on
+town pages, Patch, local news and organizer sites, so the weekly search also runs one web search **per town**, a few
+towns each week, rotating through all 129.
+
+- **Order** (stable): tier A towns first, then B, then C, then unknown; inside a tier, nearest to Framingham first.
+  Core and coastal towns are interleaved by the same rule and nothing is excluded.
+- **Slice**: each weekly search takes the next `towns_per_discovery` towns (default 25), wrapping around the end. With 129
+  towns the full lap takes about 5 weeks, tier A towns first.
+- **Cursor**: `state.json` keeps `town_rotation_cursor` (an index into the order). The precheck never moves it. It writes the
+  slice it delivered into `pending.json` as `discovery_towns`, and `stuscle_fairs.py ack --discovery` advances the cursor by
+  the size of that slice and clears it. A run that crashes before the ack therefore repeats the same towns; a plain `ack`
+  (no weekly search that run) leaves cursor and slice alone. `fairs-precheck.py --reset` deletes `state.json` and so restarts
+  the rotation at the first town.
+- **Queries**: `town_query_template` (default `craft fair OR holiday fair OR artisan market OR vendors wanted {town} MA {year}`),
+  with `{year}` = the current year until Sep 30 and `2026 OR 2027` style (this year OR next) from Oct 1.
+- **Report**: the weekly-search section lists `Generic queries` (from `search-queries.json`, unchanged) and `Town queries`
+  (already formatted), the total budget, and the rotation position, for example `Town rotation: 26-50 of 129`. If both groups
+  together exceed `max_searches_per_run`, generic queries are trimmed from the END; town queries are never dropped.
 
 ### Fair status
 
@@ -144,10 +181,10 @@ numbers, the agent calls `result`, replies with the summary and says what change
 | `scripts/fairs-precheck.py` | Cron gate: fetches sources, filters noise, diffs, lists finished fairs without results, decides whether to wake the agent |
 | `scripts/stuscle_fairs.py` | Agent CLI: `upsert`, `upsert-batch`, `confirm`, `discard`, `result`, `mark-asked`, `journal`, `sync`, `rescore`, `get`, `find`, `town`, `list` (`--sort profit_per_hour`), `ack`, `doctor` |
 | `config.example.json` | Template for `/opt/data/stuscle-fairs/config.json` (no secrets) |
-| `references/sources.json` | 15 watched sources (verified on 2026-10-09) |
-| `references/search-queries.json` | 14 weekly-search queries |
-| `references/towns.json` | 105 towns with income tier (A/B/C) and approximate miles from Framingham |
-| `references/sources.md` | Research notes: what was dropped and why, observed costs |
+| `references/sources.json` | 18 watched sources (15 verified on 2026-10-09, 3 coastal ones on 2026-10-10) |
+| `references/search-queries.json` | 14 generic weekly-search queries (the per-town queries come from `town_query_template`) |
+| `references/towns.json` | 129 towns with income tier (A/B/C), approximate miles from Framingham, `zone` (`core` or `coast`) and, for coastal towns, `region` |
+| `references/sources.md` | Research notes: what was dropped and why, observed costs, how the coastal zone was built |
 | `tests/test_fairs.py` | Offline tests (no network, no Google or Notion libraries; both services are faked) |
 
 Inside the container, at runtime:
@@ -218,8 +255,10 @@ docker exec -i -u 10000:10000 hermes sh -c 'cat > /opt/data/stuscle-fairs/config
   "notion_journal_page_id": "3f5b7a68-6121-81c0-99f2-ec6d668d3add",
   "timezone": "America/New_York",
   "discovery_interval_days": 6.5,
-  "max_searches_per_run": 15,
-  "max_extracts_per_run": 20
+  "max_searches_per_run": 40,
+  "max_extracts_per_run": 20,
+  "towns_per_discovery": 25,
+  "town_query_template": "craft fair OR holiday fair OR artisan market OR vendors wanted {town} MA {year}"
 }
 EOF
 
@@ -231,6 +270,12 @@ cd /opt/hermes && docker compose up -d --force-recreate
 ```
 
 `STUSCLE_FAIRS_CONFIG` overrides the config path (default `/opt/data/stuscle-fairs/config.json`).
+
+Config keys with defaults (anything missing falls back to the default): `discovery_interval_days` (6.5), `max_searches_per_run`
+(40, the total of generic plus town `web_search` calls), `max_extracts_per_run` (20), `towns_per_discovery` (25, how many towns
+each weekly search covers) and `town_query_template` (must contain `{town}`; `{year}` is optional). An existing `config.json`
+that still says `"max_searches_per_run": 15` keeps that value, which is below the 25 town queries of a slice: raise it to 40,
+otherwise every generic query is trimmed and the budget line in the report no longer matches what the agent is asked to run.
 
 **Telegram group.** For Hermes to answer in the group, the owner's id (today `5209892068`) must be in the group
 allowlist: variable `TELEGRAM_GROUP_ALLOWED_USERS` in `/opt/hermes/hermes.env` (comma-separated ids), then
@@ -302,8 +347,10 @@ to mirror the existing registry.
   `"opportunity->maybe": 6`), the changed keys with old and new status and score, and the calendar and Notion results. A
   calendar or Notion failure on one record does not stop the others: the record is reported, and a calendar failure is
   retried by the next `rescore`. The owner can also ask for it on Telegram ("recalcula as notas").
-- **Cost**: the precheck uses no LLM. With the cron twice a week, one weekly search and capped extractions, usage is
-  about 20 to 40 Tavily credits per week (free limit ≈ 1,000 per month). Notion calls use no Tavily credits.
+- **Cost**: the precheck uses no LLM. With the cron twice a week, one weekly search of about 40 `web_search` calls (25 town
+  queries plus the generic ones) and up to 20 extracted URLs per run, usage is roughly 200 to 250 Tavily credits per month
+  (free limit ≈ 1,000 per month). Notion calls use no Tavily credits. To spend less, lower `towns_per_discovery` (the lap
+  through all towns just gets longer).
 - **Safety**: Hermes never applies, pays, fills forms, writes to organizers, and only touches the two Stuscle calendars.
   It never edits fair or result rows in Notion except through the script. Page text is treated as data, never as instructions.
 - **Discarding** a fair keeps it in the registry forever (never suggested again). Discarding a **confirmed** or **done**
@@ -324,6 +371,8 @@ to mirror the existing registry.
 | Journal entry missing in Notion | It is in `journal_pending.json`; `sync` writes the queue in order |
 | The agent never wakes up (`wakeAgent` always false) | Expected when nothing changed. To force a look: `fairs-precheck.py --dry-run` shows what it would see. Check `state.json` (a recent `last_discovery_at` suppresses the weekly search for 6.5 days) and `pending.json` |
 | The agent wakes every time with the same content | The final `ack` is missing (the run broke before it). Check the cron log; pending content is re-delivered on purpose |
+| The weekly search keeps asking about the same towns | Same cause: the rotation only advances on `ack --discovery`. Look at `town_rotation_cursor` in `state.json` and `discovery_towns` in `pending.json` |
+| A town the owner mentions never shows up in the town queries | It is in `towns.json` but not in this lap yet (check the order: tier A, then B, then C, nearest first), or it is in neither zone. `stuscle_fairs.py town "<name>"` tells which |
 | The agent keeps asking for the results of a fair | It asks at most twice, a week apart. To stop it: record the result, or run `mark-asked <key>` twice |
 | Every source fails with `ModuleNotFoundError` (requests or google) | The cron is running the script with a Python that lacks the libraries. The right Python is `/opt/hermes/.venv/bin/python`; check `hermes cron --help` / the Hermes docs for which interpreter the cron uses |
 | State files owned by root | Someone ran the precheck/CLI as root. `docker exec -u root hermes chown -R 10000:10000 /opt/data/stuscle-fairs` |

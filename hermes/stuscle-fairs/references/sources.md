@@ -48,7 +48,7 @@ All "kept" sources were fetched with Python `requests` and a Chrome user agent (
 ## Towns (towns.json)
 
 - Source: Census Reporter API serving ACS 2024 5-year (2020-2024) table B19013, county-subdivision level, fetched 2026-10-09; centroids from the Census 2024 Gazetteer. The official Census API needs a key, so I used Census Reporter, which republishes the same table.
-- 105 towns with straight-line distance up to 24 miles from Framingham (estimated driving miles = straight-line x 1.3, rounded; not routed, so treat as plus or minus 20%). Towns with an estimate above 30 are borderline for the 30-mile radius. Tiers: A 26, B 44, C 35.
+- Core zone: 104 towns (the original 105 minus Quincy, which moved to the coastal zone) with straight-line distance up to 24 miles from Framingham (estimated driving miles = straight-line x 1.3, rounded; not routed, so treat as plus or minus 20%). Towns with an estimate above 30 are borderline for the 30-mile radius. Tiers: A 26, B 44, C 35.
 - Five values are the ACS cap (250,001, flagged `top_coded`): Sherborn, Weston, Wellesley, Dover and Carlisle. Their true median is at least $250,000, and the margin of error is not published for them.
 - Margins of error are large for small towns (for example Lincoln $175,117 with a margin of error of $43,879, near the A/B border). Tier boundaries are not sharp for those towns.
 - Framingham city itself is tier C ($107,419), as are Marlborough, Waltham and Boston (whole-city medians). Neighbourhood income varies, but only town-level data was used.
@@ -66,3 +66,50 @@ The three Castleberry Fairs pages (`castleberry-fairs`, `castleberry-booth-prici
 connection and from the Hetzner server that runs the radar. They were dropped from
 `sources.json`. Castleberry booths run US$ 325 to 675, far above the US$ 75 target, so the
 loss is mainly the fee benchmark, which stays recorded above.
+
+## Coastal zone (added 2026-10-10)
+
+The owner wants North Shore and South Shore beach towns even though most are 35 to 66 driving miles from Framingham. They live in
+`towns.json` with `zone: "coast"` and `region: "north_shore"` or `"south_shore"`, get no distance penalty and the flag `litoral`
+(see the README). Every earlier entry is `zone: "core"`.
+
+**Method.** Identical to the core towns: Census Reporter API, ACS 2024 5-year (2020-2024) table B19013, county-subdivision level, release
+`acs2024_5yr`, fetched 2026-10-10 from `https://api.censusreporter.org/1.0/data/show/latest?table_ids=B19013&geo_ids=060|04000US25`
+(the API now rejects clients without a project-specific user agent; one such header was enough). Centroids from the Census 2024
+Gazetteer county-subdivision file. Straight-line (haversine) miles to the Framingham city centroid times 1.3, rounded. The method was
+checked against the existing rows first (Natick 4.7 straight-line miles, Weston 7.7, Quincy $98,882, all reproduced exactly). Tiers: A >= 175,000, B 125,000 to 174,999, C < 125,000.
+
+**What was added: 24 towns, plus Quincy re-tagged (it was already listed, numbers kept).**
+
+| Region | Towns | Tier A | Tier B | Tier C |
+|---|---|---|---|---|
+| North Shore (15, Essex County, Lynn to Salisbury) | Lynn, Nahant, Swampscott, Marblehead, Salem, Beverly, Manchester-by-the-Sea, Gloucester, Rockport, Essex, Ipswich, Rowley, Newbury, Newburyport, Salisbury | Marblehead, Manchester-by-the-Sea | Swampscott, Essex, Ipswich, Rowley, Newbury, Newburyport | Lynn, Nahant, Salem, Beverly, Gloucester, Rockport, Salisbury |
+| South Shore (10, Norfolk and Plymouth County coast, Quincy to Plymouth) | Quincy (existing), Weymouth, Hull, Hingham, Cohasset, Scituate, Marshfield, Duxbury, Kingston, Plymouth | Hingham, Cohasset, Duxbury | Scituate, Marshfield | Quincy, Weymouth, Hull, Kingston, Plymouth |
+
+The whole file now has 129 towns: tier A 31, B 52, C 46.
+
+**Uncertainty.**
+- No coastal town is top-coded at the 250,001 ACS cap.
+- Margins of error are large for several small towns, so tier boundaries are soft: Newbury $174,868 (MOE 58,593) sits $132 below the tier A line; Cohasset $199,306 (MOE 53,082), Manchester-by-the-Sea $206,389 (MOE 43,757), Rowley $132,734 (MOE 32,311), Duxbury $176,583 (MOE 29,187) and Marblehead $182,132 (MOE 27,872) could each land one tier either way; Hingham $178,390 (MOE 14,719) and Marshfield $125,986 (MOE 8,316) are right at an A/B and a B/C edge.
+- Distances are not routed. Coastal estimates run from 35 (Lynn, Nahant) to 66 (Plymouth) miles, plus or minus 20%. Quincy (29) and Weymouth/Hull/Hingham (34 to 38) are the closest.
+- Whole-city medians hide neighbourhood differences (Lynn, Salem, Gloucester and Plymouth are C overall).
+- Not added on purpose: Revere and Winthrop (Suffolk County beaches, not part of the Essex County North Shore or Plymouth/Norfolk South Shore definition used here) and inland towns that are only called "North Shore" or "South Shore" in marketing (Danvers, Peabody, Topsfield, Norwell, Pembroke, Rockland). A fair in one of them gets `distancia_desconhecida` (no penalty, flagged) unless it is added to `towns.json`.
+
+**Sources added (3, all verified 2026-10-10 with Python `requests` and a Chrome user agent; a fair name was found in the raw bytes).**
+
+| id | Sample found in the raw HTML |
+|---|---|
+| `meetmeatthefair-north-shore` | Marblehead Winter Artisan & Craft Fair 2026 (Dec 5-6, King Hooper Mansion); 27 events, 375,711 bytes. Region slug confirmed on the Massachusetts index page. |
+| `meetmeatthefair-south-shore` | Plimoth Patuxet Winter Fine Arts & Craft Fair 2026 (Dec 5, Plymouth); 16 events, 253,372 bytes. |
+| `patch-hingham-calendar` | Holiday Vendor Fair (Sat Dec 5, Hingham); 164,726 bytes. Low yield, kept as a late-announcement net like the other Patch calendars. |
+
+**Checked and rejected.**
+- FestivalNet `Massachusetts-craft-shows?page=4`: answers 200 but repeats Cape Cod listings already on page 3. Other FestivalNet category slugs (`holiday-shows`, `festivals`, `art-shows`) return 404.
+- Boston Calendar `events?q=craft+fair`: 200 and 2 MB, but the `q` parameter is ignored (the same Boston-wide list comes back for any query), it changes every day, and its tag pages answer 500.
+- See Plymouth events (`seeplymouth.com/events/`): server-rendered South Shore calendar, but it lists only the next 12 events (one day on the check date), mostly not fairs, and changes daily.
+- Macaroni Kid North Shore and South Shore: static, but no fair names on the pages checked (the holiday-fairs guide is a new article each year with a new URL).
+- Patch calendars for Newburyport, Gloucester, Scituate, Duxbury, Marshfield, Ipswich and Cohasset: HTTP 404. Marblehead, Salem, Beverly, Swampscott, Plymouth, Weymouth and Quincy load but had no vendor fair on the check date. Lynn, Rockport and Kingston have no calendar page.
+- Chamber and arts-association pages (Newburyport, Cape Ann, Marblehead, Essex Heritage, Salem Arts Association): static or empty, no fair listing a script can diff. The Marblehead Arts Association site answers 403 to scripts.
+- TheCraftMap (statewide and per-town pages) still answers HTTP 429.
+
+Directory coverage of coastal fairs is thin, which is why the rotating town search (README, "Rotating per-town discovery") does the real work for them.

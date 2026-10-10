@@ -205,6 +205,34 @@ def discovery_due(state: dict[str, Any], now: dt.datetime, interval_days: float)
     return (now - previous).total_seconds() >= interval_days * 86400
 
 
+def plan_discovery(cfg: dict[str, Any], state: dict[str, Any], pending_file: dict[str, Any],
+                   now: dt.datetime) -> dict[str, Any]:
+    """The town slice of this weekly search, already formatted as queries.
+
+    The slice comes from pending.json when an earlier run was delivered but never acked (a crashed run repeats the
+    same towns); otherwise it is the next `towns_per_discovery` towns of the rotation, starting at the stored cursor.
+    The cursor itself only moves in `stuscle_fairs.py ack --discovery`."""
+    template = str(cfg["town_query_template"])
+    if "{town}" not in template:
+        raise core.FairError("config.town_query_template must contain {town}")
+    order = core.rotation_order(core.load_town_list(cfg["skill_dir"]))
+    total = len(order)
+    cursor = int(state.get(core.STATE_ROTATION_CURSOR) or 0) % total if total else 0
+    stored = [t for t in (pending_file.get("discovery_towns") or []) if isinstance(t, str) and t]
+    towns = stored or core.rotation_slice(order, cursor, max(0, int(cfg["towns_per_discovery"])))
+    year_text = core.discovery_year_text(now.date())
+    return {"towns": towns, "queries": [core.town_query(template, t, year_text) for t in towns],
+            "label": core.rotation_label(cursor, len(towns), total)}
+
+
+def split_search_budget(generic: list[str], town_queries: list[str], max_searches: int) -> tuple[list[str], int]:
+    """Generic queries first, but town queries are never dropped: the generic ones are trimmed from the END
+    when both groups together exceed the budget. Returns (generic kept, generic dropped)."""
+    room = max(0, int(max_searches) - len(town_queries))
+    kept = generic[:room]
+    return kept, len(generic) - len(kept)
+
+
 # --------------------------------------------------------------------------- #
 # Follow-up: ask for the results of fairs that already happened
 # --------------------------------------------------------------------------- #
@@ -256,7 +284,8 @@ def _section(src: dict[str, Any], entry: dict[str, Any]) -> str:
 
 def build_report(now, sources: list[dict[str, Any]], pending: dict[str, Any], failing: list[dict[str, Any]],
                  due: bool, queries: list[str], cfg: dict[str, Any],
-                 followups: list[dict[str, Any]] | None = None) -> tuple[str, list[str]]:
+                 followups: list[dict[str, Any]] | None = None,
+                 town_queries: list[str] | None = None, rotation: str | None = None) -> tuple[str, list[str]]:
     """Return (markdown ending in the wakeAgent line, ids of sources fully included)."""
     head = [
         f"# Fair radar precheck {now.strftime('%Y-%m-%d %H:%M %Z').strip()}",
@@ -276,7 +305,26 @@ def build_report(now, sources: list[dict[str, Any]], pending: dict[str, Any], fa
         tail.append("")
     tail.append(f"Weekly search: {'YES' if due else 'NO'}")
     if due:
-        tail += [f"{i}. {q}" for i, q in enumerate(queries, 1)]
+        town_queries = town_queries or []
+        max_searches = int(cfg["max_searches_per_run"])
+        generic, dropped = split_search_budget(queries, town_queries, max_searches)
+        tail.append(f"Search budget: {max_searches} web_search calls in total for the generic and town queries below. "
+                    "Never repeat a query.")
+        if rotation and town_queries:
+            tail.append(f"Town rotation: {rotation}")
+        if dropped:
+            tail.append(f"({dropped} generic queries left out to make room for the town queries)")
+        number = 0
+        if generic:
+            tail.append("Generic queries")
+            for q in generic:
+                number += 1
+                tail.append(f"{number}. {q}")
+        if town_queries:
+            tail.append("Town queries")
+            for q in town_queries:
+                number += 1
+                tail.append(f"{number}. {q}")
     tail += ["", '{"wakeAgent": true}']
 
     budget = TOTAL_CAP - len("\n".join(head + tail)) - (150 + 40 * len(sources))  # headings + deferral note
@@ -378,7 +426,8 @@ def run_precheck(cfg: dict[str, Any], sources: list[dict[str, Any]], queries: li
             pending[sid] = merge_pending(pending.get(sid), added, stamp, bootstrap=old is None)
         if not dry_run:
             # pending first: a crash between the two writes re-delivers instead of losing content
-            core.write_json(paths.pending, {"sources": pending, "delivered": pending_file.get("delivered", [])})
+            core.write_json(paths.pending, {"sources": pending, "delivered": pending_file.get("delivered", []),
+                                            "discovery_towns": pending_file.get("discovery_towns", [])})
             paths.pages.mkdir(parents=True, exist_ok=True)
             page_path.write_text(text, encoding="utf-8")
 
@@ -389,14 +438,18 @@ def run_precheck(cfg: dict[str, Any], sources: list[dict[str, Any]], queries: li
     has_pending = any(pending.get(s["id"], {}).get("lines") for s in sources)
     followups = select_result_followups(core.read_json(paths.fairs, {"fairs": {}}), now)
 
+    discovery = plan_discovery(cfg, state, pending_file, now) if due else {"towns": [], "queries": [], "label": None}
+
     if not (has_pending or newly_broken or due or followups):
         output, included = '{"wakeAgent": false}', []
     else:
-        output, included = build_report(now, sources, pending, failing, due, queries, cfg, followups)
+        output, included = build_report(now, sources, pending, failing, due, queries, cfg, followups,
+                                        town_queries=discovery["queries"], rotation=discovery["label"])
 
     if not dry_run:
         core.write_json(paths.state, state)
-        core.write_json(paths.pending, {"sources": pending, "delivered": included})
+        core.write_json(paths.pending, {"sources": pending, "delivered": included,
+                                        "discovery_towns": discovery["towns"]})
     return output, stats
 
 

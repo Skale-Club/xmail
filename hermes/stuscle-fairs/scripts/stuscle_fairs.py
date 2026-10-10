@@ -42,6 +42,12 @@ LARGE_VENDOR_COUNT = 100        # > large: crowded
 
 RADIUS_MILES = 30
 DISTANCE_PENALTY = -15
+# Towns come in two zones (references/towns.json). "core" is the 30-mile radius around Framingham: beyond it the
+# distance penalty applies. "coast" is the North Shore and South Shore coastal towns the owner wants even though they
+# are farther away: no distance penalty, never an `excecao` because of distance, flag `litoral`.
+ZONE_CORE = "core"
+ZONE_COAST = "coast"
+REGION_LABELS = {"north_shore": "North Shore", "south_shore": "South Shore"}
 
 SAME_EVENT_DATE_WINDOW_DAYS = 14  # same name+town+year within this window is one event with a corrected date
 
@@ -85,8 +91,11 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "notion_journal_page_id": "3f5b7a68-6121-81c0-99f2-ec6d668d3add",
     "timezone": "America/New_York",
     "discovery_interval_days": 6.5,
-    "max_searches_per_run": 15,
+    "max_searches_per_run": 40,
     "max_extracts_per_run": 20,
+    # Rotating per-town discovery: every weekly search runs one web_search per town of the next slice of the rotation.
+    "towns_per_discovery": 25,
+    "town_query_template": "craft fair OR holiday fair OR artisan market OR vendors wanted {town} MA {year}",
 }
 
 EVENT_TYPE_PT = {
@@ -232,6 +241,68 @@ def load_towns(skill_dir: str | Path) -> dict[str, dict[str, Any]]:
     if not data or "towns" not in data:
         raise FairError(f"towns.json not found or malformed: {path}")
     return {norm_town(t["town"]): t for t in data["towns"]}
+
+
+def load_town_list(skill_dir: str | Path) -> list[dict[str, Any]]:
+    """The towns exactly as listed in towns.json (the rotation needs the list, not the lookup dict)."""
+    path = Path(skill_dir) / "references" / "towns.json"
+    data = read_json(path, None)
+    if not data or "towns" not in data:
+        raise FairError(f"towns.json not found or malformed: {path}")
+    return list(data["towns"])
+
+
+# --------------------------------------------------------------------------- #
+# Rotating per-town discovery
+# --------------------------------------------------------------------------- #
+ROTATION_TIER_RANK = {"A": 0, "B": 1, "C": 2}   # anything else (unknown tier) goes last
+STATE_ROTATION_CURSOR = "town_rotation_cursor"
+
+
+def rotation_order(towns: list[dict[str, Any]]) -> list[str]:
+    """Stable order in which the weekly search visits the towns: tier A, B, C, unknown, then nearest first.
+
+    Core and coast towns are interleaved by the same rule (a coast town is just a town with its own tier).
+    Nothing is excluded."""
+    def key(t: dict[str, Any]) -> tuple:
+        miles = t.get("approx_miles_from_framingham")
+        straight = t.get("straight_line_miles")
+        return (ROTATION_TIER_RANK.get(t.get("income_tier"), len(ROTATION_TIER_RANK)),
+                miles if miles is not None else float("inf"),
+                straight if straight is not None else float("inf"),
+                t["town"])
+    return [t["town"] for t in sorted(towns, key=key)]
+
+
+def rotation_slice(order: list[str], cursor: int, size: int) -> list[str]:
+    """The next `size` towns starting at `cursor`, wrapping around the end of the order."""
+    count = len(order)
+    if count == 0 or size <= 0:
+        return []
+    start = cursor % count
+    return [order[(start + i) % count] for i in range(min(size, count))]
+
+
+def rotation_label(cursor: int, size: int, total: int) -> str:
+    """'26-50 of 131', or '121-131 and 1-14 of 131' when the slice wraps."""
+    if total <= 0 or size <= 0:
+        return f"0 of {total}"
+    start = cursor % total
+    first, last = start + 1, start + size
+    if last <= total:
+        return f"{first}-{last} of {total}"
+    return f"{first}-{total} and 1-{last - total} of {total}"
+
+
+def discovery_year_text(today: dt.date) -> str:
+    """The year(s) for a search query: this year until Sep 30, then 'this OR next' (fall shows are over by then)."""
+    if (today.month, today.day) < (10, 1):
+        return str(today.year)
+    return f"{today.year} OR {today.year + 1}"
+
+
+def town_query(template: str, town: str, year_text: str) -> str:
+    return template.replace("{town}", town).replace("{year}", year_text)
 
 
 _NAME_STOPWORDS = {"the", "annual"}
@@ -479,6 +550,8 @@ def score_fair(fair: dict[str, Any], towns: dict[str, dict[str, Any]]) -> dict[s
     town = towns.get(norm_town(fair["town"]))
     tier = town["income_tier"] if town else "unknown"
     miles = town.get("approx_miles_from_framingham") if town else None
+    coast = bool(town) and town.get("zone") == ZONE_COAST
+    region = town.get("region") if coast else None
 
     days = fair_days(fair)
     fee = fair.get("booth_fee_usd")
@@ -503,10 +576,13 @@ def score_fair(fair: dict[str, Any], towns: dict[str, dict[str, Any]]) -> dict[s
 
     flags: list[str] = []
     distance = 0
+    beyond_radius = miles is not None and miles > RADIUS_MILES and not coast   # the coastal zone is exempt
     if miles is None:
         flags.append("distancia_desconhecida")
-    elif miles > RADIUS_MILES:
+    elif beyond_radius:
         distance = DISTANCE_PENALTY
+    if coast:
+        flags.append("litoral")
     if fee is None:
         flags.append("taxa_desconhecida")
 
@@ -529,16 +605,18 @@ def score_fair(fair: dict[str, Any], towns: dict[str, dict[str, Any]]) -> dict[s
         flags.append(status_cap[0])
         decision = cap_decision(decision, status_cap[1])
 
-    # An unknown fee is "outside target" like a known fee above it or a town beyond the radius, but only the known
-    # cases are flagged `excecao`; the unknown one is already flagged `taxa_desconhecida`.
-    known_outside = (fee is not None and fee > BOOTH_FEE_TARGET_USD) or (miles is not None and miles > RADIUS_MILES)
-    if decision == "opportunity" and (known_outside or fee is None):
+    # A multi-day fair with an unknown fee is "outside target" like a known fee above it or a town beyond the radius:
+    # big multi-day shows hide their prices and are usually expensive. One-day local fairs rarely publish a fee, so
+    # for them an unknown fee only costs points. Only the known cases are flagged `excecao`.
+    known_outside = (fee is not None and fee > BOOTH_FEE_TARGET_USD) or beyond_radius
+    unknown_multi_day = fee is None and days > 1
+    if decision == "opportunity" and (known_outside or unknown_multi_day):
         if total < EXCEPTION_MIN_SCORE:
             decision = "maybe"
         elif known_outside:
             flags.append("excecao")
     return {"total": total, "breakdown": breakdown, "decision": decision, "flags": flags,
-            "income_tier": tier, "approx_miles": miles}
+            "income_tier": tier, "approx_miles": miles, "zone": ZONE_COAST if coast else ZONE_CORE, "region": region}
 
 
 # --------------------------------------------------------------------------- #
@@ -602,6 +680,9 @@ def fair_description(rec: dict[str, Any]) -> str:
         lines.append("EXCEÇÃO: taxa acima de US$ 75 ou mais de 30 milhas, mas o resto compensa.")
     if "distancia_desconhecida" in rec["flags"]:
         lines.append("Distância desconhecida (cidade fora da lista).")
+    if "litoral" in rec["flags"]:
+        region = REGION_LABELS.get(rec.get("region") or "")
+        lines.append(f"Litoral ({region})" if region else "Litoral")
     if "taxa_desconhecida" in rec["flags"]:
         lines.append("Taxa de booth não informada: confirme o valor antes de se inscrever.")
     if "temporada_longa" in rec["flags"]:
@@ -776,7 +857,7 @@ NOTION_RECURRENCE = {"one_off": "Única", "annual": "Anual", "seasonal": "Sazona
                      "weekly": "Semanal", "unknown": "?"}
 NOTION_TIER = {"A": "A", "B": "B", "C": "C", "unknown": "?"}
 NOTION_APPLICATION_STATUS = {"open": "Aberta", "waitlist": "Lista de espera", "closed": "Encerrada", "unknown": "?"}
-NOTION_FLAGS = {"excecao": "Exceção", "distancia_desconhecida": "Distância desconhecida",
+NOTION_FLAGS = {"excecao": "Exceção", "litoral": "Litoral", "distancia_desconhecida": "Distância desconhecida",
                 "taxa_desconhecida": "Taxa desconhecida", "temporada_longa": "Temporada longa",
                 "inscricao_encerrada": "Inscrição encerrada", "lista_de_espera": "Lista de espera"}
 NOTION_WOULD_RETURN = {"yes": "Sim", "maybe": "Talvez", "no": "Não"}
@@ -1097,7 +1178,7 @@ class FairService:
         result = score_fair(rec, self.towns)
         rec.update(score=result["total"], breakdown=result["breakdown"], flags=result["flags"],
                    income_tier=result["income_tier"], approx_miles=result["approx_miles"],
-                   decision=result["decision"])
+                   region=result["region"], decision=result["decision"])
 
     # -- upsert ------------------------------------------------------------ #
     def upsert(self, raw: Any) -> dict[str, Any]:
@@ -1572,10 +1653,13 @@ class FairService:
         entry = self.towns.get(norm_town(name))
         if entry is None:
             return {"ok": True, "town": name, "in_list": False,
-                    "message": "not in the radar list (about 24+ straight-line miles from Framingham or unknown)"}
+                    "message": "not in the radar list (neither within the 30-mile core zone nor a North Shore or "
+                               "South Shore coastal town, or unknown)"}
+        coast = entry.get("zone") == ZONE_COAST
         return {"ok": True, "town": entry["town"], "in_list": True, "income_tier": entry["income_tier"],
                 "approx_miles": entry["approx_miles_from_framingham"],
-                "within_radius": entry["approx_miles_from_framingham"] <= RADIUS_MILES}
+                "zone": ZONE_COAST if coast else ZONE_CORE, "region": entry.get("region") if coast else None,
+                "within_radius": coast or entry["approx_miles_from_framingham"] <= RADIUS_MILES}
 
     def list(self, statuses: list[str] | None = None, date_from: str | None = None, date_to: str | None = None,
              deadlines_within: int | None = None, sort: str = "date") -> dict[str, Any]:
@@ -1626,11 +1710,19 @@ class FairService:
             cleared = list(sources) if delivered is None else [s for s in delivered if s in sources]
             for source_id in cleared:
                 sources.pop(source_id, None)
-            write_json(self.paths.pending, {"sources": sources, "delivered": []})  # a second ack must not wipe deferred sources
+            # a second ack must not wipe deferred sources; the town slice of an undelivered discovery stays
+            slice_size = len(pending.get("discovery_towns") or [])
+            new_pending: dict[str, Any] = {"sources": sources, "delivered": []}
+            if not discovery and pending.get("discovery_towns"):
+                new_pending["discovery_towns"] = pending["discovery_towns"]
+            write_json(self.paths.pending, new_pending)
 
             state = read_json(self.paths.state, {"version": 1, "sources": {}})
             if discovery:
                 state["last_discovery_at"] = stamp
+                total = len(self.towns)
+                cursor = int(state.get(STATE_ROTATION_CURSOR) or 0)
+                state[STATE_ROTATION_CURSOR] = (cursor + slice_size) % total if total else 0
                 write_json(self.paths.state, state)
 
             data = self._load()
@@ -1642,7 +1734,9 @@ class FairService:
             if marked:
                 self._save(data)
         return {"ok": True, "cleared_sources": cleared, "still_pending": sorted(sources),
-                "discovery_marked": discovery, "fairs_marked_announced": marked}
+                "discovery_marked": discovery, "fairs_marked_announced": marked,
+                "town_rotation_cursor": state.get(STATE_ROTATION_CURSOR, 0),
+                "discovery_towns_delivered": slice_size if discovery else 0}
 
     # -- doctor -------------------------------------------------------------- #
     def doctor(self) -> dict[str, Any]:
@@ -1806,7 +1900,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="date (default) or profit_per_hour (best first, from the stored results)")
 
     ack = sub.add_parser("ack", help="clear delivered pending content after a run")
-    ack.add_argument("--discovery", action="store_true", help="also record that the weekly search ran")
+    ack.add_argument("--discovery", action="store_true",
+                    help="also record that the weekly search ran and advance the town rotation by the delivered slice")
 
     sub.add_parser("doctor", help="check config, state dir, sources and calendar access")
     return parser

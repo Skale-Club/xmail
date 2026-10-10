@@ -418,7 +418,8 @@ class ScoringTest(unittest.TestCase):
 
     def test_expensive_show_without_a_near_perfect_rest_is_only_a_maybe(self):
         tier_b = next(t["town"] for t in TOWNS.values()
-                      if t["income_tier"] == "B" and t["approx_miles_from_framingham"] <= core.RADIUS_MILES)
+                      if t["income_tier"] == "B" and t["approx_miles_from_framingham"] <= core.RADIUS_MILES
+                      and t.get("zone") != "coast")
         r = self.score(town=tier_b, event_type="craft", booth_fee_usd=500, juried=True)
         self.assertEqual((r["total"], r["decision"]), (72, "maybe"))
         self.assertNotIn("excecao", r["flags"])
@@ -442,7 +443,8 @@ class ScoringTest(unittest.TestCase):
         self.assertEqual(pts(juried=False), 5)
 
     def test_far_town_gets_penalty_and_exception_flag(self):
-        far = next(t for t in TOWNS.values() if t["approx_miles_from_framingham"] > core.RADIUS_MILES)
+        far = next(t for t in TOWNS.values()
+                   if t["approx_miles_from_framingham"] > core.RADIUS_MILES and t.get("zone") != "coast")
         r = self.score(town=far["town"], booth_fee_usd=40, juried=True)
         self.assertEqual(r["breakdown"]["distance"], core.DISTANCE_PENALTY)
         if r["decision"] == "opportunity":
@@ -1658,7 +1660,7 @@ class FollowupTest(TmpDirCase):
 # Scoring v2: unknown fee, long seasons, application status
 # --------------------------------------------------------------------------- #
 def town_of(tier, within_radius=True):
-    return next(t["town"] for t in TOWNS.values() if t["income_tier"] == tier
+    return next(t["town"] for t in TOWNS.values() if t["income_tier"] == tier and t.get("zone") != "coast"
                 and (t["approx_miles_from_framingham"] <= core.RADIUS_MILES) == within_radius)
 
 
@@ -1691,6 +1693,13 @@ class ScoringV2Test(unittest.TestCase):
         r = self.score()
         self.assertEqual((r["total"], r["decision"]), (80, "opportunity"))
         self.assertEqual(r["flags"], ["taxa_desconhecida"])
+
+    def test_one_day_local_fair_in_tier_b_with_unknown_fee_uses_the_normal_bar(self):
+        r = self.score(town=town_of("B"))
+        self.assertEqual((r["total"], r["decision"]), (72, "opportunity"))
+        self.assertEqual(r["flags"], ["taxa_desconhecida"])
+        r = self.score(town=town_of("C"))
+        self.assertEqual((r["total"], r["decision"]), (63, "opportunity"))
 
     def test_two_day_annual_event_in_tier_a_with_unknown_fee_needs_the_full_exception_score(self):
         r = self.score(end_date="2026-11-15")
@@ -1944,6 +1953,363 @@ class RescoreTest(TmpDirCase):
                 return {"ok": True}
         self.assertEqual(core.run_command(args, Stub()), {"ok": True})
         self.assertEqual(seen, [True])
+
+
+# --------------------------------------------------------------------------- #
+# Zones: core radius and the North Shore / South Shore coastal towns
+# --------------------------------------------------------------------------- #
+def coast_town(region, tier, beyond_radius=True):
+    return next(t["town"] for t in TOWNS.values() if t.get("zone") == "coast" and t["region"] == region
+                and t["income_tier"] == tier and (t["approx_miles_from_framingham"] > core.RADIUS_MILES) == beyond_radius)
+
+
+class TownsFileTest(unittest.TestCase):
+    def setUp(self):
+        self.towns = core.load_town_list(ROOT)
+
+    def test_every_town_has_a_zone_and_coastal_towns_have_a_region(self):
+        for t in self.towns:
+            self.assertIn(t.get("zone"), ("core", "coast"), t["town"])
+            if t["zone"] == "coast":
+                self.assertIn(t["region"], ("north_shore", "south_shore"), t["town"])
+            else:
+                self.assertNotIn("region", t, t["town"])
+
+    def test_coastal_towns_added_for_both_shores(self):
+        by_region = {}
+        for t in self.towns:
+            if t["zone"] == "coast":
+                by_region.setdefault(t["region"], set()).add(t["town"])
+        self.assertEqual(len(by_region["north_shore"]), 15)
+        self.assertEqual(len(by_region["south_shore"]), 10)
+        for name in ("Swampscott", "Marblehead", "Salem", "Beverly", "Gloucester", "Rockport", "Newburyport"):
+            self.assertIn(name, by_region["north_shore"])
+        for name in ("Quincy", "Hingham", "Cohasset", "Scituate", "Duxbury", "Plymouth"):
+            self.assertIn(name, by_region["south_shore"])
+
+    def test_tiers_follow_the_documented_income_rule(self):
+        for t in self.towns:
+            income = t["median_household_income"]
+            self.assertEqual(t["income_tier"], "A" if income >= 175000 else "B" if income >= 125000 else "C", t["town"])
+
+    def test_distance_is_the_documented_estimate(self):
+        for t in self.towns:
+            # straight_line_miles is stored rounded to one decimal, so the product can differ by one mile at a .5 edge
+            self.assertLessEqual(abs(t["approx_miles_from_framingham"] - t["straight_line_miles"] * 1.3), 0.65, t["town"])
+
+    def test_names_are_unique_after_normalisation(self):
+        self.assertEqual(len(TOWNS), len(self.towns))
+
+
+class ZoneScoringTest(TmpDirCase):
+    def score(self, **overrides):
+        base = {"name": "X", "town": "Marblehead", "start_date": "2026-11-14", "end_date": None, "event_type": "craft",
+                "recurrence": "annual", "booth_fee_usd": 40, "vendor_count": None, "juried": True}
+        base.update(overrides)
+        return core.score_fair(base, TOWNS)
+
+    def test_coast_town_far_away_has_no_distance_penalty_and_the_litoral_flag(self):
+        entry = TOWNS["marblehead"]
+        self.assertGreater(entry["approx_miles_from_framingham"], core.RADIUS_MILES)
+        r = self.score()
+        self.assertEqual(r["breakdown"]["distance"], 0)
+        self.assertEqual((r["total"], r["decision"], r["flags"]), (100, "opportunity", ["litoral"]))
+        self.assertEqual((r["zone"], r["region"]), ("coast", "north_shore"))
+
+    def test_coast_town_never_gets_excecao_from_distance(self):
+        r = self.score(town=coast_town("south_shore", "C"), booth_fee_usd=None, end_date=None, juried=True)
+        self.assertNotIn("excecao", r["flags"])
+        self.assertEqual(r["breakdown"]["distance"], 0)
+        # a known fee above the target still makes it an exception, for the fee alone
+        pricey = self.score(booth_fee_usd=300, event_type="holiday")
+        self.assertEqual((pricey["decision"], pricey["flags"]), ("opportunity", ["litoral", "excecao"]))
+
+    def test_core_town_beyond_the_radius_is_still_penalised_and_has_no_litoral(self):
+        far = town_of("B", within_radius=False)
+        r = self.score(town=far)
+        self.assertEqual(r["breakdown"]["distance"], core.DISTANCE_PENALTY)
+        self.assertNotIn("litoral", r["flags"])
+        self.assertEqual(r["zone"], "core")
+
+    def test_coast_town_within_30_miles_is_tagged_too(self):
+        r = self.score(town="Quincy")
+        self.assertLessEqual(r["approx_miles"], core.RADIUS_MILES)
+        self.assertIn("litoral", r["flags"])
+        self.assertEqual((r["zone"], r["region"], r["income_tier"]), ("coast", "south_shore", "C"))
+
+    def test_tier_of_a_coast_town_still_counts(self):
+        a = self.score(town=coast_town("south_shore", "A"))["breakdown"]["town"]
+        c = self.score(town=coast_town("south_shore", "C"))["breakdown"]["town"]
+        self.assertEqual((a, c), (25, 8))
+
+    def test_unknown_town_has_no_litoral(self):
+        self.assertNotIn("litoral", self.score(town="Atlantis")["flags"])
+
+    def test_town_lookup_for_coast_and_core(self):
+        svc = make_service(self.tmp)
+        coast = svc.town("Marblehead, MA")
+        self.assertEqual((coast["zone"], coast["region"], coast["within_radius"]), ("coast", "north_shore", True))
+        self.assertGreater(coast["approx_miles"], core.RADIUS_MILES)
+        core_town = svc.town("Weston")
+        self.assertEqual((core_town["zone"], core_town["region"], core_town["within_radius"]), ("core", None, True))
+        far_core = svc.town(town_of("B", within_radius=False))
+        self.assertEqual((far_core["zone"], far_core["within_radius"]), ("core", False))
+        self.assertFalse(svc.town("Provincetown")["in_list"])
+
+    def test_registry_calendar_and_notion_carry_the_flag_and_region(self):
+        cal = FakeCalendar()
+        svc = make_service(self.tmp, calendar=cal)
+        out = svc.upsert(fair(name="Marblehead Winter Artisan Fair", town="Marblehead"))
+        self.assertEqual((out["fair"]["status"], out["fair"]["flags"]), ("opportunity", ["litoral"]))
+        (event,) = cal.events("opp")
+        self.assertIn("Litoral (North Shore)", event["description"])
+        self.assertNotIn("EXCEÇÃO", event["description"])
+        self.assertNotIn("⚠️", event["summary"])
+        out2 = svc.upsert(fair(name="Quincy Harbor Craft Fair", town="Quincy"))
+        self.assertIn("Litoral (South Shore)",
+                      next(e for e in cal.events("opp") if "Quincy" in e["summary"])["description"])
+        rec = json.loads((self.tmp / "fairs.json").read_text())["fairs"][out["fair"]["key"]]
+        props = core.fair_to_notion_properties(rec)
+        self.assertEqual(props["Alertas"], {"multi_select": [{"name": "Litoral"}]})
+        self.assertEqual(out2["fair"]["flags"], ["litoral"])
+
+    def test_rescore_adds_the_flag_to_a_record_scored_before_zones_existed(self):
+        svc = make_service(self.tmp)
+        key = svc.upsert(fair(name="Marblehead Winter Artisan Fair", town="Marblehead"))["fair"]["key"]
+        path = self.tmp / "fairs.json"
+        data = json.loads(path.read_text())
+        data["fairs"][key].update(flags=[], region=None)
+        data["fairs"][key]["breakdown"]["distance"] = core.DISTANCE_PENALTY
+        data["fairs"][key]["score"] = 85
+        path.write_text(json.dumps(data))
+        out = svc.rescore()
+        self.assertEqual(out["changed"], 1)
+        rec = json.loads(path.read_text())["fairs"][key]
+        self.assertEqual((rec["score"], rec["flags"], rec["region"]), (100, ["litoral"], "north_shore"))
+
+
+# --------------------------------------------------------------------------- #
+# Rotating per-town discovery
+# --------------------------------------------------------------------------- #
+class RotationHelpersTest(unittest.TestCase):
+    def setUp(self):
+        self.list = core.load_town_list(ROOT)
+        self.order = core.rotation_order(self.list)
+        self.by_name = {t["town"]: t for t in self.list}
+
+    def test_order_contains_every_town_exactly_once(self):
+        self.assertEqual(sorted(self.order), sorted(t["town"] for t in self.list))
+        self.assertEqual(len(self.order), len(set(self.order)))
+
+    def test_tiers_come_in_order_and_distance_ascends_inside_a_tier(self):
+        tiers = [self.by_name[n]["income_tier"] for n in self.order]
+        self.assertEqual(tiers, sorted(tiers))                       # all A, then all B, then all C
+        for tier in "ABC":
+            miles = [self.by_name[n]["approx_miles_from_framingham"] for n in self.order
+                     if self.by_name[n]["income_tier"] == tier]
+            self.assertEqual(miles, sorted(miles), tier)
+
+    def test_coast_towns_are_interleaved_by_the_same_rule(self):
+        a_tier = [n for n in self.order if self.by_name[n]["income_tier"] == "A"]
+        miles = lambda n: self.by_name[n]["approx_miles_from_framingham"]  # noqa: E731
+        marblehead_at = a_tier.index("Marblehead")
+        closer = [n for n in a_tier if miles(n) < miles("Marblehead")]
+        farther = [n for n in a_tier if miles(n) > miles("Marblehead")]
+        self.assertTrue(any(self.by_name[n]["zone"] == "core" for n in closer))
+        self.assertTrue(all(a_tier.index(n) < marblehead_at for n in closer))
+        self.assertTrue(all(a_tier.index(n) > marblehead_at for n in farther))
+        self.assertIn("Gloucester", self.order)                      # nothing is excluded
+
+    def test_unknown_tier_goes_last(self):
+        towns = [{"town": "Zed", "income_tier": "?", "approx_miles_from_framingham": 1},
+                 {"town": "Cee", "income_tier": "C", "approx_miles_from_framingham": 40},
+                 {"town": "Ay", "income_tier": "A", "approx_miles_from_framingham": 50},
+                 {"town": "Bee", "income_tier": "B", "approx_miles_from_framingham": 2}]
+        self.assertEqual(core.rotation_order(towns), ["Ay", "Bee", "Cee", "Zed"])
+
+    def test_slice_wraps_around_the_end(self):
+        order = list("abcdefg")
+        self.assertEqual(core.rotation_slice(order, 0, 3), ["a", "b", "c"])
+        self.assertEqual(core.rotation_slice(order, 5, 4), ["f", "g", "a", "b"])
+        self.assertEqual(core.rotation_slice(order, 9, 2), ["c", "d"])           # cursor beyond the end wraps too
+        self.assertEqual(core.rotation_slice(order, 2, 50), list("cdefgab"))     # never more than one lap
+        self.assertEqual(core.rotation_slice([], 0, 5), [])
+        self.assertEqual(core.rotation_slice(order, 0, 0), [])
+
+    def test_labels(self):
+        self.assertEqual(core.rotation_label(0, 25, 131), "1-25 of 131")
+        self.assertEqual(core.rotation_label(25, 25, 131), "26-50 of 131")
+        self.assertEqual(core.rotation_label(120, 25, 131), "121-131 and 1-14 of 131")
+
+    def test_year_text_switches_on_october_first(self):
+        self.assertEqual(core.discovery_year_text(dt.date(2026, 1, 1)), "2026")
+        self.assertEqual(core.discovery_year_text(dt.date(2026, 9, 30)), "2026")
+        self.assertEqual(core.discovery_year_text(dt.date(2026, 10, 1)), "2026 OR 2027")
+        self.assertEqual(core.discovery_year_text(dt.date(2026, 12, 31)), "2026 OR 2027")
+
+    def test_town_query_fills_both_placeholders(self):
+        q = core.town_query(core.CONFIG_DEFAULTS["town_query_template"], "Marblehead", "2026 OR 2027")
+        self.assertEqual(q, "craft fair OR holiday fair OR artisan market OR vendors wanted Marblehead MA 2026 OR 2027")
+
+    def test_new_defaults(self):
+        self.assertEqual(core.CONFIG_DEFAULTS["towns_per_discovery"], 25)
+        self.assertEqual(core.CONFIG_DEFAULTS["max_searches_per_run"], 40)
+        self.assertIn("{town}", core.CONFIG_DEFAULTS["town_query_template"])
+        self.assertIn("{year}", core.CONFIG_DEFAULTS["town_query_template"])
+        example = json.loads((ROOT / "config.example.json").read_text())
+        self.assertEqual((example["towns_per_discovery"], example["max_searches_per_run"]), (25, 40))
+        self.assertEqual(example["town_query_template"], core.CONFIG_DEFAULTS["town_query_template"])
+
+
+class TownRotationRunTest(TmpDirCase):
+    """The precheck hands out a slice; only `ack --discovery` moves the cursor."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg = {**core.CONFIG_DEFAULTS, "state_dir": str(self.tmp), "skill_dir": str(ROOT)}
+        self.sources = [{"id": "s1", "name": "Source One", "url": "https://one.example/"}]
+        self.queries = [f"generic query {i}" for i in range(1, 15)]
+        self.pages = {"https://one.example/": page("Some listing line")}
+        self.service = core.FairService(self.cfg, towns=TOWNS, calendar=FakeCalendar(), now_fn=lambda: NOW, notion=None)
+        self.order = core.rotation_order(core.load_town_list(ROOT))
+
+    def run_once(self, now=NOW, dry_run=False, queries=None):
+        return pre.run_precheck(self.cfg, self.sources, queries or self.queries, fetch=lambda url: self.pages[url],
+                                now=now, dry_run=dry_run, sleep=lambda s: None)[0]
+
+    def pending(self):
+        return json.loads((self.tmp / "pending.json").read_text())
+
+    def cursor(self):
+        return json.loads((self.tmp / "state.json").read_text()).get("town_rotation_cursor", 0)
+
+    def test_first_run_takes_the_first_slice_and_reports_it(self):
+        out = self.run_once()
+        total = len(self.order)
+        self.assertEqual(self.pending()["discovery_towns"], self.order[:25])
+        self.assertIn(f"Town rotation: 1-25 of {total}", out)
+        self.assertIn("Generic queries", out)
+        self.assertIn("Town queries", out)
+        self.assertLess(out.index("\nGeneric queries\n"), out.index("\nTown queries\n"))
+        self.assertIn("Search budget: 40 web_search calls in total", out)
+        for town in self.order[:25]:
+            self.assertIn(f"vendors wanted {town} MA 2026 OR 2027", out)      # NOW is Oct 9: this year or next
+        self.assertNotIn(f"vendors wanted {self.order[25]} MA", out)
+        self.assertEqual(out.count("generic query"), 14)                       # 14 + 25 = 39 <= 40: nothing trimmed
+        self.assertTrue(out.rstrip().endswith('{"wakeAgent": true}'))
+
+    def test_numbering_runs_across_both_groups(self):
+        out = self.run_once()
+        self.assertIn("14. generic query 14", out)
+        self.assertIn(f"15. craft fair OR holiday fair OR artisan market OR vendors wanted {self.order[0]} MA", out)
+        self.assertIn(f"39. craft fair OR holiday fair OR artisan market OR vendors wanted {self.order[24]} MA", out)
+
+    def test_year_before_october_is_just_this_year(self):
+        out = self.run_once(now=dt.datetime(2026, 9, 30, 8, 0, tzinfo=TZ))
+        self.assertIn(f"vendors wanted {self.order[0]} MA 2026\n", out + "\n")
+        self.assertNotIn("2026 OR 2027", out)
+
+    def test_cursor_moves_only_on_ack_with_discovery_by_the_delivered_slice(self):
+        self.run_once()
+        self.assertEqual(self.cursor(), 0)
+        self.service.ack()                                                     # plain ack: no discovery happened
+        self.assertEqual(self.cursor(), 0)
+        self.assertEqual(self.pending()["discovery_towns"], self.order[:25])   # the slice survives a plain ack
+        result = self.service.ack(discovery=True)
+        self.assertEqual((self.cursor(), result["town_rotation_cursor"], result["discovery_towns_delivered"]), (25, 25, 25))
+        self.assertEqual(self.pending().get("discovery_towns", []), [])             # delivered: nothing left to repeat
+
+    def test_a_crashed_run_repeats_the_same_towns(self):
+        first = self.run_once()
+        again = self.run_once()                                                # no ack: the agent crashed
+        self.assertEqual(self.cursor(), 0)
+        self.assertEqual(self.pending()["discovery_towns"], self.order[:25])
+        for town in self.order[:25]:
+            self.assertIn(f"vendors wanted {town} MA", again)
+        self.assertEqual(first.count("vendors wanted"), again.count("vendors wanted"))
+
+    def test_repeated_slice_survives_a_config_change_but_the_cursor_advances_by_what_was_delivered(self):
+        self.run_once()
+        self.cfg["towns_per_discovery"] = 5                                    # edited between the crash and the retry
+        self.run_once()
+        self.assertEqual(len(self.pending()["discovery_towns"]), 25)
+        self.service.ack(discovery=True)
+        self.assertEqual(self.cursor(), 25)
+
+    def test_next_discovery_continues_where_the_last_one_stopped(self):
+        self.run_once()
+        self.service.ack(discovery=True)
+        later = NOW + dt.timedelta(days=7)
+        out = self.run_once(now=later)
+        self.assertEqual(self.pending()["discovery_towns"], self.order[25:50])
+        self.assertIn(f"Town rotation: 26-50 of {len(self.order)}", out)
+
+    def test_rotation_wraps_around_after_the_last_town(self):
+        total = len(self.order)
+        state = {"version": 1, "sources": {}, "town_rotation_cursor": total - 10}
+        (self.tmp / "state.json").write_text(json.dumps(state))
+        out = self.run_once()
+        self.assertEqual(self.pending()["discovery_towns"], self.order[-10:] + self.order[:15])
+        self.assertIn(f"Town rotation: {total - 9}-{total} and 1-15 of {total}", out)
+        self.service.ack(discovery=True)
+        self.assertEqual(self.cursor(), 15)
+
+    def test_dry_run_neither_stores_a_slice_nor_moves_anything(self):
+        out = self.run_once(dry_run=True)
+        self.assertIn("\nTown queries\n", out)
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_no_town_section_when_the_weekly_search_is_not_due(self):
+        self.run_once()
+        self.service.ack(discovery=True)
+        self.pages["https://one.example/"] = page("Some listing line", "A brand new listing")
+        out = self.run_once(now=NOW + dt.timedelta(days=2))
+        self.assertIn("Weekly search: NO", out)
+        self.assertNotIn("\nTown queries\n", out)
+        self.assertNotIn("Town rotation", out)
+        self.assertEqual(self.pending().get("discovery_towns", []), [])
+
+    def test_town_queries_use_the_configured_template_and_size(self):
+        self.cfg["towns_per_discovery"] = 3
+        self.cfg["town_query_template"] = "fairs in {town} {year}"
+        out = self.run_once()
+        self.assertEqual(self.pending()["discovery_towns"], self.order[:3])
+        self.assertIn(f"fairs in {self.order[0]} 2026 OR 2027", out)
+        self.assertIn(f"Town rotation: 1-3 of {len(self.order)}", out)
+        self.service.ack(discovery=True)
+        self.assertEqual(self.cursor(), 3)
+
+    def test_template_without_a_town_placeholder_is_refused(self):
+        self.cfg["town_query_template"] = "fairs near Boston"
+        with self.assertRaises(core.FairError):
+            self.run_once()
+
+
+class SearchBudgetTest(TmpDirCase):
+    def test_generic_queries_are_trimmed_from_the_end_town_queries_never(self):
+        generic = [f"g{i}" for i in range(1, 15)]
+        towns = [f"t{i}" for i in range(1, 26)]
+        kept, dropped = pre.split_search_budget(generic, towns, 30)
+        self.assertEqual((kept, dropped), (generic[:5], 9))
+        self.assertEqual(pre.split_search_budget(generic, towns, 40), (generic, 0))
+        self.assertEqual(pre.split_search_budget(generic, towns, 25), ([], 14))
+        self.assertEqual(pre.split_search_budget(generic, towns, 10), ([], 14))       # town queries still all there
+
+    def test_report_keeps_every_town_query_when_the_budget_is_tight(self):
+        cfg = {**core.CONFIG_DEFAULTS, "state_dir": str(self.tmp), "skill_dir": str(ROOT), "max_searches_per_run": 30}
+        generic = [f"generic query {i:02d}" for i in range(1, 15)]
+        town_queries = [f"town query {i:02d}" for i in range(1, 26)]
+        out, _ = pre.build_report(NOW, [], {}, [], True, generic, cfg, town_queries=town_queries, rotation="1-25 of 129")
+        for i in range(1, 26):
+            self.assertIn(f"town query {i:02d}", out)
+        self.assertEqual([i for i in range(1, 15) if f"generic query {i:02d}" in out], [1, 2, 3, 4, 5])
+        self.assertIn("9 generic queries left out", out)
+        self.assertIn("Search budget: 30 web_search calls", out)
+        tight = {**cfg, "max_searches_per_run": 10}
+        out2, _ = pre.build_report(NOW, [], {}, [], True, generic, tight, town_queries=town_queries, rotation="1-25 of 129")
+        self.assertNotIn("generic query", out2)
+        self.assertNotIn("\nGeneric queries\n", out2)
+        self.assertEqual(sum(f"town query {i:02d}" in out2 for i in range(1, 26)), 25)
 
 
 if __name__ == "__main__":

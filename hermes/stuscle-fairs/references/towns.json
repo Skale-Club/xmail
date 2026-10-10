@@ -1,9 +1,9 @@
 {
- "source": "U.S. Census Bureau ACS 5-year table B19013 (Median Household Income in the Past 12 Months, 2024 inflation-adjusted dollars), county-subdivision level (MA cities/towns), retrieved via the Census Reporter API https://api.censusreporter.org/1.0/data/show/latest?table_ids=B19013&geo_ids=060|04000US25 on 2026-10-09. Town centroids for distance from the Census 2024 Gazetteer https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2024_Gazetteer/2024_gaz_cousubs_25.txt",
+ "source": "U.S. Census Bureau ACS 5-year table B19013 (Median Household Income in the Past 12 Months, 2024 inflation-adjusted dollars), county-subdivision level (MA cities/towns), retrieved via the Census Reporter API https://api.censusreporter.org/1.0/data/show/latest?table_ids=B19013&geo_ids=060|04000US25 on 2026-10-09. Town centroids for distance from the Census 2024 Gazetteer https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2024_Gazetteer/2024_gaz_cousubs_25.txt Coastal zone added 2026-10-10 with the same table, release, centroid file and method: 24 coastal towns of the North Shore (Essex County, Lynn to Salisbury) and the South Shore (Norfolk and Plymouth County coast, Weymouth to Plymouth), plus Quincy, already listed, re-tagged. Coastal towns carry zone=\"coast\" and region=\"north_shore\" or \"south_shore\"; every other town carries zone=\"core\".",
  "vintage": "ACS 2024 5-year estimates (survey years 2020-2024), release id acs2024_5yr, dollars adjusted to 2024",
  "tier_rule": "A >= 175000; B 125000-174999; C < 125000",
  "distance_method": "straight-line (haversine) miles between Census internal points of the town and of Framingham city, multiplied by 1.3 and rounded to estimate driving miles (a rough road-circuity factor, NOT a routed distance). Towns with straight-line > 24 mi were left out; towns with approx_miles > 30 are borderline for the 30-mile radius.",
- "notes": "top_coded=true means the ACS reports the value capped at 250,001 (true median is at least $250,000). margin_of_error is the 90% MOE published by the Census Bureau. Boston, Cambridge, etc. are whole-city medians; neighborhoods vary a lot.",
+ "notes": "top_coded=true means the ACS reports the value capped at 250,001 (true median is at least $250,000). margin_of_error is the 90% MOE published by the Census Bureau. Boston, Cambridge, etc. are whole-city medians; neighborhoods vary a lot. zone=\"core\" towns are within the 30-mile radius and keep the distance penalty beyond it; zone=\"coast\" towns are exempt from the distance penalty even when approx_miles_from_framingham is above 30 (the coastal entries run up to 66 estimated miles). The 24-straight-line-mile cutoff described in distance_method applies to the core zone only.",
  "towns": [
   {
    "town": "Framingham",
@@ -12,7 +12,8 @@
    "approx_miles_from_framingham": 0,
    "straight_line_miles": 0.0,
    "margin_of_error": 6244,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Ashland",
@@ -21,7 +22,8 @@
    "approx_miles_from_framingham": 5,
    "straight_line_miles": 4.0,
    "margin_of_error": 10749,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Natick",
@@ -30,7 +32,8 @@
    "approx_miles_from_framingham": 6,
    "straight_line_miles": 4.7,
    "margin_of_error": 11269,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Southborough",
@@ -39,7 +42,8 @@
    "approx_miles_from_framingham": 6,
    "straight_line_miles": 4.7,
    "margin_of_error": 16201,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Sudbury",
@@ -48,7 +52,8 @@
    "approx_miles_from_framingham": 7,
    "straight_line_miles": 5.3,
    "margin_of_error": 16791,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Wayland",
@@ -57,7 +62,8 @@
    "approx_miles_from_framingham": 7,
    "straight_line_miles": 5.3,
    "margin_of_error": 28027,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Sherborn",
@@ -66,7 +72,8 @@
    "approx_miles_from_framingham": 8,
    "straight_line_miles": 6.2,
    "margin_of_error": null,
-   "top_coded": true
+   "top_coded": true,
+   "zone": "core"
   },
   {
    "town": "Marlborough",
@@ -75,7 +82,8 @@
    "approx_miles_from_framingham": 8,
    "straight_line_miles": 6.4,
    "margin_of_error": 9070,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Weston",
@@ -84,7 +92,8 @@
    "approx_miles_from_framingham": 10,
    "straight_line_miles": 7.7,
    "margin_of_error": null,
-   "top_coded": true
+   "top_coded": true,
+   "zone": "core"
   },
   {
    "town": "Holliston",
@@ -93,7 +102,8 @@
    "approx_miles_from_framingham": 10,
    "straight_line_miles": 7.8,
    "margin_of_error": 8576,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Wellesley",
@@ -102,7 +112,8 @@
    "approx_miles_from_framingham": 10,
    "straight_line_miles": 7.8,
    "margin_of_error": null,
-   "top_coded": true
+   "top_coded": true,
+   "zone": "core"
   },
   {
    "town": "Hopkinton",
@@ -111,7 +122,8 @@
    "approx_miles_from_framingham": 10,
    "straight_line_miles": 7.9,
    "margin_of_error": 21775,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Hudson",
@@ -120,7 +132,8 @@
    "approx_miles_from_framingham": 10,
    "straight_line_miles": 7.9,
    "margin_of_error": 12712,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Maynard",
@@ -129,7 +142,8 @@
    "approx_miles_from_framingham": 11,
    "straight_line_miles": 8.2,
    "margin_of_error": 16495,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Dover",
@@ -138,7 +152,8 @@
    "approx_miles_from_framingham": 12,
    "straight_line_miles": 9.0,
    "margin_of_error": null,
-   "top_coded": true
+   "top_coded": true,
+   "zone": "core"
   },
   {
    "town": "Stow",
@@ -147,7 +162,8 @@
    "approx_miles_from_framingham": 12,
    "straight_line_miles": 9.3,
    "margin_of_error": 22387,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Westborough",
@@ -156,7 +172,8 @@
    "approx_miles_from_framingham": 12,
    "straight_line_miles": 9.5,
    "margin_of_error": 12497,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Millis",
@@ -165,7 +182,8 @@
    "approx_miles_from_framingham": 13,
    "straight_line_miles": 10.0,
    "margin_of_error": 8817,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Needham",
@@ -174,7 +192,8 @@
    "approx_miles_from_framingham": 13,
    "straight_line_miles": 10.1,
    "margin_of_error": 13048,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Lincoln",
@@ -183,7 +202,8 @@
    "approx_miles_from_framingham": 13,
    "straight_line_miles": 10.3,
    "margin_of_error": 43879,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Medway",
@@ -192,7 +212,8 @@
    "approx_miles_from_framingham": 14,
    "straight_line_miles": 10.5,
    "margin_of_error": 18469,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Northborough",
@@ -201,7 +222,8 @@
    "approx_miles_from_framingham": 14,
    "straight_line_miles": 10.8,
    "margin_of_error": 19436,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Medfield",
@@ -210,7 +232,8 @@
    "approx_miles_from_framingham": 14,
    "straight_line_miles": 10.8,
    "margin_of_error": 31636,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Milford",
@@ -219,7 +242,8 @@
    "approx_miles_from_framingham": 15,
    "straight_line_miles": 11.2,
    "margin_of_error": 4232,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Concord",
@@ -228,7 +252,8 @@
    "approx_miles_from_framingham": 15,
    "straight_line_miles": 11.3,
    "margin_of_error": 22362,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Waltham",
@@ -237,7 +262,8 @@
    "approx_miles_from_framingham": 15,
    "straight_line_miles": 11.4,
    "margin_of_error": 7308,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Berlin",
@@ -246,7 +272,8 @@
    "approx_miles_from_framingham": 15,
    "straight_line_miles": 11.4,
    "margin_of_error": 12039,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Newton",
@@ -255,7 +282,8 @@
    "approx_miles_from_framingham": 15,
    "straight_line_miles": 11.8,
    "margin_of_error": 8593,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Acton",
@@ -264,7 +292,8 @@
    "approx_miles_from_framingham": 16,
    "straight_line_miles": 12.2,
    "margin_of_error": 13899,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Bolton",
@@ -273,7 +302,8 @@
    "approx_miles_from_framingham": 16,
    "straight_line_miles": 12.4,
    "margin_of_error": 30733,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Upton",
@@ -282,7 +312,8 @@
    "approx_miles_from_framingham": 16,
    "straight_line_miles": 12.5,
    "margin_of_error": 33339,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Westwood",
@@ -291,7 +322,8 @@
    "approx_miles_from_framingham": 17,
    "straight_line_miles": 12.8,
    "margin_of_error": 33149,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Boxborough",
@@ -300,7 +332,8 @@
    "approx_miles_from_framingham": 17,
    "straight_line_miles": 13.0,
    "margin_of_error": 35275,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Hopedale",
@@ -309,7 +342,8 @@
    "approx_miles_from_framingham": 18,
    "straight_line_miles": 13.7,
    "margin_of_error": 19447,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Dedham",
@@ -318,7 +352,8 @@
    "approx_miles_from_framingham": 18,
    "straight_line_miles": 13.8,
    "margin_of_error": 9667,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Watertown",
@@ -327,7 +362,8 @@
    "approx_miles_from_framingham": 18,
    "straight_line_miles": 13.9,
    "margin_of_error": 6062,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Lexington",
@@ -336,7 +372,8 @@
    "approx_miles_from_framingham": 18,
    "straight_line_miles": 14.2,
    "margin_of_error": 17708,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Shrewsbury",
@@ -345,7 +382,8 @@
    "approx_miles_from_framingham": 19,
    "straight_line_miles": 14.3,
    "margin_of_error": 11474,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Norfolk",
@@ -354,7 +392,8 @@
    "approx_miles_from_framingham": 19,
    "straight_line_miles": 14.3,
    "margin_of_error": 21984,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Grafton",
@@ -363,7 +402,8 @@
    "approx_miles_from_framingham": 19,
    "straight_line_miles": 14.4,
    "margin_of_error": 11211,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Belmont",
@@ -372,7 +412,8 @@
    "approx_miles_from_framingham": 19,
    "straight_line_miles": 14.4,
    "margin_of_error": 14328,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Walpole",
@@ -381,7 +422,8 @@
    "approx_miles_from_framingham": 19,
    "straight_line_miles": 14.5,
    "margin_of_error": 15740,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Boylston",
@@ -390,7 +432,8 @@
    "approx_miles_from_framingham": 19,
    "straight_line_miles": 14.7,
    "margin_of_error": 28329,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Clinton",
@@ -399,7 +442,8 @@
    "approx_miles_from_framingham": 19,
    "straight_line_miles": 14.8,
    "margin_of_error": 9660,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Norwood",
@@ -408,7 +452,8 @@
    "approx_miles_from_framingham": 19,
    "straight_line_miles": 14.8,
    "margin_of_error": 11136,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Brookline",
@@ -417,7 +462,8 @@
    "approx_miles_from_framingham": 20,
    "straight_line_miles": 15.1,
    "margin_of_error": 8266,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Bedford",
@@ -426,7 +472,8 @@
    "approx_miles_from_framingham": 20,
    "straight_line_miles": 15.4,
    "margin_of_error": 22941,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Franklin",
@@ -435,7 +482,8 @@
    "approx_miles_from_framingham": 20,
    "straight_line_miles": 15.5,
    "margin_of_error": 9492,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Harvard",
@@ -444,7 +492,8 @@
    "approx_miles_from_framingham": 20,
    "straight_line_miles": 15.6,
    "margin_of_error": 23859,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Mendon",
@@ -453,7 +502,8 @@
    "approx_miles_from_framingham": 21,
    "straight_line_miles": 15.8,
    "margin_of_error": 32533,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Arlington",
@@ -462,7 +512,8 @@
    "approx_miles_from_framingham": 21,
    "straight_line_miles": 15.9,
    "margin_of_error": 4963,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Littleton",
@@ -471,7 +522,8 @@
    "approx_miles_from_framingham": 21,
    "straight_line_miles": 16.0,
    "margin_of_error": 31172,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Bellingham",
@@ -480,7 +532,8 @@
    "approx_miles_from_framingham": 21,
    "straight_line_miles": 16.1,
    "margin_of_error": 10415,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Carlisle",
@@ -489,7 +542,8 @@
    "approx_miles_from_framingham": 21,
    "straight_line_miles": 16.3,
    "margin_of_error": null,
-   "top_coded": true
+   "top_coded": true,
+   "zone": "core"
   },
   {
    "town": "Northbridge",
@@ -498,7 +552,8 @@
    "approx_miles_from_framingham": 22,
    "straight_line_miles": 16.7,
    "margin_of_error": 18543,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Cambridge",
@@ -507,7 +562,8 @@
    "approx_miles_from_framingham": 22,
    "straight_line_miles": 16.9,
    "margin_of_error": 3564,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Lancaster",
@@ -516,7 +572,8 @@
    "approx_miles_from_framingham": 22,
    "straight_line_miles": 17.2,
    "margin_of_error": 27224,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Winchester",
@@ -525,7 +582,8 @@
    "approx_miles_from_framingham": 23,
    "straight_line_miles": 17.9,
    "margin_of_error": 20670,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Burlington",
@@ -534,7 +592,8 @@
    "approx_miles_from_framingham": 23,
    "straight_line_miles": 18.0,
    "margin_of_error": 14210,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Somerville",
@@ -543,7 +602,8 @@
    "approx_miles_from_framingham": 23,
    "straight_line_miles": 18.0,
    "margin_of_error": 6106,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Wrentham",
@@ -552,7 +612,8 @@
    "approx_miles_from_framingham": 24,
    "straight_line_miles": 18.1,
    "margin_of_error": 17394,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "West Boylston",
@@ -561,7 +622,8 @@
    "approx_miles_from_framingham": 24,
    "straight_line_miles": 18.3,
    "margin_of_error": 12361,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Canton",
@@ -570,7 +632,8 @@
    "approx_miles_from_framingham": 24,
    "straight_line_miles": 18.3,
    "margin_of_error": 9210,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Medford",
@@ -579,7 +642,8 @@
    "approx_miles_from_framingham": 24,
    "straight_line_miles": 18.5,
    "margin_of_error": 7926,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Milton",
@@ -588,7 +652,8 @@
    "approx_miles_from_framingham": 24,
    "straight_line_miles": 18.7,
    "margin_of_error": 14505,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Sharon",
@@ -597,7 +662,8 @@
    "approx_miles_from_framingham": 24,
    "straight_line_miles": 18.8,
    "margin_of_error": 18502,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Woburn",
@@ -606,7 +672,8 @@
    "approx_miles_from_framingham": 25,
    "straight_line_miles": 19.0,
    "margin_of_error": 8940,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Blackstone",
@@ -615,7 +682,8 @@
    "approx_miles_from_framingham": 25,
    "straight_line_miles": 19.2,
    "margin_of_error": 21141,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Worcester",
@@ -624,7 +692,8 @@
    "approx_miles_from_framingham": 25,
    "straight_line_miles": 19.2,
    "margin_of_error": 2389,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Westford",
@@ -633,7 +702,8 @@
    "approx_miles_from_framingham": 25,
    "straight_line_miles": 19.2,
    "margin_of_error": 10347,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Millbury",
@@ -642,7 +712,8 @@
    "approx_miles_from_framingham": 25,
    "straight_line_miles": 19.2,
    "margin_of_error": 13217,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Ayer",
@@ -651,7 +722,8 @@
    "approx_miles_from_framingham": 25,
    "straight_line_miles": 19.2,
    "margin_of_error": 14619,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Billerica",
@@ -660,7 +732,8 @@
    "approx_miles_from_framingham": 25,
    "straight_line_miles": 19.6,
    "margin_of_error": 7519,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Foxborough",
@@ -669,7 +742,8 @@
    "approx_miles_from_framingham": 26,
    "straight_line_miles": 19.6,
    "margin_of_error": 9343,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Sterling",
@@ -678,7 +752,8 @@
    "approx_miles_from_framingham": 26,
    "straight_line_miles": 19.9,
    "margin_of_error": 26765,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Uxbridge",
@@ -687,7 +762,8 @@
    "approx_miles_from_framingham": 26,
    "straight_line_miles": 20.1,
    "margin_of_error": 6826,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Millville",
@@ -696,7 +772,8 @@
    "approx_miles_from_framingham": 26,
    "straight_line_miles": 20.1,
    "margin_of_error": 32485,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Sutton",
@@ -705,7 +782,8 @@
    "approx_miles_from_framingham": 26,
    "straight_line_miles": 20.1,
    "margin_of_error": 24500,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Chelmsford",
@@ -714,7 +792,8 @@
    "approx_miles_from_framingham": 26,
    "straight_line_miles": 20.3,
    "margin_of_error": 8110,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Everett",
@@ -723,7 +802,8 @@
    "approx_miles_from_framingham": 27,
    "straight_line_miles": 20.6,
    "margin_of_error": 7101,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Stoneham",
@@ -732,7 +812,8 @@
    "approx_miles_from_framingham": 27,
    "straight_line_miles": 20.7,
    "margin_of_error": 10253,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Malden",
@@ -741,7 +822,8 @@
    "approx_miles_from_framingham": 27,
    "straight_line_miles": 21.0,
    "margin_of_error": 6482,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Plainville",
@@ -750,7 +832,8 @@
    "approx_miles_from_framingham": 27,
    "straight_line_miles": 21.0,
    "margin_of_error": 12802,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Shirley",
@@ -759,7 +842,8 @@
    "approx_miles_from_framingham": 27,
    "straight_line_miles": 21.1,
    "margin_of_error": 16320,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Stoughton",
@@ -768,7 +852,8 @@
    "approx_miles_from_framingham": 28,
    "straight_line_miles": 21.4,
    "margin_of_error": 5793,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Boston",
@@ -777,7 +862,8 @@
    "approx_miles_from_framingham": 28,
    "straight_line_miles": 21.5,
    "margin_of_error": 1837,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Randolph",
@@ -786,7 +872,8 @@
    "approx_miles_from_framingham": 28,
    "straight_line_miles": 21.5,
    "margin_of_error": 5904,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Chelsea",
@@ -795,7 +882,8 @@
    "approx_miles_from_framingham": 28,
    "straight_line_miles": 21.6,
    "margin_of_error": 7994,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Melrose",
@@ -804,7 +892,8 @@
    "approx_miles_from_framingham": 28,
    "straight_line_miles": 21.8,
    "margin_of_error": 14410,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Groton",
@@ -813,7 +902,8 @@
    "approx_miles_from_framingham": 29,
    "straight_line_miles": 22.0,
    "margin_of_error": 27062,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Holden",
@@ -822,7 +912,8 @@
    "approx_miles_from_framingham": 29,
    "straight_line_miles": 22.0,
    "margin_of_error": 10959,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Quincy",
@@ -831,7 +922,9 @@
    "approx_miles_from_framingham": 29,
    "straight_line_miles": 22.1,
    "margin_of_error": 4519,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "coast",
+   "region": "south_shore"
   },
   {
    "town": "Auburn",
@@ -840,7 +933,8 @@
    "approx_miles_from_framingham": 29,
    "straight_line_miles": 22.3,
    "margin_of_error": 9712,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Wilmington",
@@ -849,7 +943,8 @@
    "approx_miles_from_framingham": 29,
    "straight_line_miles": 22.5,
    "margin_of_error": 19029,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Leominster",
@@ -858,7 +953,8 @@
    "approx_miles_from_framingham": 29,
    "straight_line_miles": 22.5,
    "margin_of_error": 6939,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Avon",
@@ -867,7 +963,8 @@
    "approx_miles_from_framingham": 30,
    "straight_line_miles": 23.0,
    "margin_of_error": 33191,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Mansfield",
@@ -876,7 +973,8 @@
    "approx_miles_from_framingham": 30,
    "straight_line_miles": 23.0,
    "margin_of_error": 15179,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Reading",
@@ -885,7 +983,8 @@
    "approx_miles_from_framingham": 30,
    "straight_line_miles": 23.0,
    "margin_of_error": 12806,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Braintree",
@@ -894,7 +993,8 @@
    "approx_miles_from_framingham": 30,
    "straight_line_miles": 23.3,
    "margin_of_error": 10045,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Wakefield",
@@ -903,7 +1003,8 @@
    "approx_miles_from_framingham": 30,
    "straight_line_miles": 23.3,
    "margin_of_error": 13946,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Tewksbury",
@@ -912,7 +1013,8 @@
    "approx_miles_from_framingham": 31,
    "straight_line_miles": 23.5,
    "margin_of_error": 11976,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Lowell",
@@ -921,7 +1023,8 @@
    "approx_miles_from_framingham": 31,
    "straight_line_miles": 23.6,
    "margin_of_error": 3823,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Lunenburg",
@@ -930,7 +1033,8 @@
    "approx_miles_from_framingham": 31,
    "straight_line_miles": 23.9,
    "margin_of_error": 11429,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "North Attleborough",
@@ -939,7 +1043,8 @@
    "approx_miles_from_framingham": 31,
    "straight_line_miles": 23.9,
    "margin_of_error": 5412,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
   },
   {
    "town": "Douglas",
@@ -948,7 +1053,272 @@
    "approx_miles_from_framingham": 31,
    "straight_line_miles": 23.9,
    "margin_of_error": 10298,
-   "top_coded": false
+   "top_coded": false,
+   "zone": "core"
+  },
+  {
+   "town": "Weymouth",
+   "median_household_income": 102714,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 34,
+   "straight_line_miles": 26.1,
+   "margin_of_error": 3950,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "south_shore"
+  },
+  {
+   "town": "Lynn",
+   "median_household_income": 75043,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 35,
+   "straight_line_miles": 26.8,
+   "margin_of_error": 3246,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Nahant",
+   "median_household_income": 112762,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 35,
+   "straight_line_miles": 26.8,
+   "margin_of_error": 6430,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Hull",
+   "median_household_income": 115485,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 37,
+   "straight_line_miles": 28.3,
+   "margin_of_error": 14015,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "south_shore"
+  },
+  {
+   "town": "Hingham",
+   "median_household_income": 178390,
+   "income_tier": "A",
+   "approx_miles_from_framingham": 38,
+   "straight_line_miles": 29.0,
+   "margin_of_error": 14719,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "south_shore"
+  },
+  {
+   "town": "Swampscott",
+   "median_household_income": 134386,
+   "income_tier": "B",
+   "approx_miles_from_framingham": 39,
+   "straight_line_miles": 29.9,
+   "margin_of_error": 22662,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Salem",
+   "median_household_income": 85153,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 40,
+   "straight_line_miles": 30.5,
+   "margin_of_error": 5154,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Cohasset",
+   "median_household_income": 199306,
+   "income_tier": "A",
+   "approx_miles_from_framingham": 43,
+   "straight_line_miles": 32.7,
+   "margin_of_error": 53082,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "south_shore"
+  },
+  {
+   "town": "Marblehead",
+   "median_household_income": 182132,
+   "income_tier": "A",
+   "approx_miles_from_framingham": 43,
+   "straight_line_miles": 33.3,
+   "margin_of_error": 27872,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Beverly",
+   "median_household_income": 106044,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 45,
+   "straight_line_miles": 34.7,
+   "margin_of_error": 7420,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Scituate",
+   "median_household_income": 136732,
+   "income_tier": "B",
+   "approx_miles_from_framingham": 47,
+   "straight_line_miles": 36.2,
+   "margin_of_error": 15903,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "south_shore"
+  },
+  {
+   "town": "Manchester-by-the-Sea",
+   "median_household_income": 206389,
+   "income_tier": "A",
+   "approx_miles_from_framingham": 50,
+   "straight_line_miles": 38.7,
+   "margin_of_error": 43757,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Marshfield",
+   "median_household_income": 125986,
+   "income_tier": "B",
+   "approx_miles_from_framingham": 51,
+   "straight_line_miles": 39.5,
+   "margin_of_error": 8316,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "south_shore"
+  },
+  {
+   "town": "Rowley",
+   "median_household_income": 132734,
+   "income_tier": "B",
+   "approx_miles_from_framingham": 52,
+   "straight_line_miles": 40.0,
+   "margin_of_error": 32311,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Ipswich",
+   "median_household_income": 138750,
+   "income_tier": "B",
+   "approx_miles_from_framingham": 53,
+   "straight_line_miles": 40.7,
+   "margin_of_error": 15795,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Essex",
+   "median_household_income": 157147,
+   "income_tier": "B",
+   "approx_miles_from_framingham": 53,
+   "straight_line_miles": 40.9,
+   "margin_of_error": 24136,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Duxbury",
+   "median_household_income": 176583,
+   "income_tier": "A",
+   "approx_miles_from_framingham": 54,
+   "straight_line_miles": 41.6,
+   "margin_of_error": 29187,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "south_shore"
+  },
+  {
+   "town": "Kingston",
+   "median_household_income": 119876,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 54,
+   "straight_line_miles": 41.9,
+   "margin_of_error": 13168,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "south_shore"
+  },
+  {
+   "town": "Newbury",
+   "median_household_income": 174868,
+   "income_tier": "B",
+   "approx_miles_from_framingham": 56,
+   "straight_line_miles": 43.0,
+   "margin_of_error": 58593,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Gloucester",
+   "median_household_income": 83883,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 57,
+   "straight_line_miles": 44.2,
+   "margin_of_error": 5521,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Newburyport",
+   "median_household_income": 139625,
+   "income_tier": "B",
+   "approx_miles_from_framingham": 58,
+   "straight_line_miles": 44.7,
+   "margin_of_error": 21347,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Salisbury",
+   "median_household_income": 93361,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 62,
+   "straight_line_miles": 47.9,
+   "margin_of_error": 5840,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Rockport",
+   "median_household_income": 96250,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 63,
+   "straight_line_miles": 48.8,
+   "margin_of_error": 15271,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "north_shore"
+  },
+  {
+   "town": "Plymouth",
+   "median_household_income": 116941,
+   "income_tier": "C",
+   "approx_miles_from_framingham": 66,
+   "straight_line_miles": 50.7,
+   "margin_of_error": 5179,
+   "top_coded": false,
+   "zone": "coast",
+   "region": "south_shore"
   }
  ]
 }

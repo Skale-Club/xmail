@@ -10,6 +10,8 @@
   "notion_journal_page_id": "3f5b7a68-6121-81c0-99f2-ec6d668d3add",
   "timezone": "America/New_York",
   "discovery_interval_days": 6.5,
-  "max_searches_per_run": 15,
-  "max_extracts_per_run": 20
+  "max_searches_per_run": 40,
+  "max_extracts_per_run": 20,
+  "towns_per_discovery": 25,
+  "town_query_template": "craft fair OR holiday fair OR artisan market OR vendors wanted {town} MA {year}"
 }

@@ -26,10 +26,20 @@ Owner's criteria, in priority order:
 4. Low booth cost, target at most US$ 75.
 5. Low competition (juried or few vendors is better than hundreds of tables).
 
-Radius: 30 miles from Framingham. A fair that is pricier than US$ 75 or farther than 30 miles can
-still become an opportunity only if it scores high on the rest. The script then adds the flag
-`excecao`; always show it to the owner as an exception. A fair whose booth fee is unknown is held to the same bar
-(flag `taxa_desconhecida`), so finding the real fee is the most useful thing you can do for a good-looking fair.
+Radar towns come in two zones (both listed in `references/towns.json`):
+
+- **Core zone**: towns within 30 miles of Framingham. A fair pricier than US$ 75 or in a core town beyond 30 miles
+  (a few border towns) can still become an opportunity only if it scores high on the rest.
+- **Coastal zone**: the coastal towns of the North Shore (Lynn to Salisbury) and the South Shore (Quincy to Plymouth).
+  The owner wants beach towns even though most are 35 to 66 miles away, so they get NO distance penalty and never an
+  `excecao` because of distance. The script adds the flag `litoral` to their fairs.
+
+Towns in neither list (Cape Cod, the Berkshires, Worcester County beyond the list, other states) are still skipped.
+
+When a fair is pricier than US$ 75 or in a core town beyond the radius, the script adds the flag
+`excecao`; always show it to the owner as an exception. A multi-day fair whose booth fee is unknown is held to the same bar
+(flag `taxa_desconhecida`); a one-day fair with an unknown fee only loses points. Finding the real fee is the most useful
+thing you can do for a good-looking fair.
 Long seasons (more than 14 days), closed applications and waitlists never go above "Talvez".
 
 The LLM extracts facts. The script computes the score, the decision and every result figure.
@@ -54,8 +64,10 @@ Never compute, adjust or second-guess them yourself.
 - Python: `/opt/hermes/.venv/bin/python`
 - Registry CLI: `/opt/data/scripts/stuscle_fairs.py`
 - Cron gate (runs before you, you do not call it): `/opt/data/scripts/fairs-precheck.py`
-- Config: `/opt/data/stuscle-fairs/config.json` (limits `max_searches_per_run`, `max_extracts_per_run`; Notion ids)
-- State dir: `/opt/data/stuscle-fairs/` (`fairs.json`, `state.json`, `pending.json`, `journal_pending.json`, `pages/`)
+- Config: `/opt/data/stuscle-fairs/config.json` (limits `max_searches_per_run`, `max_extracts_per_run`; weekly town search
+  `towns_per_discovery`, `town_query_template`; Notion ids)
+- State dir: `/opt/data/stuscle-fairs/` (`fairs.json`, `state.json` with the town rotation cursor, `pending.json` with the
+  town slice being delivered, `journal_pending.json`, `pages/`)
 - Skill references: `/opt/data/skills/skale-club/stuscle-fairs/references/` (`towns.json`, `sources.json`, `search-queries.json`)
 
 Base command, used everywhere below:
@@ -89,9 +101,10 @@ You are woken by the cron job only when the precheck found something. The preche
    If it ends with `[truncated N chars]`, the listing continues; read the rest with `web_extract` on that URL only if the extract budget allows.
 2. For each pending source, pick every fair that looks NEW, is a future event, and is in Massachusetts.
    - Skip trade shows, conventions, comic cons, concerts and festivals without vendor booths.
-   - Town must be a MA city or town in `towns.json`. Check unsure ones with `... stuscle_fairs.py town "<name>"`.
-     Map Boston neighborhoods to `Boston`. Skip towns that are not in the list (Cape Cod, Berkshires, etc.),
-     because an unknown town gets no distance penalty and would be wrongly favored.
+   - Town must be a MA city or town in `towns.json` (core zone or coastal zone). Check unsure ones with
+     `... stuscle_fairs.py town "<name>"` (it prints `zone`, `region`, tier and miles). Map Boston neighborhoods to `Boston`.
+     Skip towns that are in neither zone (Cape Cod, Berkshires, other states, etc.), because an unknown town gets no
+     distance penalty and would be wrongly favored.
    - When the listing lacks booth fee, application deadline, vendor count or contact, you may follow the organizer link with `web_extract`.
      Use at most `max_extracts_per_run` URLs for the whole run, prioritizing fairs likely to score high:
      craft, holiday or artisan types, tier A or B towns, soonest deadlines, fee still unknown.
@@ -99,9 +112,17 @@ You are woken by the cron job only when the precheck found something. The preche
      to score well (craft, holiday or artisan type, tier A or B town, or multi-day). Open its organizer or application page
      with `web_extract` to find the booth fee and the application status. Do the highest-value fairs first and stop when
      the `max_extracts_per_run` budget is gone. Never guess a fee: if the page does not show one, send `null`.
-3. If the report says `Weekly search: YES`, run the listed queries with `web_search`, at most `max_searches_per_run` in total
-   (the list is already ordered by value; stop early when results repeat). Extract fairs from the results.
-   Follow a few promising links with `web_extract`, inside the same extract budget. Use `source_id` `web-search` for these.
+3. If the report says `Weekly search: YES`, it lists two groups of queries and the total search budget (about 40):
+   `Generic queries` (fixed, from `search-queries.json`) and `Town queries` (one per town of this week's slice of the
+   rotation, already formatted; the report says how far the rotation is, for example `Town rotation: 26-50 of 129`).
+   Run EVERY `Town queries` line, one `web_search` each, then the generic queries while budget remains, never more than the
+   budget in total and never the same query twice. Pick fairs from the results.
+   - The town queries exist for the small local fairs that the directories do not list: town, church, school, PTO,
+     Rotary/Lions, library, town common and historical society fairs. They show up on town pages, Patch, local news and
+     organizer sites. Extract them even when the hit is only a short news or calendar item, as long as it gives a name, a
+     town and a date. The town must be in `towns.json`; a result about another town (a neighbor outside the lists) is skipped.
+   - Follow organizer links with `web_extract` inside the extract budget to find the booth fee, the application status and
+     the contact (same priority as in step 2). Use `source_id` `web-search` for these fairs.
 4. Write ALL the fairs of this run as one JSON array to `/opt/data/stuscle-fairs/batch.json` with the file tool
    (overwrite it each run), then make ONE terminal call:
 
@@ -146,7 +167,9 @@ You are woken by the cron job only when the precheck found something. The preche
 5. After every upsert has been attempted, run `sync` and then `ack` as the last steps:
    `... stuscle_fairs.py sync` (pushes anything that failed to reach Notion earlier and flushes queued journal entries),
    then `... stuscle_fairs.py ack --discovery` if the weekly search ran, otherwise `... stuscle_fairs.py ack`.
-   If the run fails before this point, do not ack; the next run delivers the same content again.
+   `ack --discovery` is also what moves the town rotation forward to the next towns, so run it only after the town queries
+   were really executed.
+   If the run fails before this point, do not ack; the next run delivers the same content (and the same towns) again.
 6. If the report has `## Past fairs without results`, add the results block to the message (see below) and run
    `... stuscle_fairs.py mark-asked <key>` once for each fair listed, after composing the message.
 7. Your final answer is the Telegram message, or exactly `[SILENT]` when no upsert returned `announce: true` with status `opportunity` or `maybe`,
@@ -166,6 +189,7 @@ Novas oportunidades (no calendário)
 sáb 14/11 · Weston Artisan Craft Fair · Weston (A) · US$ 50 · score 100 · prazo 30/10 · <link>
 sáb 12/12 · Pricey Holiday Show · Wellesley (A) · US$ 300 ⚠️ · score 80 · <link>
 sáb 14/11 e dom 15/11 · Natick Holiday Makers · Natick (A) · US$ 150 (US$ 75/dia) · score 82 · <link>
+sáb 05/12 · Winter Artisan Fair · Gloucester (B, praia) · US$ 60 · score 88 · <link>
 
 Talvez
 dom 22/11 · Wayland Winter Market · Wayland (A) · US$ 90 · score 48 · taxa acima do alvo
@@ -188,12 +212,15 @@ Responda: confirma <nome> / descarta <nome>
 
 - "Novas oportunidades": fairs from this run's upserts with `announce: true` and `status: opportunity`. One line each: date, name, town (tier letter), booth fee (or "taxa não informada"),
   score, ⚠️ when the flags contain `excecao` (say in a few words why: taxa alta ou distância), "distância desconhecida" when that flag is present, deadline if any, link (`application_url`, else `event_url`).
-  When the fee is unknown (`taxa_desconhecida`), the line says "taxa não informada" (it stays an opportunity only with a very high score).
+  When the flags contain `litoral`, write "praia" after the tier letter inside the parentheses, for example "Gloucester (B, praia)"
+  (a coastal fair is never an exception because of distance, so do not mention distance for it). Same in "Talvez" lines.
+  When the fee is unknown (`taxa_desconhecida`), the line says "taxa não informada" (a multi-day fair stays an opportunity only with a very high score).
   For a multi-day fair (`days` > 1) with a known fee, show the per-day price as `(US$ X/dia)` right after the fee, using `price_per_day` from the result; both dates when it spans days.
 - "Talvez": `announce: true` with status `maybe`, short lines (same `/dia` rule). Each line ends with the reason it is only
   a "Talvez", in short PT-BR words taken from the flags and the numbers: "taxa não informada" (`taxa_desconhecida`),
   "temporada longa" (`temporada_longa`), "inscrição encerrada" (`inscricao_encerrada`), "lista de espera"
-  (`lista_de_espera`), "taxa acima do alvo" (known fee above US$ 75), "fora do raio" (more than 30 miles). Give every
+  (`lista_de_espera`), "taxa acima do alvo" (known fee above US$ 75), "fora do raio" (more than 30 miles, core towns only,
+  never for a `litoral` fair). Give every
   reason that applies, separated by commas; skip the reason when the score is simply below 55. "taxa não informada" already
   sits in the fee slot, so do not repeat it at the end of the line.
 - "Prazos de inscrição nos próximos 21 dias": from `... stuscle_fairs.py list --deadlines-within 21` (covers opportunity, maybe and confirmed). Skip the section if it is empty.
@@ -254,5 +281,7 @@ Run `sync` only if a result shows a Notion error you want to retry for the owner
 ## Budget
 
 Tavily free tier is about 1,000 credits per month: 1 credit per basic `web_search`, 1 credit per 5 URLs in `web_extract`.
-This design uses about 20 to 40 credits per week. Never loop or repeat searches, never exceed the per-run limits,
-never re-extract a URL already read in the same run. Notion calls cost no search credits.
+The weekly search runs about 40 `web_search` calls (25 town queries plus the generic ones) plus up to 20 extracted URLs,
+so roughly 200 to 250 credits per month out of 1,000.
+Never loop or repeat a query, never exceed the per-run limits, never re-extract a URL already read in the same run.
+Notion calls cost no search credits.
