@@ -1651,6 +1651,9 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--json", help="fair as a JSON object")
     group.add_argument("--file", help="path to a JSON file with the fair, or - for stdin (safe with apostrophes)")
 
+    batch = sub.add_parser("upsert-batch", help="upsert every fair of a JSON array file; one bad fair never stops the rest")
+    batch.add_argument("--file", required=True, help="path to a JSON file holding an array of fairs")
+
     sub.add_parser("confirm", help="mark a fair as confirmed").add_argument("key")
 
     dis = sub.add_parser("discard", help="never suggest this fair again")
@@ -1706,9 +1709,30 @@ def read_json_arg(args: argparse.Namespace, what: str) -> Any:
         raise ValidationError(f"could not read {what} JSON: {exc}") from None
 
 
+def upsert_batch(service: FairService, fairs: Any) -> dict[str, Any]:
+    """Upsert each fair independently, so the agent never needs a shell loop (blocked in cron)."""
+    if not isinstance(fairs, list):
+        raise ValidationError("upsert-batch expects a JSON array of fairs")
+    results: list[dict[str, Any]] = []
+    for index, raw in enumerate(fairs):
+        name = raw.get("name") if isinstance(raw, dict) else None
+        try:
+            out = service.upsert(raw)
+        except FairError as exc:
+            out = {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            out = {"ok": False, "error": http_error_text(exc)}
+        results.append({"index": index, "name": name, **out})
+    failed = [r for r in results if not r.get("ok", True)]
+    return {"ok": not failed, "count": len(results), "failed": len(failed), "results": results}
+
+
 def run_command(args: argparse.Namespace, service: FairService) -> dict[str, Any]:
     if args.cmd == "upsert":
         return service.upsert(read_json_arg(args, "fair"))
+    if args.cmd == "upsert-batch":
+        args.json = None
+        return upsert_batch(service, read_json_arg(args, "fairs"))
     if args.cmd == "result":
         return service.result(args.key, read_json_arg(args, "result"))
     if args.cmd == "mark-asked":

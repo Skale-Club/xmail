@@ -65,6 +65,14 @@ Base command, used everywhere below:
 Every subcommand prints one JSON document. `"ok": false` means it failed; read `error`.
 If `saved_in_registry` is true the fair is stored but the calendar was not updated: tell the owner and retry the same command once.
 
+### Commands that work in a cron run
+
+Cron runs deny anything that needs approval, silently. These are blocked, so never use them for this skill:
+`execute_code`, shell loops or pipes into `while`/`xargs` (`jq ... | while read ...`), `python -c`, `bash -c`/`sh -c`,
+and heredocs fed straight into an interpreter (`python <<EOF`). Use only plain calls of the base command below,
+one per terminal call, and the file tools (`write_file`/`read_file`) for JSON. A heredoc into
+`stuscle_fairs.py ... --file -` is allowed because the interpreter is followed by the script path.
+
 Every command that changes a fair (`upsert`, `confirm`, `discard`, `result`) also mirrors it to Notion and reports
 `notion: {synced, page_id, error}` (or `{"enabled": false}` when Notion is off). A Notion failure never fails the command:
 the record stays marked dirty and the next `sync` pushes it. Mention a Notion error to the owner in one short sentence;
@@ -88,17 +96,26 @@ You are woken by the cron job only when the precheck found something. The preche
 3. If the report says `Weekly search: YES`, run the listed queries with `web_search`, at most `max_searches_per_run` in total
    (the list is already ordered by value; stop early when results repeat). Extract fairs from the results.
    Follow a few promising links with `web_extract`, inside the same extract budget. Use `source_id` `web-search` for these.
-4. Call `upsert` once per fair, using stdin so apostrophes never break the shell:
+4. Write ALL the fairs of this run as one JSON array to `/opt/data/stuscle-fairs/batch.json` with the file tool
+   (overwrite it each run), then make ONE terminal call:
 
    ```
-   /opt/hermes/.venv/bin/python /opt/data/scripts/stuscle_fairs.py upsert --file - <<'JSON'
-   {"name": "Weston Artisan Craft Fair", "town": "Weston", "start_date": "2026-11-14", "end_date": "2026-11-15",
-    "event_type": "craft", "recurrence": "annual", "booth_fee_usd": 120, "vendor_count": 60, "juried": true,
-    "application_deadline": "2026-10-30", "application_url": "https://...", "event_url": "https://...",
-    "contact_email": "vendors@example.org", "contact_other": "Organizer: Jane Doe, Instagram @westoncraft",
-    "source_id": "meetmeatthefair-craft-fairs-1", "notes": "Feira juried na escola, boa para souvenirs locais."}
-   JSON
+   /opt/hermes/.venv/bin/python /opt/data/scripts/stuscle_fairs.py upsert-batch --file /opt/data/stuscle-fairs/batch.json
    ```
+
+   The array holds one object per fair, for example:
+
+   ```
+   [{"name": "Weston Artisan Craft Fair", "town": "Weston", "start_date": "2026-11-14", "end_date": "2026-11-15",
+     "event_type": "craft", "recurrence": "annual", "booth_fee_usd": 120, "vendor_count": 60, "juried": true,
+     "application_deadline": "2026-10-30", "application_url": "https://...", "event_url": "https://...",
+     "contact_email": "vendors@example.org", "contact_other": "Organizer: Jane Doe, Instagram @westoncraft",
+     "source_id": "meetmeatthefair-craft-fairs-1", "notes": "Feira juried na escola, boa para souvenirs locais."}]
+   ```
+
+   The output has `results[]`, one per fair in the same order, each with the same fields a single `upsert` returns
+   (or `ok: false` and `error` for that fair only; the others still went through). Fix a rejected fair and resubmit
+   only that one with `upsert --file -` and a heredoc. For a single fair in a conversation, `upsert --file -` is fine.
 
    Field rules:
    - Required: `name`, `town`, `start_date` (YYYY-MM-DD). Dates must be today or later; past events are rejected.

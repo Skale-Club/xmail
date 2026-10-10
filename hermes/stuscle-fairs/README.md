@@ -25,7 +25,7 @@ cron (Mon and Thu, 08:00 ET)
             └─ Hermes agent (skill stuscle-fairs)
                  ├─ reads the report, extracts the facts of each new fair (web_extract for fee, deadline, contact)
                  ├─ weekly search: web_search with the queries from the report
-                 ├─ stuscle_fairs.py upsert   code validates, scores and decides
+                 ├─ stuscle_fairs.py upsert-batch  one call for all fairs (shell loops are blocked in cron); code validates, scores and decides
                  │       ├─ Google Calendar   "Fair Opportunities" (score >= 55) + a deadline event
                  │       └─ Notion            "Feiras" database (everything except `skip`)
                  ├─ stuscle_fairs.py sync     pushes anything that failed to reach Notion, flushes the journal queue

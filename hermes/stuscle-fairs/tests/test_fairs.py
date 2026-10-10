@@ -773,6 +773,32 @@ class CliTest(TmpDirCase):
             core.run_command(args, Stub())
         self.assertEqual(seen["name"], "King Richard's Faire")
 
+    def test_upsert_batch_reads_a_file_and_keeps_going_after_a_bad_fair(self):
+        seen = []
+
+        class Stub:
+            def upsert(self, raw):
+                if raw.get("name") == "bad":
+                    raise core.ValidationError("town is required")
+                seen.append(raw["name"])
+                return {"ok": True, "action": "created"}
+
+        path = self.tmp / "batch.json"
+        path.write_text(json.dumps([{"name": "A"}, {"name": "bad"}, {"name": "King Richard's Faire"}]),
+                        encoding="utf-8")
+        args = core.build_parser().parse_args(["upsert-batch", "--file", str(path)])
+        out = core.run_command(args, Stub())
+        self.assertEqual(seen, ["A", "King Richard's Faire"])
+        self.assertEqual((out["ok"], out["count"], out["failed"]), (False, 3, 1))
+        self.assertEqual(out["results"][1]["error"], "town is required")
+
+    def test_upsert_batch_rejects_a_non_array(self):
+        path = self.tmp / "batch.json"
+        path.write_text('{"name": "A"}', encoding="utf-8")
+        args = core.build_parser().parse_args(["upsert-batch", "--file", str(path)])
+        with self.assertRaisesRegex(core.ValidationError, "JSON array"):
+            core.run_command(args, object())
+
     def test_read_only_commands_work_without_google_config(self):
         import contextlib
         import io
