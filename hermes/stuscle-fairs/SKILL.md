@@ -1,6 +1,6 @@
 ---
 name: stuscle-fairs
-description: "Load for craft fairs, artisan and holiday markets, feiras, Stuscle booth or expositor decisions, fair results (vendas, lucro), the Stuscle fairs calendar (Oportunidades / Feiras confirmadas), the fairs journal (diário), or when the stuscle-fairs-radar cron fires."
+description: "Load for craft fairs, artisan and holiday markets, feiras, Stuscle booth or expositor decisions, fair results (vendas, lucro), the Stuscle fairs calendar (Fair Opportunities / Confirmed Fairs), the fairs journal (diário), or when the stuscle-fairs-radar cron fires."
 metadata:
   hermes:
     tags: [stuscle, craft-fairs, calendar, notion, radar]
@@ -203,8 +203,8 @@ Run `sync` only if a result shows a Notion error you want to retry for the owner
 - "quais feiras deram mais resultado?", "qual foi a melhor feira?": `... list --status done --sort profit_per_hour`. Answer with a short ranking
   (name, lucro por hora, lucro, receita), best first; fairs without a computable value go last and are marked "sem horas". If the list is empty, say no results are recorded yet.
 - Always finish with what changed in the calendar, from `calendar` in the result: `fair_event` (`created`, `updated`, `moved`, `deleted:N`, `none`),
-  `deadline_event`, and which calendar (`opportunities` is "Stuscle · Oportunidades", `confirmed` is "Stuscle · Feiras confirmadas").
-  Example: "Confirmei a Weston Artisan Craft Fair. Movi o evento para Feiras confirmadas e tirei o lembrete de inscrição."
+  `deadline_event`, and which calendar (`opportunities` is "Stuscle · Fair Opportunities", `confirmed` is "Stuscle · Confirmed Fairs").
+  Example: "Confirmei a Weston Artisan Craft Fair. Movi o evento para Confirmed Fairs e tirei o lembrete de inscrição."
 - If a command fails, say what failed in one sentence and what you will try next. Do not hide errors.
 
 ## Seasonality

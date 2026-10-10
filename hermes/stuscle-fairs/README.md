@@ -26,7 +26,7 @@ cron (Mon and Thu, 08:00 ET)
                  ├─ reads the report, extracts the facts of each new fair (web_extract for fee, deadline, contact)
                  ├─ weekly search: web_search with the queries from the report
                  ├─ stuscle_fairs.py upsert   code validates, scores and decides
-                 │       ├─ Google Calendar   "Oportunidades" (score >= 55) + a deadline event
+                 │       ├─ Google Calendar   "Fair Opportunities" (score >= 55) + a deadline event
                  │       └─ Notion            "Feiras" database (everything except `skip`)
                  ├─ stuscle_fairs.py sync     pushes anything that failed to reach Notion, flushes the journal queue
                  ├─ stuscle_fairs.py ack      last step, after all upserts and the sync
@@ -95,7 +95,7 @@ cannot drift apart.
 ### Results after a fair
 
 `result <key> --file -` (JSON on stdin) stores the figures under `rec["result"]`, sets the status to `done`, creates or
-updates ONE row in "Resultados por feira" related to the fair's row, keeps the calendar event in "Feiras confirmadas"
+updates ONE row in "Resultados por feira" related to the fair's row, keeps the calendar event in "Stuscle · Confirmed Fairs"
 with a `✅` title prefix, and prints a `summary` computed in code (`total_costs`, `profit`, `profit_per_hour`,
 `revenue_per_open_hour`, `avg_ticket`; null when the inputs are missing).
 
@@ -152,10 +152,10 @@ Inside the container, at runtime:
 
 ## What the OWNER does once
 
-1. **Telegram group** with the bot `@skaleclubhermesbot` as administrator (so it can read group messages). The group is named "Stuscle · Feiras".
+1. **Telegram group** with the bot `@skaleclubhermesbot` as administrator (so it can read group messages). The group is "Hermes | Faires" (chat id -5496280561 at setup; re-check after promoting the bot, Telegram may migrate it to a supergroup with a new -100... id).
 2. **Google Cloud**: create a project, enable the **Google Calendar API**, create a **service account** and download the JSON key.
    Note the service account email (`...@....iam.gserviceaccount.com`).
-3. **Two calendars** in the `stuscle@gmail.com` account: **"Stuscle · Oportunidades"** and **"Stuscle · Feiras confirmadas"**.
+3. **Two calendars** in the `stuscle@gmail.com` account: **"Stuscle · Fair Opportunities"** and **"Stuscle · Confirmed Fairs"**.
    In each: Settings and sharing → Share with specific people → add the service account email with the permission
    **"Make changes to events"**. Under "Integrate calendar", copy each calendar's **calendar ID**.
    No domain-wide delegation or impersonation: sharing only.
@@ -226,7 +226,7 @@ Hermes documentation. The group id is a negative number (starts with `-100`); it
 ### Verify before scheduling
 
 ```bash
-# Config, state dir, sources, key, access to BOTH calendars (inserts and deletes a test event in Oportunidades),
+# Config, state dir, sources, key, access to BOTH calendars (inserts and deletes a test event in Fair Opportunities),
 # Notion token file, both data sources and the journal page
 docker exec -u 10000:10000 hermes /opt/hermes/.venv/bin/python /opt/data/scripts/stuscle_fairs.py doctor
 
