@@ -1,0 +1,15 @@
+{
+  "state_dir": "/opt/data/stuscle-fairs",
+  "skill_dir": "/opt/data/skills/skale-club/stuscle-fairs",
+  "service_account_file": "/opt/data/secrets/stuscle-calendar-sa.json",
+  "calendar_opportunities_id": "REPLACE_WITH_OPPORTUNITIES_CALENDAR_ID@group.calendar.google.com",
+  "calendar_confirmed_id": "REPLACE_WITH_CONFIRMED_CALENDAR_ID@group.calendar.google.com",
+  "notion_token_file": "/opt/data/secrets/notion-token",
+  "notion_fairs_data_source_id": "c942d066-ec7d-43a4-86b9-93292e78cfac",
+  "notion_results_data_source_id": "8afba059-0a31-4e1b-bb0b-3a7f84f53120",
+  "notion_journal_page_id": "3f5b7a68-6121-81c0-99f2-ec6d668d3add",
+  "timezone": "America/New_York",
+  "discovery_interval_days": 6.5,
+  "max_searches_per_run": 15,
+  "max_extracts_per_run": 20
+}
