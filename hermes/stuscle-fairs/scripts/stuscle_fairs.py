@@ -32,7 +32,9 @@ RECURRENCE_POINTS = {"one_off": 15, "annual": 15, "seasonal": 15, "monthly": 7, 
 
 BOOTH_FEE_TARGET_USD = 75       # <= target: full points
 BOOTH_FEE_MID_USD = 150         # <= mid: partial points, above: none
-BOOTH_FEE_POINTS = {"target": 20, "mid": 8, "high": 0, "unknown": 10}
+# Listings rarely show the booth fee, and the big expensive shows are the ones that hide it, so an unknown fee
+# earns little: a bit for a 1-day event (small stake), nothing for 2+ days (likely a big show).
+BOOTH_FEE_POINTS = {"target": 20, "mid": 8, "high": 0, "unknown_1day": 5, "unknown_multi": 0}
 
 COMPETITION_POINTS = {"juried": 10, "small": 7, "default": 5, "large": 2}
 SMALL_VENDOR_COUNT = 40         # <= small: little competition
@@ -45,12 +47,18 @@ SAME_EVENT_DATE_WINDOW_DAYS = 14  # same name+town+year within this window is on
 
 OPPORTUNITY_MIN_SCORE = 55      # >= goes to the calendar
 MAYBE_MIN_SCORE = 40            # 40..54 is reported but not calendared
-EXCEPTION_MIN_SCORE = 75        # fee above target or beyond the radius needs a near-perfect score on the rest
+EXCEPTION_MIN_SCORE = 75        # fee unknown/above target or beyond the radius needs a near-perfect score on the rest
+LONG_SEASON_DAYS = 14           # more days than this is a season (Christmas village, summer market), not a fair: maybe at best
+
+DECISION_RANK = {"skip": 0, "maybe": 1, "opportunity": 2}
+APPLICATION_STATUS_CAPS = {"closed": ("inscricao_encerrada", "maybe"), "waitlist": ("lista_de_espera", "maybe")}
 
 EVENT_TYPES = tuple(EVENT_TYPE_POINTS)
+APPLICATION_STATUSES = ("open", "waitlist", "closed", "unknown")
 RECURRENCES = tuple(RECURRENCE_POINTS)
 STATUSES = ("opportunity", "maybe", "skip", "confirmed", "done", "discarded")
 DEFAULT_LIST_STATUSES = ("opportunity", "maybe", "confirmed")
+RESCORE_STATUSES = ("opportunity", "maybe", "skip")   # confirmed, done and discarded are owner decisions: scoring never moves them
 CALENDAR_CONFIRMED_STATUSES = ("confirmed", "done")   # these live in the "confirmed" calendar
 NOTION_MIRRORED_STATUSES = ("opportunity", "maybe", "confirmed", "done", "discarded")  # skip is never created
 RESULT_ASK_MIN_DAYS = 7         # days before asking again about a fair that has no result yet
@@ -85,6 +93,8 @@ EVENT_TYPE_PT = {
     "craft": "feira de artesanato", "holiday": "feira de fim de ano", "artisan": "feira de artesãos",
     "mixed": "evento misto", "festival": "festival", "farmers": "feira de produtores",
 }
+APPLICATION_STATUS_PT = {"open": "aberta", "waitlist": "lista de espera", "closed": "encerrada",
+                         "unknown": "não informada"}
 RECURRENCE_PT = {
     "one_off": "evento único", "annual": "anual", "seasonal": "sazonal",
     "monthly": "mensal", "weekly": "semanal", "unknown": "não informada",
@@ -254,7 +264,7 @@ def name_similarity(a: str, b: str, town: str) -> float:
 # --------------------------------------------------------------------------- #
 _ALLOWED_FIELDS = (
     "name", "town", "start_date", "end_date", "start_time", "end_time", "event_type", "recurrence",
-    "booth_fee_usd", "vendor_count", "juried", "application_deadline", "application_url",
+    "booth_fee_usd", "vendor_count", "juried", "application_deadline", "application_status", "application_url",
     "event_url", "contact_email", "contact_other", "source_id", "notes",
 )
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -345,6 +355,11 @@ def validate_fair(raw: Any, today: dt.date) -> dict[str, Any]:
         if raw["recurrence"] not in RECURRENCES:
             raise ValidationError(f"recurrence must be one of {', '.join(RECURRENCES)}")
         out["recurrence"] = raw["recurrence"]
+
+    if "application_status" in raw:
+        if raw["application_status"] is not None and raw["application_status"] not in APPLICATION_STATUSES:
+            raise ValidationError(f"application_status must be one of {', '.join(APPLICATION_STATUSES)} or null")
+        out["application_status"] = raw["application_status"]
 
     if "booth_fee_usd" in raw:
         fee = raw["booth_fee_usd"]
@@ -455,14 +470,20 @@ def decide(total: int) -> str:
     return "skip"
 
 
+def cap_decision(decision: str, ceiling: str) -> str:
+    """A cap only ever lowers a decision."""
+    return decision if DECISION_RANK[decision] <= DECISION_RANK[ceiling] else ceiling
+
+
 def score_fair(fair: dict[str, Any], towns: dict[str, dict[str, Any]]) -> dict[str, Any]:
     town = towns.get(norm_town(fair["town"]))
     tier = town["income_tier"] if town else "unknown"
     miles = town.get("approx_miles_from_framingham") if town else None
 
+    days = fair_days(fair)
     fee = fair.get("booth_fee_usd")
     if fee is None:
-        fee_points = BOOTH_FEE_POINTS["unknown"]
+        fee_points = BOOTH_FEE_POINTS["unknown_1day"] if days == 1 else BOOTH_FEE_POINTS["unknown_multi"]
     elif fee <= BOOTH_FEE_TARGET_USD:
         fee_points = BOOTH_FEE_POINTS["target"]
     elif fee <= BOOTH_FEE_MID_USD:
@@ -486,6 +507,8 @@ def score_fair(fair: dict[str, Any], towns: dict[str, dict[str, Any]]) -> dict[s
         flags.append("distancia_desconhecida")
     elif miles > RADIUS_MILES:
         distance = DISTANCE_PENALTY
+    if fee is None:
+        flags.append("taxa_desconhecida")
 
     breakdown = {
         "event_type": EVENT_TYPE_POINTS[fair["event_type"]],
@@ -497,12 +520,23 @@ def score_fair(fair: dict[str, Any], towns: dict[str, dict[str, Any]]) -> dict[s
     }
     total = max(0, min(100, sum(breakdown.values())))
     decision = decide(total)
-    outside_target = (fee is not None and fee > BOOTH_FEE_TARGET_USD) or (miles is not None and miles > RADIUS_MILES)
-    if decision == "opportunity" and outside_target:
-        if total >= EXCEPTION_MIN_SCORE:
-            flags.append("excecao")
-        else:
+
+    if days > LONG_SEASON_DAYS:
+        flags.append("temporada_longa")
+        decision = cap_decision(decision, "maybe")
+    status_cap = APPLICATION_STATUS_CAPS.get(fair.get("application_status") or "unknown")
+    if status_cap:
+        flags.append(status_cap[0])
+        decision = cap_decision(decision, status_cap[1])
+
+    # An unknown fee is "outside target" like a known fee above it or a town beyond the radius, but only the known
+    # cases are flagged `excecao`; the unknown one is already flagged `taxa_desconhecida`.
+    known_outside = (fee is not None and fee > BOOTH_FEE_TARGET_USD) or (miles is not None and miles > RADIUS_MILES)
+    if decision == "opportunity" and (known_outside or fee is None):
+        if total < EXCEPTION_MIN_SCORE:
             decision = "maybe"
+        elif known_outside:
+            flags.append("excecao")
     return {"total": total, "breakdown": breakdown, "decision": decision, "flags": flags,
             "income_tier": tier, "approx_miles": miles}
 
@@ -568,6 +602,14 @@ def fair_description(rec: dict[str, Any]) -> str:
         lines.append("EXCEÇÃO: taxa acima de US$ 75 ou mais de 30 milhas, mas o resto compensa.")
     if "distancia_desconhecida" in rec["flags"]:
         lines.append("Distância desconhecida (cidade fora da lista).")
+    if "taxa_desconhecida" in rec["flags"]:
+        lines.append("Taxa de booth não informada: confirme o valor antes de se inscrever.")
+    if "temporada_longa" in rec["flags"]:
+        lines.append(f"Temporada longa: {fair_days(rec)} dias.")
+    if "inscricao_encerrada" in rec["flags"]:
+        lines.append("Inscrições encerradas.")
+    if "lista_de_espera" in rec["flags"]:
+        lines.append("Só há lista de espera.")
     miles = rec.get("approx_miles")
     lines += [
         f"Tipo: {EVENT_TYPE_PT[rec['event_type']]}",
@@ -578,6 +620,7 @@ def fair_description(rec: dict[str, Any]) -> str:
         f"Seleção (juried): {_yes_no(rec.get('juried'))}",
         f"Distância aproximada: {f'{miles} milhas' if miles is not None else 'não informada'}",
         f"Prazo de inscrição: {rec.get('application_deadline') or 'não informado'}",
+        f"Inscrição: {APPLICATION_STATUS_PT[rec.get('application_status') or 'unknown']}",
     ]
     per_day = price_per_day(rec)
     if per_day is not None:
@@ -587,7 +630,7 @@ def fair_description(rec: dict[str, Any]) -> str:
     if rec.get("contact_other"):
         lines.append(f"Outro contato: {rec['contact_other']}")
     if rec.get("application_url"):
-        lines.append(f"Inscrição: {rec['application_url']}")
+        lines.append(f"Link de inscrição: {rec['application_url']}")
     if rec.get("event_url"):
         lines.append(f"Evento: {rec['event_url']}")
     if rec.get("source_id"):
@@ -732,7 +775,10 @@ NOTION_EVENT_TYPE = {"craft": "Craft", "holiday": "Holiday", "artisan": "Artesan
 NOTION_RECURRENCE = {"one_off": "Única", "annual": "Anual", "seasonal": "Sazonal", "monthly": "Mensal",
                      "weekly": "Semanal", "unknown": "?"}
 NOTION_TIER = {"A": "A", "B": "B", "C": "C", "unknown": "?"}
-NOTION_FLAGS = {"excecao": "Exceção", "distancia_desconhecida": "Distância desconhecida"}
+NOTION_APPLICATION_STATUS = {"open": "Aberta", "waitlist": "Lista de espera", "closed": "Encerrada", "unknown": "?"}
+NOTION_FLAGS = {"excecao": "Exceção", "distancia_desconhecida": "Distância desconhecida",
+                "taxa_desconhecida": "Taxa desconhecida", "temporada_longa": "Temporada longa",
+                "inscricao_encerrada": "Inscrição encerrada", "lista_de_espera": "Lista de espera"}
 NOTION_WOULD_RETURN = {"yes": "Sim", "maybe": "Talvez", "no": "Não"}
 # Formula columns computed by Notion itself: writing them would be an API error, so they are never sent.
 NOTION_FORMULA_PROPERTIES = ("Preço por dia", "Custos totais", "Lucro líquido", "Lucro por hora",
@@ -778,6 +824,7 @@ def fair_to_notion_properties(rec: dict[str, Any]) -> dict[str, Any]:
         "E-mail de contato": {"email": rec.get("contact_email")},
         "Outro contato": _n_text(rec.get("contact_other")),
         "Prazo de inscrição": _n_date(rec.get("application_deadline")),
+        "Inscrição": _n_select(NOTION_APPLICATION_STATUS[rec.get("application_status") or "unknown"]),
         "Link de inscrição": {"url": rec.get("application_url")},
         "Link do evento": {"url": rec.get("event_url")},
         "Juried": _n_select("?" if juried is None else ("Sim" if juried else "Não")),
@@ -960,8 +1007,10 @@ NOTION_ID_KEYS = ("notion_fairs_data_source_id", "notion_results_data_source_id"
 def compact(rec: dict[str, Any]) -> dict[str, Any]:
     fields = ("key", "name", "town", "start_date", "end_date", "status", "score", "flags", "income_tier",
               "approx_miles", "event_type", "recurrence", "booth_fee_usd", "vendor_count", "juried",
-              "application_deadline", "application_url", "event_url", "contact_email", "contact_other")
+              "application_deadline", "application_status", "application_url", "event_url", "contact_email",
+              "contact_other")
     out = {f: rec.get(f) for f in fields}
+    out["application_status"] = rec.get("application_status") or "unknown"
     out.update(days=fair_days(rec), price_per_day=price_per_day(rec))
     return out
 
@@ -1066,7 +1115,7 @@ class FairService:
             if rec is None:
                 rec = {"key": key, "event_type": "mixed", "recurrence": "unknown", "end_date": None,
                        "start_time": None, "end_time": None, "booth_fee_usd": None, "vendor_count": None,
-                       "juried": None, "application_deadline": None, "application_url": None,
+                       "juried": None, "application_deadline": None, "application_status": "unknown", "application_url": None,
                        "event_url": None, "contact_email": None, "contact_other": None, "notes": None,
                        "sources": [], "aliases": [], "created_at": stamp, "announced_at": None, "status": "skip"}
                 rec.update({k: v for k, v in clean.items() if v is not None})
@@ -1080,7 +1129,10 @@ class FairService:
                 for field, value in clean.items():
                     if value is None or field in ("name", "town"):
                         continue
-                    if fill_only and rec.get(field) is not None:
+                    if field == "application_status" and value == "unknown":
+                        continue                    # "I found nothing" never erases a known status
+                    known = rec.get(field) is not None and not (field == "application_status" and rec[field] == "unknown")
+                    if fill_only and known:
                         continue
                     rec[field] = value
                 if clean["name"] != rec["name"] and clean["name"] not in rec["aliases"]:
@@ -1345,6 +1397,67 @@ class FairService:
         if aborted:
             result["aborted"] = aborted
         return result
+
+    # -- rescore ---------------------------------------------------------------- #
+    def rescore(self) -> dict[str, Any]:
+        """Re-apply the current scoring to every opportunity, maybe and skip record, then sync Notion.
+
+        Never touches confirmed, done or discarded records, and never touches `announced_at`. A calendar or Notion
+        failure on one record is reported and does not stop the others.
+        """
+        stamp = iso(self.now())
+        transitions: dict[str, int] = {}
+        changed: list[dict[str, Any]] = []
+        to_reconcile: list[dict[str, Any]] = []
+        examined = 0
+        with file_lock(self.paths.lock):
+            data = self._load()
+            for rec in data["fairs"].values():
+                if rec["status"] not in RESCORE_STATUSES:
+                    continue
+                examined += 1
+                old = {"status": rec["status"], "score": rec.get("score"), "flags": list(rec.get("flags", [])),
+                       "breakdown": rec.get("breakdown")}
+                notion_before = json.dumps(fair_to_notion_properties(rec), sort_keys=True)
+                self._apply_score(rec)
+                rec["status"] = rec["decision"]
+                content_changed = (rec["score"], rec["flags"], rec["breakdown"]) != (old["score"], old["flags"], old["breakdown"])
+                status_changed = rec["status"] != old["status"]
+                if content_changed or status_changed:
+                    rec["updated_at"] = stamp
+                    changed.append({"key": rec["key"], "old_status": old["status"], "new_status": rec["status"],
+                                    "old_score": old["score"], "new_score": rec["score"]})
+                if status_changed:
+                    label = f"{old['status']}->{rec['status']}"
+                    transitions[label] = transitions.get(label, 0) + 1
+                if json.dumps(fair_to_notion_properties(rec), sort_keys=True) != notion_before:
+                    rec["notion_dirty"] = True
+                # an opportunity that stays one still shows its old score in the event description
+                if status_changed or rec.get("calendar_stale") or (content_changed and rec["status"] == "opportunity"):
+                    to_reconcile.append(rec)
+            self._save(data)
+
+            reconciled, calendar_failures = 0, []
+            for rec in to_reconcile:
+                try:
+                    self._reconcile(rec)
+                    rec.pop("calendar_stale", None)
+                    reconciled += 1
+                except Exception as exc:
+                    rec["calendar_stale"] = True        # the next rescore retries this record
+                    calendar_failures.append({"key": rec["key"], "error": http_error_text(exc)})
+            if to_reconcile:
+                self._save(data)
+
+        out: dict[str, Any] = {
+            "ok": True, "action": "rescored", "examined": examined, "changed": len(changed),
+            "transitions": dict(sorted(transitions.items())), "changed_keys": changed,
+            "calendar": {"reconciled": reconciled, "failed": len(calendar_failures)},
+            "notion": self.sync(),
+        }
+        if calendar_failures:
+            out["calendar"]["errors"] = calendar_failures[:5]
+        return out
 
     # -- confirm / discard / result ------------------------------------------ #
     def confirm(self, key: str) -> dict[str, Any]:
@@ -1676,6 +1789,9 @@ def build_parser() -> argparse.ArgumentParser:
     sy = sub.add_parser("sync", help="push dirty records and queued journal entries to Notion")
     sy.add_argument("--all", action="store_true", help="push every mirrored record, not only the dirty ones")
 
+    sub.add_parser("rescore", help="re-apply the current scoring to every opportunity, maybe and skip record, "
+                                   "fix the calendar, then sync Notion")
+
     sub.add_parser("get").add_argument("key")
     sub.add_parser("find").add_argument("text")
     sub.add_parser("town", help="is this town in the radar list? tier and approximate miles").add_argument("name")
@@ -1741,6 +1857,8 @@ def run_command(args: argparse.Namespace, service: FairService) -> dict[str, Any
         return service.journal(args.text, args.date)
     if args.cmd == "sync":
         return service.sync(args.all)
+    if args.cmd == "rescore":
+        return service.rescore()
     if args.cmd == "confirm":
         return service.confirm(args.key)
     if args.cmd == "discard":

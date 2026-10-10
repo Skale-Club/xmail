@@ -28,7 +28,9 @@ Owner's criteria, in priority order:
 
 Radius: 30 miles from Framingham. A fair that is pricier than US$ 75 or farther than 30 miles can
 still become an opportunity only if it scores high on the rest. The script then adds the flag
-`excecao`; always show it to the owner as an exception.
+`excecao`; always show it to the owner as an exception. A fair whose booth fee is unknown is held to the same bar
+(flag `taxa_desconhecida`), so finding the real fee is the most useful thing you can do for a good-looking fair.
+Long seasons (more than 14 days), closed applications and waitlists never go above "Talvez".
 
 The LLM extracts facts. The script computes the score, the decision and every result figure.
 Never compute, adjust or second-guess them yourself.
@@ -93,6 +95,10 @@ You are woken by the cron job only when the precheck found something. The preche
    - When the listing lacks booth fee, application deadline, vendor count or contact, you may follow the organizer link with `web_extract`.
      Use at most `max_extracts_per_run` URLs for the whole run, prioritizing fairs likely to score high:
      craft, holiday or artisan types, tier A or B towns, soonest deadlines, fee still unknown.
+   - Before writing the batch (step 4), go through every candidate fair whose booth fee is still unknown and that is likely
+     to score well (craft, holiday or artisan type, tier A or B town, or multi-day). Open its organizer or application page
+     with `web_extract` to find the booth fee and the application status. Do the highest-value fairs first and stop when
+     the `max_extracts_per_run` budget is gone. Never guess a fee: if the page does not show one, send `null`.
 3. If the report says `Weekly search: YES`, run the listed queries with `web_search`, at most `max_searches_per_run` in total
    (the list is already ordered by value; stop early when results repeat). Extract fairs from the results.
    Follow a few promising links with `web_extract`, inside the same extract budget. Use `source_id` `web-search` for these.
@@ -132,6 +138,8 @@ You are woken by the cron job only when the precheck found something. The preche
      form URL, Instagram or Facebook page, organizer name. Copy it as published; never guess or build an address.
    - `start_time` and `end_time` (HH:MM) only when both are published. `notes`: short PT-BR sentence on why it fits and any caveat
      (for example "data tentativa").
+   - `application_status`: `closed` when the page says applications are closed, sold out or full; `waitlist` when it offers
+     a waitlist; `open` when it accepts applications now; otherwise omit it (or `unknown`). Never guess it.
    - Unknown optional fields: omit them or send `null` (null never erases a known value). Do not put extra fields in the JSON; unknown fields are rejected.
    - Read the result: `fair.status`, `fair.score`, `fair.flags`, `fair.days`, `fair.price_per_day`, `announce`, `action`, `notion`.
      `ignored_discarded` means the owner already rejected it: say nothing.
@@ -160,7 +168,10 @@ sáb 12/12 · Pricey Holiday Show · Wellesley (A) · US$ 300 ⚠️ · score 80
 sáb 14/11 e dom 15/11 · Natick Holiday Makers · Natick (A) · US$ 150 (US$ 75/dia) · score 82 · <link>
 
 Talvez
-dom 22/11 · Wayland Winter Market · Wayland (A) · taxa não informada · score 48
+dom 22/11 · Wayland Winter Market · Wayland (A) · US$ 90 · score 48 · taxa acima do alvo
+sáb 05/12 e dom 06/12 · Castleberry Fine Craft Show · Natick (B) · taxa não informada · score 72 · <link>
+sáb 28/11 · Sherborn Holiday Market · Sherborn (A) · US$ 40 · score 90 · inscrição encerrada · <link>
+sáb 14/11 até 04/01 · Holiday Village · Boston (B) · US$ 60 · score 70 · temporada longa
 
 Prazos de inscrição nos próximos 21 dias
 30/10 · Weston Artisan Craft Fair · <link de inscrição>
@@ -177,8 +188,14 @@ Responda: confirma <nome> / descarta <nome>
 
 - "Novas oportunidades": fairs from this run's upserts with `announce: true` and `status: opportunity`. One line each: date, name, town (tier letter), booth fee (or "taxa não informada"),
   score, ⚠️ when the flags contain `excecao` (say in a few words why: taxa alta ou distância), "distância desconhecida" when that flag is present, deadline if any, link (`application_url`, else `event_url`).
+  When the fee is unknown (`taxa_desconhecida`), the line says "taxa não informada" (it stays an opportunity only with a very high score).
   For a multi-day fair (`days` > 1) with a known fee, show the per-day price as `(US$ X/dia)` right after the fee, using `price_per_day` from the result; both dates when it spans days.
-- "Talvez": `announce: true` with status `maybe`, short lines (same `/dia` rule).
+- "Talvez": `announce: true` with status `maybe`, short lines (same `/dia` rule). Each line ends with the reason it is only
+  a "Talvez", in short PT-BR words taken from the flags and the numbers: "taxa não informada" (`taxa_desconhecida`),
+  "temporada longa" (`temporada_longa`), "inscrição encerrada" (`inscricao_encerrada`), "lista de espera"
+  (`lista_de_espera`), "taxa acima do alvo" (known fee above US$ 75), "fora do raio" (more than 30 miles). Give every
+  reason that applies, separated by commas; skip the reason when the score is simply below 55. "taxa não informada" already
+  sits in the fee slot, so do not repeat it at the end of the line.
 - "Prazos de inscrição nos próximos 21 dias": from `... stuscle_fairs.py list --deadlines-within 21` (covers opportunity, maybe and confirmed). Skip the section if it is empty.
 - "Feiras que já aconteceram": one entry per fair under `Past fairs without results`, asking for the things above in a single short sentence per fair. Skip the section if there is none.
 - "Fontes com problema": from `Failing sources` in the report, skip the section if none.
@@ -193,6 +210,10 @@ Run `sync` only if a result shows a Notion error you want to retry for the owner
   Several matches (`ambiguous: true`): list them briefly (name, town, date) and ask which one. No match: say so and offer to add it by asking for the details you need.
 - "descarta X", "não quero X": `find`, then `... discard <key> --reason "<owner's words>"`. Same disambiguation rule.
   If the fair is `confirmed` or `done`, ask once whether to really remove it; only after an explicit yes use `--confirmed-ok`.
+- "recalcula as notas", "reavalia as feiras": `... stuscle_fairs.py rescore`. It re-applies the current scoring to every
+  opportunity, maybe and skip fair (never confirmed, done or discarded), fixes the calendar and Notion, and does not
+  re-announce anything. Report in PT-BR the transitions (for example "6 saíram de oportunidade para talvez") and name the fairs
+  whose status changed, from `changed_keys`; if `calendar.failed` or `notion.records_failed` is above 0, say so.
 - "o que tem em <mês>", "o que tem pra dezembro": `... list --from YYYY-MM-01 --to YYYY-MM-31`. Months already past this year mean next year.
   Add `--status all` only if the owner asks for rejected or low-score fairs. Reply as a short list in PT-BR.
 - "e a Y?", "me fala da Y": `find` then `get <key>`; answer from the stored facts (including contact, days and price per day) and say what is unknown.

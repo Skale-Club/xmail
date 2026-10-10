@@ -40,14 +40,29 @@ The LLM only **extracts facts**; the score (0 to 100) is computed in code, so it
 | Type: craft / holiday / artisan | 30 (mixed and festival 18, farmers 5) |
 | Town: tier A / B / C / unknown | 25 / 17 / 8 / 8 |
 | Recurrence: one-off, annual, seasonal / monthly / weekly / unknown | 15 / 7 / 0 / 7 |
-| Booth fee: up to US$ 75 / 76 to 150 / above / unknown | 20 / 8 / 0 / 10 |
+| Booth fee: up to US$ 75 / 76 to 150 / above | 20 / 8 / 0 |
+| Booth fee unknown: 1-day fair / 2+ days (flag `taxa_desconhecida`) | 5 / 0 |
 | Competition: juried / up to 40 vendors / more than 100 / the rest | 10 / 7 / 2 / 5 |
 | Distance beyond 30 miles | −15 (town not in the list: 0 and flag `distancia_desconhecida`) |
 
 Decision: **55 or more** = `opportunity` (goes to the calendar); **40 to 54** = `maybe` (reported only);
 **below 40** = `skip` (kept in the registry so it is not re-evaluated every week, never created in Notion).
-An opportunity with a fee above US$ 75 or farther than 30 miles gets the flag `excecao` (⚠️ in the title).
+An opportunity with a known fee above US$ 75 or farther than 30 miles gets the flag `excecao` (⚠️ in the title).
+An unknown fee also counts as "outside target": it needs `EXCEPTION_MIN_SCORE` (75) to stay an opportunity, otherwise it
+becomes `maybe` (listings rarely show the fee, and the big expensive shows are the ones that hide it). The unknown-fee
+case is signalled by `taxa_desconhecida`, not `excecao`.
 Weights and cut-offs live in a constants block at the top of `scripts/stuscle_fairs.py`.
+
+Caps (they only ever lower a decision, never raise one):
+
+| Condition | Flag | Decision |
+|---|---|---|
+| More than `LONG_SEASON_DAYS` (14) days | `temporada_longa` | at most `maybe` |
+| `application_status` = `closed` | `inscricao_encerrada` | at most `maybe` |
+| `application_status` = `waitlist` | `lista_de_espera` | at most `maybe` |
+
+`application_status` (`open`, `waitlist`, `closed`, `unknown`; default `unknown`) is extracted by the agent from the
+organizer or application page. An incoming `unknown` or `null` never erases a status already known.
 
 Example of the design: a juried US$ 300 fair in Wellesley scores 80 and becomes an opportunity with ⚠️, because
 type, town and competition make up for the fee. Requiring more for exceptions is one more constant in the code.
@@ -55,7 +70,7 @@ type, town and competition make up for the fee. Requiring more for exceptions is
 ### Fair status
 
 `opportunity`, `maybe`, `skip` (from the score) → `confirmed` (the owner said yes) → `done` (results recorded).
-`discarded` is the owner's veto and is permanent. Discarding a `confirmed` or `done` fair needs `--confirmed-ok`
+`discarded` is the owner's veto and is permanent. Scoring never moves `confirmed`, `done` or `discarded`. Discarding a `confirmed` or `done` fair needs `--confirmed-ok`
 and an explicit request from the owner in that conversation.
 
 ### Fair fields beyond the basics
@@ -127,7 +142,7 @@ numbers, the agent calls `result`, replies with the summary and says what change
 |---|---|
 | `SKILL.md` | Agent instructions (English): criteria, authority rules, cron procedure, message format, interactive use |
 | `scripts/fairs-precheck.py` | Cron gate: fetches sources, filters noise, diffs, lists finished fairs without results, decides whether to wake the agent |
-| `scripts/stuscle_fairs.py` | Agent CLI: `upsert`, `confirm`, `discard`, `result`, `mark-asked`, `journal`, `sync`, `get`, `find`, `town`, `list` (`--sort profit_per_hour`), `ack`, `doctor` |
+| `scripts/stuscle_fairs.py` | Agent CLI: `upsert`, `upsert-batch`, `confirm`, `discard`, `result`, `mark-asked`, `journal`, `sync`, `rescore`, `get`, `find`, `town`, `list` (`--sort profit_per_hour`), `ack`, `doctor` |
 | `config.example.json` | Template for `/opt/data/stuscle-fairs/config.json` (no secrets) |
 | `references/sources.json` | 15 watched sources (verified on 2026-10-09) |
 | `references/search-queries.json` | 14 weekly-search queries |
@@ -279,6 +294,14 @@ to mirror the existing registry.
 
 ## Operation
 
+- **After changing weights or rules**: run `stuscle_fairs.py rescore` on the host. It re-applies the current scoring to every
+  `opportunity`, `maybe` and `skip` record (never `confirmed`, `done` or `discarded`), updates status, score, flags and
+  breakdown, deletes the calendar events of opportunities that became `maybe` or `skip`, creates them for the ones that
+  became `opportunity`, marks changed records dirty and then runs the same Notion sync as `sync`. It does not touch
+  `announced_at`, so nothing is announced again. The JSON output lists the transitions (for example
+  `"opportunity->maybe": 6`), the changed keys with old and new status and score, and the calendar and Notion results. A
+  calendar or Notion failure on one record does not stop the others: the record is reported, and a calendar failure is
+  retried by the next `rescore`. The owner can also ask for it on Telegram ("recalcula as notas").
 - **Cost**: the precheck uses no LLM. With the cron twice a week, one weekly search and capped extractions, usage is
   about 20 to 40 Tavily credits per week (free limit ≈ 1,000 per month). Notion calls use no Tavily credits.
 - **Safety**: Hermes never applies, pays, fills forms, writes to organizers, and only touches the two Stuscle calendars.

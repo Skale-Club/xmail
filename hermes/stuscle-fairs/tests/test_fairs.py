@@ -396,8 +396,8 @@ class ValidationTest(unittest.TestCase):
 
 class ScoringTest(unittest.TestCase):
     def score(self, **overrides):
-        base = {"name": "X", "town": "Weston", "event_type": "craft", "recurrence": "annual",
-                "booth_fee_usd": None, "vendor_count": None, "juried": None}
+        base = {"name": "X", "town": "Weston", "start_date": "2026-11-14", "event_type": "craft",
+                "recurrence": "annual", "booth_fee_usd": None, "vendor_count": None, "juried": None}
         base.update(overrides)
         return core.score_fair(base, TOWNS)
 
@@ -409,7 +409,7 @@ class ScoringTest(unittest.TestCase):
 
     def test_weekly_farmers_market_in_framingham_is_skipped(self):
         r = self.score(town="Framingham", event_type="farmers", recurrence="weekly")
-        self.assertEqual((r["total"], r["decision"]), (28, "skip"))
+        self.assertEqual((r["total"], r["decision"]), (23, "skip"))
 
     def test_300_dollar_juried_holiday_show_in_wellesley_is_an_exception(self):
         r = self.score(town="Wellesley", event_type="holiday", booth_fee_usd=300, juried=True)
@@ -425,14 +425,14 @@ class ScoringTest(unittest.TestCase):
 
     def test_maybe_band(self):
         r = self.score(town="Framingham", event_type="mixed", recurrence="monthly")
-        self.assertEqual((r["total"], r["decision"]), (48, "maybe"))
+        self.assertEqual((r["total"], r["decision"]), (43, "maybe"))
 
     def test_threshold_edges(self):
         self.assertEqual([core.decide(n) for n in (39, 40, 54, 55)], ["skip", "maybe", "maybe", "opportunity"])
 
     def test_fee_boundaries(self):
         points = {fee: self.score(booth_fee_usd=fee)["breakdown"]["booth_fee"] for fee in (0, 75, 76, 150, 151, None)}
-        self.assertEqual(points, {0: 20, 75: 20, 76: 8, 150: 8, 151: 0, None: 10})
+        self.assertEqual(points, {0: 20, 75: 20, 76: 8, 150: 8, 151: 0, None: 5})
 
     def test_competition_precedence_and_ranges(self):
         pts = lambda **kw: self.score(**kw)["breakdown"]["competition"]  # noqa: E731
@@ -541,8 +541,8 @@ class RegistryTest(TmpDirCase):
         self.assertEqual(len(self.fairs()), 2)
 
     def test_status_follows_new_facts_and_calendar_follows_status(self):
-        base = dict(name="Mid Fair", town="Framingham", event_type="mixed", recurrence="annual", juried=None, booth_fee_usd=None)
-        self.assertEqual(self.svc.upsert(fair(**base))["fair"]["status"], "opportunity")  # 18+8+15+10+5 = 56
+        base = dict(name="Mid Fair", town="Framingham", event_type="mixed", recurrence="annual", juried=None, booth_fee_usd=60)
+        self.assertEqual(self.svc.upsert(fair(**base))["fair"]["status"], "opportunity")  # 18+8+15+20+5 = 66
         down = self.svc.upsert(fair(**{**base, "booth_fee_usd": 400, "vendor_count": 300}))
         self.assertEqual(down["fair"]["status"], "maybe")
         self.assertEqual(self.cal.events("opp"), [])
@@ -958,7 +958,7 @@ class NotionMappingTest(TmpDirCase):
         props = core.fair_to_notion_properties(rec)
         self.assertEqual(set(props), {
             "Feira", "Status", "Data", "Cidade", "Nível da cidade", "Distância (mi)", "Tipo", "Recorrência",
-            "Booth (US$)", "Dias", "E-mail de contato", "Outro contato", "Prazo de inscrição", "Link de inscrição",
+            "Booth (US$)", "Dias", "E-mail de contato", "Outro contato", "Prazo de inscrição", "Inscrição", "Link de inscrição",
             "Link do evento", "Juried", "Expositores", "Nota", "Alertas", "Fonte", "Observações", "Chave"})
         self.assertEqual(plain(props["Feira"]), "Weston Artisan Craft Fair")
         self.assertEqual(props["Status"], {"select": {"name": "Oportunidade"}})
@@ -995,7 +995,8 @@ class NotionMappingTest(TmpDirCase):
                          ({"rich_text": []}, {"rich_text": []}, {"rich_text": []}))
         self.assertEqual(props["Juried"], {"select": {"name": "?"}})
         self.assertEqual(props["Nível da cidade"], {"select": {"name": "?"}})
-        self.assertEqual(props["Alertas"], {"multi_select": [{"name": "Distância desconhecida"}]})
+        self.assertEqual(props["Alertas"], {"multi_select": [{"name": "Distância desconhecida"}, {"name": "Taxa desconhecida"}]})
+        self.assertEqual(props["Inscrição"], {"select": {"name": "?"}})
         self.assertEqual(props["Data"], {"date": {"start": "2026-11-14", "end": None}})
 
     def test_value_maps(self):
@@ -1186,7 +1187,7 @@ class NotionSyncTest(TmpDirCase):
 
     def test_skip_that_already_has_a_page_is_updated(self):
         base = dict(name="Mid Fair", town="Framingham", event_type="mixed", recurrence="annual", juried=None,
-                    booth_fee_usd=None)
+                    booth_fee_usd=60)
         up = self.svc.upsert(fair(**base))
         self.assertEqual(up["fair"]["status"], "opportunity")
         down = self.svc.upsert(fair(**{**base, "event_type": "farmers", "recurrence": "weekly", "booth_fee_usd": 400,
@@ -1651,6 +1652,298 @@ class FollowupTest(TmpDirCase):
                                dry_run=True, sleep=lambda s: None)[0]
         self.assertIn("## Past fairs without results", out)
         self.assertEqual(self.registry()["fairs"][self.key].get("result_ask_count"), None)
+
+
+# --------------------------------------------------------------------------- #
+# Scoring v2: unknown fee, long seasons, application status
+# --------------------------------------------------------------------------- #
+def town_of(tier, within_radius=True):
+    return next(t["town"] for t in TOWNS.values() if t["income_tier"] == tier
+                and (t["approx_miles_from_framingham"] <= core.RADIUS_MILES) == within_radius)
+
+
+class ScoringV2Test(unittest.TestCase):
+    def score(self, **overrides):
+        base = {"name": "X", "town": town_of("A"), "start_date": "2026-11-14", "end_date": None, "event_type": "craft",
+                "recurrence": "annual", "booth_fee_usd": None, "vendor_count": None, "juried": None}
+        base.update(overrides)
+        return core.score_fair(base, TOWNS)
+
+    def test_unknown_fee_earns_5_for_one_day_and_0_for_longer(self):
+        one = self.score()
+        two = self.score(end_date="2026-11-15")
+        self.assertEqual((one["breakdown"]["booth_fee"], two["breakdown"]["booth_fee"]), (5, 0))
+        self.assertIn("taxa_desconhecida", one["flags"])
+        self.assertIn("taxa_desconhecida", two["flags"])
+        self.assertNotIn("taxa_desconhecida", self.score(booth_fee_usd=50)["flags"])
+
+    def test_two_day_juried_craft_show_in_tier_b_with_unknown_fee_is_only_a_maybe(self):
+        r = self.score(town=town_of("B"), end_date="2026-11-15", juried=True)
+        self.assertEqual((r["total"], r["decision"]), (72, "maybe"))
+        self.assertIn("taxa_desconhecida", r["flags"])
+        self.assertNotIn("excecao", r["flags"])
+
+    def test_three_day_juried_craft_show_in_tier_c_with_unknown_fee_is_a_maybe(self):
+        r = self.score(town=town_of("C"), end_date="2026-11-16", juried=True)
+        self.assertEqual((r["total"], r["decision"]), (63, "maybe"))
+
+    def test_one_day_craft_fair_in_tier_a_with_unknown_fee_still_makes_the_calendar(self):
+        r = self.score()
+        self.assertEqual((r["total"], r["decision"]), (80, "opportunity"))
+        self.assertEqual(r["flags"], ["taxa_desconhecida"])
+
+    def test_two_day_annual_event_in_tier_a_with_unknown_fee_needs_the_full_exception_score(self):
+        r = self.score(end_date="2026-11-15")
+        self.assertEqual((r["total"], r["decision"]), (75, "opportunity"))
+        self.assertEqual(r["flags"], ["taxa_desconhecida"])
+        festival = self.score(end_date="2026-11-15", event_type="festival")   # 18 instead of 30 points: 63
+        self.assertEqual((festival["total"], festival["decision"]), (63, "maybe"))
+
+    def test_long_season_is_capped_at_maybe(self):
+        r = self.score(event_type="holiday", start_date="2026-11-14", end_date="2027-01-04", booth_fee_usd=50, juried=True)
+        self.assertEqual(core.fair_days({"start_date": "2026-11-14", "end_date": "2027-01-04"}), 52)
+        self.assertGreaterEqual(r["total"], core.OPPORTUNITY_MIN_SCORE)
+        self.assertEqual(r["decision"], "maybe")
+        self.assertIn("temporada_longa", r["flags"])
+
+    def test_season_threshold_is_more_than_14_days(self):
+        fourteen = self.score(start_date="2026-11-14", end_date="2026-11-27", booth_fee_usd=50)
+        fifteen = self.score(start_date="2026-11-14", end_date="2026-11-28", booth_fee_usd=50)
+        self.assertEqual((fourteen["decision"], "temporada_longa" in fourteen["flags"]), ("opportunity", False))
+        self.assertEqual((fifteen["decision"], "temporada_longa" in fifteen["flags"]), ("maybe", True))
+
+    def test_closed_applications_cap_at_maybe(self):
+        r = self.score(booth_fee_usd=50, application_status="closed")
+        self.assertEqual((r["total"], r["decision"]), (95, "maybe"))
+        self.assertIn("inscricao_encerrada", r["flags"])
+        self.assertNotIn("excecao", r["flags"])
+
+    def test_waitlist_caps_at_maybe(self):
+        r = self.score(booth_fee_usd=50, application_status="waitlist")
+        self.assertEqual(r["decision"], "maybe")
+        self.assertIn("lista_de_espera", r["flags"])
+
+    def test_open_and_unknown_status_change_nothing(self):
+        for status in ("open", "unknown", None):
+            r = self.score(booth_fee_usd=50, application_status=status)
+            self.assertEqual((r["decision"], r["flags"]), ("opportunity", []), status)
+
+    def test_caps_never_raise_a_decision(self):
+        self.assertEqual([core.cap_decision(d, "maybe") for d in ("skip", "maybe", "opportunity")],
+                         ["skip", "maybe", "maybe"])
+        r = self.score(event_type="farmers", recurrence="weekly", town=town_of("C"), application_status="closed")
+        self.assertEqual(r["decision"], "skip")
+
+    def test_known_expensive_fee_keeps_the_excecao_flag(self):
+        r = self.score(booth_fee_usd=300, juried=True, town="Wellesley", event_type="holiday")
+        self.assertEqual((r["decision"], r["flags"]), ("opportunity", ["excecao"]))
+
+
+class ApplicationStatusFieldTest(TmpDirCase):
+    today = dt.date(2026, 10, 9)
+
+    def test_validation(self):
+        for status in core.APPLICATION_STATUSES:
+            self.assertEqual(core.validate_fair(fair(application_status=status), self.today)["application_status"], status)
+        self.assertIsNone(core.validate_fair(fair(application_status=None), self.today)["application_status"])
+        for bad in ("Open", "full", 1, True):
+            with self.assertRaises(core.ValidationError, msg=str(bad)):
+                core.validate_fair(fair(application_status=bad), self.today)
+
+    def test_defaults_to_unknown_and_flows_to_compact_calendar_and_notion(self):
+        cal = FakeCalendar()
+        svc = make_service(self.tmp, cal)
+        first = svc.upsert(fair())["fair"]
+        self.assertEqual(first["application_status"], "unknown")
+        self.assertIn("Inscrição: não informada", cal.events("opp")[0]["description"])
+        r = svc.upsert(fair(application_status="open", application_url="https://apply.example/x"))
+        self.assertEqual((r["action"], r["fair"]["application_status"]), ("updated", "open"))
+        description = cal.events("opp")[0]["description"]
+        self.assertIn("Inscrição: aberta", description)
+        self.assertIn("Link de inscrição: https://apply.example/x", description)
+        rec = next(iter(json.loads((self.tmp / "fairs.json").read_text())["fairs"].values()))
+        self.assertEqual(core.fair_to_notion_properties(rec)["Inscrição"], {"select": {"name": "Aberta"}})
+
+    def test_unknown_or_null_never_erases_a_known_status(self):
+        svc = make_service(self.tmp)
+        svc.upsert(fair(application_status="waitlist"))
+        for value in ("unknown", None):
+            self.assertEqual(svc.upsert(fair(application_status=value))["fair"]["application_status"], "waitlist")
+
+    def test_closed_status_moves_the_fair_out_of_the_calendar_and_back(self):
+        cal = FakeCalendar()
+        svc = make_service(self.tmp, cal)
+        self.assertEqual(svc.upsert(fair())["fair"]["status"], "opportunity")
+        closed = svc.upsert(fair(application_status="closed"))
+        self.assertEqual((closed["fair"]["status"], closed["fair"]["flags"]), ("maybe", ["inscricao_encerrada"]))
+        self.assertEqual(cal.events("opp"), [])
+        reopened = svc.upsert(fair(application_status="open"))
+        self.assertEqual(reopened["fair"]["status"], "opportunity")
+        self.assertEqual(len(cal.events("opp")), 1)
+
+    def test_confirmed_fair_fills_a_missing_status_but_keeps_a_known_one(self):
+        svc = make_service(self.tmp)
+        key = svc.upsert(fair())["fair"]["key"]
+        svc.confirm(key)
+        self.assertEqual(svc.upsert(fair(application_status="open"))["fair"]["application_status"], "open")
+        self.assertEqual(svc.upsert(fair(application_status="closed"))["fair"]["application_status"], "open")
+        self.assertEqual(svc.upsert(fair(application_status="closed"))["fair"]["status"], "confirmed")
+
+    def test_new_notion_alert_names_and_status_values(self):
+        svc = make_service(self.tmp)
+        svc.upsert(fair())
+        rec = next(iter(json.loads((self.tmp / "fairs.json").read_text())["fairs"].values()))
+        flags = ["taxa_desconhecida", "temporada_longa", "inscricao_encerrada", "lista_de_espera"]
+        alerts = core.fair_to_notion_properties({**rec, "flags": flags})["Alertas"]["multi_select"]
+        self.assertEqual([a["name"] for a in alerts],
+                         ["Taxa desconhecida", "Temporada longa", "Inscrição encerrada", "Lista de espera"])
+        for status, label in {"open": "Aberta", "waitlist": "Lista de espera", "closed": "Encerrada", "unknown": "?"}.items():
+            props = core.fair_to_notion_properties({**rec, "application_status": status})
+            self.assertEqual(props["Inscrição"], {"select": {"name": label}})
+        legacy = {k: v for k, v in rec.items() if k != "application_status"}
+        self.assertEqual(core.fair_to_notion_properties(legacy)["Inscrição"], {"select": {"name": "?"}})
+
+
+# --------------------------------------------------------------------------- #
+# rescore
+# --------------------------------------------------------------------------- #
+class RescoreTest(TmpDirCase):
+    def setUp(self):
+        super().setUp()
+        self.cal = FakeCalendar()
+        self.notion = FakeNotion()
+        self.svc = notion_service(self.tmp, self.notion, self.cal)
+
+    def fairs(self):
+        return json.loads((self.tmp / "fairs.json").read_text())["fairs"]
+
+    def edit(self, key, **fields):
+        """Simulate a record scored under older rules by rewriting stored facts without rescoring."""
+        data = json.loads((self.tmp / "fairs.json").read_text())
+        data["fairs"][key].update(fields)
+        (self.tmp / "fairs.json").write_text(json.dumps(data), encoding="utf-8")
+
+    def test_opportunity_that_no_longer_qualifies_loses_its_calendar_events_and_syncs_notion(self):
+        key = self.svc.upsert(fair(application_deadline="2026-11-01"))["fair"]["key"]
+        self.svc.ack()
+        announced = self.fairs()[key]["announced_at"]
+        self.assertEqual(len(self.cal.events("opp")), 2)
+        self.edit(key, application_status="closed")
+        out = self.svc.rescore()
+        self.assertEqual((out["ok"], out["examined"], out["changed"]), (True, 1, 1))
+        self.assertEqual(out["transitions"], {"opportunity->maybe": 1})
+        self.assertEqual(out["changed_keys"], [{"key": key, "old_status": "opportunity", "new_status": "maybe",
+                                                "old_score": 100, "new_score": 100}])
+        self.assertEqual(out["calendar"], {"reconciled": 1, "failed": 0})
+        self.assertEqual(self.cal.events("opp"), [])
+        rec = self.fairs()[key]
+        self.assertEqual((rec["status"], rec["flags"], rec["announced_at"]), ("maybe", ["inscricao_encerrada"], announced))
+        self.assertEqual(out["notion"]["records_synced"], 1)
+        props = self.notion.pages[rec["notion_page_id"]]["properties"]
+        self.assertEqual(props["Status"], {"select": {"name": "Talvez"}})
+        self.assertEqual(props["Inscrição"], {"select": {"name": "Encerrada"}})
+        self.assertEqual(props["Alertas"], {"multi_select": [{"name": "Inscrição encerrada"}]})
+        self.assertFalse(rec["notion_dirty"])
+
+    def test_maybe_that_now_qualifies_gets_calendar_events_and_stays_unannounced(self):
+        key = self.svc.upsert(fair(name="Mid Fair", town="Framingham", event_type="mixed", recurrence="annual",
+                                   booth_fee_usd=400, vendor_count=300))["fair"]["key"]
+        self.assertEqual(self.fairs()[key]["status"], "maybe")
+        self.assertEqual(self.cal.events("opp"), [])
+        self.edit(key, booth_fee_usd=40, vendor_count=20, application_deadline="2026-11-01")
+        out = self.svc.rescore()
+        self.assertEqual(out["transitions"], {"maybe->opportunity": 1})
+        self.assertEqual(len(self.cal.events("opp")), 2)       # fair + deadline reminder
+        self.assertIsNone(self.fairs()[key]["announced_at"])
+
+    def test_transitions_are_counted_per_kind(self):
+        keys = [self.svc.upsert(fair(name=f"Pricey Show {n}", town="Wellesley", event_type="holiday", booth_fee_usd=300,
+                                     juried=True, start_date=f"2026-11-{14 + n}"))["fair"]["key"] for n in range(3)]
+        weekly = self.svc.upsert(fair(name="Weekly Market", town="Framingham", event_type="farmers", recurrence="weekly",
+                                      booth_fee_usd=None))["fair"]["key"]
+        self.edit(weekly, event_type="craft", recurrence="annual", booth_fee_usd=70, juried=True)
+        for key in keys:
+            self.edit(key, application_status="waitlist")
+        out = self.svc.rescore()
+        self.assertEqual(out["transitions"], {"opportunity->maybe": 3, "skip->opportunity": 1})
+        self.assertEqual((out["changed"], out["examined"]), (4, 4))
+
+    def test_nothing_changed_is_a_no_op(self):
+        self.svc.upsert(fair())
+        calls = len(self.notion.calls)
+        out = self.svc.rescore()
+        self.assertEqual((out["changed"], out["transitions"], out["changed_keys"]), (0, {}, []))
+        self.assertEqual(out["calendar"], {"reconciled": 0, "failed": 0})
+        self.assertEqual(len(self.notion.calls), calls)
+
+    def test_score_change_without_status_change_refreshes_the_event_description(self):
+        key = self.svc.upsert(fair(booth_fee_usd=70))["fair"]["key"]
+        self.edit(key, score=90)
+        out = self.svc.rescore()
+        self.assertEqual(out["transitions"], {})
+        self.assertEqual(out["changed_keys"][0]["old_score"], 90)
+        self.assertIn(f"Score: {out['changed_keys'][0]['new_score']}/100", self.cal.events("opp")[0]["description"])
+
+    def test_confirmed_done_and_discarded_are_never_touched(self):
+        confirmed = self.svc.upsert(fair())["fair"]["key"]
+        self.svc.confirm(confirmed)
+        discarded = self.svc.upsert(fair(name="Rejected Fair"))["fair"]["key"]
+        self.svc.discard(discarded, reason="longe")
+        done = self.svc.upsert(fair(name="Past Fair", start_date="2026-10-20"))["fair"]["key"]
+        self.svc.confirm(done)
+        self.edit(done, status="done")
+        for key in (confirmed, discarded, done):
+            self.edit(key, application_status="closed")
+        before = dict(self.fairs())
+        out = self.svc.rescore()
+        self.assertEqual((out["examined"], out["changed"]), (0, 0))
+        self.assertEqual(self.fairs(), before)
+        self.assertEqual(len(self.cal.events("conf")), 2)
+
+    def test_one_calendar_failure_does_not_stop_the_others_and_is_retried_next_time(self):
+        bad = self.svc.upsert(fair(name="Bad Calendar Fair"))["fair"]["key"]
+        good = self.svc.upsert(fair(name="Sunset Makers Market", start_date="2026-11-21"))["fair"]["key"]
+        self.edit(bad, application_status="closed")
+        self.edit(good, application_status="closed")
+        real_find = self.cal.find
+
+        def find(cal_id, key):
+            if key == bad:
+                raise RuntimeError("calendar exploded")
+            return real_find(cal_id, key)
+        self.cal.find = find
+        out = self.svc.rescore()
+        self.assertEqual(out["transitions"], {"opportunity->maybe": 2})
+        self.assertEqual((out["calendar"]["reconciled"], out["calendar"]["failed"]), (1, 1))
+        self.assertEqual(out["calendar"]["errors"][0]["key"], bad)
+        self.assertTrue(self.fairs()[bad]["calendar_stale"])
+        self.assertEqual([e["summary"] for e in self.cal.events("opp")], ["🎪 Bad Calendar Fair — Weston"])
+        self.assertEqual(self.fairs()[bad]["status"], "maybe")        # registry already has the new status
+        self.cal.find = real_find
+        again = self.svc.rescore()
+        self.assertEqual((again["changed"], again["calendar"]), (0, {"reconciled": 1, "failed": 0}))
+        self.assertEqual(self.cal.events("opp"), [])
+        self.assertNotIn("calendar_stale", self.fairs()[bad])
+
+    def test_notion_failure_is_reported_and_leaves_records_dirty(self):
+        key = self.svc.upsert(fair())["fair"]["key"]
+        self.edit(key, application_status="closed")
+        self.notion.fail = core.NotionError("Notion HTTP 500: boom", 500)
+        out = self.svc.rescore()
+        self.assertEqual((out["ok"], out["notion"]["records_failed"]), (True, 1))
+        self.assertTrue(self.fairs()[key]["notion_dirty"])
+        self.assertEqual(self.fairs()[key]["status"], "maybe")
+
+    def test_cli_wiring(self):
+        args = core.build_parser().parse_args(["rescore"])
+        seen = []
+
+        class Stub:
+            def rescore(self):
+                seen.append(True)
+                return {"ok": True}
+        self.assertEqual(core.run_command(args, Stub()), {"ok": True})
+        self.assertEqual(seen, [True])
 
 
 if __name__ == "__main__":
