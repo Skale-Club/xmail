@@ -28,6 +28,8 @@ problema que aparecer antes de aumentar o volume. Cada linha diz o que aconteceu
 | 19 | Gancho "sem agendamento" saía sem ninguém conferir (parte do aberto A) | Afirmação falsa ao dono | `51bc24d`: só aparece com `booking_verified_none: true`, que o Hermes marca depois de abrir o site |
 | 20 | Aprovação só pelo painel do Xmail | Vanildo tinha que entrar no Xmail para cada campanha | `0ab60fd`/`dbfb05c`: cartão com Aprovar/Recusar no Telegram (bot xmailoppsbot), com confirmação em dois toques; mesma lógica do painel |
 | 21 | Analisador do Xphere não via Squire/Booksy em sites Squarespace/Wix (resto do aberto A) | `booking_platform` errado no lead | Xphere `b10b020a`: lista única de provedores, lê scripts, iframes, `data-*`, JSON inline, segue uma subpágina `/book`; CTA externo desconhecido conta como agendamento (`unknown`). Na dúvida, "tem agendamento" |
+| 22 | Fila diária chamava o Xcraper sem o `niche` que passou a ser obrigatório | Springfield falhava com HTTP 400 e voltava para a fila todos os dias | 2026-10-15: migration 077 persiste/backfill `niche`; o job o envia e o contrato está coberto por teste |
+| 23 | Scrape concluído com zero contatos nunca criava `prospecting_runs` | Fall River ficava `running` para sempre | 2026-10-15: `savedResults=0` é resultado terminal e fecha o território diretamente como `done`, sem duplicar o scrape |
 
 ## Abertos
 

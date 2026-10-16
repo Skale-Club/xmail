@@ -5,6 +5,15 @@ import {
 } from './territory-reconciliation'
 
 describe('decideTerritoryReconciliation', () => {
+    it('treats a completed scrape with zero saved results as a terminal empty run', () => {
+        const decision = decideTerritoryReconciliation({
+            scrapeStatus: 'completed',
+            savedResults: 0,
+            elapsedSinceAttemptMs: 60_000,
+        })
+        expect(decision).toEqual({ action: 'completed_empty' })
+    })
+
     it('leaves the territory running (does not flip to done itself) when the scrape completed', () => {
         const decision = decideTerritoryReconciliation({
             scrapeStatus: 'completed',
@@ -82,14 +91,15 @@ describe('decideTerritoryReconciliation', () => {
         expect(decision).toEqual({ action: 'stalled' })
     })
 
-    it('never returns an action that would cause a caller to re-fire a scrape -- only completed/failed/still_running/stalled exist', () => {
-        // Documents the invariant by construction: the decision type has exactly four shapes,
+    it('never returns an action that would cause a caller to re-fire a scrape', () => {
+        // Documents the invariant by construction: the decision type has exactly five shapes,
         // none of which are "run" or "retry". A paid scrape can only ever be started by
         // runDailyProspecting's own fetchNextQueuedTerritory + callXcraperScrape path, never by
         // this reconciliation step.
         const allActions = new Set(
             [
                 decideTerritoryReconciliation({ scrapeStatus: 'completed', elapsedSinceAttemptMs: 0 }),
+                decideTerritoryReconciliation({ scrapeStatus: 'completed', savedResults: 0, elapsedSinceAttemptMs: 0 }),
                 decideTerritoryReconciliation({ scrapeStatus: 'failed', elapsedSinceAttemptMs: 0 }),
                 decideTerritoryReconciliation({ scrapeStatus: 'processing', elapsedSinceAttemptMs: 0 }),
                 decideTerritoryReconciliation({
@@ -98,6 +108,6 @@ describe('decideTerritoryReconciliation', () => {
                 }),
             ].map((d) => d.action),
         )
-        expect(allActions).toEqual(new Set(['completed', 'failed', 'still_running', 'stalled']))
+        expect(allActions).toEqual(new Set(['completed', 'completed_empty', 'failed', 'still_running', 'stalled']))
     })
 })

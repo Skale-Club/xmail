@@ -34,9 +34,11 @@ const log = createLogger('outreach.prospecting.daily_run')
  *      scheduler on Xcraper's side that does this on its own. Before this fix, nothing ever
  *      called that endpoint, so a completed scrape could sit un-pushed indefinitely (measured:
  *      a full day, for the two territories this fix was written to reconcile). A 'completed'
- *      poll result does NOT flip the territory to 'done' here — that still happens via step 1,
+ *      poll normally does NOT flip the territory to 'done' here — that still happens via step 1,
  *      once Xphere's asynchronous push creates the matching `prospecting_runs` row, possibly not
- *      until a LATER tick. This step never re-fires a scrape; see decideTerritoryReconciliation's
+ *      until a LATER tick. A completed run with exactly zero saved results is the terminal
+ *      exception: nothing can be pushed and no downstream row can ever appear, so this step
+ *      closes it directly. This step never re-fires a scrape; see decideTerritoryReconciliation's
  *      decision shape, which has no "run"/"retry" action. Bounded by
  *      `XCRAPER_STATUS_FETCH_TIMEOUT_MS` per request and `MAX_TERRITORIES_TO_RECONCILE_PER_TICK`
  *      overall (shared across every organization in the tick) so this step can never consume the
@@ -102,6 +104,7 @@ interface TerritoryRow {
     id: string
     query: string
     location: string
+    niche: string
     template: string
     maxResults: number
 }
@@ -179,7 +182,7 @@ async function fetchRunningTerritoriesToPoll(organizationId: string, limit: numb
 }
 
 type ScrapeStatusPollResult =
-    | { ok: true; status: string; xphere?: unknown }
+    | { ok: true; status: string; savedResults?: number | null; xphere?: unknown }
     | { ok: false; error: string }
 
 /**
@@ -199,11 +202,11 @@ async function pollXcraperScrapeStatus(config: XcraperConfig, searchId: string):
             const text = await response.text().catch(() => '')
             return { ok: false, error: `xcraper responded ${response.status}${text ? `: ${text.slice(0, 500)}` : ''}` }
         }
-        const json = await response.json().catch(() => null) as { status?: string; xphere?: unknown } | null
+        const json = await response.json().catch(() => null) as { status?: string; savedResults?: number | null; xphere?: unknown } | null
         if (!json?.status) {
             return { ok: false, error: 'xcraper scrape status response did not include a status' }
         }
-        return { ok: true, status: json.status, xphere: json.xphere }
+        return { ok: true, status: json.status, savedResults: json.savedResults, xphere: json.xphere }
     } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
@@ -220,9 +223,22 @@ async function markTerritoryFailed(territoryId: string, reason: string): Promise
     `
 }
 
+async function markTerritoryCompletedEmpty(territoryId: string): Promise<void> {
+    const reason = 'Xcraper completed with zero saved results; no downstream prospecting run was created.'
+    await queryClient`
+        UPDATE prospecting_territories
+        SET status = 'done',
+            last_run_id = NULL,
+            notes = concat_ws(E'\n', nullif(notes, ''), ${reason}),
+            updated_at = now()
+        WHERE id = ${territoryId}
+    `
+}
+
 interface ReconcilePollSummary {
     polled: number
     completed: number
+    completedEmpty: number
     failedMarked: number
     stillRunning: number
     stalled: number
@@ -233,8 +249,8 @@ interface ReconcilePollSummary {
  * Step 1b orchestration — polls up to `budget.remaining` still-'running' territories for this
  * organization, applies `decideTerritoryReconciliation`'s decision, and decrements the shared
  * cross-organization budget as it goes. Never re-fires a scrape: the decision type this switches
- * on (territory-reconciliation.ts) has no "run"/"retry" action, only completed/failed/
- * still_running/stalled.
+ * on (territory-reconciliation.ts) has no "run"/"retry" action, only completed/
+ * completed_empty/failed/still_running/stalled.
  */
 async function reconcilePollRunningTerritories(
     organizationId: string,
@@ -242,7 +258,7 @@ async function reconcilePollRunningTerritories(
     now: Date,
     budget: { remaining: number },
 ): Promise<ReconcilePollSummary> {
-    const summary: ReconcilePollSummary = { polled: 0, completed: 0, failedMarked: 0, stillRunning: 0, stalled: 0, pollErrors: 0 }
+    const summary: ReconcilePollSummary = { polled: 0, completed: 0, completedEmpty: 0, failedMarked: 0, stillRunning: 0, stalled: 0, pollErrors: 0 }
     if (budget.remaining <= 0) return summary
 
     const territories = await fetchRunningTerritoriesToPoll(organizationId, budget.remaining)
@@ -271,10 +287,24 @@ async function reconcilePollRunningTerritories(
         const lastAttemptedAtMs = territory.lastAttemptedAt ? new Date(territory.lastAttemptedAt).getTime() : now.getTime()
         const decision = decideTerritoryReconciliation({
             scrapeStatus: pollResult.status,
+            savedResults: pollResult.savedResults,
             elapsedSinceAttemptMs: Math.max(0, now.getTime() - lastAttemptedAtMs),
         })
 
         switch (decision.action) {
+            case 'completed_empty':
+                summary.completedEmpty += 1
+                await markTerritoryCompletedEmpty(territory.id)
+                log.info(
+                    {
+                        action: 'prospecting.daily.reconcile_completed_empty',
+                        organizationId,
+                        territoryId: territory.id,
+                        searchId: territory.lastExternalRunId,
+                    },
+                    'xcraper completed with zero saved results -- territory closed without a downstream prospecting run',
+                )
+                break
             case 'completed':
                 summary.completed += 1
                 log.info(
@@ -353,6 +383,7 @@ async function fetchNextQueuedTerritory(organizationId: string): Promise<Territo
             id::text AS "id",
             query AS "query",
             location AS "location",
+            niche AS "niche",
             template AS "template",
             max_results AS "maxResults"
         FROM prospecting_territories
@@ -409,6 +440,7 @@ async function markTerritoryAttemptFailed(territoryId: string): Promise<void> {
 interface ScrapeRequestBody {
     query: string
     location: string
+    niche: string
     maxResults: number
     scrapeType: string
     hypothesis: BaselineHypothesisResult
@@ -526,6 +558,7 @@ async function runForOrganization(
     const result = await callXcraperScrape(config, {
         query: territory.query,
         location: territory.location,
+        niche: territory.niche,
         maxResults: decision.maxResults,
         scrapeType: territory.template,
         hypothesis,
@@ -548,6 +581,7 @@ async function runForOrganization(
             territoryId: territory.id,
             query: territory.query,
             location: territory.location,
+            niche: territory.niche,
             maxResults: decision.maxResults,
             searchId: result.searchId,
         },

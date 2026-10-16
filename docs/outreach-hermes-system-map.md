@@ -10,7 +10,9 @@
 > Última auditoria completa: **2026-08-15** (commit `159450d`); reconferência de produção em
 > **2026-09-05** (achados 1b, 13, 14 e 15 fechados; §8 atualizado). Em **2026-09-08** (Fase 37) o
 > achado 2 foi fechado. Em **2026-10-07** entraram os escopos `campaigns:copy` e `outreach:manage`; as migrations 072-075 estão aplicadas. Em **2026-10-08**, a fronteira foi fechada no sistema inteiro: Xphere só matricula em campanha inativa, não ativa nem envia mensagem direta; a migration 076 reduz o Kai a `campaigns:copy`. A seção "Achados abertos" tem
-> data — se estiver velha, refaça a rotina de reanálise no fim do doc antes de confiar nela.
+> data — se estiver velha, refaça a rotina de reanálise no fim do doc antes de confiar nela. Em
+> **2026-10-15**, uma reconferência pontual da fila diária fechou o achado 25 (drift de `niche` e
+> território vazio preso em `running`).
 
 ## 1. O que é, em uma frase
 
@@ -233,7 +235,7 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 > **Armadilha nº 1 do deploy:** `deploy-hetzner.yml` é **legado** (`workflow_dispatch`). Editar
 > variável de ambiente só nele não muda nada em produção. O caminho ativo é `build-deploy.yml`.
 
-## 8. Achados abertos — auditoria de 2026-08-15
+## 8. Achados abertos — auditoria de 2026-08-15, reconferência pontual em 2026-10-15
 
 | # | Severidade | Achado | Onde |
 |---|---|---|---|
@@ -261,6 +263,7 @@ npm run lint && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 | 22 | Baixa | O lint de cópia avisa sobre endereço postal (decisão de 2026-10-07: nenhum endereço físico nos e-mails), mas o card de aprovação (`outreach-campaign-compliance.ts`, Fase 37) ainda lista `missing_physical_address` como blocker informativo — os dois dizem o contrário. Reconciliar quando a política de rodapé estiver fechada. Também: o histórico de versões fica em `outreach_agent_audit_log` (`metadata.before/after`), validado só contra um banco falso nos testes, não contra Postgres real (filtro jsonb `metadata->>'stepOrder'`, `FOR UPDATE`) | `outreach-campaign-compliance.ts`, `agent-campaign-copy-history.ts` |
 | 23 | Média | **Hermes retoma campanha pausada sem nova aprovação** (decisão do dono em 2026-10-07). Fica fechado por: aprovação de ativação executada + pausa feita pelo próprio agente + readiness de ativação de novo. Aberto: a aprovação antiga não é amarrada ao texto/leads atuais, então a campanha retomada pode estar diferente do que o humano viu (o readiness só olha as regras estruturais, não o conteúdo). Se incomodar: recusar `resume` quando o texto ou os leads mudaram depois de `executed_at` | `agent-campaign-manage.ts` (`resumeVerdict`) |
 | 24 | Baixa | Os testes do G12 rodam contra um banco falso em memória (`__tests__/fake-agent-db.ts`): avaliam os filtros de org/id gerados pelo Drizzle, mas **não** provam SQL real (`FOR UPDATE`, `GREATEST`, jsonb via `jsonbParam`, `group by`, joins das métricas). Falta rodar contra Postgres real (ex.: teste `.db.test.ts`) antes de confiar nas métricas e na remoção de lead. Também: a lista de caixas devolve `lastError` truncado em 200 caracteres | `routes/agent-*.ts` |
+| 25 | ~~Alta~~ | **Resolvido em 2026-10-15.** O Xcraper passou a exigir `niche`, mas `runDailyProspecting` não persistia nem enviava o campo: Springfield retornava 400 diariamente. Ao mesmo tempo, Fall River terminou com zero resultados e ficou `running` porque nenhum push vazio cria o `prospecting_runs` usado pela reconciliação. A migration 077 adiciona/backfill `niche`; o POST agora o envia; um `completed` com `savedResults=0` fecha o território diretamente como `done`. | `runDailyProspecting.ts`, `territory-reconciliation.ts`, migration 077 |
 | 20 | ~~Alta~~ | ~~A regra "campanha só sai das contas Icemail" não é garantida pelo código~~ — **resolvido em 2026-09-30** (`63982a9`, `OUTREACH_PROTECTED_DOMAINS` no deploy, provado no container). Registro original: (medido 2026-09-30) As nove `info@` têm `warmup_only=false`, então passam no filtro de remetente de `agent-outreach.ts` e de `campaigns.ts`; o único bloqueio por domínio, `checkProtectedSendingDomains`, lê `MAIL_DOMAIN` + `OUTREACH_PROTECTED_DOMAINS`, e em produção só `skale.club` está protegido (`OUTREACH_PROTECTED_DOMAINS` nem chega ao container). Uma `info@xkedule.com` poderia ser matriculada como remetente; hoje só não envia porque `sending_inbox_not_warmed` a barra por acidente. Conserto: os oito outros domínios da operação em `OUTREACH_PROTECTED_DOMAINS`, passado no `run_app_container`. Regra completa no `CLAUDE.md`, seção *Regras do processo de prospecção*. | `routes/outreach/campaigns.ts` (`getProtectedSendingDomains`) + `.github/workflows/build-deploy.yml` |
 
 ### Correções aplicadas em 2026-08-15

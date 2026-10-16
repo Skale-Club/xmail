@@ -2844,6 +2844,7 @@ export const prospectingTerritories = pgTable('prospecting_territories', {
     organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'cascade' }).notNull(),
     query: text('query').notNull(),
     location: text('location').notNull(),
+    niche: text('niche').notNull(),
     template: text('template').$type<ProspectingTerritoryTemplate>().notNull(),
     // Lower number = higher priority (runs first) — see migration 065.
     priority: integer('priority').default(100).notNull(),
@@ -2863,6 +2864,7 @@ export const prospectingTerritories = pgTable('prospecting_territories', {
     idxLastRun: index('idx_prospecting_territories_last_run').on(table.lastRunId).where(sql`${table.lastRunId} IS NOT NULL`),
     templateCheck: check('prospecting_territories_template_check', sql`${table.template} IN ('standard', 'enriched')`),
     statusCheck: check('prospecting_territories_status_check', sql`${table.status} IN ('queued', 'running', 'done', 'paused')`),
+    nicheCheck: check('prospecting_territories_niche_check', sql`${table.niche} ~ '^[a-z][a-z0-9_]*$'`),
     maxResultsCheck: check('prospecting_territories_max_results_check', sql`${table.maxResults} > 0`),
     priorityCheck: check('prospecting_territories_priority_check', sql`${table.priority} > 0`),
 }))

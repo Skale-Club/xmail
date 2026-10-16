@@ -25,11 +25,12 @@ function expectDecided(summary: DailyProspectingOrgSummary): Extract<DailyProspe
     return summary
 }
 
-function territoryRow(overrides: Partial<{ id: string; query: string; location: string; template: string; maxResults: number }> = {}) {
+function territoryRow(overrides: Partial<{ id: string; query: string; location: string; niche: string; template: string; maxResults: number }> = {}) {
     return {
         id: 'territory-1',
         query: 'barbershops',
         location: 'Hudson, MA, USA',
+        niche: 'barbershop',
         template: 'enriched',
         maxResults: 40,
         ...overrides,
@@ -148,6 +149,7 @@ describe('runDailyProspecting: per-organization decisions', () => {
         expect(JSON.parse((options as RequestInit).body as string)).toEqual({
             query: 'barbershops',
             location: 'Hudson, MA, USA',
+            niche: 'barbershop',
             maxResults: 40,
             scrapeType: 'enriched',
             hypothesis: { premise: 'p', expected: {}, basis: 'first run' },
@@ -270,6 +272,33 @@ describe('runDailyProspecting: territory reconciliation poll (defect fix 2026-09
             ...overrides,
         }
     }
+
+    it('closes a completed territory directly when Xcraper saved zero results', async () => {
+        queryClientMock
+            .mockResolvedValueOnce([{ organizationId: ORG_ID }]) // org list
+            .mockResolvedValueOnce([]) // join reconciliation cannot find a downstream run for an empty scrape
+            .mockResolvedValueOnce([runningTerritoryRow({ id: 'territory-empty' })])
+            .mockResolvedValueOnce([]) // markTerritoryCompletedEmpty UPDATE
+            .mockResolvedValueOnce([{ amountMicros: '2000000' }]) // spend already at budget
+
+        vi.mocked(fetch).mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({
+                status: 'completed',
+                savedResults: 0,
+                xphere: { pushed: false, error: 'No contacts in this run to push.' },
+            }),
+        } as unknown as Response)
+
+        await runDailyProspecting(NOW)
+
+        expect(queryClientMock).toHaveBeenCalledTimes(5)
+        const [strings, note, territoryId] = queryClientMock.mock.calls[3] as [string[], string, string]
+        expect(strings.join('')).toContain("status = 'done'")
+        expect(strings.join('')).toContain('last_run_id = NULL')
+        expect(note).toMatch(/zero/i)
+        expect(territoryId).toBe('territory-empty')
+    })
 
     it('polls a running territory\'s status, logs the xphere push result, and leaves it running -- it does NOT flip status itself', async () => {
         queryClientMock

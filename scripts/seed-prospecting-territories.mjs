@@ -27,6 +27,7 @@ import dotenv from 'dotenv'
 dotenv.config()
 
 const QUERY = 'barbershops'
+const NICHE = 'barbershop'
 const TEMPLATE = 'enriched'
 
 // priority: lower number = higher priority (runs first) — see migration 065.
@@ -103,9 +104,9 @@ async function main() {
         for (const territory of TERRITORIES) {
             const rows = await sql`
                 INSERT INTO prospecting_territories
-                    (organization_id, query, location, template, priority, max_results, notes)
+                    (organization_id, query, location, niche, template, priority, max_results, notes)
                 VALUES
-                    (${organizationId}, ${QUERY}, ${territory.location}, ${TEMPLATE}, ${territory.priority}, ${territory.maxResults}, ${territory.notes})
+                    (${organizationId}, ${QUERY}, ${territory.location}, ${NICHE}, ${TEMPLATE}, ${territory.priority}, ${territory.maxResults}, ${territory.notes})
                 ON CONFLICT (organization_id, query, location) DO NOTHING
                 RETURNING id
             `

@@ -159,8 +159,8 @@ unitário do run anterior (US$ 0,0061 a 0,0066 por resultado). O teto de "uns do
 veio de você em linguagem natural. Nada impede raspar Boston de novo amanhã.
 
 **Xmail**
-- Tabela `prospecting_territories` (migração `064`, junto da fase 34): `query`, `location`,
-  `template`, `priority`, `status` (`queued`, `running`, `done`, `paused`), `last_run_id`,
+- Tabela `prospecting_territories` (migração `065`; `niche` acrescentado pela `077`): `query`, `location`,
+  `niche`, `template`, `priority`, `status` (`queued`, `running`, `done`, `paused`), `last_run_id`,
   `max_results`, `notes`. Único por `(organization_id, query, location)`.
 - Job `runDailyProspecting` em `src/server/jobs/`, agendado uma vez por dia no horário que
   você definir, dentro de `runWithLock` como os demais. Lógica: lê o gasto real de

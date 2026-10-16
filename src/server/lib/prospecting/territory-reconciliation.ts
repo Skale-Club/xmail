@@ -29,8 +29,10 @@
  * matching `prospecting_runs` row (keyed by `idempotency_key = last_external_run_id`)
  * ASYNCHRONOUSLY after the push this poll just triggered/confirmed, and the existing
  * join-based reconciliation in runDailyProspecting.ts's `reconcileTerritories` is what flips
- * 'running' -> 'done' once that row exists (possibly not until a LATER tick). This module never
- * writes 'done' itself, and never re-fires a scrape for a territory that already has a
+ * 'running' -> 'done' once that row exists (possibly not until a LATER tick). The one terminal
+ * exception is `action: 'completed_empty'`: with zero saved results there is nothing for Xcraper
+ * to push, so no downstream row can ever appear and the caller closes the territory directly.
+ * This module never re-fires a scrape for a territory that already has a
  * `last_external_run_id` — a paid Xcraper scrape must never be duplicated by a reconciliation
  * pass.
  */
@@ -54,6 +56,10 @@ export type XcraperScrapeStatus = string
 export interface TerritoryReconciliationInput {
     /** `status` from Xcraper's GET /scrape/:id response for this territory's last_external_run_id. */
     scrapeStatus: XcraperScrapeStatus
+    /** Structured final count from Xcraper. A completed run with exactly zero saved rows can
+     *  never create the Xphere/Xmail prospecting_runs row used by join reconciliation, so it is
+     *  a distinct terminal outcome rather than a territory that should remain running forever. */
+    savedResults?: number | null
     /** now - territory.last_attempted_at, in ms. Only consulted when the scrape is neither
      *  'completed' nor 'failed', to detect a wedged run. */
     elapsedSinceAttemptMs: number
@@ -62,6 +68,9 @@ export interface TerritoryReconciliationInput {
 }
 
 export type TerritoryReconciliationDecision =
+    /** Xcraper completed successfully but produced no rows to push. Caller closes the territory
+     *  directly because no downstream prospecting_runs row can ever be created for it. */
+    | { action: 'completed_empty' }
     /** Xcraper reports the scrape finished (and, per the GET handler, has pushed or confirmed
      *  push to Xphere by now). Leave the territory 'running' -- see module doc for why this is
      *  correct, not a bug. */
@@ -84,6 +93,9 @@ export function decideTerritoryReconciliation(
     input: TerritoryReconciliationInput,
 ): TerritoryReconciliationDecision {
     if (input.scrapeStatus === 'completed') {
+        if (input.savedResults === 0) {
+            return { action: 'completed_empty' }
+        }
         return { action: 'completed' }
     }
 

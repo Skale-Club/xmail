@@ -12,7 +12,7 @@ systems in four repositories plus one home server.
 - **Keep it current:** any change to prospecting behavior (a rule, a limit, a new tool, a new
   step, a host move) updates this file **in the same commit** as the code. The other repos'
   `CLAUDE.md` files point here with the same rule. After updating, refresh the Notion mirror.
-- **Last reviewed:** 2026-10-08.
+- **Last reviewed:** 2026-10-15.
 - **Taking over?** Read [`handoff-2026-10-08.md`](handoff-2026-10-08.md) first: story, access, current state, open items.
 
 ---
@@ -115,6 +115,12 @@ Kai is a second agent with limited Xmail access (exactly `campaigns:copy`, enfor
     members on 2026-10-08). `Skale Club - Xcraper Prospects` stays as the everyone-scraped bag.
     `prospects_list` filters by `niche` and returns `by_niche`. Old data is tagged with the Xphere
     workflow `backfill-prospect-niche` (manual, dry run by default).
+    Xmail's legacy daily territory queue follows the same contract: each
+    `prospecting_territories` row persists the slug and sends it to Xcraper. It starts at most one
+    run per organization at 10:00 UTC. A completed run with zero saved results is closed directly
+    as `done`, because there is nothing for Xcraper to push and therefore no downstream
+    `prospecting_runs` row to reconcile. Migration 077 added and backfilled `niche` for the
+    original 32-city barbershop queue.
 
 ---
 
