@@ -72,7 +72,7 @@ beforeAll(async () => {
     await seedLead('new')
     await seedLead('unsubscribed') // pre-send suppressed
     await seedLead('contacted', { opens: 3, clicks: 1, sends: 2, openedFirst: true })
-    await seedLead('replied', { replies: 1, sends: 1, repliedFirst: true })
+    await seedLead('interested', { replies: 1, sends: 1, repliedFirst: true })
     await seedLead('bounced', { sends: 1, bouncedFirst: true })
 
     const campaignsRouter = (await import('../campaigns')).default
@@ -111,6 +111,8 @@ describe('campaign metric cohorts are identical across every surface', () => {
         expect(d.sentEmails).toBe(4)
         expect(d.eligibleLeads).toBe(4)
         expect(d.totalLeads).toBe(5)
+        expect(d.interestedLeads).toBe(1)
+        expect(Math.round(d.positiveReplyRate)).toBe(33)
 
         // Every surface agrees on emails sent.
         expect(listRow.sentEmails).toBe(4)

@@ -51,6 +51,9 @@ export interface CampaignMetrics {
     uniqueOpeners: number
     uniqueClickers: number
     repliedLeads: number
+    // Leads explicitly classified as interested after a reply. This is the campaign's
+    // north-star outcome, not merely another engagement event.
+    interestedLeads: number
     bouncedLeads: number
     // Raw event counts. NOT rate numerators — one lead can contribute many.
     totalOpens: number
@@ -60,6 +63,7 @@ export interface CampaignMetrics {
     openRate: number
     clickRate: number
     replyRate: number
+    positiveReplyRate: number
     bounceRate: number
 }
 
@@ -72,6 +76,7 @@ export const EMPTY_CAMPAIGN_METRICS: CampaignMetrics = {
     uniqueOpeners: 0,
     uniqueClickers: 0,
     repliedLeads: 0,
+    interestedLeads: 0,
     bouncedLeads: 0,
     totalOpens: 0,
     totalClicks: 0,
@@ -79,6 +84,7 @@ export const EMPTY_CAMPAIGN_METRICS: CampaignMetrics = {
     openRate: 0,
     clickRate: 0,
     replyRate: 0,
+    positiveReplyRate: 0,
     bounceRate: 0,
 }
 
@@ -89,6 +95,7 @@ interface RawCohortCounts {
     uniqueOpeners: number
     uniqueClickers: number
     repliedLeads: number
+    interestedLeads: number
     bouncedLeads: number
     totalOpens: number
     totalClicks: number
@@ -103,6 +110,7 @@ const EMPTY_RAW: RawCohortCounts = {
     uniqueOpeners: 0,
     uniqueClickers: 0,
     repliedLeads: 0,
+    interestedLeads: 0,
     bouncedLeads: 0,
     totalOpens: 0,
     totalClicks: 0,
@@ -124,6 +132,7 @@ function finalize(r: RawCohortCounts): CampaignMetrics {
         uniqueOpeners: r.uniqueOpeners,
         uniqueClickers: r.uniqueClickers,
         repliedLeads: r.repliedLeads,
+        interestedLeads: r.interestedLeads,
         bouncedLeads: r.bouncedLeads,
         totalOpens: r.totalOpens,
         totalClicks: r.totalClicks,
@@ -131,6 +140,7 @@ function finalize(r: RawCohortCounts): CampaignMetrics {
         openRate: pct(r.uniqueOpeners, contacted),
         clickRate: pct(r.uniqueClickers, contacted),
         replyRate: pct(r.repliedLeads, contacted),
+        positiveReplyRate: pct(r.interestedLeads, contacted),
         bounceRate: pct(r.bouncedLeads, contacted),
     }
 }
@@ -149,6 +159,7 @@ interface LeadCohortRow {
     uniqueOpeners: number | string
     uniqueClickers: number | string
     repliedLeads: number | string
+    interestedLeads: number | string
     bouncedLeads: number | string
     totalOpens: number | string
     totalClicks: number | string
@@ -183,6 +194,7 @@ async function queryRawCohorts(campaignIds: string[]): Promise<Map<string, RawCo
             count(*) FILTER (WHERE cl.total_opens > 0)::int AS "uniqueOpeners",
             count(*) FILTER (WHERE cl.total_clicks > 0)::int AS "uniqueClickers",
             count(*) FILTER (WHERE cl.status IN ('replied', 'interested') OR cl.total_replies > 0)::int AS "repliedLeads",
+            count(*) FILTER (WHERE cl.status = 'interested' AND sent.campaign_lead_id IS NOT NULL)::int AS "interestedLeads",
             count(*) FILTER (WHERE cl.status = 'bounced' AND sent.campaign_lead_id IS NOT NULL)::int AS "bouncedLeads",
             coalesce(sum(cl.total_opens), 0)::int AS "totalOpens",
             coalesce(sum(cl.total_clicks), 0)::int AS "totalClicks",
@@ -218,6 +230,7 @@ async function queryRawCohorts(campaignIds: string[]): Promise<Map<string, RawCo
             uniqueOpeners: Number(row.uniqueOpeners) || 0,
             uniqueClickers: Number(row.uniqueClickers) || 0,
             repliedLeads: Number(row.repliedLeads) || 0,
+            interestedLeads: Number(row.interestedLeads) || 0,
             bouncedLeads: Number(row.bouncedLeads) || 0,
             totalOpens: Number(row.totalOpens) || 0,
             totalClicks: Number(row.totalClicks) || 0,
@@ -250,6 +263,7 @@ export async function computeCampaignMetrics(campaignIds: string[]): Promise<Cam
         total.uniqueOpeners += counts.uniqueOpeners
         total.uniqueClickers += counts.uniqueClickers
         total.repliedLeads += counts.repliedLeads
+        total.interestedLeads += counts.interestedLeads
         total.bouncedLeads += counts.bouncedLeads
         total.totalOpens += counts.totalOpens
         total.totalClicks += counts.totalClicks

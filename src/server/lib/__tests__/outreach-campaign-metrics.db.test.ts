@@ -129,7 +129,7 @@ beforeAll(async () => {
     await seedLead({ campaignId: CAMPAIGN_1, status: 'new' }) // A: never sent
     await seedLead({ campaignId: CAMPAIGN_1, status: 'unsubscribed' }) // B: pre-send suppressed, never sent
     await seedLead({ campaignId: CAMPAIGN_1, status: 'contacted', opens: 3, clicks: 1, sends: 2, openedFirst: true }) // C
-    await seedLead({ campaignId: CAMPAIGN_1, status: 'replied', replies: 1, sends: 1, repliedFirst: true }) // D
+    await seedLead({ campaignId: CAMPAIGN_1, status: 'interested', replies: 1, sends: 1, repliedFirst: true }) // D
     await seedLead({ campaignId: CAMPAIGN_1, status: 'bounced', sends: 1, bouncedFirst: true }) // E
 
     // Campaign 2: 1 contacted lead, 1 sent email.
@@ -160,11 +160,13 @@ describe('computeCampaignMetrics cohorts', () => {
         expect(m.uniqueOpeners).toBe(1)
         expect(m.uniqueClickers).toBe(1)
         expect(m.repliedLeads).toBe(1)
+        expect(m.interestedLeads).toBe(1)
         expect(m.bouncedLeads).toBe(1)
         expect(m.totalOpens).toBe(3)
         // Denominator is contactedLeads (3), not "status != new" (which would be 4).
         expect(Math.round(m.openRate)).toBe(33)
         expect(Math.round(m.replyRate)).toBe(33)
+        expect(Math.round(m.positiveReplyRate)).toBe(33)
         expect(Math.round(m.bounceRate)).toBe(33)
     })
 
@@ -178,6 +180,8 @@ describe('computeCampaignMetrics cohorts', () => {
         expect(empty.totalLeads).toBe(0)
         expect(empty.contactedLeads).toBe(0)
         expect(empty.sentEmails).toBe(0)
+        expect(empty.interestedLeads).toBe(0)
+        expect(empty.positiveReplyRate).toBe(0)
     })
 })
 
