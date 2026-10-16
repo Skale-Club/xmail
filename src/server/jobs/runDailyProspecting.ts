@@ -229,7 +229,7 @@ async function markTerritoryCompletedEmpty(territoryId: string): Promise<void> {
         UPDATE prospecting_territories
         SET status = 'done',
             last_run_id = NULL,
-            notes = concat_ws(E'\n', nullif(notes, ''), ${reason}),
+            notes = concat_ws(E'\n', nullif(notes, ''), CAST(${reason} AS text)),
             updated_at = now()
         WHERE id = ${territoryId}
     `

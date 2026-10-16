@@ -296,6 +296,10 @@ describe('runDailyProspecting: territory reconciliation poll (defect fix 2026-09
         const [strings, note, territoryId] = queryClientMock.mock.calls[3] as [string[], string, string]
         expect(strings.join('')).toContain("status = 'done'")
         expect(strings.join('')).toContain('last_run_id = NULL')
+        // concat_ws is overloaded in PostgreSQL. The interpolated note must be cast explicitly,
+        // otherwise the real driver sends it as an untyped parameter and production rejects the
+        // statement with "could not determine data type of parameter $1".
+        expect(strings.join('')).toMatch(/CAST\(\s*AS text\)/)
         expect(note).toMatch(/zero/i)
         expect(territoryId).toBe('territory-empty')
     })
