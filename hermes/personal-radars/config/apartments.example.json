@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "enabled": true,
+  "configurationStatus": "pilot_public_web",
+  "telegram": {
+    "chatId": "-5472550104",
+    "digestTime": "08:00",
+    "timezone": "America/New_York",
+    "immediateAlertsEnabled": false
+  },
+  "notion": {
+    "mcpServer": "notion",
+    "workspace": "Skale Club",
+    "databaseId": "669e69bc-685c-4769-ad85-ea5d3eeca9ed",
+    "dataSourceId": "303fc987-eb42-4495-8684-6840467686eb",
+    "activityDatabaseId": "8fe7e462-07a8-4fa9-be1e-676964a2e535",
+    "activityDataSourceId": "82ab8acc-f37c-4c96-9565-6d5ddae3aa57",
+    "syncDirection": "radar_to_notion"
+  },
+  "regions": [
+    "Orange County, FL",
+    "Orlando, FL",
+    "Winter Park, FL",
+    "Maitland, FL",
+    "Apopka, FL",
+    "Ocoee, FL",
+    "Winter Garden, FL",
+    "Lake Buena Vista, FL",
+    "Windermere, FL",
+    "Davenport, FL",
+    "Kissimmee, FL",
+    "Celebration, FL",
+    "Saint Cloud, FL",
+    "Clermont, FL",
+    "Framingham, MA",
+    "Natick, MA",
+    "Ashland, MA",
+    "Marlborough, MA",
+    "Southborough, MA",
+    "Westborough, MA",
+    "Hopkinton, MA",
+    "Hudson, MA",
+    "Sudbury, MA",
+    "Wayland, MA",
+    "Wellesley, MA",
+    "Needham, MA"
+  ],
+  "marketGroups": {
+    "florida": {
+      "label": "Greater Orlando and nearby relocation corridor",
+      "areas": [
+        "Orange County, FL",
+        "Orlando, FL",
+        "Winter Park, FL",
+        "Maitland, FL",
+        "Apopka, FL",
+        "Ocoee, FL",
+        "Winter Garden, FL",
+        "Lake Buena Vista, FL",
+        "Windermere, FL",
+        "Davenport, FL",
+        "Kissimmee, FL",
+        "Celebration, FL",
+        "Saint Cloud, FL",
+        "Clermont, FL"
+      ]
+    },
+    "massachusetts": {
+      "label": "Framingham and MetroWest",
+      "areas": [
+        "Framingham, MA",
+        "Natick, MA",
+        "Ashland, MA",
+        "Marlborough, MA",
+        "Southborough, MA",
+        "Westborough, MA",
+        "Hopkinton, MA",
+        "Hudson, MA",
+        "Sudbury, MA",
+        "Wayland, MA",
+        "Wellesley, MA",
+        "Needham, MA"
+      ]
+    }
+  },
+  "commuteTargets": [],
+  "filters": {
+    "targetAdvertisedBaseRent": 1500,
+    "maximumAdvertisedBaseRent": null,
+    "maximumKnownMonthlyCost": null,
+    "studiosAccepted": false,
+    "minimumBedrooms": 1,
+    "preferredBedrooms": 1,
+    "maximumBedrooms": 2,
+    "minimumBathrooms": null,
+    "minimumSquareFeet": null,
+    "smallSpaceReviewThresholdSquareFeet": 600,
+    "maximumCommuteMinutes": null,
+    "requiredMoveInBy": null,
+    "petsRequired": null,
+    "airConditioningRequired": null,
+    "laundryInUnitRequired": true,
+    "dishwasherRequired": true,
+    "parking": {
+      "minimumVehicleSpaces": 2,
+      "secondSpaceMayBePaid": true,
+      "garageOrOnSiteParkingRequired": true,
+      "streetParkingAccepted": false,
+      "offSiteParkingAccepted": false,
+      "maximumWalkDistanceMeters": 100,
+      "availabilityMustBeConfirmed": true
+    },
+    "comparisonAllowsAboveTarget": true,
+    "comparisonAllowsUnknownAmenities": false,
+    "comparisonRequiresMandatoryHousingFit": true,
+    "propertyTypes": [
+      "apartment",
+      "condo",
+      "townhouse",
+      "single-family rental"
+    ]
+  },
+  "comparison": {
+    "enabled": true,
+    "cadence": "weekly",
+    "minimumSampleSizePerMarket": 3,
+    "metrics": [
+      "listing_count",
+      "median_base_rent",
+      "median_known_monthly_cost",
+      "bedrooms",
+      "fees_and_utilities_completeness"
+    ]
+  },
+  "score": {
+    "enabled": false,
+    "weights": {}
+  }
+}

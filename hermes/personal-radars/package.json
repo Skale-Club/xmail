@@ -1,0 +1,11 @@
+{
+  "name": "@xmail/personal-radars",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "personal-radars": "src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

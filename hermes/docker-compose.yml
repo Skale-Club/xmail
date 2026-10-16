@@ -16,6 +16,7 @@ services:
     environment:
       HERMES_UID: "10000"
       HERMES_GID: "10000"
+      PERSONAL_RADARS_DATA_DIR: "/opt/data/radars"
       # Scheduler/cron interpreta horários neste fuso (DST-safe). Operador em Boston/ET.
       TZ: "America/New_York"
     volumes:
@@ -23,6 +24,11 @@ services:
       - hermes-data:/opt/data
       # Gateway MCP local e sem dependencias externas para a API escopada do Xmail.
       - ./xmail-mcp:/opt/xmail-mcp:ro
+      # Núcleo/MCP dos dois radares pessoais. Dados continuam no volume hermes-data.
+      - ./personal-radars:/opt/personal-radars:ro
+      # Skills separadas preservam o contexto e as fronteiras de cada grupo.
+      - ./personal-radars/skills/apartment-radar:/opt/data/skills/personal/apartment-radar:ro
+      - ./personal-radars/skills/job-radar:/opt/data/skills/personal/job-radar:ro
     # --- Guard-rails de recurso: o Hermes NUNCA pode derrubar o email por OOM ---
     mem_limit: 1g          # teto duro de RAM (sobra ~2.7 GB + swap pro resto)
     memswap_limit: 2g      # 1 GB RAM + até 1 GB swap de folga sob pressão

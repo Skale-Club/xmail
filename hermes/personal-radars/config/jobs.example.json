@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "enabled": true,
+  "configurationStatus": "pilot_public_web",
+  "telegram": {
+    "chatId": "-5422244642",
+    "digestTime": "08:15",
+    "timezone": "America/New_York",
+    "immediateAlertsEnabled": false
+  },
+  "notion": {
+    "mcpServer": "notion",
+    "workspace": "Skale Club",
+    "databaseId": "b4853d7f-e045-4a29-8614-9346ce22cac6",
+    "dataSourceId": "750ee1e4-5f09-4eb9-8be1-9fac5d18bcca",
+    "activityDatabaseId": "8fe7e462-07a8-4fa9-be1e-676964a2e535",
+    "activityDataSourceId": "82ab8acc-f37c-4c96-9565-6d5ddae3aa57",
+    "profilePageId": "3fab7a68-6121-8130-8a81-e3352260cced",
+    "syncDirection": "radar_to_notion"
+  },
+  "criteria": {
+    "titleKeywords": [
+      "administrative assistant",
+      "office coordinator",
+      "customer support",
+      "customer service",
+      "front desk agent",
+      "hotel front desk",
+      "guest services",
+      "reservations agent",
+      "concierge",
+      "visitor services",
+      "hospitality coordinator",
+      "vacation rental coordinator",
+      "property management assistant",
+      "leasing consultant",
+      "event coordinator",
+      "airport customer service",
+      "patient coordinator",
+      "receptionist",
+      "relationship banker",
+      "barista"
+    ],
+    "excludedTitleKeywords": [
+      "driver",
+      "merchandiser",
+      "paraprofessional",
+      "behavior technician",
+      "support developer",
+      "support engineer",
+      "technical customer support",
+      "software engineer"
+    ],
+    "allowedLocations": [
+      "Orange County, FL",
+      "Orlando, FL",
+      "Winter Park, FL",
+      "Maitland, FL",
+      "Apopka, FL",
+      "Ocoee, FL",
+      "Winter Garden, FL",
+      "Lake Buena Vista, FL",
+      "Windermere, FL",
+      "Belle Isle, FL",
+      "Kissimmee, FL",
+      "Davenport, FL",
+      "Celebration, FL",
+      "Saint Cloud, FL",
+      "Clermont, FL",
+      "Framingham, MA",
+      "Natick, MA",
+      "Ashland, MA",
+      "Southborough, MA",
+      "Westborough, MA",
+      "Marlborough, MA",
+      "Hopkinton, MA",
+      "Hudson, MA",
+      "Sudbury, MA",
+      "Wayland, MA",
+      "Needham, MA",
+      "Wellesley, MA",
+      "Waltham, MA",
+      "Remote (US)"
+    ],
+    "allowedLocationModes": [
+      "remote",
+      "hybrid",
+      "onsite"
+    ],
+    "minimumAnnualSalary": null,
+    "regionalCompensationTargets": {
+      "MassachusettsHourly": 25,
+      "FloridaHourly": 20
+    },
+    "employmentTypes": [
+      "full-time",
+      "part-time"
+    ],
+    "requiredWorkAuthorization": null,
+    "requiredLanguages": [],
+    "excludedCompanies": []
+  },
+  "marketGroups": {
+    "florida": {
+      "label": "Orange County and nearby tourism corridor",
+      "areas": [
+        "Orange County, FL",
+        "Orlando, FL",
+        "Winter Park, FL",
+        "Maitland, FL",
+        "Apopka, FL",
+        "Ocoee, FL",
+        "Winter Garden, FL",
+        "Lake Buena Vista, FL",
+        "Windermere, FL",
+        "Belle Isle, FL",
+        "Kissimmee, FL",
+        "Davenport, FL",
+        "Celebration, FL",
+        "Saint Cloud, FL",
+        "Clermont, FL"
+      ],
+      "prioritySectors": [
+        "hospitality",
+        "tourism",
+        "theme parks and attractions",
+        "hotels and resorts",
+        "vacation rentals",
+        "airport and visitor services",
+        "administrative and customer service"
+      ]
+    },
+    "massachusetts": {
+      "label": "Framingham and MetroWest",
+      "areas": [
+        "Framingham, MA",
+        "Natick, MA",
+        "Ashland, MA",
+        "Marlborough, MA",
+        "Southborough, MA",
+        "Westborough, MA",
+        "Hopkinton, MA",
+        "Hudson, MA",
+        "Sudbury, MA",
+        "Wayland, MA",
+        "Needham, MA",
+        "Wellesley, MA",
+        "Waltham, MA"
+      ],
+      "prioritySectors": [
+        "administrative",
+        "customer service",
+        "healthcare coordination",
+        "banking",
+        "hospitality"
+      ]
+    }
+  },
+  "comparison": {
+    "enabled": true,
+    "cadence": "weekly",
+    "minimumSampleSizePerMarket": 3,
+    "metrics": [
+      "new_opportunity_count",
+      "compensation_range",
+      "hourly_or_annual_median_when_known",
+      "onsite_hybrid_remote_mix",
+      "role_and_sector_mix"
+    ]
+  },
+  "score": {
+    "enabled": false,
+    "weights": {}
+  }
+}
