@@ -336,7 +336,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                 )}
 
                 <div className="flex-1 flex flex-col min-w-0">
-                    <header className="h-16 bg-background/80 backdrop-blur-md border-b border-border flex items-center justify-between px-4 sm:px-6 sticky top-0 z-30">
+                    <header className="h-16 bg-background/80 backdrop-blur-md border-b border-border flex items-center justify-between gap-3 px-4 sm:gap-4 sm:px-6 sticky top-0 z-30">
                         <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
                             {isMobile && (
                                 <button
@@ -388,7 +388,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                                         aria-label="Search emails"
                                         value={searchQuery}
                                         onChange={(e) => setSearchQuery(e.target.value)}
-                                        className="w-full pl-10 pr-4 py-2 bg-muted/50 border border-transparent rounded-lg text-sm focus:bg-background focus:border-border focus:ring-4 focus:ring-primary/10 transition-all outline-none shadow-sm-soft"
+                                        className="h-10 w-full pl-10 pr-4 bg-muted/50 border border-transparent rounded-lg text-sm focus:bg-background focus:border-border focus:ring-4 focus:ring-primary/10 transition-all outline-none shadow-sm-soft"
                                     />
                                 </form>
                             )}
@@ -402,7 +402,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                                     href="/admin"
                                     aria-label="Open Admin"
                                     title="Open Admin"
-                                    className="hidden shrink-0 items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:flex xl:px-3"
+                                    className="hidden h-10 shrink-0 items-center gap-2 rounded-lg border border-border px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:flex xl:px-3"
                                 >
                                     <Shield className="w-4 h-4" />
                                     <span className="hidden whitespace-nowrap xl:inline">Open Admin</span>
@@ -415,7 +415,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
                                 href="/outreach"
                                 aria-label="Open Outreach"
                                 title="Open Outreach"
-                                className="hidden shrink-0 items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:flex xl:px-3"
+                                className="hidden h-10 shrink-0 items-center gap-2 rounded-lg border border-border px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground sm:flex xl:px-3"
                             >
                                 <Target className="w-4 h-4" />
                                 <span className="hidden whitespace-nowrap xl:inline">Open Outreach</span>

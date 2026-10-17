@@ -64,8 +64,8 @@ export function EmailDetailView({
     }, [email.id])
 
     return (
-        <div className="flex-1 overflow-y-auto">
-            <div className="p-4">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="shrink-0 px-4 pt-4">
                 <div className="max-w-3xl mx-auto">
                     <h2 className="text-base font-bold text-foreground mb-3">
                         {email.subject}
@@ -89,73 +89,80 @@ export function EmailDetailView({
                         invertColors={invertColors}
                         onToggleInvertColors={() => setInvertColors(!invertColors)}
                         authStatus={getSenderAuthStatus(fullMessage?.headers)}
+                        className="mb-0"
                     />
+                </div>
+            </div>
 
-                    {email.labels && email.labels.length > 0 && (
-                        <div className="flex items-center gap-2 mt-4 mb-6">
-                            {email.labels.map(label => (
-                                <span
-                                    key={label}
-                                    className="px-2.5 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground font-medium"
-                                >
-                                    {label}
-                                </span>
-                            ))}
-                        </div>
-                    )}
-
-                    <div className="mt-4">
-                        <EmailHtmlViewer
-                            html={fullMessage?.bodyHtml || fullMessage?.htmlBody}
-                            plainText={fullMessage?.bodyText || fullMessage?.plainBody || email.snippet}
-                            invertColors={invertColors}
-                            isLoading={isMessageLoading}
-                            senderEmail={email.from.email}
-                            onMailto={openMailto}
-                        />
-                    </div>
-
-                    <AttachmentList
-                        attachments={attachments}
-                        onDownload={handleDownload}
-                        className="mt-6 p-4 bg-muted/30 rounded-lg"
-                    />
-
-                    {replyActions !== 'none' && (
-                        <div className="mt-8 pt-6 border-t border-border">
-                            <div className="flex items-center gap-3">
-                                {replyActions === 'all' && (
-                                    <>
-                                        <button
-                                            onClick={() => openCompose({ replyToId: email.id })}
-                                            className="inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-colors"
-                                        >
-                                            <Reply className="w-4 h-4" />
-                                            Reply
-                                        </button>
-                                        <button
-                                            onClick={() => openCompose({ replyToId: email.id, replyAll: true })}
-                                            className="inline-flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 text-secondary-foreground rounded-lg text-sm font-medium transition-colors"
-                                        >
-                                            <ReplyAll className="w-4 h-4" />
-                                            Reply All
-                                        </button>
-                                    </>
-                                )}
-                                <button
-                                    onClick={() => openCompose({ forwardId: email.id })}
-                                    className={
-                                        replyActions === 'forwardOnly'
-                                            ? 'inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-colors'
-                                            : 'inline-flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 text-secondary-foreground rounded-lg text-sm font-medium transition-colors'
-                                    }
-                                >
-                                    <Forward className="w-4 h-4" />
-                                    Forward
-                                </button>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+                <div className="p-4">
+                    <div className="max-w-3xl mx-auto">
+                        {email.labels && email.labels.length > 0 && (
+                            <div className="flex items-center gap-2 mb-6">
+                                {email.labels.map(label => (
+                                    <span
+                                        key={label}
+                                        className="px-2.5 py-0.5 text-xs rounded-full bg-secondary text-secondary-foreground font-medium"
+                                    >
+                                        {label}
+                                    </span>
+                                ))}
                             </div>
+                        )}
+
+                        <div>
+                            <EmailHtmlViewer
+                                html={fullMessage?.bodyHtml || fullMessage?.htmlBody}
+                                plainText={fullMessage?.bodyText || fullMessage?.plainBody || email.snippet}
+                                invertColors={invertColors}
+                                isLoading={isMessageLoading}
+                                senderEmail={email.from.email}
+                                onMailto={openMailto}
+                            />
                         </div>
-                    )}
+
+                        <AttachmentList
+                            attachments={attachments}
+                            onDownload={handleDownload}
+                            className="mt-6 p-4 bg-muted/30 rounded-lg"
+                        />
+
+                        {replyActions !== 'none' && (
+                            <div className="mt-8 pt-6 border-t border-border">
+                                <div className="flex items-center gap-3">
+                                    {replyActions === 'all' && (
+                                        <>
+                                            <button
+                                                onClick={() => openCompose({ replyToId: email.id })}
+                                                className="inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-colors"
+                                            >
+                                                <Reply className="w-4 h-4" />
+                                                Reply
+                                            </button>
+                                            <button
+                                                onClick={() => openCompose({ replyToId: email.id, replyAll: true })}
+                                                className="inline-flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 text-secondary-foreground rounded-lg text-sm font-medium transition-colors"
+                                            >
+                                                <ReplyAll className="w-4 h-4" />
+                                                Reply All
+                                            </button>
+                                        </>
+                                    )}
+                                    <button
+                                        onClick={() => openCompose({ forwardId: email.id })}
+                                        className={
+                                            replyActions === 'forwardOnly'
+                                                ? 'inline-flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg text-sm font-medium transition-colors'
+                                                : 'inline-flex items-center gap-2 px-4 py-2 bg-secondary hover:bg-secondary/80 text-secondary-foreground rounded-lg text-sm font-medium transition-colors'
+                                        }
+                                    >
+                                        <Forward className="w-4 h-4" />
+                                        Forward
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
         </div>
