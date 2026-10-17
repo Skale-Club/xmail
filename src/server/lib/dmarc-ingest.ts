@@ -21,16 +21,10 @@ import {
 } from '../../db/schema'
 import { createObjectStorage } from './object-storage'
 import { parseDmarcAttachment, type DmarcParsedReport } from './dmarc-parser'
+import { DMARC_MAILBOX_ADDRESS } from './dmarc-config'
 import { createLogger } from './logger'
 
 const log = createLogger('dmarc.ingest')
-
-/**
- * The mailbox `scripts/seed-dmarc-mailbox.ts` provisions and `skale.club`'s DMARC `rua` now
- * names. Overridable so a different environment (or a future additional reporting domain)
- * does not require a code change, but defaults to the actual address this Fase 1 pass wires up.
- */
-export const DMARC_MAILBOX_ADDRESS = (process.env.DMARC_REPORT_MAILBOX || 'dmarc@skale.club').toLowerCase()
 
 /** Bounds how many unread messages one tick processes, so a burst of mail (legitimate or a
  *  mailbox anyone can write to being abused) cannot make a single tick unbounded. Reports

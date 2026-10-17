@@ -26,11 +26,26 @@ export interface MembershipRow {
 }
 
 /**
+ * Removes internal service mailboxes from the list exposed to the interactive webmail.
+ * The underlying mailbox remains active for server-side jobs such as DMARC ingestion.
+ */
+export function filterUserFacingMailboxes<T extends { email: string }>(
+    mailboxes: readonly T[],
+    hiddenEmails: ReadonlySet<string>,
+): T[] {
+    const normalizedHidden = new Set([...hiddenEmails].map(email => email.trim().toLowerCase()))
+    return mailboxes.filter(mailbox => !normalizedHidden.has(mailbox.email.trim().toLowerCase()))
+}
+
+/**
  * Where a mailbox belongs in the webmail switcher:
  *  - `warmup`: an email_accounts row with the same address has warmup_only = true (a mailbox that
  *    exists only to be warmed; nobody reads it, so the switcher keeps it collapsed);
  *  - `other`: not an operation mailbox (client organization);
- *  - `work`: everything else (the info@ boxes, dmarc@, the requester's own mailbox).
+ *  - `work`: everything else (the info@ boxes and the requester's own mailbox).
+ *
+ * Internal service mailboxes are removed before classification by
+ * `filterUserFacingMailboxes`; they do not belong in any interactive section.
  */
 export type MailboxRole = 'work' | 'warmup' | 'other'
 

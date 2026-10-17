@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { getOperationDomains } from '../../lib/operation-domains'
-import { classifyMailboxes } from './mailbox-organizations'
+import { classifyMailboxes, filterUserFacingMailboxes } from './mailbox-organizations'
 
 const operationDomains = getOperationDomains({
     MAIL_DOMAIN: 'skale.club',
@@ -60,6 +60,20 @@ describe('classifyMailboxes', () => {
         })
         expect(noEnv.get('own')?.isOperationMailbox).toBe(true)
         expect(noEnv.get('info')?.isOperationMailbox).toBe(false)
+    })
+})
+
+describe('filterUserFacingMailboxes', () => {
+    it('removes the technical DMARC mailbox from the webmail list, ignoring case', () => {
+        const visible = filterUserFacingMailboxes(
+            [
+                { id: 'work', email: 'info@skale.club' },
+                { id: 'dmarc', email: 'DMARC@skale.club' },
+            ],
+            new Set(['dmarc@skale.club']),
+        )
+
+        expect(visible).toEqual([{ id: 'work', email: 'info@skale.club' }])
     })
 })
 

@@ -53,7 +53,8 @@ Hoje `GET /api/mail/mailboxes` devolve `unreadCount`, `organizationName`, `isOpe
 - `warmup`: existe `email_accounts` com o mesmo e-mail e `warmup_only = true` (regra 2 das três caixas;
   `CLAUDE.md`). Um `LEFT JOIN email_accounts ON lower(email)` na mesma query agrupada que já existe.
 - `other`: `isOperationMailbox = false` (já calculado).
-- `work`: o resto (as `info@`, `dmarc@`, e a caixa própria do admin).
+- `work`: o resto (as `info@` e a caixa própria do admin). Caixas técnicas, como
+  `dmarc@skale.club`, continuam ativas no servidor mas não aparecem no webmail.
 
 Sem migration: é só leitura cruzada. Sem mudar nada em `email_accounts`.
 

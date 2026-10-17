@@ -3,8 +3,9 @@ import { z } from 'zod'
 import { eq, and, desc, inArray, sql } from 'drizzle-orm'
 import { db } from '../../../db'
 import { mailboxes, mailFolders, users, organizationUsers, organizations, emailAccounts } from '../../../db/schema'
-import { classifyMailboxes } from './mailbox-organizations'
+import { classifyMailboxes, filterUserFacingMailboxes } from './mailbox-organizations'
 import { getOperationDomains } from '../../lib/operation-domains'
+import { DMARC_MAILBOX_ADDRESS } from '../../lib/dmarc-config'
 import { encryptSecret } from '../../lib/crypto'
 import { authenticateNativeUser, createUserMailbox, deleteMailboxById } from '../../lib/native-mail'
 import { isPrivateHostWithDns } from '../../lib/network-guard'
@@ -108,7 +109,7 @@ router.get('/', async (req: Request, res: Response) => {
         // Admins see every mailbox in the system (super-admin impersonation:
         // they can pick any user's inbox from their AccountSwitcher). Regular
         // users only see their own mailboxes.
-        const userMailboxes = user.isAdmin
+        const accessibleMailboxes = user.isAdmin
             ? await db.query.mailboxes.findMany({
                   orderBy: [desc(mailboxes.createdAt)],
               })
@@ -116,6 +117,13 @@ router.get('/', async (req: Request, res: Response) => {
                   where: eq(mailboxes.userId, userId),
                   orderBy: [desc(mailboxes.createdAt)],
               })
+
+        // dmarc@ is an internal report sink consumed by the ingestion job, not a human inbox.
+        // Keep the DB mailbox active, but never expose it to the webmail selector/settings API.
+        const userMailboxes = filterUserFacingMailboxes(
+            accessibleMailboxes,
+            new Set([DMARC_MAILBOX_ADDRESS]),
+        )
 
         // Clear stale syncError from native mailboxes (they don't use IMAP)
         const nativeWithError = userMailboxes.filter(mb => mb.isNative && mb.syncError)
