@@ -29,7 +29,15 @@ LLM **externo** (sem GPU local) e teto de RAM pra nunca ameaçar o email.
 - **Principal (desde 2026-08-14):** OpenAI Codex via OAuth — `provider: openai-codex`,
   `model: gpt-5.6-sol` (explicitamente Sol, não Terra/Luna). A credencial renovável
   vive em `/opt/data/auth.json`; não usa `OPENAI_API_KEY`.
-- **Único fallback:** `opencode-go` / `kimi-k3`.
+- **Único fallback (desde 2026-10-17):** `openrouter` / `moonshotai/kimi-k3`
+  (`OPENROUTER_API_KEY` do `hermes.env`). O fallback anterior, `opencode-go` / `kimi-k3`,
+  passou a recusar o Hermes com `400 MissingSessionID` ("Request is missing
+  x-opencode-session"): o OpenCode Go passou a exigir esse cabeçalho, que o Hermes
+  (upstream de 2026-06-08) não envia; ver https://opencode.ai/docs/go/. Falhava
+  desde pelo menos 2026-10-09, então qualquer instabilidade do Codex derrubava o job (foi o
+  que matou o relatório do Bigode em 2026-10-16). O `kimi-coding` direto também não serve:
+  responde 402 (assinatura vencida desde 2026-08). Backup do config anterior:
+  `/opt/data/config.yaml.bak-pre-journey-*`.
 - A cadeia em `config.yaml` dispara em rate-limit, 5xx ou erro de conexão sem perder a conversa.
 - **Modelo vive no `config.yaml`** (no volume), NÃO em env var — ver "Gotchas" abaixo.
 
@@ -95,6 +103,21 @@ fazer no navegador"):
   prospecção e só é incluída no relatório quando algum saldo fica abaixo do
   limite configurado (500 por padrão) ou chega a zero.
 - `weekly-health-check` — **pausado** desde 2026-08-10 (custo recorrente).
+- `Desempenho diário — Google Ads O Bigode` (`739835a4fd95`) — 09:00 ET diário, entrega no
+  grupo **Hermes | Ads | O Bigode** (`-5433207263`), usa só o MCP `xphere_bigode`
+  (token `xph_` da org O Bigode Português). Só monitora e recomenda; desde 2026-10-17
+  também grava o relatório no Journey do Xphere (`ads_create_memory`, type `observation`)
+  e termina com `Journey: gravado (id …)`.
+
+### Grupo de Ads do O Bigode grava tudo no Journey (2026-10-17)
+
+`telegram.channel_prompts['-5433207263']` no `config.yaml` injeta uma regra em toda
+conversa daquele grupo: qualquer análise feita lá (desempenho, termos, conversões,
+diagnóstico, recomendação, decisão do Vanildo) é gravada no Journey do Xphere com
+`ads_create_memory` do `xphere_bigode` antes da resposta final, consultando
+`ads_search_memories` antes para não duplicar. Gravar memória não autoriza mudar a
+campanha. Para outro grupo de cliente, acrescente uma chave com o id do chat e reinicie
+o container (o prompt é lido na subida do gateway).
 
 ## Notion + Health Check semanal (adicionado 2026-07-08)
 
@@ -272,7 +295,7 @@ Edite `/opt/hermes/hermes.env` e `docker compose up -d --force-recreate`.
    que mostra o estado real e quanto falta.
    **Workaround (testado):** force o provider na chamada.
    ```bash
-   docker exec -u hermes hermes hermes -z "prompt" --provider opencode-go -m kimi-k3
+   docker exec -u hermes hermes hermes -z "prompt" --provider openrouter -m moonshotai/kimi-k3
    ```
    Sem isso é fácil concluir que o Hermes está fora do ar quando ele só precisa de um
    flag. Pior: um `hermes -z` que morre por credencial pode ter **executado ações
@@ -316,7 +339,8 @@ DOCKER_CONFIG=/tmp/emptydocker docker compose up -d
 docker exec -it hermes hermes auth add openai-codex --type oauth
 docker exec hermes hermes config set model.provider openai-codex
 docker exec hermes hermes config set model.default gpt-5.6-sol
-# No picker, selecione OpenCode Go → kimi-k3 como único fallback.
+# No picker, selecione OpenRouter → moonshotai/kimi-k3 como único fallback
+# (OpenCode Go não serve: exige x-opencode-session, ver "Config atual").
 docker exec -it hermes hermes fallback add
 docker compose restart hermes
 ```
