@@ -100,6 +100,30 @@ function patchMailboxMessageQueries(
     )
 }
 
+/**
+ * Shared by every mutation that changes what a message list shows (flags, moves, deletes), so a
+ * refetch can tell whether one of them is still on its way to the server.
+ */
+export const MESSAGE_MUTATION_KEY = ['mail', 'message-mutation'] as const
+
+function messageMutationsInFlight(queryClient: ReturnType<typeof useQueryClient>) {
+    return queryClient.isMutating({ mutationKey: MESSAGE_MUTATION_KEY })
+}
+
+/**
+ * Refetch after a message mutation — but only once the LAST concurrent one settles. A refetch that
+ * runs while another is still in flight reads the server before that change lands and puts its
+ * message back on screen until the next refetch removes it again: the "deleted, came back, then
+ * vanished" flicker when deleting several in a row, or deleting right after opening (mark-as-read).
+ * The settling mutation itself still counts here, hence `> 1`.
+ */
+function settleMessageMutation(queryClient: ReturnType<typeof useQueryClient>) {
+    if (messageMutationsInFlight(queryClient) > 1) return
+    queryClient.invalidateQueries({ queryKey: ['messages'] })
+    queryClient.invalidateQueries({ queryKey: ['search'] })
+    queryClient.invalidateQueries({ queryKey: ['folders'] })
+}
+
 /** `poll` should be set by exactly one mounted observer (the sidebar), not by every caller. */
 export function useFolders(options: { poll?: boolean } = {}) {
     const { selectedMailbox } = useMailbox()
@@ -225,6 +249,10 @@ export function useInfiniteMessages(folderType: string | undefined, limit = 30, 
                 return
             }
             if (Date.now() - lastCheckRef.current < minGapMs) return
+            // A pending delete/move/flag change refetches when it settles; checking now would read
+            // the server before it lands and bring its message back. This fetch is ours, not the
+            // query's, so the mutation's cancelQueries cannot stop it either.
+            if (messageMutationsInFlight(queryClient) > 0) return
             const state = queryClient.getQueryState(queryKey)
             if (!state) return
             if (state.fetchStatus === 'fetching') {
@@ -242,6 +270,8 @@ export function useInfiniteMessages(folderType: string | undefined, limit = 30, 
             try {
                 const fresh = await fetchPage(1)
                 const cached = queryClient.getQueryData<InfiniteData<MessageListResponse>>(queryKey)
+                // A mutation that started while this fetch was out made `fresh` stale already.
+                if (messageMutationsInFlight(queryClient) > 0) return
                 if (cached && firstPageSignature(fresh) !== firstPageSignature(cached.pages[0])) {
                     await queryClient.invalidateQueries({ queryKey, exact: true })
                 }
@@ -320,6 +350,7 @@ export function useUpdateMessage() {
     const { selectedMailbox } = useMailbox()
 
     return useMutation({
+        mutationKey: MESSAGE_MUTATION_KEY,
         mutationFn: ({
             messageId,
             data
@@ -355,11 +386,7 @@ export function useUpdateMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['messages'] })
-            queryClient.invalidateQueries({ queryKey: ['search'] })
-            queryClient.invalidateQueries({ queryKey: ['folders'] })
-        },
+        onSettled: () => settleMessageMutation(queryClient),
     })
 }
 
@@ -368,6 +395,7 @@ export function useDeleteMessage() {
     const { selectedMailbox } = useMailbox()
 
     return useMutation({
+        mutationKey: MESSAGE_MUTATION_KEY,
         mutationFn: (messageId: string) => {
             if (!selectedMailbox) throw new Error('No mailbox selected')
             return mailApi.deleteMessage(selectedMailbox.id, messageId)
@@ -390,11 +418,7 @@ export function useDeleteMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['messages'] })
-            queryClient.invalidateQueries({ queryKey: ['search'] })
-            queryClient.invalidateQueries({ queryKey: ['folders'] })
-        },
+        onSettled: () => settleMessageMutation(queryClient),
     })
 }
 
@@ -403,6 +427,7 @@ export function useArchiveMessage() {
     const { selectedMailbox } = useMailbox()
 
     return useMutation({
+        mutationKey: MESSAGE_MUTATION_KEY,
         mutationFn: (messageId: string) => {
             if (!selectedMailbox) throw new Error('No mailbox selected')
             return mailApi.archiveMessage(selectedMailbox.id, messageId)
@@ -425,11 +450,7 @@ export function useArchiveMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['messages'] })
-            queryClient.invalidateQueries({ queryKey: ['search'] })
-            queryClient.invalidateQueries({ queryKey: ['folders'] })
-        },
+        onSettled: () => settleMessageMutation(queryClient),
     })
 }
 
@@ -438,6 +459,7 @@ export function useSpamMessage() {
     const { selectedMailbox } = useMailbox()
 
     return useMutation({
+        mutationKey: MESSAGE_MUTATION_KEY,
         mutationFn: ({
             messageId,
             isSpam
@@ -467,11 +489,7 @@ export function useSpamMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['messages'] })
-            queryClient.invalidateQueries({ queryKey: ['search'] })
-            queryClient.invalidateQueries({ queryKey: ['folders'] })
-        },
+        onSettled: () => settleMessageMutation(queryClient),
     })
 }
 
@@ -480,6 +498,7 @@ export function useRestoreMessage() {
     const { selectedMailbox } = useMailbox()
 
     return useMutation({
+        mutationKey: MESSAGE_MUTATION_KEY,
         mutationFn: (messageId: string) => {
             if (!selectedMailbox) throw new Error('No mailbox selected')
             return mailApi.restoreMessage(selectedMailbox.id, messageId)
@@ -502,11 +521,7 @@ export function useRestoreMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['messages'] })
-            queryClient.invalidateQueries({ queryKey: ['search'] })
-            queryClient.invalidateQueries({ queryKey: ['folders'] })
-        },
+        onSettled: () => settleMessageMutation(queryClient),
     })
 }
 
@@ -515,6 +530,7 @@ export function useMoveMessage() {
     const { selectedMailbox } = useMailbox()
 
     return useMutation({
+        mutationKey: MESSAGE_MUTATION_KEY,
         mutationFn: ({
             messageId,
             folderId
@@ -543,11 +559,7 @@ export function useMoveMessage() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['messages'] })
-            queryClient.invalidateQueries({ queryKey: ['search'] })
-            queryClient.invalidateQueries({ queryKey: ['folders'] })
-        },
+        onSettled: () => settleMessageMutation(queryClient),
     })
 }
 
@@ -556,6 +568,7 @@ export function useBatchUpdate() {
     const { selectedMailbox } = useMailbox()
 
     return useMutation({
+        mutationKey: MESSAGE_MUTATION_KEY,
         mutationFn: ({
             messageIds,
             action,
@@ -607,11 +620,7 @@ export function useBatchUpdate() {
                 restoreMessageQuerySnapshots(queryClient, context.snapshots)
             }
         },
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['messages'] })
-            queryClient.invalidateQueries({ queryKey: ['search'] })
-            queryClient.invalidateQueries({ queryKey: ['folders'] })
-        },
+        onSettled: () => settleMessageMutation(queryClient),
     })
 }
 
@@ -651,15 +660,12 @@ export function useEmptyFolder() {
     const { selectedMailbox } = useMailbox()
 
     return useMutation({
+        mutationKey: MESSAGE_MUTATION_KEY,
         mutationFn: (folderType: 'trash' | 'spam') => {
             if (!selectedMailbox) throw new Error('No mailbox selected')
             return mailApi.emptyFolder(selectedMailbox.id, folderType)
         },
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['messages'] })
-            queryClient.invalidateQueries({ queryKey: ['search'] })
-            queryClient.invalidateQueries({ queryKey: ['folders'] })
-        },
+        onSettled: () => settleMessageMutation(queryClient),
     })
 }
 
