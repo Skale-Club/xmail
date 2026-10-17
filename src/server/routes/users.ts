@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db } from '../../db'
-import { users, organizationUsers, organizations } from '../../db/schema'
+import { users, organizationUsers, organizations, mailboxes } from '../../db/schema'
 import { eq, and, inArray } from 'drizzle-orm'
 import { isPlatformAdmin } from '../lib/admin'
 import { hashPassword, createUserMailbox, validateEmailDomainForOrg, deleteUserMailbox } from '../lib/native-mail'
@@ -28,7 +28,7 @@ function mapAdminUser(user: {
             slug: string
         }
     }>
-}) {
+}, isActive = true) {
     return {
         id: user.id,
         email: user.email,
@@ -38,6 +38,7 @@ function mapAdminUser(user: {
         emailVerified: user.emailVerified,
         createdAt: user.createdAt,
         lastLoginAt: user.lastLoginAt,
+        isActive,
         organizations: (user.organizations || []).map((membership) => ({
             id: membership.organization.id,
             name: membership.organization.name,
@@ -48,7 +49,8 @@ function mapAdminUser(user: {
 }
 
 async function getAdminUserRecord(userId: string) {
-    const user = await db.query.users.findFirst({
+    const [user, nativeMailbox] = await Promise.all([
+        db.query.users.findFirst({
         where: eq(users.id, userId),
         columns: {
             passwordHash: false,
@@ -70,9 +72,14 @@ async function getAdminUserRecord(userId: string) {
                 },
             },
         },
-    })
+        }),
+        db.query.mailboxes.findFirst({
+            where: and(eq(mailboxes.userId, userId), eq(mailboxes.isNative, true)),
+            columns: { isActive: true },
+        }),
+    ])
 
-    return user ? mapAdminUser(user) : null
+    return user ? mapAdminUser(user, nativeMailbox?.isActive ?? true) : null
 }
 
 // Get current user profile
@@ -387,7 +394,15 @@ router.get('/', async (req: Request, res: Response) => {
             orderBy: (usersTable, { desc }) => [desc(usersTable.createdAt)],
         })
 
-        res.json({ users: allUsers.map(mapAdminUser) })
+        const nativeMailboxRows = await db.query.mailboxes.findMany({
+            where: eq(mailboxes.isNative, true),
+            columns: { userId: true, isActive: true },
+        })
+        const activeByUserId = new Map(nativeMailboxRows.map(mailbox => [mailbox.userId, mailbox.isActive]))
+
+        res.json({
+            users: allUsers.map(user => mapAdminUser(user, activeByUserId.get(user.id) ?? true)),
+        })
     } catch (error) {
         console.error('Error fetching users:', error)
         res.status(500).json({ error: 'Internal server error' })
@@ -456,6 +471,86 @@ router.patch('/:id', async (req: Request, res: Response) => {
             return res.status(400).json({ error: error.errors })
         }
         console.error('Error updating user:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// Admin: reversibly deactivate a user without deleting their mailbox or history.
+router.post('/:id/deactivate', async (req: Request, res: Response) => {
+    try {
+        const requestingUserId = req.headers['x-user-id'] as string
+        const targetUserId = req.params.id
+
+        const requestingUser = requestingUserId
+            ? await db.query.users.findFirst({ where: eq(users.id, requestingUserId) })
+            : null
+        if (!requestingUserId || !requestingUser) return res.status(401).json({ error: 'Unauthorized' })
+        if (!requestingUser.isAdmin) return res.status(403).json({ error: 'Forbidden' })
+        if (requestingUserId === targetUserId) return res.status(400).json({ error: 'Cannot deactivate yourself' })
+
+        const targetUser = await db.query.users.findFirst({ where: eq(users.id, targetUserId) })
+        if (!targetUser) return res.status(404).json({ error: 'User not found' })
+        if (targetUser.isAdmin) {
+            return res.status(400).json({ error: 'Remove platform admin access before deactivating this user' })
+        }
+
+        const { data: authData, error: lookupError } = await supabaseAdminClient.auth.admin.getUserById(targetUserId)
+        if (lookupError || !authData.user) {
+            return res.status(400).json({ error: lookupError?.message ?? 'Auth user not found' })
+        }
+
+        const { error: authError } = await supabaseAdminClient.auth.admin.updateUserById(targetUserId, {
+            ban_duration: '876000h',
+            app_metadata: { ...authData.user.app_metadata, xmail_disabled: true },
+        })
+        if (authError) return res.status(400).json({ error: authError.message })
+
+        await db.update(mailboxes)
+            .set({ isActive: false, updatedAt: new Date() })
+            .where(and(eq(mailboxes.userId, targetUserId), eq(mailboxes.isNative, true)))
+
+        invalidateUser(targetUserId)
+        res.json({ user: await getAdminUserRecord(targetUserId) })
+    } catch (error) {
+        console.error('Error deactivating user:', error)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+})
+
+// Admin: restore a deactivated account and its native mailbox.
+router.post('/:id/activate', async (req: Request, res: Response) => {
+    try {
+        const requestingUserId = req.headers['x-user-id'] as string
+        const targetUserId = req.params.id
+
+        const requestingUser = requestingUserId
+            ? await db.query.users.findFirst({ where: eq(users.id, requestingUserId) })
+            : null
+        if (!requestingUserId || !requestingUser) return res.status(401).json({ error: 'Unauthorized' })
+        if (!requestingUser.isAdmin) return res.status(403).json({ error: 'Forbidden' })
+
+        const targetUser = await db.query.users.findFirst({ where: eq(users.id, targetUserId) })
+        if (!targetUser) return res.status(404).json({ error: 'User not found' })
+
+        const { data: authData, error: lookupError } = await supabaseAdminClient.auth.admin.getUserById(targetUserId)
+        if (lookupError || !authData.user) {
+            return res.status(400).json({ error: lookupError?.message ?? 'Auth user not found' })
+        }
+
+        const { error: authError } = await supabaseAdminClient.auth.admin.updateUserById(targetUserId, {
+            ban_duration: 'none',
+            app_metadata: { ...authData.user.app_metadata, xmail_disabled: false },
+        })
+        if (authError) return res.status(400).json({ error: authError.message })
+
+        await db.update(mailboxes)
+            .set({ isActive: true, updatedAt: new Date() })
+            .where(and(eq(mailboxes.userId, targetUserId), eq(mailboxes.isNative, true)))
+
+        invalidateUser(targetUserId)
+        res.json({ user: await getAdminUserRecord(targetUserId) })
+    } catch (error) {
+        console.error('Error activating user:', error)
         res.status(500).json({ error: 'Internal server error' })
     }
 })

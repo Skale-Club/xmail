@@ -15,6 +15,7 @@ type CompactUser = {
     firstName: string
     lastName: string
     emailVerified: boolean
+    disabled: boolean
 }
 
 type Entry = {
@@ -87,6 +88,7 @@ export async function resolveUserFromToken(token: string): Promise<ResolveResult
             firstName: (u.user_metadata?.firstName as string | undefined) ?? '',
             lastName: (u.user_metadata?.lastName as string | undefined) ?? '',
             emailVerified: Boolean(u.email_confirmed_at || (u as { confirmed_at?: string | null }).confirmed_at),
+            disabled: u.app_metadata?.xmail_disabled === true,
         }
         // Cache successes only — never cache 401s (token could be revoked / rotated rapidly)
         evictExpired(now)

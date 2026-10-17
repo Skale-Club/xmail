@@ -32,6 +32,17 @@ export async function authenticateNativeUser(email: string, password: string) {
 
     if (!user || !user.passwordHash) return null
 
+    const activeMailbox = await db.query.mailboxes.findFirst({
+        where: and(
+            eq(mailboxes.userId, user.id),
+            eq(mailboxes.email, user.email.toLowerCase()),
+            eq(mailboxes.isNative, true),
+            eq(mailboxes.isActive, true),
+        ),
+        columns: { id: true },
+    })
+    if (!activeMailbox) return null
+
     const valid = await bcrypt.compare(password, user.passwordHash)
     return valid ? user : null
 }

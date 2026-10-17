@@ -211,6 +211,9 @@ export function createMXServer() {
                         console.error(`[MX] Local user has no native mailbox: ${rcpt}`)
                         return callback(smtpError('4.2.1 Mailbox not provisioned; please retry later', 451))
                     }
+                    if (!companion.isActive) {
+                        return callback(smtpError('5.2.1 Mailbox disabled', 550))
+                    }
                     localMailboxId = companion.id
                     hasRoute = true
                 } else {
@@ -299,6 +302,9 @@ export function createMXServer() {
                             if (!companion) {
                                 console.error(`[MX] Accepted local recipient has no native mailbox: ${rcpt}`)
                                 throw new Error(`Mailbox not provisioned for ${rcpt}`)
+                            }
+                            if (!companion.isActive) {
+                                throw new Error(`Accepted recipient became disabled during delivery: ${rcpt}`)
                             }
                             if (companion) {
                                 await storeInbound(companion.id, parsed, { isSpam })

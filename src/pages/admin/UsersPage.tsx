@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertCircle, Search, Shield, ShieldOff, Users as UsersIcon } from 'lucide-react'
+import { AlertCircle, Search, Shield, ShieldOff, UserCheck, UserX, Users as UsersIcon } from 'lucide-react'
 import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
@@ -31,6 +31,7 @@ type PlatformUser = {
     emailVerified: boolean
     createdAt: string
     lastLoginAt: string | null
+    isActive: boolean
     organizations: UserOrgMembership[]
 }
 
@@ -45,6 +46,8 @@ export default function UsersPage() {
     const [adminToggleTarget, setAdminToggleTarget] = useState<PlatformUser | null>(null)
     const [isTogglingAdmin, setIsTogglingAdmin] = useState(false)
     const [roleChangeKey, setRoleChangeKey] = useState<string | null>(null)
+    const [statusTarget, setStatusTarget] = useState<PlatformUser | null>(null)
+    const [isChangingStatus, setIsChangingStatus] = useState(false)
 
     useEffect(() => {
         void fetchUsers()
@@ -124,6 +127,27 @@ export default function UsersPage() {
         }
     }
 
+    async function handleConfirmStatusChange() {
+        if (!statusTarget) return
+        const action = statusTarget.isActive ? 'deactivate' : 'activate'
+        setIsChangingStatus(true)
+        try {
+            const data = await apiFetch<{ user: PlatformUser }>(`/api/users/${statusTarget.id}/${action}`, {
+                method: 'POST',
+            })
+            setUsers(current => current.map(user => user.id === statusTarget.id ? data.user : user))
+            toast({
+                title: action === 'deactivate' ? 'User and mailbox deactivated' : 'User and mailbox activated',
+                variant: 'success',
+            })
+            setStatusTarget(null)
+        } catch (err) {
+            toast({ title: err instanceof Error ? err.message : `Failed to ${action} user`, variant: 'destructive' })
+        } finally {
+            setIsChangingStatus(false)
+        }
+    }
+
     return (
         <div className="space-y-6">
             <PageHeader
@@ -190,11 +214,10 @@ export default function UsersPage() {
                                                     <div className="text-sm text-muted-foreground">{user.email}</div>
                                                 </TableCell>
                                                 <TableCell>
-                                                    {user.isAdmin ? (
-                                                        <Badge>Platform admin</Badge>
-                                                    ) : (
-                                                        <Badge variant="secondary">Standard</Badge>
-                                                    )}
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {user.isAdmin ? <Badge>Platform admin</Badge> : <Badge variant="secondary">Standard</Badge>}
+                                                        {user.isActive ? <Badge variant="secondary">Active</Badge> : <Badge variant="destructive">Deactivated</Badge>}
+                                                    </div>
                                                 </TableCell>
                                                 <TableCell>
                                                     {user.organizations.length === 0 ? (
@@ -227,17 +250,20 @@ export default function UsersPage() {
                                                     )}
                                                 </TableCell>
                                                 <TableCell className="text-right">
-                                                    <Button
-                                                        variant="outline"
-                                                        size="sm"
-                                                        onClick={() => setAdminToggleTarget(user)}
-                                                    >
-                                                        {user.isAdmin ? (
-                                                            <><ShieldOff className="mr-2 h-4 w-4" /> Demote</>
-                                                        ) : (
-                                                            <><Shield className="mr-2 h-4 w-4" /> Promote</>
+                                                    <div className="flex justify-end gap-2">
+                                                        <Button variant="outline" size="sm" onClick={() => setAdminToggleTarget(user)}>
+                                                            {user.isAdmin ? <><ShieldOff className="mr-2 h-4 w-4" /> Demote</> : <><Shield className="mr-2 h-4 w-4" /> Promote</>}
+                                                        </Button>
+                                                        {!user.isAdmin && (
+                                                            <Button
+                                                                variant={user.isActive ? 'destructive' : 'outline'}
+                                                                size="sm"
+                                                                onClick={() => setStatusTarget(user)}
+                                                            >
+                                                                {user.isActive ? <><UserX className="mr-2 h-4 w-4" /> Deactivate</> : <><UserCheck className="mr-2 h-4 w-4" /> Activate</>}
+                                                            </Button>
                                                         )}
-                                                    </Button>
+                                                    </div>
                                                 </TableCell>
                                             </TableRow>
                                         ))}
@@ -271,6 +297,18 @@ export default function UsersPage() {
                 variant={adminToggleTarget?.isAdmin ? 'danger' : 'warning'}
                 loading={isTogglingAdmin}
                 onConfirm={() => void handleConfirmAdminToggle()}
+            />
+            <ConfirmDialog
+                open={statusTarget !== null}
+                onOpenChange={(open) => { if (!open) setStatusTarget(null) }}
+                title={statusTarget?.isActive ? 'Deactivate user and mailbox' : 'Reactivate user and mailbox'}
+                description={statusTarget?.isActive
+                    ? `${statusTarget.email} will immediately lose web, SMTP and IMAP access. New inbound mail will be rejected. Existing messages are preserved.`
+                    : `${statusTarget?.email} will regain access and the mailbox will accept mail again.`}
+                confirmLabel={statusTarget?.isActive ? 'Deactivate' : 'Reactivate'}
+                variant={statusTarget?.isActive ? 'danger' : 'warning'}
+                loading={isChangingStatus}
+                onConfirm={() => void handleConfirmStatusChange()}
             />
         </div>
     )

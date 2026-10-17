@@ -117,6 +117,14 @@ export function createApiAuthMiddleware(): RequestHandler {
             return res.status(401).json({ error: error ?? 'Invalid or expired token' })
         }
 
+        // Offboarded users remain in Supabase and in the local database so their mailbox
+        // history is preserved. The admin deactivation endpoint sets this server-owned
+        // app_metadata flag and invalidates the auth cache, making the block immediate even
+        // for an access token that has not expired yet.
+        if (user.disabled) {
+            return res.status(403).json({ error: 'Account disabled' })
+        }
+
         req.headers['x-user-id'] = user.id
         req.headers['x-user-email'] = user.email ?? ''
         req.headers['x-user-first-name'] = user.firstName

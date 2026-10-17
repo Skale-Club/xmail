@@ -121,7 +121,7 @@ router.get('/', async (req: Request, res: Response) => {
         // dmarc@ is an internal report sink consumed by the ingestion job, not a human inbox.
         // Keep the DB mailbox active, but never expose it to the webmail selector/settings API.
         const userMailboxes = filterUserFacingMailboxes(
-            accessibleMailboxes,
+            accessibleMailboxes.filter(mailbox => mailbox.isActive),
             new Set([DMARC_MAILBOX_ADDRESS]),
         )
 
