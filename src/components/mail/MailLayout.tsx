@@ -29,7 +29,9 @@ import {
     ShieldAlert,
     Users,
     Shield,
-    Target
+    Target,
+    PanelLeftOpen,
+    PanelLeftClose
 } from 'lucide-react'
 import { useFolders } from '../../hooks/useMail'
 import { useMailboxLiveSync } from '../../hooks/useMailboxEvents'
@@ -61,6 +63,32 @@ interface SidebarContentProps {
     openCompose: () => void
 }
 
+export function SidebarToggleButton({
+    isCollapsed,
+    onToggle,
+}: {
+    isCollapsed: boolean
+    onToggle: () => void
+}) {
+    const label = isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'
+
+    return (
+        <button
+            type="button"
+            onClick={onToggle}
+            className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:inline-flex"
+            title={label}
+            aria-label={label}
+            aria-expanded={!isCollapsed}
+            aria-controls="mail-sidebar-navigation"
+        >
+            {isCollapsed
+                ? <PanelLeftOpen className="h-5 w-5" />
+                : <PanelLeftClose className="h-5 w-5" />}
+        </button>
+    )
+}
+
 function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, branding, closeSidebar, openCompose }: SidebarContentProps) {
     const { data: foldersData } = useFolders({ poll: true })
     const inboxUnread = findFolderByKind(foldersData?.folders, 'inbox')?.unread ?? 0
@@ -86,14 +114,10 @@ function SidebarContent({ isCollapsed, setIsCollapsed, isMobile, location, brand
         <>
         <div className="flex items-center justify-between h-16 px-4 border-b border-border">
             <div className="flex items-center gap-3 overflow-hidden">
-                <button
-                    onClick={() => setIsCollapsed(!isCollapsed)}
-                    className="p-2 rounded-lg hover:bg-accent text-muted-foreground shrink-0 hidden lg:block"
-                    title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-                    aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-                >
-                    <Menu className="w-5 h-5" />
-                </button>
+                <SidebarToggleButton
+                    isCollapsed={isCollapsed}
+                    onToggle={() => setIsCollapsed(!isCollapsed)}
+                />
                 {(!isCollapsed || isMobile) && (
                     <Link href="/mail/inbox" className="flex items-center gap-2" onClick={closeSidebar}>
                         <AppLogo className="h-8 w-8 shrink-0" />
@@ -300,13 +324,13 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
 
             <div className="flex h-screen">
                 {!isMobile && (
-                    <aside className={`${isCollapsed ? 'w-[72px]' : 'w-72'} shrink-0 h-full bg-card border-r border-border flex flex-col transition-all duration-300 ease-in-out`}>
+                    <aside id="mail-sidebar-navigation" className={`${isCollapsed ? 'w-[72px]' : 'w-72'} shrink-0 h-full bg-card border-r border-border flex flex-col transition-all duration-300 ease-in-out`}>
                         <SidebarContent isCollapsed={isCollapsed} setIsCollapsed={setIsCollapsed} isMobile={isMobile} location={location} branding={branding} closeSidebar={closeSidebar} openCompose={openCompose} />
                     </aside>
                 )}
 
                 {isMobile && sidebarOpen && (
-                    <aside className="fixed top-0 left-0 z-50 h-full w-72 bg-card border-r border-border shadow-lg flex flex-col animate-slide-in-left">
+                    <aside id="mail-sidebar-navigation" className="fixed top-0 left-0 z-50 h-full w-72 bg-card border-r border-border shadow-lg flex flex-col animate-slide-in-left">
                         <SidebarContent isCollapsed={isCollapsed} setIsCollapsed={setIsCollapsed} isMobile={isMobile} location={location} branding={branding} closeSidebar={closeSidebar} openCompose={openCompose} />
                     </aside>
                 )}
