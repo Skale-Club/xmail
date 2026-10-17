@@ -12,7 +12,7 @@ systems in four repositories plus one home server.
 - **Keep it current:** any change to prospecting behavior (a rule, a limit, a new tool, a new
   step, a host move) updates this file **in the same commit** as the code. The other repos'
   `CLAUDE.md` files point here with the same rule. After updating, refresh the Notion mirror.
-- **Last reviewed:** 2026-10-15.
+- **Last reviewed:** 2026-10-17.
 - **Taking over?** Read [`handoff-2026-10-08.md`](handoff-2026-10-08.md) first: story, access, current state, open items.
 
 ---
@@ -76,6 +76,13 @@ Kai is a second agent with limited Xmail access (exactly `campaigns:copy`, enfor
 4. **Enrich in Xphere.** Xphere verifies each email and runs the website analyzer (site
    presence, booking platform, screenshots, score, insights). Booking-platform emails are marked
    `invalid` with provider `platform_rule` and never spend verification credit.
+   Verification runs on its own since 2026-10-17: `skale-cron` fires Xphere's
+   `/api/cron/prospect-verify-tick` every 30 minutes (`PROSPECTING_AUTO_VERIFY=1`, at most 100
+   checks a day), and the tick imports every `ok` result into Xmail itself. When MillionVerifier
+   and NeverBounce are both out of credits, the tick stops and sends one Telegram alert a day.
+   **Scraping never waits on verification credit:** prospects keep arriving and queue unverified
+   until the next top-up. Before 2026-10-17 the tick was never scheduled, so nothing was verified
+   between a manual batch on 2026-10-08 and that date.
 5. **Import to Xmail.** Prospects with a verified email become Xmail leads, carrying their custom
    fields (`has_owned_website`, `web_presence_type`, `booking_platform`, `source_run_id`, insights).
    Xmail refuses platform emails again on import.
