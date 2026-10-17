@@ -720,7 +720,7 @@ function TrashDetailPanel({
     onRestore: (id: string) => void
 }) {
     return (
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable]">
             <div className="p-4">
                 <div className="max-w-3xl mx-auto">
                     <div className="flex items-center gap-3 py-2 border-b border-border mb-3">
@@ -776,7 +776,7 @@ function DraftDetailPanel({
     const fullMessage = messageData?.message
 
     return (
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable]">
             <div className="p-4">
                 <div className="max-w-3xl mx-auto">
                     <EmailMessageHeader
@@ -829,7 +829,7 @@ function SpamDetailPanel({
     const [invertColors, setInvertColors] = useState(false)
 
     return (
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable]">
             <div className="p-4">
                 <div className="max-w-3xl mx-auto">
                     <EmailMessageHeader

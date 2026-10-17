@@ -152,7 +152,7 @@ export function EmailMessageHeader({
                     )}
                 </div>
             )}
-            <p className="text-xs text-muted-foreground flex-shrink-0 self-center">
+            <p className="w-[10.5rem] whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground flex-shrink-0 self-center">
                 {date.toLocaleString()}
             </p>
         </div>
