@@ -89,13 +89,16 @@ Useful success lines:
 Useful rejection/error lines:
 
 ```text
-[MX] Greylisted: ...
 [MX] AUTH REJECT ...
 [MX] Spamhaus-listed IP rejected: ...
 [MX] Processing error: ...
 [RouteMatcher] ... NO MATCHING ROUTES
 [RouteMatcher] ... domain "..." has NO ORG
 ```
+
+Greylisting is disabled: a valid local recipient is accepted on the first delivery attempt.
+The MX still applies per-IP connection throttling, Spamhaus checks, and SPF/DKIM/DMARC
+verification.
 
 ## Diagnostics
 

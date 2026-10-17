@@ -14,7 +14,7 @@ const queryClientMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../../db', () => ({ queryClient: queryClientMock }))
 
-import { isOwnMeshSender } from '../mx-guard'
+import { isOwnMeshSender, shouldGreylist } from '../mx-guard'
 
 /** Fakes queryClient's tagged-template call: resolves the SELECT to `rows`. */
 function stubQuery(rows: Array<{ id: string }>) {
@@ -66,5 +66,18 @@ describe('isOwnMeshSender', () => {
     it('fails closed (not exempt) on a database error', async () => {
         stubQueryError(new Error('connection reset'))
         await expect(isOwnMeshSender('warmup1@ourdomain.com')).resolves.toBe(false)
+    })
+})
+
+describe('shouldGreylist', () => {
+    it('accepts a new sender immediately without touching the greylist database', async () => {
+        await expect(
+            shouldGreylist(
+                '159.183.204.205',
+                'bounce@signin.autodesk.com',
+                'info@stuscle.com',
+            ),
+        ).resolves.toBe(false)
+        expect(queryClientMock).not.toHaveBeenCalled()
     })
 })
