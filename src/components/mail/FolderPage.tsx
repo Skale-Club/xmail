@@ -529,19 +529,21 @@ export function FolderPage({ kind, title, icon, emptyMessage, emptyStateIcon }: 
 
     const headerRow = (
         <div className="px-4 py-2 border-b border-border bg-background">
-            <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2">
                     {icon}
                     <h1 className="text-lg font-bold text-foreground">{title}</h1>
                 </div>
-                <div className="flex items-center gap-2">
-                    <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
-                        <button onClick={() => setFilter('all')} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'all' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>All</button>
-                        <button onClick={() => setFilter('unread')} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'unread' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Unread {unreadCount > 0 && `(${unreadCount})`}</button>
-                        {!crossFolder && (
-                            <button onClick={() => setFilter('starred')} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'starred' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Starred</button>
-                        )}
-                        <button onClick={() => setFilter('attachments')} className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'attachments' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Attachments</button>
+                <div className="ml-auto flex min-w-0 max-w-full items-center gap-2">
+                    <div className="max-w-full overflow-x-auto rounded-lg [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                        <div className="flex min-w-max items-center gap-1 rounded-lg bg-muted p-1">
+                            <button onClick={() => setFilter('all')} className={`shrink-0 whitespace-nowrap px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'all' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>All</button>
+                            <button onClick={() => setFilter('unread')} className={`shrink-0 whitespace-nowrap px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'unread' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Unread {unreadCount > 0 && `(${unreadCount})`}</button>
+                            {!crossFolder && (
+                                <button onClick={() => setFilter('starred')} className={`shrink-0 whitespace-nowrap px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'starred' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Starred</button>
+                            )}
+                            <button onClick={() => setFilter('attachments')} className={`shrink-0 whitespace-nowrap px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${filter === 'attachments' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Attachments</button>
+                        </div>
                     </div>
                     {(kind === 'trash' || kind === 'spam') && emails.length > 0 && (
                         <div className="relative group">
