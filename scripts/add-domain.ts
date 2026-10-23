@@ -28,6 +28,7 @@ interface Args {
     domain: string
     selector: string
     mailHost: string
+    returnPathTarget: string
 }
 
 function parseArgs(): Args {
@@ -42,7 +43,7 @@ function parseArgs(): Args {
     const domain = get('domain')?.toLowerCase().trim()
 
     if (!org || !slug || !domain) {
-        console.error('Usage: npx tsx scripts/add-domain.ts --org "Name" --slug the-slug --domain example.com [--selector skaleclub]')
+        console.error('Usage: npx tsx scripts/add-domain.ts --org "Name" --slug the-slug --domain example.com [--selector skaleclub] [--mail-domain skale.club]')
         process.exit(1)
     }
 
@@ -53,7 +54,12 @@ function parseArgs(): Args {
     const mailHost = get('mail-host')
         || (envMailHost && envMailHost.includes('.') && envMailHost !== 'localhost' ? envMailHost : 'mx.skale.club')
 
-    return { org, slug, domain, selector: get('selector') || 'skaleclub', mailHost }
+    // The Return-Path target is rp.<MAIL_DOMAIN> (see RETURN_PATH_TARGET in routes/domains.ts),
+    // but the local .env's MAIL_DOMAIN is the dev value skaleclub.mail, so the env is not
+    // trusted here either: production's MAIL_DOMAIN is skale.club.
+    const returnPathTarget = `rp.${get('mail-domain') || 'skale.club'}`
+
+    return { org, slug, domain, selector: get('selector') || 'skaleclub', mailHost, returnPathTarget }
 }
 
 /**
@@ -158,6 +164,7 @@ async function main() {
         console.log()
         console.log(`  autoconfig.${domain.name}.    CNAME  ${mailHost}.`)
         console.log(`  autodiscover.${domain.name}.  CNAME  ${mailHost}.`)
+        console.log(`  rp.${domain.name}.            CNAME  ${args.returnPathTarget}.   <- Return-Path`)
         console.log()
         console.log(`  Depois da propagacao, verificar:`)
         console.log(`    POST https://mail.skale.club/api/domains/${domain.id}/verify`)
