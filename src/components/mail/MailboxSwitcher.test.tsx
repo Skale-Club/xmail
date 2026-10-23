@@ -236,6 +236,20 @@ describe('MailboxSwitcherButton and panel', () => {
         await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull())
     })
 
+    it('copies a mailbox address without switching to it or closing the panel', async () => {
+        const writeText = vi.fn(() => Promise.resolve())
+        Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+        renderSwitcher()
+        await openPanel()
+        // The copy button is a mouse-only affordance (aria-hidden), so find it by its title.
+        fireEvent.click(screen.getByTitle('Copy dmarc@skale.club'))
+
+        expect(writeText).toHaveBeenCalledWith('dmarc@skale.club')
+        expect(state.setSelected).not.toHaveBeenCalled()
+        await waitFor(() => expect(screen.getAllByTitle('Copied')).toHaveLength(1))
+        expect(screen.getAllByRole('listbox', { hidden: true }).length).toBeGreaterThan(0)
+    })
+
     it('closes with Escape and gives focus back to the trigger', async () => {
         renderSwitcher()
         await openPanel()

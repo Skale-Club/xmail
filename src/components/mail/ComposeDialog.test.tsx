@@ -78,6 +78,16 @@ vi.mock('./ContactAutocomplete', () => ({
 
 vi.mock('../ui/toaster', () => ({ toast: vi.fn() }))
 
+// The From picker's options stay visibility-hidden in jsdom (Radix never measures a position there),
+// so look them up including hidden nodes and match on their text.
+async function findSenderOption(email: string): Promise<HTMLElement> {
+    return waitFor(() => {
+        const option = screen.queryAllByRole('option', { hidden: true }).find(node => node.textContent?.includes(email))
+        if (!option) throw new Error(`No From option for ${email}`)
+        return option
+    })
+}
+
 function renderDialog() {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return render(
@@ -94,6 +104,13 @@ describe('ComposeDialog', () => {
         mocks.closeCompose.mockReset()
         mocks.options = { replyToId: 'm1', replyAll: true, mailboxId: 'mb1' }
         mocks.selectedId = 'mb1'
+        // The From picker is a Radix popover with a cmdk list; jsdom lacks what they measure with.
+        Element.prototype.scrollIntoView = vi.fn()
+        globalThis.ResizeObserver = class {
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+        }
     })
     afterEach(() => cleanup())
 
@@ -119,16 +136,27 @@ describe('ComposeDialog', () => {
         // The sidebar moves to another mailbox while the compose window is open.
         mocks.selectedId = 'mb2'
 
-        const from = screen.getByLabelText('From') as HTMLSelectElement
-        expect(from.value).toBe('mb1')
-        fireEvent.change(from, { target: { value: 'mb2' } })
+        const from = screen.getByLabelText('From')
+        expect(from.textContent).toContain('info@skale.club')
+        fireEvent.click(from)
+        fireEvent.click(await findSenderOption('contato@xkedule.com'))
         // With nothing typed yet the message is rebuilt for the new sender (its own signature).
         await waitFor(() => expect((screen.getByRole('button', { name: /send/i }) as HTMLButtonElement).disabled).toBe(false))
-        expect((screen.getByLabelText('From') as HTMLSelectElement).value).toBe('mb2')
+        expect(screen.getByLabelText('From').textContent).toContain('contato@xkedule.com')
 
         fireEvent.click(screen.getByRole('button', { name: /send/i }))
         await waitFor(() => expect(mocks.sendMock).toHaveBeenCalledTimes(1))
         expect(mocks.sendMock.mock.calls[0][0].mailboxId).toBe('mb2')
+    })
+
+    it('closes only the From picker on Escape, not the compose window', async () => {
+        renderDialog()
+        await screen.findByLabelText('Body')
+        fireEvent.click(screen.getByLabelText('From'))
+        const option = await findSenderOption('contato@xkedule.com')
+        fireEvent.keyDown(option, { key: 'Escape' })
+        await waitFor(() => expect(screen.queryAllByRole('option', { hidden: true })).toHaveLength(0))
+        expect(mocks.closeCompose).not.toHaveBeenCalled()
     })
 
     it('sends from the mailbox that owns the original even if the selection changed meanwhile', async () => {

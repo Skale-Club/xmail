@@ -19,6 +19,7 @@ import {
     recipientsToString,
 } from './compose-body'
 import { sendableMailboxes, mailboxOptionLabel } from './compose-sender'
+import { ComposeFromPicker } from './ComposeFromPicker'
 import {
     Send,
     X,
@@ -92,6 +93,7 @@ export function ComposeDialog() {
     const { data: originalMessage, isError: originalFailed } = useMessage(sourceMessageId, originMailboxId)
 
     const [fromMailboxId, setFromMailboxId] = React.useState<string | null>(originMailboxId)
+    const [fromPickerOpen, setFromPickerOpen] = React.useState(false)
     const [email, setEmail] = React.useState<ComposeEmail>(EMPTY_EMAIL)
     const [showCc, setShowCc] = React.useState(false)
     const [showBcc, setShowBcc] = React.useState(false)
@@ -563,13 +565,14 @@ export function ComposeDialog() {
         // While the discard confirmation is up, the keyboard belongs to it.
         onSend: () => { if (!discardConfirmOpen) void handleSend() },
         onSaveDraft: () => { if (!discardConfirmOpen) void handleSaveDraftClick() },
-        onEscape: (event) => {
+        onEscape: () => {
             if (discardConfirmOpen) {
                 setDiscardConfirmOpen(false)
                 return
             }
-            // Esc inside the From select only closes the select.
-            if ((event.target as HTMLElement | null)?.tagName === 'SELECT') return
+            // Esc while the From picker is open only closes the picker (handlers come from the render
+            // before the picker's own Esc handler closed it, so the flag is still true here).
+            if (fromPickerOpen) return
             void handleClose()
         }
     })
@@ -705,16 +708,14 @@ export function ComposeDialog() {
                         <label htmlFor="compose-from" className="w-12 text-xs font-medium text-muted-foreground uppercase tracking-wide shrink-0">From</label>
                         <div className="flex-1 min-w-0">
                             {senders.length > 1 ? (
-                                <select
+                                <ComposeFromPicker
                                     id="compose-from"
-                                    value={fromMailboxId ?? ''}
-                                    onChange={(event) => handleFromChange(event.target.value)}
-                                    className="w-full px-2 py-1.5 bg-transparent border-0 focus:ring-0 text-sm text-foreground outline-none cursor-pointer"
-                                >
-                                    {senders.map(mailbox => (
-                                        <option key={mailbox.id} value={mailbox.id}>{mailboxOptionLabel(mailbox)}</option>
-                                    ))}
-                                </select>
+                                    senders={senders}
+                                    value={fromMailboxId}
+                                    onChange={handleFromChange}
+                                    open={fromPickerOpen}
+                                    onOpenChange={setFromPickerOpen}
+                                />
                             ) : (
                                 <span id="compose-from" className="block px-2 py-1.5 text-sm text-foreground truncate">
                                     {fromMailbox ? mailboxOptionLabel(fromMailbox) : ''}

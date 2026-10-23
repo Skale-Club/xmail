@@ -1,6 +1,6 @@
 import React from 'react'
 import { Link } from 'wouter'
-import { AlertCircle, Check, ChevronDown, ChevronRight, Mail, Pin, Plus, Search, Settings, X } from 'lucide-react'
+import { AlertCircle, Check, ChevronDown, ChevronRight, Copy, Mail, Pin, Plus, Search, Settings, X } from 'lucide-react'
 import { useMailbox, type Mailbox } from '../../hooks/useMailbox'
 import { cn } from '../../lib/utils'
 import {
@@ -45,6 +45,19 @@ function MailboxOptionRow({
 }) {
     const unreadBadge = formatUnreadBadge(mailbox.unreadCount)
     const domain = mailboxDomain(mailbox.email)
+    const [copied, setCopied] = React.useState(false)
+
+    React.useEffect(() => {
+        if (!copied) return
+        const timer = window.setTimeout(() => setCopied(false), 1500)
+        return () => window.clearTimeout(timer)
+    }, [copied])
+
+    const copyAddress = (event: React.MouseEvent) => {
+        // Copying must not switch to the mailbox or close the panel.
+        event.stopPropagation()
+        void navigator.clipboard?.writeText(mailbox.email).then(() => setCopied(true), () => undefined)
+    }
 
     return (
         <div role="presentation" className="group flex min-w-0 items-center">
@@ -80,6 +93,20 @@ function MailboxOptionRow({
                 ) : null}
                 {selected ? <Check className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" /> : null}
             </div>
+            <button
+                type="button"
+                tabIndex={-1}
+                // Mouse affordance only, like the pin button below.
+                aria-hidden="true"
+                onClick={copyAddress}
+                title={copied ? 'Copied' : `Copy ${mailbox.email}`}
+                className={cn(
+                    'ml-0.5 shrink-0 rounded-md p-1.5 transition-opacity hover:bg-accent focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    copied ? 'text-primary opacity-100' : 'text-muted-foreground opacity-0 group-hover:opacity-100',
+                )}
+            >
+                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
             <button
                 type="button"
                 tabIndex={-1}
