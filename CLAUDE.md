@@ -232,7 +232,7 @@ prospecção depende destas três regras:
 - Regra 2/3 para as caixas de warm-up: garantida — `warmup_only=true` é filtrado em
   `agent-outreach.ts` (matrícula pelo agente) e em `campaigns.ts` (ativação).
 - Regra 1/3 para as `info@`: **garantida desde 2026-09-30** (`63982a9`). `OUTREACH_PROTECTED_DOMAINS`
-  leva os oito domínios da operação no `run_app_container` do `build-deploy.yml`; somado ao
+  leva os domínios da operação (nove desde 2026-10-23, com `brasilshowdown.com`) no `run_app_container` do `build-deploy.yml`; somado ao
   `MAIL_DOMAIN` (`skale.club`), nenhum endereço de domínio da empresa pode ser matriculado nem
   ativado como remetente (`checkProtectedSendingDomains`, em `campaigns.ts` e `agent-outreach.ts`).
   Provado dentro do container de produção: `info@xkedule.com`, `contato@xphere.app` e

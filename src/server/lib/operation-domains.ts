@@ -1,6 +1,6 @@
 /**
  * The operation's own domains: MAIL_DOMAIN plus the comma-separated
- * OUTREACH_PROTECTED_DOMAINS list (the eight company domains in production).
+ * OUTREACH_PROTECTED_DOMAINS list (the company domains in production).
  *
  * One source of truth for two questions:
  *  - which domains cold outreach must never send from (campaigns.ts), and
