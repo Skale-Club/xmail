@@ -56,7 +56,7 @@ export default defineConfig(({ mode }) => {
             appConfigPlugin({ supabaseUrl, supabaseAnonKey, appName, faviconUrl, appleTouchIconUrl: appleTouchIcon }),
             VitePWA({
                 registerType: 'autoUpdate',
-                includeAssets: ['brand-mark.png', 'favicon.png', 'apple-touch-icon.png', 'pwa-icon-192.png', 'pwa-icon-512.png'],
+                includeAssets: ['brand-mark.png', 'favicon.png', 'apple-touch-icon.png', 'pwa-icon-192.png', 'pwa-icon-512.png', 'pwa-maskable-192.png', 'pwa-maskable-512.png'],
                 manifest: {
                     name: appName,
                     short_name: 'Mail',
@@ -81,7 +81,13 @@ export default defineConfig(({ mode }) => {
                             purpose: 'any',
                         },
                         {
-                            src: '/pwa-icon-512.png',
+                            src: '/pwa-maskable-192.png',
+                            sizes: '192x192',
+                            type: 'image/png',
+                            purpose: 'maskable',
+                        },
+                        {
+                            src: '/pwa-maskable-512.png',
                             sizes: '512x512',
                             type: 'image/png',
                             purpose: 'maskable',
