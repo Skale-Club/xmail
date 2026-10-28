@@ -39,10 +39,11 @@ const router = Router()
 
 // A ceiling on what the agent may set. The ramp only slows a box that is still warming up: once
 // warmupCurrentDay reaches warmupDays, effectiveDailyLimit() returns the column as is, so on the
-// Icemail Google boxes the agent's number would apply the same day. 30/day per box is the safe
-// band for those accounts (2026-10-07, 15/day in use); anything above is the owner's call, made
+// Icemail Google boxes the agent's number would apply the same day. Owner decision 2026-10-28:
+// 50/day per warmed Icemail inbox is the target (the healthy cold-email band), raised gradually in
+// +5 steps while rampRecommendation stays healthy; anything above 50 is the owner's call, made
 // in the UI. Hermes reads prospect replies, so a prompt-injected "raise it" must stop here.
-export const AGENT_MAX_DAILY_SEND_LIMIT = 30
+export const AGENT_MAX_DAILY_SEND_LIMIT = 50
 
 const MAX_SPACING_MINUTES = 24 * 60
 

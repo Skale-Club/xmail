@@ -95,11 +95,11 @@ describe('GET /email-accounts', () => {
 
         const good = result.body.emailAccounts.find((entry: Row) => entry.id === GOOD)
         expect(good.rampRecommendation).toMatchObject({
-            recommendedDailyLimit: 18,
+            recommendedDailyLimit: 20,
             ready: true,
             basis: { windowDays: 7, sent: 40, bounces: 0, complaints: 0, unsubscribes: 1, unsubscribeRatePercent: 2.5 },
         })
-        expect(good.rampRecommendation.reason).toContain('15 to 18')
+        expect(good.rampRecommendation.reason).toContain('15 to 20')
 
         // Inboxes with no sends in the window get zeros, and an ineligible one is never ramped.
         const info = result.body.emailAccounts.find((entry: Row) => entry.id === INFO)
@@ -189,10 +189,10 @@ describe('PATCH /email-accounts/:id', () => {
         expect(state.audits).toHaveLength(0)
     })
 
-    it('caps the daily limit the agent can set at 30 (warmed boxes get the column the same day)', async () => {
+    it('caps the daily limit the agent can set at 50 (warmed boxes get the column the same day)', async () => {
         expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 5000 })).status).toBe(400)
-        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 31 })).status).toBe(400)
-        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 30 })).status).toBe(200)
+        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 51 })).status).toBe(400)
+        expect((await server.call('PATCH', `/email-accounts/${GOOD}`, { dailySendLimit: 50 })).status).toBe(200)
     })
 
     it('cannot weaken the warm-up gate: no shorter warm-up, no switching it off', async () => {

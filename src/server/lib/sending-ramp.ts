@@ -24,14 +24,14 @@ export const RAMP_MAX_UNSUBSCRIBE_RATE_TO_RAISE = 0.03
 /** Bounce rate (fraction of sends) at or above which the inbox should go down. */
 export const RAMP_BOUNCE_RATE_TO_LOWER = 0.05
 /** How much a recommendation moves the limit, up or down. */
-export const RAMP_STEP = 3
+export const RAMP_STEP = 5
 /** Lowest limit a recommendation ever proposes. */
 export const RAMP_FLOOR = 5
 /**
  * Default ceiling of a recommended raise. Equals AGENT_MAX_DAILY_SEND_LIMIT (routes/agent-accounts.ts),
  * which callers pass explicitly; it is repeated here only so the module stands alone.
  */
-export const RAMP_DEFAULT_CEILING = 30
+export const RAMP_DEFAULT_CEILING = 50
 
 export interface SendingRampInput {
     /** isCampaignSenderEligible(account): only a cold-campaign sender is ever ramped. */
