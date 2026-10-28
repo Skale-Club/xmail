@@ -257,6 +257,20 @@ const tools = [
     },
   },
   {
+    name: 'xmail_enroll_campaign',
+    description: 'Add leads to a campaign, whatever its status. DRAFT: the leads are enrolled immediately. ACTIVE or PAUSED: nothing is enrolled; Xmail files an approval request and the owner (Vanildo) gets a Telegram card in the "Skale Club | Outreach" group; the leads only enter the campaign after he approves, and eligibility is checked again at that moment. COMPLETED or ARCHIVED: refused (409). Up to 1000 leads per call; there is no volume cap beyond that, so call again for more with a new idempotencyKey. Senders are chosen by Xmail: leave emailAccountId out and the leads are distributed round-robin across the eligible Icemail inboxes of the campaign (never info@ boxes or warm-up boxes); name emailAccountId only to pin all of them to one inbox. Leads that are unsubscribed, suppressed, booking-platform addresses, without a verified/likely email or already on the campaign are skipped and listed with the reason. Idempotent on idempotencyKey: a retry returns the same approval request. The response says approvalRequired, approvalId and a dryRun (willAdd, alreadyEnrolled, leftOutByReason, senders with counts); tell Vanildo the card is waiting when approvalRequired is true, and read the outcome later with xmail_get_approval. This cannot send or activate anything by itself.',
+    inputSchema: {
+      type: 'object', required: ['campaignId', 'leadIds', 'idempotencyKey'], additionalProperties: false,
+      properties: {
+        campaignId: { type: 'string' },
+        leadIds: { type: 'array', minItems: 1, maxItems: 1000, items: { type: 'string' } },
+        emailAccountId: { type: 'string' },
+        idempotencyKey: { type: 'string', minLength: 8, maxLength: 200 },
+        reason: { type: 'string', maxLength: 500, description: 'Why these leads, shown to the owner on the card.' },
+      },
+    },
+  },
+  {
     name: 'xmail_pause_campaign',
     description: 'Immediately pause a draft or active campaign in the bound organization.',
     inputSchema: {
@@ -443,7 +457,7 @@ const tools = [
   },
   {
     name: 'outreach_email_accounts_list',
-    description: 'The organization outreach inboxes: provider, status, daily limit and the effective limit today, sent today, spacing, warm-up (enabled, day, source, warmupOnly), health rates, campaignSenderEligible and rampRecommendation. Never returns credentials. Rule to respect: info@ boxes and warmupOnly boxes never carry a cold campaign (campaignSenderEligible=false); only the Google accounts bought for outreach do. rampRecommendation is advice on the daily limit from the last 7 days of real sending ({ recommendedDailyLimit, ready, reason, basis }): ready only with 20+ sends, bounce under 2%, unsubscribe under 3% and no complaints, then +3 up to 30; it recommends -3 (floor 5) on a bounce rate of 5% or more or any complaint. It is never applied for you: raising the limit is a deliberate outreach_email_account_update call that you report to the owner with the reason, and anything above 30 is for the owner to decide in the UI. Read-only.',
+    description: 'The organization outreach inboxes: provider, status, daily limit and the effective limit today, sent today, spacing, warm-up (enabled, day, source, warmupOnly), health rates, campaignSenderEligible and rampRecommendation. Never returns credentials. Rule to respect: info@ boxes and warmupOnly boxes never carry a cold campaign (campaignSenderEligible=false); only the Google accounts bought for outreach do. rampRecommendation is advice on the daily limit from the last 7 days of real sending ({ recommendedDailyLimit, ready, reason, basis }): ready only with 20+ sends, bounce under 2%, unsubscribe under 3% and no complaints, then +5 up to 50; it recommends -5 (floor 5) on a bounce rate of 5% or more or any complaint. It is never applied for you: raising the limit is a deliberate outreach_email_account_update call that you report to the owner with the reason, and anything above 50 is for the owner to decide in the UI. Read-only.',
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -455,12 +469,12 @@ const tools = [
   },
   {
     name: 'outreach_email_account_update',
-    description: 'Adjust the pacing of one outreach inbox: dailySendLimit (1 to 30; above 30 only the owner decides, ask him), minMinutesBetweenEmails and maxMinutesBetweenEmails (max >= min), warmupDays (can only be RAISED), warmupEnabled (can only be turned ON), status "paused" (stops the inbox; only a person can un-pause). It CANNOT change provider, host, username, password, warmupOnly, warmupSource or verification, and cannot attach an inbox to a campaign. Audited with before and after.',
+    description: 'Adjust the pacing of one outreach inbox: dailySendLimit (1 to 50; above 50 only the owner decides, ask him), minMinutesBetweenEmails and maxMinutesBetweenEmails (max >= min), warmupDays (can only be RAISED), warmupEnabled (can only be turned ON), status "paused" (stops the inbox; only a person can un-pause). It CANNOT change provider, host, username, password, warmupOnly, warmupSource or verification, and cannot attach an inbox to a campaign. Audited with before and after.',
     inputSchema: {
       type: 'object', required: ['emailAccountId'], additionalProperties: false,
       properties: {
         emailAccountId: { type: 'string' },
-        dailySendLimit: { type: 'integer', minimum: 1, maximum: 30 },
+        dailySendLimit: { type: 'integer', minimum: 1, maximum: 50 },
         minMinutesBetweenEmails: { type: 'integer', minimum: 1, maximum: 1440 },
         maxMinutesBetweenEmails: { type: 'integer', minimum: 1, maximum: 1440 },
         warmupDays: { type: 'integer', minimum: 1, maximum: 60 },
@@ -633,6 +647,10 @@ async function callTool(name, args = {}) {
     case 'xmail_enroll_campaign_draft': {
       const { campaignId, ...body } = args
       return request(`/campaigns/${encodeURIComponent(campaignId)}/enroll-draft`, { method: 'POST', body })
+    }
+    case 'xmail_enroll_campaign': {
+      const { campaignId, ...body } = args
+      return request(`/campaigns/${encodeURIComponent(campaignId)}/enroll`, { method: 'POST', body })
     }
     case 'xmail_pause_campaign': return request(`/campaigns/${encodeURIComponent(args.campaignId)}/pause`, { method: 'POST' })
     case 'outreach_campaign_sequence_get': return request(`/campaigns/${encodeURIComponent(args.campaignId)}/sequence`)

@@ -30,6 +30,7 @@ import agentAccountsRouter from './agent-accounts'
 import agentInboxRouter from './agent-inbox'
 import agentAnalyticsRouter from './agent-analytics'
 import agentSuppressionsRouter from './agent-suppressions'
+import agentCampaignEnrollRouter from './agent-campaign-enroll'
 import { jsonbParam } from '../lib/jsonb'
 import { withSourceRunId } from '../lib/prospecting/source-run-id'
 import { checkProtectedSendingDomains } from './outreach/campaigns'
@@ -57,6 +58,8 @@ router.use('/', agentAccountsRouter)
 router.use('/', agentInboxRouter)
 router.use('/', agentAnalyticsRouter)
 router.use('/', agentSuppressionsRouter)
+// POST /campaigns/:id/enroll: draft enrolls now, active/paused files a campaign_enrollment approval.
+router.use('/', agentCampaignEnrollRouter)
 
 function requireScope(req: Request, res: Response, scope: OutreachAgentScope): AgentPrincipal | null {
     const principal = getAgentPrincipal(req)
@@ -398,6 +401,9 @@ router.post('/campaigns/drafts', async (req, res) => {
     }
 })
 
+// Kept for callers that predate POST /campaigns/:id/enroll (agent-campaign-enroll.ts): draft only,
+// at most 100 leads, all-or-nothing. New callers should use /enroll, which also feeds a running
+// campaign through an owner approval.
 router.post('/campaigns/:id/enroll-draft', async (req, res) => {
     try {
         const principal = requireScope(req, res, 'campaigns:draft')
