@@ -22,6 +22,7 @@ const campaignLeadsFindManyMock = vi.hoisted(() => vi.fn())
 const transactionMock = vi.hoisted(() => vi.fn())
 const requireOutreachWriteMock = vi.hoisted(() => vi.fn())
 const getCanonicalSequenceMock = vi.hoisted(() => vi.fn())
+const emailAccountsFindFirstMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../../../db', () => ({
     db: {
@@ -29,7 +30,7 @@ vi.mock('../../../../db', () => ({
             campaigns: { findFirst: campaignsFindFirstMock },
             leads: { findMany: leadsFindManyMock },
             campaignLeads: { findMany: campaignLeadsFindManyMock },
-            emailAccounts: { findFirst: vi.fn() },
+            emailAccounts: { findFirst: emailAccountsFindFirstMock },
         },
         transaction: transactionMock,
         select: () => ({ from: () => ({ where: () => Promise.resolve([{ count: 0 }]) }) }),
@@ -136,5 +137,59 @@ describe('POST /:campaignId/leads — platform-email defense in depth', () => {
         expect(result.body.added).toBe(0)
         expect(result.body.skipped_platform_email).toBe(1)
         expect(transactionMock).not.toHaveBeenCalled()
+    })
+})
+
+describe('POST /:campaignId/leads: shared enrollment service keeps the panel contract', () => {
+    const ACCOUNT_ID = '33333333-3333-3333-3333-333333333333'
+
+    it('refuses a warm-up-only inbox with 422 and enrolls nothing', async () => {
+        emailAccountsFindFirstMock.mockResolvedValue({ id: ACCOUNT_ID, email: 'agenda@tryskaleclub.test', warmupOnly: true, status: 'verified' })
+        const result = await post(`/${CAMPAIGN_ID}/leads`, { leadIds: [LEGIT_LEAD_ID], emailAccountId: ACCOUNT_ID })
+        expect(result.status).toBe(422)
+        expect(result.body.error).toMatch(/warm-up-only/)
+        expect(transactionMock).not.toHaveBeenCalled()
+    })
+
+    it('refuses an inbox on a protected company domain with the protected_sending_domain code', async () => {
+        process.env.OUTREACH_PROTECTED_DOMAINS = 'xkedule.com'
+        try {
+            emailAccountsFindFirstMock.mockResolvedValue({ id: ACCOUNT_ID, email: 'info@xkedule.com', warmupOnly: false, status: 'verified' })
+            const result = await post(`/${CAMPAIGN_ID}/leads`, { leadIds: [LEGIT_LEAD_ID], emailAccountId: ACCOUNT_ID })
+            expect(result.status).toBe(422)
+            expect(result.body.code).toBe('protected_sending_domain')
+        } finally {
+            delete process.env.OUTREACH_PROTECTED_DOMAINS
+        }
+    })
+
+    it('answers 400 for an inbox that is not in the organization', async () => {
+        emailAccountsFindFirstMock.mockResolvedValue(undefined)
+        const result = await post(`/${CAMPAIGN_ID}/leads`, { leadIds: [LEGIT_LEAD_ID], emailAccountId: ACCOUNT_ID })
+        expect(result.status).toBe(400)
+    })
+
+    it('answers 409 when the campaign finishes between the request and the lock', async () => {
+        leadsFindManyMock.mockResolvedValueOnce([{ id: LEGIT_LEAD_ID, email: 'owner@realbarbershop.test', emailVerificationStatus: 'verified' }])
+        transactionMock.mockImplementationOnce(async (cb: (tx: unknown) => unknown) => cb({
+            execute: () => Promise.resolve([{ status: 'completed' }]),
+        }))
+        const result = await post(`/${CAMPAIGN_ID}/leads`, { leadIds: [LEGIT_LEAD_ID] })
+        expect(result.status).toBe(409)
+        expect(result.body.code).toBe('campaign_enrollment_closed')
+    })
+
+    it('still refuses a completed campaign up front', async () => {
+        campaignsFindFirstMock.mockResolvedValue({ id: CAMPAIGN_ID, organizationId: ORG_ID, status: 'completed' })
+        const result = await post(`/${CAMPAIGN_ID}/leads`, { leadIds: [LEGIT_LEAD_ID] })
+        expect(result.status).toBe(409)
+        expect(result.body.code).toBe('campaign_enrollment_closed')
+    })
+
+    it('does not filter unsubscribed leads at enroll time (the delivery policy parks them at send time)', async () => {
+        leadsFindManyMock.mockResolvedValueOnce([{ id: LEGIT_LEAD_ID, email: 'owner@realbarbershop.test', emailVerificationStatus: 'unknown', unsubscribedAt: new Date() }])
+        const result = await post(`/${CAMPAIGN_ID}/leads`, { leadIds: [LEGIT_LEAD_ID] })
+        expect(result.status).toBe(201)
+        expect(result.body).toMatchObject({ added: 1, existing: 0, skipped_invalid: 0, skipped_platform_email: 0, unverified_count: 1 })
     })
 })

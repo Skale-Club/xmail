@@ -21,7 +21,7 @@ import {
     type SequenceStepInput,
 } from '../../lib/outreach-sequences'
 import { buildCampaignActivationPreview } from '../../lib/outreach-approval-preview'
-import { isPlatformEmail } from '../../lib/platform-emails'
+import { CampaignEnrollmentError, enrollCampaignLeads } from '../../lib/campaign-enrollment'
 import {
     CONTENT_LANGUAGE_PATTERN,
     SEND_TIME_PATTERN,
@@ -34,8 +34,6 @@ import {
 } from '../../lib/sending-domain-guard'
 
 const router = Router()
-
-class CampaignEnrollmentClosedError extends Error {}
 
 function resultRows<T>(value: unknown): T[] {
     if (Array.isArray(value)) return value as T[]
@@ -1645,179 +1643,42 @@ router.post('/:campaignId/leads', async (req: Request, res: Response) => {
             }
         }
 
-        if (validatedData.emailAccountId) {
-            const account = await db.query.emailAccounts.findFirst({
-                where: and(
-                    eq(emailAccounts.id, validatedData.emailAccountId),
-                    eq(emailAccounts.organizationId, campaign.organizationId)
-                ),
-                columns: { id: true, email: true, warmupOnly: true },
-            })
-            if (!account) {
-                return res.status(400).json({ error: 'Email account not found or access denied' })
-            }
-            if (account.warmupOnly) {
-                return res.status(422).json({ error: 'This inbox is warm-up-only and cannot be assigned to campaign leads' })
-            }
-            // System map §8 finding #7: P009 used to be checked only at activation, so the agent
-            // (or a human) discovered a protected-domain assignment late. Check it here too, at
-            // enroll time.
-            const protectedViolation = checkProtectedSendingDomains([account])
-            if (protectedViolation) {
-                return res.status(422).json({ error: protectedViolation.message, code: protectedViolation.code })
-            }
-        }
-
-        // Verify leads exist and belong to organization
-        const leadsList = await db.query.leads.findMany({
-            where: and(
-                eq(leads.organizationId, campaign.organizationId),
-                inArray(leads.id, requestedLeadIds)
-            ),
+        // The enrollment rules (sender checks, eligibility, dedup, row lock, first-step scheduling)
+        // live in lib/campaign-enrollment.ts, shared with the agent gateway and the approval executor.
+        // The panel keeps its historical policy: only a confirmed-bad or booking-platform address is
+        // refused, and a request without an inbox leaves the rows unassigned.
+        const { plan, inserted } = await enrollCampaignLeads({
+            organizationId: campaign.organizationId,
+            campaignId,
+            leadIds: requestedLeadIds,
+            policy: 'human',
+            senders: validatedData.emailAccountId
+                ? { mode: 'explicit', emailAccountId: validatedData.emailAccountId }
+                : { mode: 'unassigned' },
         })
 
-        if (leadsList.length !== requestedLeadIds.length) {
-            return res.status(400).json({ error: 'Some leads not found or access denied' })
+        const skippedInvalid = plan.ineligible.filter((entry) => entry.reason === 'invalid_email').length
+        const skippedPlatformEmail = plan.ineligible.filter((entry) => entry.reason === 'platform_email').length
+        const breakdown = {
+            added: inserted.length,
+            existing: requestedLeadIds.length - inserted.length - skippedInvalid - skippedPlatformEmail,
+            skipped_invalid: skippedInvalid,
+            skipped_platform_email: skippedPlatformEmail,
+            unverified_count: plan.unverifiedCount,
         }
 
-        // Check for existing campaign leads
-        const existingCampaignLeads = await db.query.campaignLeads.findMany({
-            where: and(
-                eq(campaignLeads.campaignId, campaignId),
-                inArray(campaignLeads.leadId, requestedLeadIds)
-            ),
-            columns: { leadId: true },
-        })
-
-        const existingLeadIds = new Set(existingCampaignLeads.map(cl => cl.leadId))
-
-        // Verification gate (verification-gates step 2): close the asymmetry with the agent
-        // enrollment endpoint (agent-outreach.ts enroll-draft), which already excludes leads
-        // whose emailVerificationStatus isn't 'verified'/'likely'. This human/UI endpoint is
-        // deliberately looser — legacy and manually-imported leads are legitimately 'unknown'
-        // and must keep flowing — so it blocks ONLY the confirmed-bad 'invalid' status and
-        // reports a breakdown instead of hard-requiring verification.
-        const invalidLeadIds = new Set(
-            leadsList.filter((lead) => lead.emailVerificationStatus === 'invalid').map((lead) => lead.id),
-        )
-
-        // Defeito 2 (2026-09-30) defense in depth: a lead whose email belongs to a scheduling/
-        // marketplace platform (Booksy support etc — see platform-emails.ts) may already be
-        // sitting in the leads table from before this guard existed at import time. Never let
-        // it onto a campaign either.
-        const platformLeadIds = new Set(
-            leadsList.filter((lead) => isPlatformEmail(lead.email)).map((lead) => lead.id),
-        )
-
-        // Filter out existing + invalid + platform-email leads
-        const newLeadIds = requestedLeadIds.filter(id => (
-            !existingLeadIds.has(id) && !invalidLeadIds.has(id) && !platformLeadIds.has(id)
-        ))
-
-        // Diagnostic breakdown: how many of the requested (non-invalid) leads don't have a
-        // confirmed-good email yet. Informational only — 'unknown'/'likely' are still enrolled.
-        const unverifiedCount = leadsList.filter((lead) => (
-            !invalidLeadIds.has(lead.id)
-            && lead.emailVerificationStatus !== 'verified'
-            && lead.emailVerificationStatus !== 'likely'
-        )).length
-
-        const enrollmentBreakdown = (insertedLeadIds: Set<string>) => {
-            let added = 0
-            let existing = 0
-            let skippedInvalid = 0
-            let skippedPlatformEmail = 0
-            for (const id of requestedLeadIds) {
-                if (insertedLeadIds.has(id)) added++
-                else if (invalidLeadIds.has(id)) skippedInvalid++
-                else if (platformLeadIds.has(id)) skippedPlatformEmail++
-                else existing++
-            }
-            return {
-                added,
-                existing,
-                skipped_invalid: skippedInvalid,
-                skipped_platform_email: skippedPlatformEmail,
-                unverified_count: unverifiedCount,
-            }
+        if (plan.toAdd.length === 0) {
+            // Not an error for orchestration callers (e.g. Xphere enrolling prospects): every
+            // submitted lead is already in the campaign (or invalid). Idempotent retries must
+            // succeed rather than fail with a 400.
+            return res.status(200).json({ ...breakdown, campaignLeads: [] })
         }
 
-        if (newLeadIds.length === 0) {
-            // Not an error for orchestration callers (e.g. Xphere enrolling prospects):
-            // every submitted lead is already in the campaign (or invalid). Idempotent
-            // retries must succeed rather than fail with a 400 — see leads.ts bulk-import
-            // for the matching fix.
-            return res.status(200).json({ ...enrollmentBreakdown(new Set()), campaignLeads: [] })
-        }
-
-        // Enroll onto the campaign's single canonical sequence (Phase 20) — no first-row
-        // convention. Its steps are returned ordered, so steps[0] is the true first step.
-        const canonicalSequence = await getCanonicalSequence(campaignId, campaign.organizationId)
-
-        if (!canonicalSequence) {
-            return res.status(400).json({
-                error: 'Campaign has no sequence — create a sequence with at least one step before adding leads',
-            })
-        }
-
-        const firstStep = canonicalSequence.steps[0]
-
-        if (!firstStep) {
-            return res.status(400).json({
-                error: 'Campaign sequence has no steps — add at least one step before adding leads',
-            })
-        }
-
-        // Add leads to campaign. nextScheduledAt MUST be non-NULL or the processor's
-        // lte(nextScheduledAt, now) filter treats the row as not-yet-due (NULL semantics in SQL).
-        // See audit P0-01.
-        const insertedCampaignLeads = await db.transaction(async (tx) => {
-            const lockedCampaign = resultRows<{ status: string }>(await tx.execute(sql`
-                SELECT status::text AS status
-                FROM campaigns
-                WHERE id = ${campaignId}::uuid
-                FOR UPDATE
-            `))[0]
-            if (!lockedCampaign) throw new CampaignEnrollmentClosedError('Campaign no longer exists')
-            if (lockedCampaign.status === 'completed' || lockedCampaign.status === 'archived') {
-                throw new CampaignEnrollmentClosedError(`Cannot enroll leads into a ${lockedCampaign.status} campaign`)
-            }
-
-            const currentRows = await tx
-                .select({ leadId: campaignLeads.leadId })
-                .from(campaignLeads)
-                .where(and(
-                    eq(campaignLeads.campaignId, campaignId),
-                    inArray(campaignLeads.leadId, newLeadIds),
-                ))
-            const currentLeadIds = new Set(currentRows.map((row) => row.leadId))
-            const lockedNewLeadIds = newLeadIds.filter((leadId) => !currentLeadIds.has(leadId))
-            if (lockedNewLeadIds.length === 0) return []
-
-            const now = new Date()
-            const inserted = await tx.insert(campaignLeads).values(
-                lockedNewLeadIds.map((leadId) => ({
-                    campaignId,
-                    leadId,
-                    assignedEmailAccountId: validatedData.emailAccountId,
-                    currentStepId: firstStep.id,
-                    currentStepOrder: firstStep.stepOrder,
-                    nextScheduledAt: now,
-                })),
-            ).returning()
-            await tx.update(campaigns)
-                .set({ totalLeads: sql`${campaigns.totalLeads} + ${inserted.length}` })
-                .where(eq(campaigns.id, campaignId))
-            return inserted
-        })
-
-        res.status(201).json({
-            ...enrollmentBreakdown(new Set(insertedCampaignLeads.map((cl) => cl.leadId))),
-            campaignLeads: insertedCampaignLeads,
-        })
+        res.status(201).json({ ...breakdown, campaignLeads: inserted })
     } catch (error) {
-        if (error instanceof CampaignEnrollmentClosedError) {
-            return res.status(409).json({ error: error.message, code: 'campaign_enrollment_closed' })
+        if (error instanceof CampaignEnrollmentError) {
+            const exposeCode = error.code === 'campaign_enrollment_closed' || error.code === 'protected_sending_domain'
+            return res.status(error.status).json(exposeCode ? { error: error.message, code: error.code } : { error: error.message })
         }
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: 'Validation error', details: error.errors })
