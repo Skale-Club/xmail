@@ -97,6 +97,20 @@ Kai is a second agent with limited Xmail access (exactly `campaigns:copy`, enfor
 8. **Send.** Xmail sends inside the campaign window, spaced per inbox, within each inbox's daily
    limit. Follow-ups wait a random 3 to 5 days and carry `In-Reply-To`/`References`, so they
    thread under the previous email.
+   **Feeding a campaign that is already running.** Hermes calls `xmail_enroll_campaign`
+   (`POST /api/agent/outreach/campaigns/:id/enroll`, up to 1000 leads per call, `idempotencyKey`
+   required, call again for more). On a `draft` the leads are enrolled at once. On an `active` or
+   `paused` campaign **nothing is enrolled**: Xmail computes a dry run (who would enter, who is
+   already on it, who is left out and why, which inboxes and how many leads each) and posts a card
+   on the outreach group, "Pedido para adicionar leads a uma campanha ativa". **Approve** then
+   **Yes, start** enrolls them; Reject drops the request. There is no confirm flag for Hermes to
+   pass, because it reads untrusted prospect replies and a self-confirm is not an approval. At
+   approval time Xmail checks every lead again against the current state inside the campaign lock
+   (a lead that unsubscribed, was suppressed or was enrolled elsewhere since the request is
+   skipped and reported on the card), and a campaign that finished meanwhile fails the request
+   with the reason. Leads are spread round-robin over the campaign's Icemail inboxes (or one
+   inbox if Hermes names it); `info@` boxes and warm-up boxes are never senders. `completed` and
+   `archived` campaigns are refused. A request that would add nobody files no card.
 9. **Replies.** Xmail reads the Icemail inboxes, matches replies to the campaign email, stops the
    sequence for that lead, and alerts Vanildo on Telegram immediately, then every 2 hours
    between 8:00 and 20:00 ET until handled, plus a morning summary.
@@ -171,11 +185,17 @@ analysis is wrong.
    item (step 11). Resume works only for a campaign Hermes
    itself paused after an approved activation.
 9. **Volume.**
-   - Each Icemail inbox sends 15 a day today (5 inboxes, 75 a day).
-   - Hermes may set at most 30 a day per inbox (`AGENT_MAX_DAILY_SEND_LIMIT`). Above 30 only
-     Vanildo decides, in the panel.
+   - Each Icemail inbox sends 15 a day today (5 inboxes, 75 a day). The target is 50 a day per
+     warmed inbox (owner decision 2026-10-28), reached gradually.
+   - Hermes may raise an inbox up to 50 a day (`AGENT_MAX_DAILY_SEND_LIMIT`), following
+     `rampRecommendation` (+5 steps while the last 7 days are healthy, -5 on trouble). Above 50
+     only Vanildo decides, in the panel.
    - Xmail recommends raises and cuts (`rampRecommendation` on the inbox list) and never applies
      them by itself.
+   - The daily ceiling is inboxes x per-inbox limit (5 inboxes x 50 = 250 a day). There is no
+     volume cap per enrollment request (1000 leads per call only bounds the request size, Hermes
+     calls again); what does not fit today is deferred to the next day. To
+     go further, buy more Icemail inboxes (target 1,000 a day).
 10. **Homelab resources are capped.** 2 GB RAM with no swap, 1.5 CPU, one browser tab (`-c 1`).
     Never run it without limits.
 11. **Repeating a city** is allowed in two cases only:

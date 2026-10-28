@@ -40,7 +40,7 @@ crédito pago e toda ativação passam por aprovação humana durável.
 | Ler e editar/reverter o texto (assunto, corpo, atraso) de steps de campanha `draft`/`paused`/`active`, auditado (G11) | Editar variante B do A/B, tipo do step, criar/remover steps, mudar status |
 | Pausar campanha (direção segura) | Escolher a própria identidade/tenant |
 | **Só o Hermes, escopo `outreach:manage` (G12):** ver detalhe da campanha, mudar configuração (nome, janela, fuso, fim de semana, tracking), duplicar como rascunho, retomar campanha que ele mesmo pausou e que um humano já aprovou | Mudar `status` por PATCH, `replyToEmail`, flags de autonomia; retomar campanha nunca aprovada, pausada por humano ou por guardrail |
-| **Só o Hermes (G12):** listar/ler leads, editar campos de personalização, tirar lead de campanha (`confirm: true`), criar/renomear listas | Mudar e-mail, status, descadastro ou verificação do lead; matricular lead (continua `enroll-draft`) |
+| **Só o Hermes (G12):** listar/ler leads, editar campos de personalização, tirar lead de campanha (`confirm: true`), criar/renomear listas | Mudar e-mail, status, descadastro ou verificação do lead; matricular lead (só pela rota de matrícula: `enroll`, que em campanha ativa/pausada vira pedido de aprovação, ver G13) |
 | **Só o Hermes (G12):** listar caixas (sem segredo), ajustar limite diário/espaçamento, aumentar warm-up, pausar caixa | Trocar provider/credencial, `warmupOnly`/`warmupSource`, encurtar ou desligar warm-up, despausar, anexar caixa a campanha |
 | **Só o Hermes (G12):** ler a caixa de entrada unificada (só leitura), métricas por campanha/caixa num intervalo, listar/adicionar supressão, levantar supressão `manual` (`confirm: true`) | Responder prospect, arquivar, marcar como lido; levantar descadastro/reclamação/bounce |
 | Ler e reconhecer eventos do outbox | — |
@@ -58,12 +58,13 @@ Escopos (`OUTREACH_AGENT_SCOPES` em `src/db/schema.ts`): `outreach:read`, `prosp
 | Tools expostas ao LLM | `hermes/xmail-mcp/server.mjs` | Nenhuma tool de envio/ativação; todo input com `additionalProperties: false` e teto numérico |
 | Autenticação do agente | `src/server/lib/agent-auth.ts` | Hash SHA-256, prefixo, revogação, expiração, **e o principal ainda pertencer à org** |
 | Roteamento da auth | `src/server/lib/api-auth.ts` | `stripAgentHeaders` antes de tudo; agente só entra em `/api/agent/outreach` |
-| Gateway do agente | `src/server/routes/agent-outreach.ts` | health, campanhas, import livre, draft, enroll-draft, pause, events/ack |
+| Gateway do agente | `src/server/routes/agent-outreach.ts` | health, campanhas, import livre, draft, enroll-draft (legado, só draft, ≤100), pause, events/ack |
+| Matrícula em campanha (G13) | `src/server/lib/campaign-enrollment.ts` (serviço único), `src/server/routes/agent-campaign-enroll.ts`, `lib/agent-approval-request.ts`, `lib/approval-actions.ts` (`executeCampaignEnrollment`) | `POST /api/agent/outreach/campaigns/:id/enroll` (escopo `campaigns:draft`): `draft` matricula na hora; `active`/`paused` só gera aprovação `campaign_enrollment`; `completed`/`archived` = 409. O serviço é o mesmo da rota humana `POST /api/outreach/campaigns/:id/leads` e do executor da aprovação |
 | Texto de campanha (G11) | `src/server/routes/agent-campaign-copy.ts`, `lib/agent-campaign-copy-history.ts`, `lib/campaign-copy-lint.ts` | GET sequence, PUT step e POST revert (`campaigns:copy`); validação = `validateSequenceForActivation` do step editado; auditoria na MESMA transação |
 | Operação do dia a dia (G12) | `routes/agent-campaign-manage.ts`, `agent-leads.ts`, `agent-accounts.ts`, `agent-inbox.ts`, `agent-analytics.ts`, `agent-suppressions.ts`; `lib/agent-manage.ts` (escopo, `confirm`, auditoria), `lib/agent-account-view.ts` (lista de colunas permitidas de `email_accounts`), `lib/sending-domain-guard.ts`, `lib/campaign-settings.ts` | Rotas na tabela do G12 abaixo. Org sempre do principal; id de outra org = 404; escrita + linha de auditoria na MESMA transação; destrutivo exige `confirm: true` (senão 409 com o que aconteceria) |
 | Prospecção | `src/server/routes/agent-prospecting.ts` | search → candidatos → enrich aprovado → import |
 | Aprovações (lado agente) | `src/server/routes/agent-approvals.ts` | Pede; nunca decide |
-| Aprovações (lado humano) | `src/server/routes/outreach/approvals.ts` | `requireInteractiveAdmin` bloqueia service-principal; approve de `campaign_activation` **ativa na hora** |
+| Aprovações (lado humano) | `src/server/routes/outreach/approvals.ts` | `requireInteractiveAdmin` bloqueia service-principal; approve de `campaign_activation` **ativa na hora**; approve de `campaign_enrollment` **matricula na hora** (reavalia elegibilidade) |
 | Provider Apollo | `src/server/lib/prospecting/apollo.ts` | `reveal_personal_emails=false`, `reveal_phone_number=false`, teto de 9 créditos/pessoa |
 | Score ICP | `src/server/lib/prospecting/scoring.ts` | Determinístico, pesos só contam quando o critério existe |
 | Parecer do LLM | `src/server/lib/prospecting/assessment.ts` | `qualified` exige confiança ≥60 + evidência + zero risk-flag bloqueante |
@@ -71,7 +72,7 @@ Escopos (`OUTREACH_AGENT_SCOPES` em `src/db/schema.ts`): `outreach:read`, `prosp
 | Eventos | `src/server/lib/xphere-events.ts` → `outreach_event_outbox` | Dedup por org+chave; Hermes e Xphere têm cursores independentes |
 | Gate de envio | `src/server/lib/outreach-delivery-policy.ts` | Org habilitada, campanha ativa, inbox verificada, unsub, supressão, janela, limite diário, warmup, espaçamento |
 | Encadeamento dos follow-ups | `src/server/lib/outreach-threading.ts` (puro), `jobs/processOutreachSequences.ts` (busca o e-mail anterior), `lib/outreach-sequence-state.ts` (`firstEmailStep`) | Passo de e-mail depois do primeiro sai com `In-Reply-To` = Message-ID do último e-mail enviado ao lead na campanha e `References` = cadeia dele + o id (últimos 10). Assunto em branco vira `Re: <assunto anterior>` (sem `Re: Re:`); assunto escrito no passo fica como está. Os cabeçalhos congelam na linha de `outreach_emails` (`in_reply_to`, `message_references`), então retry mantém a conversa; SMTP, nativo e Outlook mandam o mesmo MIME, todos levam os cabeçalhos. `processReplies` casa por `In-Reply-To` e depois por `References`: uma resposta ao passo 2 aponta para o passo 2, e os dois caminhos acham o mesmo `campaign_lead` |
-| Rampa de volume das caixas | `src/server/lib/sending-ramp.ts` (puro), `lib/sending-ramp-stats.ts` (contagens), `lib/agent-account-view.ts` | `rampRecommendation` em cada item de `GET /email-accounts`. **Só recomenda, nunca aplica.** Pronta com 20+ envios em 7 dias, bounce < 2%, descadastro < 3% e zero reclamação: sugere limite + 3 (teto 30 = `AGENT_MAX_DAILY_SEND_LIMIT`). Bounce ≥ 5% ou qualquer reclamação: sugere − 3 (piso 5). Resto: mantém. Reclamação = supressão `complaint` de um endereço que a caixa mandou na janela (não há ingestão de feedback loop, então zero = "nenhuma registrada") |
+| Rampa de volume das caixas | `src/server/lib/sending-ramp.ts` (puro), `lib/sending-ramp-stats.ts` (contagens), `lib/agent-account-view.ts` | `rampRecommendation` em cada item de `GET /email-accounts`. **Só recomenda, nunca aplica.** Pronta com 20+ envios em 7 dias, bounce < 2%, descadastro < 3% e zero reclamação: sugere limite + 5 (teto 50 = `AGENT_MAX_DAILY_SEND_LIMIT`). Bounce ≥ 5% ou qualquer reclamação: sugere − 5 (piso 5). Resto: mantém. Reclamação = supressão `complaint` de um endereço que a caixa mandou na janela (não há ingestão de feedback loop, então zero = "nenhuma registrada") |
 | Gate de ativação | `src/server/routes/outreach/campaigns.ts` → `validateCampaignReadyForActivation` | Sequência válida, leads com inbox, **P009 domínio protegido** |
 | Workers | `src/server/jobs/index.ts` | Cadências e locks (ver §5) |
 | UI do operador | `src/pages/outreach/AgentOpsPage.tsx` | Fila de aprovação, runs, evidência dos candidatos |
@@ -100,6 +101,11 @@ xmail_search_prospects ──G1─→ prospecting_runs + prospect_candidates (sc
         xmail_request_campaign_activation ──G8─→ approval(campaign_activation)
                     │
               [HUMANO aprova] ──G9─→ campanha ATIVA → cron dispara → G10 delivery policy → envio
+
+  campanha já ATIVA/PAUSADA:
+        xmail_enroll_campaign ──G13─→ dry-run + approval(campaign_enrollment) → card no Telegram
+                    │
+              [HUMANO aprova] ──G13─→ reavalia no lock da campanha → campaign_leads → mesmo cron/G10
 ```
 
 | Gate | Onde | O que garante |
@@ -110,12 +116,13 @@ xmail_search_prospects ──G1─→ prospecting_runs + prospect_candidates (sc
 | G4 | `outreach/approvals.ts` `requireInteractiveAdmin` | Sessão humana interativa + role admin; agente e service-key barrados |
 | G5 | `agent-prospecting.ts` `/enrich` | Claim transacional approved→executing + run→enriching; falha = run e approval terminais (nunca retry cego) |
 | G6 | `/searches/:id/import` | Só candidato com e-mail, status aceito e score ≥ threshold |
-| G7 | `/campaigns/:id/enroll-draft` | Só draft, inbox verificada da org, leads verified/likely e não descadastrados, ≤100 |
+| G7 | `/campaigns/:id/enroll-draft` (legado, mantido) e `/campaigns/:id/enroll` quando a campanha é `draft` | Só draft, inbox verificada da org, leads verified/likely e não descadastrados. `enroll-draft`: ≤100 e tudo-ou-nada (422); `enroll`: ≤1000, pula e reporta os inelegíveis |
 | G8 | `agent-approvals.ts` | Só de `draft`/`paused`; idempotente |
 | G9 | `outreach/approvals.ts` + `PUT /campaigns/:id` | `validateCampaignReadyForActivation` (sequência, leads com inbox, **P009**, **warm-up completo**) + ativação atômica. Único gate comum aos caminhos humano, Xphere e agente |
+| G13 | `agent-campaign-enroll.ts` + `campaign-enrollment.ts` + `approval-actions.ts` | **Alimentar campanha em andamento é decisão humana.** Para `active`/`paused` a rota **não matricula nada**: faz o dry-run com o serviço compartilhado (quem entra, já matriculados, inelegíveis por motivo, remetentes e contagem por remetente) e grava `outreach_action_approvals` com `action_kind = 'campaign_enrollment'` (`resource_id` = campanha, `request_payload` = `leadIds`, `emailAccountId?`, `reason`, `dryRun`), idempotente por `idempotencyKey` (retry devolve o mesmo pedido, sem segundo card). Não existe flag de confirmação para o agente passar (ele lê resposta de prospect, que é conteúdo não confiável). O approve (card do Telegram, dois toques, ou painel) roda `executeCampaignEnrollment`: **na mesma transação** trava a campanha (`FOR UPDATE`), recusa `completed`/`archived` (aprovação vira `failed` com o motivo, 409), **replaneja contra o estado atual** (descadastrou, entrou na supressão, virou e-mail de plataforma, foi matriculado por outro caminho = pulado e contado por motivo), insere `campaign_leads` com `next_scheduled_at` imediato, e grava a aprovação como `executed` com `executionResult` (adicionados, deixados de fora por motivo, remetentes). Falhou a gravação da aprovação, a matrícula desfaz. Remetente: só `isCampaignSenderEligible` (verificada, não `warmup_only`, fora dos domínios protegidos, ou seja nunca `info@` nem caixa de warm-up); sem `emailAccountId`, distribui round-robin (menos carregada primeiro) entre as caixas que a campanha já usa, ou entre todas as elegíveis da org se não usa nenhuma. Política `agent`: lead da org, com e-mail, não descadastrado, não suprimido (endereço ou `@domínio`), não e-mail de plataforma, `verified`/`likely`. Até 1000 leads por chamada é só limite de tamanho do pedido, não de volume. O teto real do dia é nº de caixas × limite por caixa |
 | G10 | `outreach-delivery-policy.ts` | Última rede antes do envio, por destinatário |
 | G11 | `agent-campaign-copy.ts` | Edição de texto por escopo próprio `campaigns:copy`; só `draft`/`paused`/`active`; só variante A + atrasos; o step editado tem que continuar passando `invalid_email_content`, `missing_unsubscribe_placeholder` e `malformed_template_block` (422 e nada salvo); linha do step travada (`FOR UPDATE`); edição + linha de auditoria (`agent.campaign.step_copy_updated`, com before/after) na mesma transação — falhou a auditoria, a edição desfaz; `delay_hours_max` só muda se estiver no payload; revert recusa se um humano mexeu no step depois. **Não** é um gate de aprovação: o texto de campanha ativa muda sem nova aprovação (achado 21) |
-| G12 | `agent-campaign-manage.ts` e irmãos | Escopo `outreach:manage` (só Hermes). **Nenhuma rota envia e-mail, ativa campanha ou responde prospect.** A única que põe campanha em `active` é `resume`, e só passa com: status `paused`; `activation_approval_id` apontando para aprovação `campaign_activation` **executada** desta campanha e desta org; `paused_reason = 'agent'`; e `validateCampaignReadyForActivation` de novo (sequência, leads com caixa, domínio protegido/`info@`, caixa `warmup_only`, rampa de warm-up). Senão 409/422 e o caminho é `xmail_request_campaign_activation`. PATCH de campanha é parcial, `.strict()` (sem `status`, `replyToEmail`, flags de autonomia) e valida a janela contra o valor gravado. Duplicar cria rascunho com a cadência inteira (`delay_hours_max` incluído), sem leads, sem herdar autonomia. Remover lead / levantar supressão: `confirm: true` ou 409; lead já enviado só é **parado** (histórico de `outreach_emails` não é apagado). Supressão: o agente só levanta `source = 'manual'`. Caixas: schema `.strict()`, nenhuma coluna de segredo é selecionada, `warmupDays` só sobe, `warmupEnabled` só liga, limite diário máx. 30 (caixa aquecida recebe o valor no mesmo dia; acima de 30 é decisão do Vanildo, pela tela), `status` só `paused`; `GET /email-accounts` traz `rampRecommendation` (conselho de limite pelos últimos 7 dias, nunca aplicado). Inbox: leitura, corpo em texto puro, marcado `untrustedContent`. Cada escrita grava `agent.*` em `outreach_agent_audit_log` na mesma transação (falhou a auditoria, a mudança desfaz) |
+| G12 | `agent-campaign-manage.ts` e irmãos | Escopo `outreach:manage` (só Hermes). **Nenhuma rota envia e-mail, ativa campanha ou responde prospect.** A única que põe campanha em `active` é `resume`, e só passa com: status `paused`; `activation_approval_id` apontando para aprovação `campaign_activation` **executada** desta campanha e desta org; `paused_reason = 'agent'`; e `validateCampaignReadyForActivation` de novo (sequência, leads com caixa, domínio protegido/`info@`, caixa `warmup_only`, rampa de warm-up). Senão 409/422 e o caminho é `xmail_request_campaign_activation`. PATCH de campanha é parcial, `.strict()` (sem `status`, `replyToEmail`, flags de autonomia) e valida a janela contra o valor gravado. Duplicar cria rascunho com a cadência inteira (`delay_hours_max` incluído), sem leads, sem herdar autonomia. Remover lead / levantar supressão: `confirm: true` ou 409; lead já enviado só é **parado** (histórico de `outreach_emails` não é apagado). Supressão: o agente só levanta `source = 'manual'`. Caixas: schema `.strict()`, nenhuma coluna de segredo é selecionada, `warmupDays` só sobe, `warmupEnabled` só liga, limite diário máx. 50 (decisão do dono em 2026-10-28; caixa aquecida recebe o valor no mesmo dia; acima de 50 é decisão do Vanildo, pela tela), `status` só `paused`; `GET /email-accounts` traz `rampRecommendation` (conselho de limite pelos últimos 7 dias, nunca aplicado). Inbox: leitura, corpo em texto puro, marcado `untrustedContent`. Cada escrita grava `agent.*` em `outreach_agent_audit_log` na mesma transação (falhou a auditoria, a mudança desfaz) |
 
 ### Rotas do G12 (`/api/agent/outreach`)
 
@@ -174,7 +181,7 @@ porque a escada sempre chega a 30.
 Rode do root do repo. Qualquer resultado diferente do esperado é regressão de segurança.
 
 ```bash
-# 1. Nenhuma tool de envio/ativação chega ao LLM (esperado: só request_activation e pause; as tools outreach_* editam copy/operam o existente, não enviam nem ativam; `outreach_campaign_resume` só retoma o que um humano já aprovou e o agente pausou)
+# 1. Nenhuma tool de envio/ativação chega ao LLM (esperado: só request_activation e pause; `xmail_enroll_campaign` só matricula em draft e pede aprovação nas demais; as tools outreach_* editam copy/operam o existente, não enviam nem ativam; `outreach_campaign_resume` só retoma o que um humano já aprovou e o agente pausou)
 grep -nE "name: '(xmail|outreach)_" hermes/xmail-mcp/server.mjs
 ```
 
@@ -205,6 +212,11 @@ npx vitest run src/server/lib/__tests__/hermes-mcp-contract.test.ts src/server/l
 npx vitest run src/server/routes/__tests__/agent-campaign-copy.test.ts src/server/lib/__tests__/campaign-copy-lint.test.ts --maxWorkers=1
 # 6c. G12 (outreach:manage): escopo, org, confirm, auditoria na transação, guardas das três caixas, resume, segredos
 npx vitest run src/server/routes/__tests__/agent-campaign-manage.test.ts src/server/routes/__tests__/agent-leads.test.ts src/server/routes/__tests__/agent-accounts.test.ts src/server/routes/__tests__/agent-inbox-analytics.test.ts src/server/routes/__tests__/agent-suppressions.test.ts --maxWorkers=1
+```
+
+```bash
+# 6d. G13 (matrícula em campanha em andamento): rota, serviço, execução da aprovação, card
+npx vitest run src/server/routes/__tests__/agent-campaign-enroll.test.ts src/server/lib/__tests__/campaign-enrollment.test.ts src/server/lib/__tests__/approval-actions-enrollment.test.ts src/server/lib/__tests__/telegram-approvals.test.ts --maxWorkers=1
 ```
 
 ```bash
@@ -514,7 +526,7 @@ WHERE jsonb_typeof(<coluna>) = 'string';
   vazio ganha o `Re:`. O assunto anterior vem de `outreach_emails.subject`, que guarda o template
   (a interpolação acontece no envio); o `Re: <template>` é interpolado com os mesmos dados do lead.
 - **A rampa de volume é conselho, não ação.** `rampRecommendation` nunca altera `daily_send_limit`.
-  Subir é um PATCH que o Hermes decide fazer (teto 30) e reporta, ou o Vanildo faz na tela.
+  Subir é um PATCH que o Hermes decide fazer (teto 50, passos de +5) e reporta, ou o Vanildo faz na tela.
 
 ## 12. Manutenção deste doc
 
