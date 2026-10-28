@@ -17,6 +17,7 @@ vi.mock('../telegram', () => ({
 
 import { getTelegramConfig, callTelegramApi } from '../telegram'
 import {
+    buildApprovalCardText,
     ensureTelegramWebhook,
     handleTelegramUpdate,
     notifyApprovalRequested,
@@ -391,5 +392,79 @@ describe('ensureTelegramWebhook', () => {
             secret_token: SECRET,
             allowed_updates: ['callback_query', 'my_chat_member'],
         })
+    })
+})
+
+describe('campaign_enrollment card', () => {
+    const enrollment = (overrides: Record<string, unknown> = {}) => ({
+        id: APPROVAL,
+        organizationId: ORG,
+        actionKind: 'campaign_enrollment',
+        resourceType: 'campaign',
+        resourceId: '22222222-2222-2222-2222-222222222222',
+        expiresAt: new Date('2026-10-29T12:00:00Z'),
+        requestPayload: {
+            campaignName: 'Barbers MA <pilot>',
+            campaignStatus: 'active',
+            reason: 'Fresh Hudson batch <b>x</b>',
+            dryRun: {
+                willAdd: 412,
+                exampleCompanies: ['Acme Barbers', "Joe's Cuts", 'A', 'B', 'C', 'D', 'E', 'F'],
+                senders: [{ email: 'a@tryskaleclub.com', count: 206 }, { email: 'b@tryskaleclub.com', count: 206 }],
+                leftOutByReason: { already_enrolled: 20, unsubscribed: 6, email_not_verified: 12 },
+            },
+        },
+        ...overrides,
+    })
+
+    it('renders the request in Portuguese: campaign, count, examples, senders, what was left out, the reason, expiry and the consequence', async () => {
+        state.approvalRow = enrollment()
+        const text = (await buildApprovalCardText(APPROVAL))!
+
+        expect(text).toContain('🟢 Pedido para adicionar leads a uma campanha ativa')
+        expect(text).toContain('<b>Barbers MA &lt;pilot&gt;</b> · ativa')
+        expect(text).toContain('Leads a adicionar: <b>412</b>')
+        expect(text).toContain('Acme Barbers, Joe&#39;s Cuts')
+        expect(text).toContain('e mais 404')
+        expect(text).toContain('• a@tryskaleclub.com: 206')
+        expect(text).toContain('Ficaram de fora (38)')
+        expect(text).toContain('• 20 já estavam na campanha')
+        expect(text).toContain('• 6 descadastrados')
+        expect(text).toContain('• 12 sem e-mail verificado')
+        expect(text).toContain('Motivo do Hermes:')
+        expect(text).toContain('&lt;b&gt;x&lt;/b&gt;') // the agent's text is escaped, never markup
+        expect(text).toContain('vence 2026-10-29 12:00 UTC')
+        expect(text).toContain('Aprovar adiciona os leads e eles começam a receber a sequência.')
+    })
+
+    it('says so when the campaign is paused', async () => {
+        state.approvalRow = enrollment({ requestPayload: { campaignName: 'P', campaignStatus: 'paused', dryRun: { willAdd: 3 } } })
+        const text = (await buildApprovalCardText(APPROVAL))!
+        expect(text).toContain('campanha pausada')
+        expect(text).toContain('só recebem a sequência quando ela voltar a ativa')
+    })
+
+    it('Aprovar still needs the second tap, and the confirmed tap edits the card with what was added and what was left out', async () => {
+        deps.findApproval = vi.fn().mockResolvedValue({ id: APPROVAL, organizationId: ORG, actionKind: 'campaign_enrollment' })
+        deps.approve.mockResolvedValue({
+            ok: true, status: 200,
+            body: { idempotentReplay: false, result: { added: 30, leftOut: 2, leftOutByReason: { unsubscribed: 2 } } },
+        })
+
+        await handleTelegramUpdate(tap(`apv:a:${APPROVAL}`), SECRET, deps)
+        expect(deps.approve).not.toHaveBeenCalled()
+
+        await handleTelegramUpdate(tap(`apv:c:${APPROVAL}`), SECRET, deps)
+        expect(deps.approve).toHaveBeenCalledTimes(1)
+        const text = (calls('editMessageText')[0] as { text: string }).text
+        expect(text).toContain('30 lead(s) adicionados')
+        expect(text).toContain('2 ficaram de fora (2 descadastrados)')
+    })
+
+    it('shows why a failed enrollment did not go through', async () => {
+        deps.findApproval = vi.fn().mockResolvedValue({ id: APPROVAL, organizationId: ORG, actionKind: 'campaign_enrollment' })
+        deps.approve.mockResolvedValue({ ok: false, status: 409, body: { error: 'Cannot enroll leads into a completed campaign' } })
+        await handleTelegramUpdate(tap(`apv:c:${APPROVAL}`), SECRET, deps)
+        expect((calls('editMessageText')[0] as { text: string }).text).toContain('Não aprovado: Cannot enroll leads into a completed campaign')
     })
 })

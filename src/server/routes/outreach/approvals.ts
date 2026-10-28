@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express'
 import { and, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../../../db'
-import { outreachActionApprovals } from '../../../db/schema'
+import { campaigns, outreachActionApprovals } from '../../../db/schema'
 import { requireOutreachWrite, SERVICE_PRINCIPAL_HEADER } from '../../lib/outreach-access'
 import { approveOutreachAction, rejectOutreachAction } from '../../lib/approval-actions'
 import { buildCampaignActivationPreview, type CampaignActivationPreview } from '../../lib/outreach-approval-preview'
@@ -45,8 +45,25 @@ router.get('/', async (req, res) => {
         // counts, sending inbox and compliance state BEFORE approving, not just a resource id.
         // Computed only for the pending campaign_activation requests a reviewer would actually
         // act on — historical approved/executed rows keep their original (lighter) shape.
-        const enriched: Array<typeof approvals[number] & { campaignPreview?: CampaignActivationPreview | null }> =
+        const enriched: Array<typeof approvals[number] & {
+            campaignPreview?: CampaignActivationPreview | null
+            enrollmentCampaign?: { id: string; name: string; status: string } | null
+        }> =
             await Promise.all(approvals.map(async (approval) => {
+                // A pending enrollment request shows the campaign as it is NOW (it may have been
+                // paused or finished since Hermes asked); the lead counts come from requestPayload.
+                if (approval.actionKind === 'campaign_enrollment' && approval.status === 'requested') {
+                    try {
+                        const enrollmentCampaign = await db.query.campaigns.findFirst({
+                            where: and(eq(campaigns.id, approval.resourceId), eq(campaigns.organizationId, query.organizationId)),
+                            columns: { id: true, name: true, status: true },
+                        }) ?? null
+                        return { ...approval, enrollmentCampaign }
+                    } catch (error) {
+                        console.error('Error loading campaign for enrollment approval:', error)
+                        return { ...approval, enrollmentCampaign: null }
+                    }
+                }
                 if (approval.actionKind !== 'campaign_activation' || approval.status !== 'requested') {
                     return approval
                 }

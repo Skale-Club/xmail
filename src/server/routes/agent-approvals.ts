@@ -13,7 +13,7 @@ import { agentHasScope, getAgentPrincipal, type AgentPrincipal } from '../lib/ag
 import { writeAgentAudit } from '../lib/agent-audit'
 import { MAX_APOLLO_CREDITS_PER_PERSON } from '../lib/prospecting/apollo'
 import { publishOutreachEvent } from '../lib/xphere-events'
-import { notifyApprovalRequested } from '../lib/telegram-approvals'
+import { findOrCreateApproval } from '../lib/agent-approval-request'
 
 const router = Router()
 
@@ -35,50 +35,6 @@ function requireScope(req: Request, res: Response, scope: OutreachAgentScope): A
         return null
     }
     return principal
-}
-
-async function findOrCreateApproval(input: {
-    principal: AgentPrincipal
-    actionKind: 'prospect_enrichment' | 'campaign_activation'
-    resourceType: string
-    resourceId: string
-    idempotencyKey: string
-    requestPayload: Record<string, unknown>
-    maximumCreditCost?: number
-}) {
-    const [created] = await db.insert(outreachActionApprovals).values({
-        organizationId: input.principal.organizationId,
-        requesterAgentCredentialId: input.principal.credentialId,
-        requesterUserId: input.principal.principalUserId,
-        actionKind: input.actionKind,
-        resourceType: input.resourceType,
-        resourceId: input.resourceId,
-        idempotencyKey: input.idempotencyKey,
-        requestPayload: input.requestPayload,
-        maximumCreditCost: input.maximumCreditCost ?? 0,
-    }).onConflictDoNothing({
-        target: [
-            outreachActionApprovals.organizationId,
-            outreachActionApprovals.requesterAgentCredentialId,
-            outreachActionApprovals.actionKind,
-            outreachActionApprovals.idempotencyKey,
-        ],
-    }).returning()
-    if (created) {
-        // Card with Approve/Reject buttons on the owner's Telegram (best effort, never blocks).
-        void notifyApprovalRequested(created.id)
-        return { approval: created, idempotentReplay: false }
-    }
-    const existing = await db.query.outreachActionApprovals.findFirst({
-        where: and(
-            eq(outreachActionApprovals.organizationId, input.principal.organizationId),
-            eq(outreachActionApprovals.requesterAgentCredentialId, input.principal.credentialId),
-            eq(outreachActionApprovals.actionKind, input.actionKind),
-            eq(outreachActionApprovals.idempotencyKey, input.idempotencyKey),
-        ),
-    })
-    if (!existing) throw new Error('Idempotent approval conflict could not be resolved')
-    return { approval: existing, idempotentReplay: true }
 }
 
 router.post('/approvals/prospect-enrichment', async (req, res) => {

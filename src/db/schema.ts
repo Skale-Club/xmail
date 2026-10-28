@@ -2459,7 +2459,8 @@ export type NewOutreachEventOutboxEntry = typeof outreachEventOutbox.$inferInser
 // Durable action approvals (Phase 28) — migration 047
 // ============================================================
 
-export type OutreachApprovalActionKind = 'prospect_enrichment' | 'campaign_activation'
+// 'campaign_enrollment' (migration 078): adding leads to an ACTIVE or PAUSED campaign, which starts real email.
+export type OutreachApprovalActionKind = 'prospect_enrichment' | 'campaign_activation' | 'campaign_enrollment'
 export type OutreachApprovalStatus = 'requested' | 'approved' | 'rejected' | 'executing' | 'executed' | 'failed' | 'expired' | 'cancelled'
 
 export const outreachActionApprovals = pgTable('outreach_action_approvals', {
@@ -2493,7 +2494,7 @@ export const outreachActionApprovals = pgTable('outreach_action_approvals', {
     ),
     idxOrgStatus: index('idx_outreach_action_approvals_org_status').on(table.organizationId, table.status, table.requestedAt),
     idxResource: index('idx_outreach_action_approvals_resource').on(table.organizationId, table.actionKind, table.resourceId, table.requestedAt),
-    actionCheck: check('outreach_action_approvals_action_check', sql`${table.actionKind} IN ('prospect_enrichment', 'campaign_activation')`),
+    actionCheck: check('outreach_action_approvals_action_check', sql`${table.actionKind} IN ('prospect_enrichment', 'campaign_activation', 'campaign_enrollment')`),
     statusCheck: check('outreach_action_approvals_status_check', sql`${table.status} IN ('requested', 'approved', 'rejected', 'executing', 'executed', 'failed', 'expired', 'cancelled')`),
     creditCheck: check('outreach_action_approvals_credit_nonnegative', sql`${table.maximumCreditCost} >= 0`),
 }))

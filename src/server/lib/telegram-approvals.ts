@@ -61,12 +61,91 @@ function hours(h: number): string {
     return h % 24 === 0 ? `${h / 24} dia(s) depois` : `${h}h depois`
 }
 
+const LEFT_OUT_LABELS: Record<string, string> = {
+    already_enrolled: 'já estavam na campanha',
+    not_found: 'não encontrados',
+    no_email: 'sem e-mail',
+    unsubscribed: 'descadastrados',
+    suppressed: 'na lista de bloqueio',
+    invalid_email: 'com e-mail inválido',
+    platform_email: 'com e-mail de plataforma de agendamento',
+    email_not_verified: 'sem e-mail verificado',
+}
+
+/** Untrusted text (the agent's reason, scraped company names): escaped and bounded. */
+function clip(text: string, max: number): string {
+    const flat = text.replace(/\s+/g, ' ').trim()
+    return escapeHtml(flat.length > max ? `${flat.slice(0, max - 1)}…` : flat)
+}
+
+interface EnrollmentCardPayload {
+    campaignId?: string
+    campaignName?: string
+    campaignStatus?: string
+    reason?: string | null
+    dryRun?: {
+        willAdd?: number
+        leftOutByReason?: Record<string, number>
+        senders?: Array<{ email: string; count: number }>
+        exampleCompanies?: string[]
+    }
+}
+
+/**
+ * Card for a `campaign_enrollment` request: Hermes asks to put leads on a campaign that is already
+ * running, which starts real email to new people. Built only from the request payload (the dry run
+ * Xmail computed when the request was filed), so it costs no queries and renders the same before and
+ * after the decision. Exported for tests.
+ */
+export function buildEnrollmentCardText(approval: {
+    id: string
+    resourceId: string
+    expiresAt: Date
+    requestPayload: unknown
+}): string {
+    const payload = (approval.requestPayload ?? {}) as EnrollmentCardPayload
+    const dry = payload.dryRun ?? {}
+    const willAdd = dry.willAdd ?? 0
+    const paused = payload.campaignStatus === 'paused'
+    const lines = [
+        `<b>🟢 Pedido para adicionar leads a uma campanha ${paused ? 'pausada' : 'ativa'}</b>`,
+        '',
+        `<b>${clip(payload.campaignName ?? approval.resourceId, 120)}</b> · ${paused ? 'pausada' : 'ativa'}`,
+        `Leads a adicionar: <b>${willAdd}</b>`,
+    ]
+    const examples = (dry.exampleCompanies ?? []).slice(0, 8)
+    if (examples.length > 0) {
+        const more = willAdd - examples.length
+        lines.push(`Exemplos: ${examples.map((name) => clip(name, 40)).join(', ')}${more > 0 ? ` e mais ${more}` : ''}`)
+    }
+    const senders = dry.senders ?? []
+    if (senders.length > 0) {
+        lines.push('', '<b>Remetentes</b>')
+        for (const sender of senders.slice(0, 10)) lines.push(`• ${clip(sender.email, 60)}: ${sender.count}`)
+        if (senders.length > 10) lines.push(`• e mais ${senders.length - 10} caixas`)
+    }
+    const leftOut = Object.entries(dry.leftOutByReason ?? {}).filter(([, count]) => count > 0)
+    if (leftOut.length > 0) {
+        const total = leftOut.reduce((sum, [, count]) => sum + count, 0)
+        lines.push('', `<b>Ficaram de fora (${total})</b>`)
+        for (const [reason, count] of leftOut) lines.push(`• ${count} ${LEFT_OUT_LABELS[reason] ?? escapeHtml(reason)}`)
+    }
+    if (payload.reason) lines.push('', `<b>Motivo do Hermes:</b> ${clip(payload.reason, 300)}`)
+    lines.push('', `Pedido ${approval.id.slice(0, 8)} · vence ${approval.expiresAt.toISOString().slice(0, 16).replace('T', ' ')} UTC`)
+    lines.push(paused
+        ? 'Aprovar adiciona os leads. Como a campanha está pausada, eles só recebem a sequência quando ela voltar a ativa.'
+        : 'Aprovar adiciona os leads e eles começam a receber a sequência.')
+    return lines.join('\n')
+}
+
 /** HTML body of the approval card. Exported for tests. */
 export async function buildApprovalCardText(approvalId: string): Promise<string | null> {
     const approval = await db.query.outreachActionApprovals.findFirst({
         where: eq(outreachActionApprovals.id, approvalId),
     })
     if (!approval) return null
+
+    if (approval.actionKind === 'campaign_enrollment') return buildEnrollmentCardText(approval)
 
     if (approval.actionKind === 'campaign_activation') {
         const preview = await buildCampaignActivationPreview(approval.resourceId, approval.organizationId).catch(() => null)
@@ -200,9 +279,21 @@ const defaultDeps: TelegramApprovalDeps = {
     cardText: buildApprovalCardText,
 }
 
+function describeEnrollmentResult(result: unknown): string {
+    const r = (result ?? {}) as { added?: number; leftOut?: number; leftOutByReason?: Record<string, number> }
+    const added = r.added ?? 0
+    const leftOut = r.leftOut ?? 0
+    const reasons = Object.entries(r.leftOutByReason ?? {})
+        .filter(([, count]) => count > 0)
+        .map(([reason, count]) => `${count} ${LEFT_OUT_LABELS[reason] ?? escapeHtml(reason)}`)
+    const detail = leftOut > 0 ? `${leftOut} ficaram de fora${reasons.length > 0 ? ` (${reasons.join(', ')})` : ''}` : 'nenhum ficou de fora'
+    return `✅ Aprovado. ${added} lead(s) adicionados à campanha, ${detail}.`
+}
+
 function describeOutcome(outcome: ApprovalOutcome, kind: string): string {
     if (outcome.ok) {
         if (outcome.body.idempotentReplay) return '✅ Já estava aprovado.'
+        if (kind === 'campaign_enrollment') return describeEnrollmentResult(outcome.body.result)
         return kind === 'campaign_activation' ? '✅ Aprovado. A campanha está ativa e começa a enviar.' : '✅ Aprovado.'
     }
     const issues = Array.isArray(outcome.body.issues)

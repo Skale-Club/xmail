@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const findManyMock = vi.hoisted(() => vi.fn())
 const requireOutreachWriteMock = vi.hoisted(() => vi.fn())
 const buildPreviewMock = vi.hoisted(() => vi.fn())
+const campaignFindFirstMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../../../db', () => ({
     db: {
@@ -21,6 +22,7 @@ vi.mock('../../../../db', () => ({
             outreachActionApprovals: {
                 findMany: findManyMock,
             },
+            campaigns: { findFirst: campaignFindFirstMock },
         },
     },
 }))
@@ -158,5 +160,29 @@ describe('GET /approvals — campaign activation preview (Fase 37)', () => {
 
         expect(result.status).toBe(403)
         expect(buildPreviewMock).not.toHaveBeenCalled()
+    })
+})
+
+describe('GET /approvals: campaign_enrollment requests', () => {
+    it('attaches the campaign as it is now to a pending enrollment request, and no activation preview', async () => {
+        findManyMock.mockResolvedValue([approvalRow({
+            actionKind: 'campaign_enrollment',
+            requestPayload: { dryRun: { willAdd: 12 } },
+        })])
+        campaignFindFirstMock.mockResolvedValue({ id: 'campaign-1', name: 'Pilot campaign', status: 'paused' })
+
+        const result = await get(`/?organizationId=${ORG_ID}`)
+
+        expect(result.status).toBe(200)
+        expect(result.body.approvals[0].enrollmentCampaign).toEqual({ id: 'campaign-1', name: 'Pilot campaign', status: 'paused' })
+        expect(result.body.approvals[0].requestPayload).toEqual({ dryRun: { willAdd: 12 } })
+        expect(buildPreviewMock).not.toHaveBeenCalled()
+    })
+
+    it('does not look the campaign up for an enrollment request that was already decided', async () => {
+        findManyMock.mockResolvedValue([approvalRow({ actionKind: 'campaign_enrollment', status: 'executed' })])
+        const result = await get(`/?organizationId=${ORG_ID}`)
+        expect(result.body.approvals[0]).not.toHaveProperty('enrollmentCampaign')
+        expect(campaignFindFirstMock).not.toHaveBeenCalled()
     })
 })

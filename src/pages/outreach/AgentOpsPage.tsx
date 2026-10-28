@@ -60,7 +60,7 @@ interface Assessment {
 
 interface Approval {
     id: string
-    actionKind: 'prospect_enrichment' | 'campaign_activation'
+    actionKind: 'prospect_enrichment' | 'campaign_activation' | 'campaign_enrollment'
     resourceType: string
     resourceId: string
     status: string
@@ -73,6 +73,57 @@ interface Approval {
     // `null` means the server tried and failed to build one; that failure must stay visible
     // rather than silently rendering an empty card.
     campaignPreview?: CampaignActivationPreview | null
+    // Only for a pending campaign_enrollment request: the campaign as it is now.
+    enrollmentCampaign?: { id: string; name: string; status: string } | null
+}
+
+interface EnrollmentPayload {
+    campaignName?: string
+    reason?: string | null
+    dryRun?: {
+        willAdd?: number
+        leftOutByReason?: Record<string, number>
+        senders?: Array<{ email: string; count: number }>
+        exampleCompanies?: string[]
+    }
+}
+
+function enrollmentPayload(approval: Approval): EnrollmentPayload {
+    return approval.requestPayload as EnrollmentPayload
+}
+
+function approvalTitle(kind: Approval['actionKind']): string {
+    if (kind === 'prospect_enrichment') return 'Spend enrichment credits'
+    if (kind === 'campaign_enrollment') return 'Add leads to a running campaign'
+    return 'Activate campaign'
+}
+
+/** What a campaign_enrollment request asks for, from the dry run Xmail computed when it was filed. */
+function EnrollmentRequestCard({ approval }: { approval: Approval }) {
+    const payload = enrollmentPayload(approval)
+    const dry = payload.dryRun ?? {}
+    const campaign = approval.enrollmentCampaign
+    const leftOut = Object.entries(dry.leftOutByReason ?? {}).filter(([, count]) => count > 0)
+    return (
+        <div className="mt-3 space-y-2 rounded-lg border border-border/60 bg-muted/30 p-3 text-xs leading-5">
+            <p className="text-foreground">
+                <span className="font-semibold">{campaign?.name ?? payload.campaignName ?? approval.resourceId.slice(0, 8)}</span>
+                {campaign ? ` · ${campaign.status}` : ''}
+            </p>
+            <p>
+                <span className="font-semibold text-foreground">{dry.willAdd ?? 0}</span> leads to add
+                {(dry.exampleCompanies ?? []).length > 0 ? `, e.g. ${(dry.exampleCompanies ?? []).join(', ')}` : ''}
+            </p>
+            {(dry.senders ?? []).length > 0 && (
+                <p className="text-muted-foreground">Senders: {(dry.senders ?? []).map((sender) => `${sender.email} (${sender.count})`).join(', ')}</p>
+            )}
+            {leftOut.length > 0 && (
+                <p className="text-muted-foreground">Left out: {leftOut.map(([reason, count]) => `${count} ${reason.replace(/_/g, ' ')}`).join(', ')}</p>
+            )}
+            {payload.reason && <p className="text-muted-foreground">Reason given: {payload.reason}</p>}
+            <p className="text-muted-foreground">Approving adds the leads and they start receiving the sequence. Eligibility is checked again at approval time.</p>
+        </div>
+    )
 }
 
 const tone: Record<string, string> = {
@@ -170,7 +221,9 @@ export default function AgentOpsPage() {
         const { approval, decision } = confirmReview
         const action = approval.actionKind === 'prospect_enrichment'
             ? `spend up to ${approval.maximumCreditCost} enrichment credits`
-            : 'activate this campaign'
+            : approval.actionKind === 'campaign_enrollment'
+                ? `add ${enrollmentPayload(approval).dryRun?.willAdd ?? 0} leads to a running campaign (they start receiving the sequence)`
+                : 'activate this campaign'
         const blockers = approval.campaignPreview?.compliance.blockers ?? []
         const blockerWarning = decision === 'approve' && blockers.length > 0
             ? ` WARNING — compliance blocker(s) shown above: ${blockers.map((b) => b.message).join('; ')}`
@@ -280,10 +333,13 @@ export default function AgentOpsPage() {
                                 <div className="divide-y divide-border/60">
                                     {requested.map((approval) => (
                                         <article key={approval.id} className="p-5">
-                                            <div className="flex items-start justify-between gap-3"><div><StatusBadge status={approval.status} /><h3 className="mt-2 text-sm font-semibold text-foreground">{approval.actionKind === 'prospect_enrichment' ? 'Spend enrichment credits' : 'Activate campaign'}</h3></div><Clock3 className="h-4 w-4 text-muted-foreground" /></div>
+                                            <div className="flex items-start justify-between gap-3"><div><StatusBadge status={approval.status} /><h3 className="mt-2 text-sm font-semibold text-foreground">{approvalTitle(approval.actionKind)}</h3></div><Clock3 className="h-4 w-4 text-muted-foreground" /></div>
                                             <p className="mt-2 text-xs leading-5 text-muted-foreground">Resource <span className="font-mono text-foreground">{approval.resourceId.slice(0, 8)}</span>{approval.maximumCreditCost > 0 ? ` · worst case ${approval.maximumCreditCost} credits` : ''}</p>
                                             {approval.actionKind === 'campaign_activation' && (
                                                 <CampaignActivationPreviewCard preview={approval.campaignPreview} />
+                                            )}
+                                            {approval.actionKind === 'campaign_enrollment' && (
+                                                <EnrollmentRequestCard approval={approval} />
                                             )}
                                             <div className="mt-4 grid grid-cols-2 gap-2">
                                                 <Button size="sm" onClick={() => reviewApproval(approval, 'approve')} disabled={reviewMutation.isPending}><Check className="mr-1.5 h-4 w-4" />Approve</Button>
