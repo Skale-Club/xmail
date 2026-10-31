@@ -107,7 +107,12 @@ Kai is a second agent with limited Xmail access (exactly `campaigns:copy`, enfor
    suppressed or booking-platform addresses, dedup per campaign, leads spread round-robin over the
    campaign's Icemail inboxes, `info@` and warm-up boxes never senders, everything audited.
    `completed` and `archived` campaigns are refused. Activating a campaign (draft to active) still
-   needs the approval card.
+   needs the approval card. **Feed only leads whose Google Maps category matches the campaign**
+   (a barbershop campaign takes `Barber shop` only, read from the Xphere account's
+   `custom_fields.category`): the `niche` tag also covers neighbours of the scrape, and on
+   2026-10-31 a bulk feed of every verified lead put 61 non-barbershops on Pilot 01 (salons, a
+   donut shop, a pet groomer); they were removed before any email went out. Xmail does not check
+   the category itself yet.
 9. **Replies.** Xmail reads the Icemail inboxes, matches replies to the campaign email, stops the
    sequence for that lead, and alerts Vanildo on Telegram immediately, then every 2 hours
    between 8:00 and 20:00 ET until handled, plus a morning summary.
