@@ -3,16 +3,16 @@ import { createHash } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../../db'
-import { campaigns, outreachActionApprovals } from '../../db/schema'
+import { campaigns } from '../../db/schema'
 import { requireScope, isUuid } from '../lib/agent-manage'
 import { writeAgentAudit } from '../lib/agent-audit'
-import { findOrCreateApproval } from '../lib/agent-approval-request'
+import { sendTelegram } from '../lib/telegram'
+import { escapeHtml } from '../lib/html-escape'
 import { publishOutreachEvent } from '../lib/xphere-events'
 import {
     CampaignEnrollmentError,
     enrollCampaignLeads,
     isTerminalCampaignStatus,
-    planCampaignEnrollment,
     requireCampaignFirstStep,
     summarizeEnrollmentPlan,
     type EnrollmentPlan,
@@ -25,18 +25,60 @@ import {
  *
  *   POST /campaigns/:id/enroll      scope campaigns:draft (the scope enroll-draft already uses)
  *
- *   draft            enroll now through the shared service (lib/campaign-enrollment.ts), audited.
- *   active | paused  enroll NOTHING. Dry-run with the same service and file a `campaign_enrollment`
- *                    approval request; the leads enter only after the owner approves the Telegram
- *                    card (or the panel). Adding recipients to a running campaign starts real email,
- *                    and the agent reads untrusted prospect replies, so a self-confirmed flag is not
- *                    an approval and there is none to pass.
- *   completed | archived   409.
+ *   draft | active | paused   enroll now through the shared service (lib/campaign-enrollment.ts),
+ *                             audited. On an active or paused campaign the owner gets an FYI message
+ *                             on the outreach Telegram chat ("Hermes adicionou N leads"), not an
+ *                             approval card: Vanildo decided on 2026-10-31 that feeding a running
+ *                             campaign must not wait for a tap (three daily batches expired unapproved
+ *                             and the campaign ran dry). The safety lives in the service: only verified
+ *                             emails, no unsubscribed / suppressed / booking-platform addresses, only
+ *                             campaign-eligible Icemail inboxes as senders, dedup per campaign.
+ *   completed | archived      409.
+ *
+ * Activating a campaign (draft -> active) still goes through the approval card.
  *
  * There is no small batch cap: up to 1000 leads per call is only a bound on request size, the agent
  * calls again for more. The real daily ceiling is the number of sending inboxes times the per-inbox
  * daily limit; the delivery policy defers what does not fit to the next day.
  */
+
+const LEFT_OUT_LABELS: Record<string, string> = {
+    already_enrolled: 'já estavam na campanha',
+    unsubscribed: 'descadastrados',
+    suppressed: 'suprimidos',
+    platform_email: 'e-mail de plataforma',
+    email_not_verified: 'sem e-mail verificado',
+    no_email: 'sem e-mail',
+    invalid_email: 'e-mail inválido',
+    not_found: 'não encontrados',
+}
+
+/** FYI on the outreach chat when Hermes feeds a running campaign. Best effort, never fails the call. */
+async function notifyRunningCampaignFed(input: {
+    campaignName: string
+    campaignStatus: string
+    added: number
+    summary: EnrollmentSummary
+    reason: string | null
+}): Promise<void> {
+    try {
+        const lines: string[] = []
+        lines.push(`Campanha: ${escapeHtml(input.campaignName)}${input.campaignStatus === 'paused' ? ' (pausada: recebem a sequência quando voltar)' : ''}`)
+        if (input.summary.senders.length > 0) {
+            lines.push('', 'Remetentes')
+            for (const sender of input.summary.senders) lines.push(`• ${escapeHtml(sender.email)}: ${sender.count}`)
+        }
+        const leftOut = Object.entries(input.summary.leftOutByReason)
+        if (leftOut.length > 0) {
+            lines.push('', 'Ficaram de fora')
+            for (const [reason, count] of leftOut) lines.push(`• ${count} ${escapeHtml(LEFT_OUT_LABELS[reason] ?? reason)}`)
+        }
+        if (input.reason) lines.push('', `Motivo do Hermes: ${escapeHtml(input.reason.slice(0, 300))}`)
+        await sendTelegram(`<b>📥 Hermes adicionou ${input.added} lead(s) à campanha</b>`, lines.join('\n'), 'outreach')
+    } catch (error) {
+        console.error('[agent-campaign-enroll] could not post the FYI message:', error instanceof Error ? error.message : error)
+    }
+}
 
 const router = Router()
 
@@ -92,136 +134,45 @@ router.post('/campaigns/:id/enroll', async (req, res) => {
             policy: 'agent' as const,
         }
 
-        if (campaign.status === 'draft') {
-            const { plan, inserted } = await enrollCampaignLeads({ ...enrollment, planInsideTransaction: true })
-            const summary = summarizeEnrollmentPlan(plan)
-            const added = inserted.length
-            await writeAgentAudit({
-                principal,
-                request: req,
-                action: 'agent.campaign.enrolled',
-                resourceType: 'campaign',
-                resourceId: campaign.id,
-                metadata: {
-                    campaignStatus: campaign.status,
-                    requested: leadIds.length,
-                    added,
-                    alreadyEnrolled: summary.alreadyEnrolled,
-                    leftOutByReason: summary.leftOutByReason,
-                    senders: summary.senders,
-                    idempotencyKey: input.idempotencyKey,
-                    reason: input.reason ?? null,
-                },
-            })
-            await publishOutreachEvent({
-                organizationId: principal.organizationId,
-                eventType: 'campaign.draft_enrolled',
-                aggregateType: 'campaign',
-                aggregateId: campaign.id,
-                deduplicationKey: `campaign.draft_enrolled:${campaign.id}:${createHash('sha256').update([...leadIds].sort().join(',')).digest('hex')}`,
-                payload: { campaign_id: campaign.id, requested_count: leadIds.length, added_count: added },
-            })
-            return res.status(added > 0 ? 201 : 200).json({
-                approvalRequired: false,
-                campaignStatus: campaign.status,
-                added,
-                ...dryRunBody(plan, summary),
-                activationRequired: true,
-            })
-        }
-
-        // active | paused: never enroll here. Replay first, so a retry returns the same request even
-        // after the leads it asked for are already on the campaign.
-        const existing = await db.query.outreachActionApprovals.findFirst({
-            where: and(
-                eq(outreachActionApprovals.organizationId, principal.organizationId),
-                eq(outreachActionApprovals.requesterAgentCredentialId, principal.credentialId),
-                eq(outreachActionApprovals.actionKind, 'campaign_enrollment'),
-                eq(outreachActionApprovals.idempotencyKey, input.idempotencyKey),
-            ),
-        })
-        if (existing) {
-            if (existing.resourceId !== campaign.id) {
-                return res.status(409).json({
-                    error: 'This idempotencyKey was already used for a different campaign',
-                    code: 'idempotency_key_reused',
-                })
-            }
-            const pending = existing.status === 'requested'
-            return res.status(pending ? 202 : 200).json({
-                approvalRequired: pending,
-                approvalId: existing.id,
-                approvalStatus: existing.status,
-                idempotentReplay: true,
-                dryRun: (existing.requestPayload as { dryRun?: unknown }).dryRun ?? null,
-            })
-        }
-
-        await requireCampaignFirstStep(principal.organizationId, campaign.id)
-        const plan = await planCampaignEnrollment(db, enrollment)
+        if (campaign.status !== 'draft') await requireCampaignFirstStep(principal.organizationId, campaign.id)
+        const { plan, inserted } = await enrollCampaignLeads({ ...enrollment, planInsideTransaction: true })
         const summary = summarizeEnrollmentPlan(plan)
-        if (plan.toAdd.length === 0) {
-            return res.status(200).json({
-                approvalRequired: false,
-                campaignStatus: campaign.status,
-                added: 0,
-                dryRun: dryRunBody(plan, summary),
-                note: 'Nothing to add: every lead is already on the campaign or not eligible. No approval was requested.',
-            })
-        }
-
-        const result = await findOrCreateApproval({
-            principal,
-            actionKind: 'campaign_enrollment',
-            resourceType: 'campaign',
-            resourceId: campaign.id,
-            idempotencyKey: input.idempotencyKey,
-            requestPayload: {
-                campaignId: campaign.id,
-                campaignName: campaign.name,
-                campaignStatus: campaign.status,
-                leadIds: plan.toAdd.map((lead) => lead.leadId),
-                ...(input.emailAccountId ? { emailAccountId: input.emailAccountId } : {}),
-                reason: input.reason ?? null,
-                dryRun: summary,
-            },
-        })
+        const added = inserted.length
         await writeAgentAudit({
             principal,
             request: req,
-            action: 'agent.approval.requested',
-            resourceType: 'outreach_action_approval',
-            resourceId: result.approval.id,
+            action: 'agent.campaign.enrolled',
+            resourceType: 'campaign',
+            resourceId: campaign.id,
             metadata: {
-                actionKind: 'campaign_enrollment',
-                campaignId: campaign.id,
                 campaignStatus: campaign.status,
-                willAdd: summary.willAdd,
+                requested: leadIds.length,
+                added,
+                alreadyEnrolled: summary.alreadyEnrolled,
                 leftOutByReason: summary.leftOutByReason,
+                senders: summary.senders,
+                idempotencyKey: input.idempotencyKey,
                 reason: input.reason ?? null,
-                idempotentReplay: result.idempotentReplay,
             },
         })
         await publishOutreachEvent({
             organizationId: principal.organizationId,
-            eventType: 'action.approval_requested',
+            eventType: campaign.status === 'draft' ? 'campaign.draft_enrolled' : 'campaign.leads_enrolled',
             aggregateType: 'campaign',
             aggregateId: campaign.id,
-            deduplicationKey: `action.approval_requested:${result.approval.id}`,
-            payload: {
-                approval_id: result.approval.id,
-                action_kind: 'campaign_enrollment',
-                campaign_id: campaign.id,
-                lead_count: summary.willAdd,
-            },
+            deduplicationKey: `campaign.enrolled:${campaign.id}:${createHash('sha256').update([...leadIds].sort().join(',')).digest('hex')}`,
+            payload: { campaign_id: campaign.id, requested_count: leadIds.length, added_count: added },
         })
-        res.status(202).json({
-            approvalRequired: true,
-            approvalId: result.approval.id,
-            approvalStatus: result.approval.status,
-            idempotentReplay: result.idempotentReplay,
-            dryRun: dryRunBody(plan, summary),
-            note: 'The leads enter the campaign only after the owner approves the Telegram card. Nothing was enrolled.',
+        if (campaign.status !== 'draft' && added > 0) {
+            void notifyRunningCampaignFed({ campaignName: campaign.name, campaignStatus: campaign.status, added, summary, reason: input.reason ?? null })
+        }
+        return res.status(added > 0 ? 201 : 200).json({
+            approvalRequired: false,
+            campaignStatus: campaign.status,
+            added,
+            ...dryRunBody(plan, summary),
+            activationRequired: campaign.status === 'draft',
+            ...(campaign.status === 'paused' ? { note: 'The campaign is paused: the new leads start receiving the sequence when it is resumed.' } : {}),
         })
     } catch (error) {
         if (error instanceof CampaignEnrollmentError) return respondEnrollmentError(res, error)

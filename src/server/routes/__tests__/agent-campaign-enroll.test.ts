@@ -6,9 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 /**
  * Pure unit tests, no DB: POST /campaigns/:id/enroll (Hermes feeds a campaign). The shared
  * enrollment service is mocked at its three entry points (the service itself has its own suite);
- * what is proven here is the route's contract: a draft enrolls now, an active or paused campaign
- * enrolls NOTHING and files a `campaign_enrollment` approval, a finished one is a 409, retries are
- * idempotent, and the scope and the 1000-lead request bound hold.
+ * what is proven here is the route's contract: draft, active and paused campaigns are enrolled
+ * directly (Vanildo, 2026-10-31: no approval card to feed a running campaign), a running one also
+ * gets an FYI message on the outreach Telegram chat, a finished one is a 409, and the scope and the
+ * 1000-lead request bound hold.
  */
 
 const ORG = '11111111-1111-1111-1111-111111111111'
@@ -28,6 +29,7 @@ const m = vi.hoisted(() => ({
     findOrCreateApproval: vi.fn(),
     audit: vi.fn(),
     publish: vi.fn(),
+    telegram: vi.fn(),
 }))
 
 vi.mock('../../../db', () => ({
@@ -45,6 +47,7 @@ vi.mock('../../lib/agent-auth', () => ({
 vi.mock('../../lib/agent-audit', () => ({ writeAgentAudit: m.audit }))
 vi.mock('../../lib/xphere-events', () => ({ publishOutreachEvent: m.publish }))
 vi.mock('../../lib/agent-approval-request', () => ({ findOrCreateApproval: m.findOrCreateApproval }))
+vi.mock('../../lib/telegram', () => ({ sendTelegram: m.telegram }))
 vi.mock('../../lib/campaign-enrollment', async (importOriginal) => ({
     ...(await importOriginal<typeof import('../../lib/campaign-enrollment')>()),
     enrollCampaignLeads: m.enroll,
@@ -88,6 +91,7 @@ beforeEach(async () => {
     m.findOrCreateApproval.mockResolvedValue({ approval: { id: APPROVAL, status: 'requested' }, idempotentReplay: false })
     m.audit.mockResolvedValue(undefined)
     m.publish.mockResolvedValue(undefined)
+    m.telegram.mockResolvedValue({ ok: true })
 
     const router = (await import('../agent-campaign-enroll')).default
     const app = express()
@@ -122,47 +126,41 @@ describe('POST /campaigns/:id/enroll', () => {
     })
 
     for (const status of ['active', 'paused']) {
-        it(`on a ${status} campaign enrolls nothing and files a campaign_enrollment approval with the dry run`, async () => {
+        it(`on a ${status} campaign enrolls directly (no approval card) and posts an FYI on the outreach chat`, async () => {
             m.campaignsFindFirst.mockResolvedValue({ id: CAMPAIGN, organizationId: ORG, name: 'Pilot', status })
 
             const result = await post(`/campaigns/${CAMPAIGN}/enroll`, validBody)
 
-            expect(result.status).toBe(202)
-            expect(result.body).toMatchObject({
-                approvalRequired: true,
-                approvalId: APPROVAL,
-                dryRun: { willAdd: 2, leftOutByReason: { unsubscribed: 1 }, senders: [{ email: 'a@tryskaleclub.test', count: 2 }] },
-            })
-            expect(m.enroll).not.toHaveBeenCalled()
-            expect(m.findOrCreateApproval).toHaveBeenCalledWith(expect.objectContaining({
-                actionKind: 'campaign_enrollment',
-                resourceType: 'campaign',
-                resourceId: CAMPAIGN,
-                idempotencyKey: 'enroll-batch-0001',
-                requestPayload: expect.objectContaining({
-                    leadIds: [LEAD_A, LEAD_B],
-                    reason: 'Fresh Hudson barbers',
-                    campaignName: 'Pilot',
-                    campaignStatus: status,
-                    dryRun: expect.objectContaining({ willAdd: 2, exampleCompanies: ['Shop 1', 'Shop 2'] }),
-                }),
-            }))
-            expect(m.audit).toHaveBeenCalledWith(expect.objectContaining({
-                action: 'agent.approval.requested',
-                metadata: expect.objectContaining({ actionKind: 'campaign_enrollment' }),
-            }))
+            expect(result.status).toBe(201)
+            expect(result.body).toMatchObject({ approvalRequired: false, added: 2, activationRequired: false, campaignStatus: status })
+            expect(m.firstStep).toHaveBeenCalled()
+            expect(m.enroll).toHaveBeenCalledWith(expect.objectContaining({ campaignId: CAMPAIGN, policy: 'agent', leadIds: [LEAD_A, LEAD_B] }))
+            expect(m.findOrCreateApproval).not.toHaveBeenCalled()
+            expect(m.audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'agent.campaign.enrolled', resourceId: CAMPAIGN }))
+            await vi.waitFor(() => expect(m.telegram).toHaveBeenCalledTimes(1))
+            const [title, body, channel] = m.telegram.mock.calls[0]
+            expect(channel).toBe('outreach')
+            expect(title).toContain('Hermes adicionou 2 lead(s)')
+            expect(body).toContain('Pilot')
+            expect(body).toContain('1 descadastrados')
+            expect(body).toContain('Fresh Hudson barbers')
         })
     }
 
-    it('does not file an approval when nothing would be added', async () => {
+    it('does not post the FYI when nothing was added to a running campaign', async () => {
         m.campaignsFindFirst.mockResolvedValue({ id: CAMPAIGN, organizationId: ORG, name: 'Pilot', status: 'active' })
-        m.plan.mockResolvedValue({ ...plan(0), alreadyEnrolled: [LEAD_A, LEAD_B] })
+        m.enroll.mockResolvedValue({ plan: { ...plan(0), alreadyEnrolled: [LEAD_A, LEAD_B] }, inserted: [] })
 
         const result = await post(`/campaigns/${CAMPAIGN}/enroll`, validBody)
 
         expect(result.status).toBe(200)
         expect(result.body).toMatchObject({ approvalRequired: false, added: 0 })
-        expect(m.findOrCreateApproval).not.toHaveBeenCalled()
+        expect(m.telegram).not.toHaveBeenCalled()
+    })
+
+    it('does not post the FYI for a draft (nothing is sent before activation)', async () => {
+        await post(`/campaigns/${CAMPAIGN}/enroll`, validBody)
+        expect(m.telegram).not.toHaveBeenCalled()
     })
 
     for (const status of ['completed', 'archived']) {
@@ -176,34 +174,14 @@ describe('POST /campaigns/:id/enroll', () => {
         })
     }
 
-    it('is idempotent: a retry returns the original request and its stored dry run without a second card', async () => {
+    it('is idempotent in effect: a retry adds nothing because the leads are already on the campaign', async () => {
         m.campaignsFindFirst.mockResolvedValue({ id: CAMPAIGN, organizationId: ORG, name: 'Pilot', status: 'active' })
-        m.approvalsFindFirst.mockResolvedValue({
-            id: APPROVAL, status: 'requested', resourceId: CAMPAIGN, requestPayload: { dryRun: { willAdd: 2 } },
-        })
-
-        const result = await post(`/campaigns/${CAMPAIGN}/enroll`, validBody)
-
-        expect(result.status).toBe(202)
-        expect(result.body).toMatchObject({ approvalRequired: true, approvalId: APPROVAL, idempotentReplay: true, dryRun: { willAdd: 2 } })
-        expect(m.findOrCreateApproval).not.toHaveBeenCalled()
-        expect(m.plan).not.toHaveBeenCalled()
-    })
-
-    it('a retry after the owner decided reports the decision and no longer asks', async () => {
-        m.campaignsFindFirst.mockResolvedValue({ id: CAMPAIGN, organizationId: ORG, name: 'Pilot', status: 'active' })
-        m.approvalsFindFirst.mockResolvedValue({ id: APPROVAL, status: 'executed', resourceId: CAMPAIGN, requestPayload: {} })
+        m.enroll.mockResolvedValue({ plan: { ...plan(0), alreadyEnrolled: [LEAD_A, LEAD_B] }, inserted: [] })
 
         const result = await post(`/campaigns/${CAMPAIGN}/enroll`, validBody)
 
         expect(result.status).toBe(200)
-        expect(result.body).toMatchObject({ approvalRequired: false, approvalStatus: 'executed' })
-    })
-
-    it('refuses an idempotency key already used for another campaign', async () => {
-        m.campaignsFindFirst.mockResolvedValue({ id: CAMPAIGN, organizationId: ORG, name: 'Pilot', status: 'active' })
-        m.approvalsFindFirst.mockResolvedValue({ id: APPROVAL, status: 'requested', resourceId: 'another-campaign', requestPayload: {} })
-        expect((await post(`/campaigns/${CAMPAIGN}/enroll`, validBody)).status).toBe(409)
+        expect(result.body).toMatchObject({ added: 0, alreadyEnrolled: 2 })
     })
 
     it('requires the campaigns:draft scope', async () => {

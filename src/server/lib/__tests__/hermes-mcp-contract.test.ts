@@ -121,7 +121,7 @@ describe('Hermes MCP capability contract', () => {
         expect(byName.get('outreach_inbox_thread_get')!.description).toMatch(/UNTRUSTED/)
     })
 
-    it('exposes xmail_enroll_campaign: bounded to 1000 leads, idempotent, no way to confirm or choose a send, and explicit about the approval', () => {
+    it('exposes xmail_enroll_campaign: bounded to 1000 leads, idempotent, no way to confirm or choose a send, and enrolls running campaigns directly', () => {
         const tools = listHermesTools() as Array<{
             name: string
             description?: string
@@ -135,8 +135,8 @@ describe('Hermes MCP capability contract', () => {
         const description = tool!.description ?? ''
         expect(description).toMatch(/DRAFT/)
         expect(description).toMatch(/ACTIVE or PAUSED/)
-        expect(description).toMatch(/Telegram card/)
-        expect(description).toMatch(/after he approves/)
+        expect(description).toMatch(/no approval card/)
+        expect(description).not.toMatch(/after he approves/)
         expect(description).toMatch(/COMPLETED or ARCHIVED/)
         expect(description).toMatch(/call again/)
         expect(description).toMatch(/round-robin/)

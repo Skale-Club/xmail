@@ -98,19 +98,16 @@ Kai is a second agent with limited Xmail access (exactly `campaigns:copy`, enfor
    limit. Follow-ups wait a random 3 to 5 days and carry `In-Reply-To`/`References`, so they
    thread under the previous email.
    **Feeding a campaign that is already running.** Hermes calls `xmail_enroll_campaign`
-   (`POST /api/agent/outreach/campaigns/:id/enroll`, up to 1000 leads per call, `idempotencyKey`
-   required, call again for more). On a `draft` the leads are enrolled at once. On an `active` or
-   `paused` campaign **nothing is enrolled**: Xmail computes a dry run (who would enter, who is
-   already on it, who is left out and why, which inboxes and how many leads each) and posts a card
-   on the outreach group, "Pedido para adicionar leads a uma campanha ativa". **Approve** then
-   **Yes, start** enrolls them; Reject drops the request. There is no confirm flag for Hermes to
-   pass, because it reads untrusted prospect replies and a self-confirm is not an approval. At
-   approval time Xmail checks every lead again against the current state inside the campaign lock
-   (a lead that unsubscribed, was suppressed or was enrolled elsewhere since the request is
-   skipped and reported on the card), and a campaign that finished meanwhile fails the request
-   with the reason. Leads are spread round-robin over the campaign's Icemail inboxes (or one
-   inbox if Hermes names it); `info@` boxes and warm-up boxes are never senders. `completed` and
-   `archived` campaigns are refused. A request that would add nobody files no card.
+   (`POST /api/agent/outreach/campaigns/:id/enroll`, up to 1000 leads per call, call again for
+   more). On a `draft`, `active` or `paused` campaign the leads are enrolled **at once, with no
+   approval card** (Vanildo, 2026-10-31: three daily batches expired waiting for a tap and the
+   campaign ran dry). On a running campaign Xmail posts an FYI in the outreach group ("Hermes
+   adicionou N leads": campaign, inboxes, who was left out and why). The safety is in the shared
+   service (`src/server/lib/campaign-enrollment.ts`): only verified emails, no unsubscribed,
+   suppressed or booking-platform addresses, dedup per campaign, leads spread round-robin over the
+   campaign's Icemail inboxes, `info@` and warm-up boxes never senders, everything audited.
+   `completed` and `archived` campaigns are refused. Activating a campaign (draft to active) still
+   needs the approval card.
 9. **Replies.** Xmail reads the Icemail inboxes, matches replies to the campaign email, stops the
    sequence for that lead, and alerts Vanildo on Telegram immediately, then every 2 hours
    between 8:00 and 20:00 ET until handled, plus a morning summary.
@@ -178,7 +175,7 @@ analysis is wrong.
 7. **Copy comes from the approved sequence.** Hermes edits it, shows before and after, and never
    writes new copy from scratch. No em dashes, no "Hi there", nothing that says we are talking to
    other shops in the area.
-8. **Approvals stay with Vanildo.** Hermes cannot activate a campaign or reply to a prospect.
+8. **Approvals stay with Vanildo** (campaign activation and replies to prospects; feeding a running campaign does not need one, see step 8). Hermes cannot activate a campaign or reply to a prospect.
    Xphere has no direct prospect-send tool and its enrolment tool refuses active, completed or
    archived campaigns. Activation exists only as Xmail's durable approval request: Hermes
    requests; Vanildo approves on Telegram or in the panel. Meta audience sync is not an approval
