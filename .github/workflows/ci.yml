@@ -33,6 +33,12 @@ jobs:
       - name: Install dependencies (npm ci)
         run: npm ci
 
+      - name: Database rehearsal offline policy (no SSH, Docker or source database)
+        run: |
+          node --test scripts/ops/xmail-database-rehearsal.test.mjs
+          bash -n scripts/ops/xmail-database-rehearsal.sh
+          bash scripts/ops/xmail-database-rehearsal.sh --plan
+
       - name: Lint (eslint --max-warnings 0)
         run: npm run lint
 

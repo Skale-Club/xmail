@@ -237,3 +237,35 @@ The remaining review found no additional concrete blocker. Locally, 101 focused
 server tests and 11 client tests passed sequentially, plus targeted lint and diff
 validation. Eleven disposable PostgreSQL cases and full types/build await the new
 exact-SHA CI; no local integration SQL or heavy build was run.
+
+## Increment 6 — verified live dossier and temporary restore rehearsal
+
+The running source was independently inventoried over existing SSH access without
+changing production. The final collection at 2026-11-03 22:12:31 UTC used a pinned
+public Supabase CA, hostname/certificate verification and one REPEATABLE READ READ
+ONLY transaction: PG17.6, 188,320,915 database bytes, 70 public tables/172,728,320
+relation bytes, 39 users, 38 memberships, ledger 78 through 078. All 70 tables had SELECT
+access, the role bypassed RLS and zero tables could filter the measured rows.
+The identity flag remains false and no owned-identity table exists in production.
+
+Eight SECURITY DEFINER helpers reference auth.uid(); 161 policies include 38 direct
+hosted-schema references. There are no public foreign keys outside public, no
+application triggers or public views. These dependencies are explicit restore and
+authorization gates. See [the host-local rehearsal runbook](xmail-database-rehearsal.md)
+for extension inventory, TLS evidence, scripts, resource/cleanup bounds and snapshot
+comparison limits. The initial weaker-TLS exploratory sample was superseded by the
+verified collection.
+
+After independent script review, root executed the host-local PostgreSQL17 rehearsal
+successfully (report received 2026-11-03 at 22:19 UTC): exit 0, no stderr/timeout,
+39 restored users, 38 memberships, 70 public tables, ledger 78/latest 078 and zero
+owned-identity tables. The target had no network or app process. Cleanup was verified
+before success; an independent SSH check found zero rehearsal containers/directories
+and the production container running with its observed image prefix preserved.
+The temporary archive/database were destroyed. No retained backup, complete source
+snapshot/ID/content reconciliation, Auth cutover or durable database deployment is
+claimed. Production configuration/schema, SMTP/IMAP and deploy state were unchanged.
+
+The user declined new paid Supabase projects/costs. Existing eligible targets from
+the respective environment files will be assessed for safe isolated reuse; no new
+project or account/organization lookup is needed for this preparation.
