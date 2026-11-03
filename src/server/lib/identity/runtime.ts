@@ -90,7 +90,7 @@ export async function verifyLegacyIdentity(token: string, env: NodeJS.ProcessEnv
 let runtime: Promise<IdentityRuntime> | undefined
 export function getIdentityRuntime(): Promise<IdentityRuntime> {
     if (!ownedIdentityEnabled(process.env)) return Promise.reject(new Error('Owned identity pilot is not enabled.'))
-    runtime ??= (async () => {
+    runtime ??= (async (): Promise<IdentityRuntime> => {
         const config = resolveIdentityConfig(process.env)!
         let credential: ReturnType<typeof createKeylessAccessTokenSupplier> | undefined
         const token = async (signal?: AbortSignal) => {
