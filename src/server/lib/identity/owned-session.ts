@@ -66,8 +66,8 @@ function activeSession(admission: SessionAdmission, tokenHash: string, now: numb
 /** No contact lookup, account creation, role grant or provider token persistence. */
 export function createOwnedIdentitySessions(dependencies: {
     enabled: () => boolean
-    verifyIdentity: (token: string) => Promise<GoogleIdentity>
-    readProviderStatus: (identity: Pick<GoogleIdentity, 'projectId' | 'subject'>) => Promise<GoogleAccountStatus>
+    verifyIdentity: (token: string, signal?: AbortSignal) => Promise<GoogleIdentity>
+    readProviderStatus: (identity: Pick<GoogleIdentity, 'projectId' | 'subject'>, signal?: AbortSignal) => Promise<GoogleAccountStatus>
     store: OwnedIdentityStore
     clock?: () => number
 }) {
@@ -76,14 +76,15 @@ export function createOwnedIdentitySessions(dependencies: {
         if (!dependencies.enabled()) throw new Error('Owned identity pilot is not enabled.')
     }
     return {
-        async issue(providerToken: string) {
+        async issue(providerToken: string, signal?: AbortSignal) {
             requireEnabled()
             try {
-                const identity = await dependencies.verifyIdentity(providerToken)
+                const identity = await dependencies.verifyIdentity(providerToken, signal)
                 const now = clock()
                 const age = now / 1000 - identity.authenticatedAt
                 if (age < -5 || age > 300) throw new Error('Recent provider authentication is required.')
-                requireActiveGoogleAccount(identity, await dependencies.readProviderStatus(identity))
+                requireActiveGoogleAccount(identity, await dependencies.readProviderStatus(identity, signal))
+                signal?.throwIfAborted()
                 const admission = await dependencies.store.findBinding(identity.projectId, identity.subject)
                 if (!admission || admission.binding.projectId !== identity.projectId
                     || admission.binding.subject !== identity.subject || !activeLocal(admission, identity.authenticatedAt)) {
@@ -95,6 +96,7 @@ export function createOwnedIdentitySessions(dependencies: {
                     tokenHash: hashOwnedSessionToken(token), bindingId: admission.binding.id,
                     authenticatedAt: identity.authenticatedAt, createdAt: new Date(now), expiresAt, revokedAt: null,
                 }
+                signal?.throwIfAborted()
                 if (!await dependencies.store.insertSessionIfActive(session, admission.binding)) {
                     throw new Error('Local identity admission changed.')
                 }
@@ -103,7 +105,7 @@ export function createOwnedIdentitySessions(dependencies: {
                 throw new Error('Owned identity authentication failed.')
             }
         },
-        async authenticate(token: string) {
+        async authenticate(token: string, signal?: AbortSignal) {
             requireEnabled()
             if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return null
             try {
@@ -111,7 +113,8 @@ export function createOwnedIdentitySessions(dependencies: {
                 const admission = await dependencies.store.findSession(tokenHash)
                 if (!admission || !activeSession(admission, tokenHash, clock())) return null
                 const { binding, session } = admission
-                requireActiveGoogleAccount({ authenticatedAt: session.authenticatedAt }, await dependencies.readProviderStatus(binding))
+                requireActiveGoogleAccount({ authenticatedAt: session.authenticatedAt }, await dependencies.readProviderStatus(binding, signal))
+                signal?.throwIfAborted()
                 // A provider round-trip can outlast a concurrent local revocation.
                 // Re-read local admission before exposing the trusted principal.
                 const latest = await dependencies.store.findSession(tokenHash)

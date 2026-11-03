@@ -9,7 +9,7 @@ import { useSidebarCollapsed } from './sidebar-collapse'
 import { AppLogo } from '../AppLogo'
 import { ModeToggle } from '../mode-toggle'
 import { DeployFooter } from '../DeployFooter'
-import { supabase } from '../../lib/supabase'
+import { signOutOfXmail } from '../../lib/owned-identity'
 import { MailboxSwitcherButton } from './MailboxSwitcherButton'
 import { UserAccountMenu } from './UserAccountMenu'
 import { KeyboardShortcutsHelp, KeyboardShortcutsButton } from './KeyboardShortcutsHelp'
@@ -287,7 +287,7 @@ function MailLayoutFrame({ children }: MailLayoutProps) {
     useUnreadTitlePrefix(findFolderByKind(titleFolders?.folders, folderKindFromPath(location))?.unread ?? 0)
 
     const handleSignOut = async () => {
-        await supabase.auth.signOut()
+        if (await signOutOfXmail()) { window.location.href = '/auth/identity'; return }
         window.location.href = '/login'
     }
 

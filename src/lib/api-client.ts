@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { ownedIdentityActive, ownedMutationHeaders } from './owned-identity'
 
 type ApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD'
 
@@ -147,6 +148,7 @@ async function getValidSession() {
 }
 
 export async function getAccessToken() {
+    if (ownedIdentityActive()) return undefined
     const session = await getValidSession()
     return session?.access_token
 }
@@ -158,8 +160,12 @@ export function clearTokenCache() {
 
 async function executeRequest(path: string, init: RequestInit, token?: string | null) {
     const headers = new Headers(init.headers || {})
+    if (ownedIdentityActive()) {
+        headers.delete('Authorization')
+        for (const [name, value] of Object.entries(await ownedMutationHeaders(init.method || 'GET', path, init.signal ?? undefined))) headers.set(name, value)
+    }
 
-    if (token) {
+    if (token && !ownedIdentityActive()) {
         headers.set('Authorization', `Bearer ${token}`)
     }
 
@@ -182,7 +188,7 @@ export async function apiRequest(path: string, options: ApiRequestOptions = {}):
     try {
         let response = await executeRequest(path, init, token)
 
-        if (response.status === 401 && auth) {
+        if (response.status === 401 && auth && !ownedIdentityActive()) {
             clearTokenCache()
             const refreshed = await supabase.auth.refreshSession()
             if (refreshed.error || !refreshed.data.session?.access_token) {

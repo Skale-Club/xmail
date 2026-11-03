@@ -89,6 +89,15 @@ export const identityOwnedSessions = pgTable('xmail_identity_owned_sessions', {
     bindingIndex: index('xmail_identity_sessions_binding_idx').on(table.bindingId),
 }))
 
+export const identityBrowserChallenges = pgTable('xmail_identity_browser_challenges', {
+    challengeHash: text('challenge_hash').primaryKey(),
+    browserHash: text('browser_hash').notNull(),
+    origin: text('origin').notNull(),
+    operation: text('operation').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+}, table => ({ expiryIndex: index('xmail_identity_browser_challenges_expiry_idx').on(table.expiresAt) }))
+
 // Organizations table
 export const organizations = pgTable('organizations', {
     id: uuid('id').primaryKey().defaultRandom(),

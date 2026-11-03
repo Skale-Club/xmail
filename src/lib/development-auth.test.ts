@@ -21,6 +21,9 @@ describe('development Auth isolation', () => {
         expect(browser).not.toHaveProperty('serviceRoleKey')
     })
     it.each([
+        { SUPABASE_URL: `https://${ref}.supabase.co` },
+        { VITE_SUPABASE_URL: `https://${ref}.supabase.co` },
+        { XMAIL_PRODUCTION_SUPABASE_PROJECT_REF: ref },
         { XMAIL_DEV_SUPABASE_PROJECT_REF: undefined },
         { XMAIL_DEV_SUPABASE_PROJECT_REF: 'invalid.example' },
         { XMAIL_DEV_SUPABASE_ANON_KEY: undefined },

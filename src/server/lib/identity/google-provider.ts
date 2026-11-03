@@ -1,4 +1,5 @@
 import jwt, { type Secret } from 'jsonwebtoken'
+import { identityLookupSignal } from './bounded-fetch'
 
 export const GOOGLE_CERTIFICATES_URL = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
 export type GoogleIdentity = {
@@ -28,13 +29,13 @@ export function createGoogleSigningKeyResolver(fetcher: Fetch = globalThis.fetch
     let certificates: Record<string, string> = {}
     let expiresAt = 0
     let pending: Promise<void> | undefined
-    return async (kid: string): Promise<Secret> => {
+    return async (kid: string, caller?: AbortSignal): Promise<Secret> => {
         if (!/^[a-zA-Z0-9_-]{1,128}$/.test(kid)) invalidIdentity()
         if (clock() >= expiresAt || !Object.prototype.hasOwnProperty.call(certificates, kid)) {
             pending ??= (async () => {
                 try {
                     const response = await fetcher(GOOGLE_CERTIFICATES_URL, {
-                        redirect: 'error', signal: AbortSignal.timeout(8_000),
+                        redirect: 'error', signal: identityLookupSignal(caller),
                     })
                     if (!response.ok) invalidIdentity()
                     const body: unknown = await response.json()
@@ -59,11 +60,11 @@ export function createGoogleSigningKeyResolver(fetcher: Fetch = globalThis.fetch
 /** Cryptographic verification uses the installed JWT library, not decoded profile fields. */
 export function createGoogleIdentityVerifier(
     projectId: string,
-    resolveKey: (kid: string) => Promise<Secret> = createGoogleSigningKeyResolver(),
+    resolveKey: (kid: string, signal?: AbortSignal) => Promise<Secret> = createGoogleSigningKeyResolver(),
     clock = Date.now,
 ) {
     if (!validProject(projectId)) throw new Error('Invalid Google identity project.')
-    return async (token: string): Promise<GoogleIdentity> => {
+    return async (token: string, signal?: AbortSignal): Promise<GoogleIdentity> => {
         try {
             if (typeof token !== 'string' || !token || token.length > 16_384) invalidIdentity()
             const decoded = jwt.decode(token, { complete: true })
@@ -71,7 +72,7 @@ export function createGoogleIdentityVerifier(
                 || !/^[a-zA-Z0-9_-]{1,128}$/.test(decoded.header.kid)
                 || decoded.header.crit !== undefined) invalidIdentity()
             const now = Math.floor(clock() / 1000)
-            const payload = jwt.verify(token, await resolveKey(decoded.header.kid), {
+            const payload = jwt.verify(token, await resolveKey(decoded.header.kid, signal), {
                 algorithms: ['RS256'], audience: projectId, issuer: `https://securetoken.google.com/${projectId}`,
                 clockTimestamp: now, clockTolerance: 5, maxAge: '65m',
             })
@@ -105,17 +106,17 @@ export function createGoogleIdentityVerifier(
 /** The caller supplies a short-lived scoped ADC/federation token; no JSON key or env token fallback. */
 export function createGoogleAccountStatusReader(
     projectId: string,
-    getAccessToken: () => Promise<string>,
+    getAccessToken: (signal?: AbortSignal) => Promise<string>,
     fetcher: Fetch = globalThis.fetch,
 ) {
     if (!validProject(projectId)) throw new Error('Invalid Google identity project.')
-    return async (identity: Pick<GoogleIdentity, 'projectId' | 'subject'>): Promise<GoogleAccountStatus> => {
+    return async (identity: Pick<GoogleIdentity, 'projectId' | 'subject'>, signal?: AbortSignal): Promise<GoogleAccountStatus> => {
         try {
             if (identity.projectId !== projectId || !identity.subject || identity.subject.length > 128) invalidIdentity()
-            const accessToken = await getAccessToken()
+            const accessToken = await getAccessToken(signal)
             if (!accessToken || /[\r\n]/.test(accessToken)) invalidIdentity()
             const response = await fetcher(`https://identitytoolkit.googleapis.com/v1/projects/${projectId}/accounts:lookup`, {
-                method: 'POST', redirect: 'error', signal: AbortSignal.timeout(8_000),
+                method: 'POST', redirect: 'error', signal: identityLookupSignal(signal),
                 headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ localId: [identity.subject] }),
             })

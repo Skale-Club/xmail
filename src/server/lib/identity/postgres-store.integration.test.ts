@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import postgres, { type Sql } from 'postgres'
 import { createPostgresOwnedIdentityStore } from './postgres-store'
+import { createIdentityPilotStore } from './pilot-store'
 import { createOwnedIdentitySessions, hashOwnedSessionToken, OWNED_SESSION_LIFETIME_MS, type IdentityBinding, type OwnedIdentityStore, type OwnedSession } from './owned-session'
 
 // This standalone gate never loads dotenv, application DB aliases or the shared
@@ -33,12 +34,14 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
 
     beforeAll(async () => {
         sql = postgres(databaseUrl!, { max: 4, prepare: false, onnotice: () => {} })
-        await sql`CREATE TABLE public.users (id uuid PRIMARY KEY, email text NOT NULL UNIQUE, password_hash text, is_admin boolean NOT NULL DEFAULT false)`
+        await sql`CREATE TABLE public.users (id uuid PRIMARY KEY, email text NOT NULL UNIQUE, password_hash text, is_admin boolean NOT NULL DEFAULT false,
+            first_name text, last_name text, email_verified boolean NOT NULL DEFAULT false)`
         await sql.unsafe(`DO $$ BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN CREATE ROLE anon; END IF;
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN CREATE ROLE authenticated; END IF;
         END $$;`)
         await sql.unsafe(migration)
+        await sql.unsafe(readFileSync(resolve('supabase/migrations/080_identity_browser_challenges.sql'), 'utf8'))
         store = createPostgresOwnedIdentityStore(sql)
     })
     afterAll(async () => { await sql?.end({ timeout: 1 }) })
@@ -68,11 +71,12 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
 
     it('reapplies additively without changing application UUID, admin authority or SMTP/IMAP hash', async () => {
         await sql.unsafe(migration)
+        await sql.unsafe(readFileSync(resolve('supabase/migrations/080_identity_browser_challenges.sql'), 'utf8'))
         const [user] = await sql`SELECT id, password_hash, is_admin FROM public.users WHERE id = ${binding.userId}`
         expect(user).toEqual({ id: binding.userId, password_hash: existingPasswordHash, is_admin: true })
     })
     it('enables RLS on all three tables and revokes browser-role reads', async () => {
-        for (const table of ['xmail_identity_user_controls', 'xmail_identity_bindings', 'xmail_identity_owned_sessions']) {
+        for (const table of ['xmail_identity_user_controls', 'xmail_identity_bindings', 'xmail_identity_owned_sessions', 'xmail_identity_browser_challenges']) {
             const [row] = await sql`SELECT relrowsecurity FROM pg_class WHERE oid = ${`public.${table}`}::regclass`
             expect(row.relrowsecurity).toBe(true)
             for (const role of ['anon', 'authenticated']) {
@@ -126,5 +130,49 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
         invalid.expiresAt = new Date(now + OWNED_SESSION_LIFETIME_MS + 1)
         await expect(store.insertSessionIfActive(invalid, binding)).rejects.toMatchObject({ code: '23514' })
         expect(await store.insertSessionIfActive(session(), { ...binding, userId: randomUUID() })).toBe(false)
+    })
+    it('atomically consumes a browser/origin/operation-bound challenge once', async () => {
+        const pilot = createIdentityPilotStore(sql)
+        const challenge = { challengeHash: hashOwnedSessionToken(randomUUID()), browserHash: hashOwnedSessionToken(randomUUID()), origin: 'https://offline.example.invalid', operation: 'link' }
+        await pilot.createChallenge({ ...challenge, expiresAt: new Date(now + 60_000) }, new Date(now))
+        expect(await pilot.consumeChallenge({ ...challenge, operation: 'session' }, new Date(now))).toBe(false)
+        expect(await pilot.consumeChallenge({ ...challenge, origin: 'https://other.example.invalid' }, new Date(now))).toBe(false)
+        expect(await pilot.consumeChallenge({ ...challenge, browserHash: hashOwnedSessionToken(randomUUID()) }, new Date(now))).toBe(false)
+        const result = await Promise.all([pilot.consumeChallenge(challenge, new Date(now)), pilot.consumeChallenge(challenge, new Date(now))])
+        expect(result.filter(Boolean)).toHaveLength(1)
+    })
+    it('links only reviewed existing UUIDs and refuses conflicting or disabled bindings', async () => {
+        const pilot = createIdentityPilotStore(sql)
+        const identity = { projectId: 'skaleclub', subject: randomUUID(), provider: 'google.com' as const, providerSubject: 'offline-google-subject', authenticatedAt: authTime }
+        expect(await pilot.linkExisting(identity, randomUUID(), 'legacy-session', new Date(now))).toBe(false)
+        expect(await pilot.linkExisting(identity, binding.userId, 'legacy-session', new Date(now))).toBe(true)
+        expect((await store.findBinding(identity.projectId, identity.subject))?.binding.userId).toBe(binding.userId)
+        await sql`UPDATE public.xmail_identity_bindings SET disabled_at = now() WHERE project_id = ${identity.projectId} AND subject = ${identity.subject}`
+        expect(await pilot.linkExisting(identity, binding.userId, 'owned-session', new Date(now))).toBe(false)
+        const [user] = await sql`SELECT id, password_hash, is_admin FROM public.users WHERE id = ${binding.userId}`
+        expect(user).toEqual({ id: binding.userId, password_hash: existingPasswordHash, is_admin: true })
+    })
+    it('preserves SQL bans and revokes sessions when the legacy administration changes account status', async () => {
+        const pilot = createIdentityPilotStore(sql), engine = sessions(), issued = await engine.issue('offline-verified-token')
+        await pilot.setDisabled(binding.userId, true, new Date(now))
+        expect(await pilot.profile(binding.userId)).toBeNull()
+        expect(await engine.authenticate(issued.token)).toBeNull()
+        await pilot.setDisabled(binding.userId, false, new Date(now + 1000))
+        expect((await pilot.profile(binding.userId))?.isAdmin).toBe(true)
+        expect(await engine.authenticate(issued.token)).toBeNull()
+        const [count] = await sql`SELECT count(*)::int AS count FROM public.xmail_identity_user_controls`
+        await pilot.setDisabled(randomUUID(), false, new Date(now))
+        expect((await sql`SELECT count(*)::int AS count FROM public.xmail_identity_user_controls`)[0].count).toBe(count.count)
+    })
+    it('serializes competing independently proved users so an immutable provider UID has one owner', async () => {
+        const pilot = createIdentityPilotStore(sql), otherUser = randomUUID()
+        await sql`INSERT INTO public.users (id, email) VALUES (${otherUser}, ${`${randomUUID()}@example.invalid`})`
+        await sql`INSERT INTO public.xmail_identity_user_controls (user_id, review_source) VALUES (${otherUser}, 'reviewed-offline-fixture')`
+        const identity = { projectId: 'skaleclub', subject: randomUUID(), provider: 'google.com' as const, providerSubject: 'offline-google-subject', authenticatedAt: authTime }
+        const results = await Promise.all([pilot.linkExisting(identity, binding.userId, 'legacy-session', new Date(now)), pilot.linkExisting(identity, otherUser, 'legacy-session', new Date(now))])
+        expect(results.filter(Boolean)).toHaveLength(1)
+        const winner = results[0] ? binding.userId : otherUser
+        expect((await store.findBinding(identity.projectId, identity.subject))?.binding.userId).toBe(winner)
+        expect(await pilot.linkExisting(identity, winner === otherUser ? binding.userId : otherUser, 'owned-session', new Date(now))).toBe(false)
     })
 })

@@ -143,13 +143,16 @@ until Auth settings and external side effects are isolated too. See
 
 ### Authentication Flow
 
-**Owned identity foundation (not activated):** `src/server/lib/identity/` provides
+**Owned identity pilot (not activated):** `src/server/lib/identity/` provides
 Firebase Google/verified-phone token verification, a live account-status adapter,
-hashed opaque session policy and a postgres.js store. Migration `079` is additive
-and unapplied; it preserves application UUIDs, organization roles, `isAdmin` and
-SMTP/IMAP `password_hash`. `XMAIL_GOOGLE_AUTH_ENABLED` defaults off. No pilot route,
-cookie/CSRF wiring or browser login is connected yet; setting the flag alone does
-not switch authentication. Read `docs/xmail-supabase-exit.md` before integration.
+hashed opaque session policy and a postgres.js store. Migrations `079`/`080` are
+additive and unapplied; they preserve application UUIDs, organization roles,
+`isAdmin` and SMTP/IMAP `password_hash`. `XMAIL_GOOGLE_AUTH_ENABLED` defaults off.
+The isolated `/auth/identity` pilot uses host-only HttpOnly cookies, single-use
+CSRF challenges, fresh local controls/provider status and in-memory Firebase
+persistence. Current `/login` remains the default. DEV needs distinct explicit
+SQL/Auth/Google projects; API-key provenance is checked before exposing browser
+config. Read `docs/xmail-identity-pilot.md` and `docs/xmail-supabase-exit.md` before activation.
 
 1. Frontend authenticates via Supabase Auth (`supabase.auth.signInWithPassword`)
 2. JWT token sent as `Authorization: Bearer <token>` header
@@ -370,7 +373,7 @@ All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql
 - **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/archive/0000_dear_wolverine.sql` (the original genesis DDL — moved into `drizzle/archive/` because it targets the pre-`organization_id`, server-scoped schema and must never be applied against the current database; see `drizzle/archive/README.md`). The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
 - **Do NOT add Drizzle relations / constraints expecting them to apply automatically.** The TS-side schema is for type information; the DB side comes from the SQL migration.
 
-**Numbering convention:** Migrations are sequential integers. As of 2026-10-28 the files run through `078_campaign_enrollment_approval.sql`; the next free number is `079`. Migrations `070` through `078` are applied in production with their ledger rows (`077` and `078` verified on 2026-10-28; `078` widens the `outreach_action_approvals.action_kind` check for `campaign_enrollment`). Re-verify what is actually applied against `supabase_migrations.schema_migrations` before assuming. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+**Numbering convention:** Migrations are sequential integers. This branch reserves `079_owned_identity_foundation.sql` and `080_identity_browser_challenges.sql` (unapplied outside disposable CI); the next free number is `081`. Migrations `070` through `078` are applied in production with their ledger rows (`077` and `078` verified on 2026-10-28; `078` widens the `outreach_action_approvals.action_kind` check for `campaign_enrollment`). Re-verify what is actually applied against `supabase_migrations.schema_migrations` before assuming. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
 
 > **Resolved collision (2026-08-15):** `051_warmup_engine.sql` shared its prefix with the
 > already-applied `051_prospecting_journey_and_costs.sql`. Because the ledger keys on the numeric

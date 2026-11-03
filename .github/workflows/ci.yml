@@ -40,7 +40,10 @@ jobs:
         run: npx tsc --noEmit -p tsconfig.json
 
       - name: Development isolation and identity policy tests (no database or Docker)
-        run: npx vitest run --project server src/db/database-target.test.ts src/lib/development-auth.test.ts src/server/lib/__tests__/development-supabase.test.ts src/server/lib/__tests__/crypto.test.ts src/server/lib/__tests__/remote-db-guard.test.ts src/server/jobs/__tests__/development-scheduler.test.ts src/server/lib/identity/google-provider.test.ts src/server/lib/identity/owned-session.test.ts --maxWorkers 1 --testTimeout 15000
+        run: npx vitest run --project server src/db/database-target.test.ts src/lib/development-auth.test.ts src/server/lib/__tests__/development-supabase.test.ts src/server/lib/__tests__/crypto.test.ts src/server/lib/__tests__/remote-db-guard.test.ts src/server/jobs/__tests__/development-scheduler.test.ts src/server/lib/__tests__/api-auth-public-routes.test.ts src/server/lib/__tests__/api-auth-disabled-user.test.ts src/server/lib/identity/google-provider.test.ts src/server/lib/identity/owned-session.test.ts src/server/lib/identity/pilot-config.test.ts src/server/lib/identity/user-sync.test.ts src/server/routes/identity.test.ts --maxWorkers 1 --testTimeout 15000
+
+      - name: Owned identity browser policy tests (mocked provider; no SMS/network)
+        run: npx vitest run --project client src/pages/IdentityPilot.test.tsx src/hooks/useMultiSession.identity.test.tsx src/lib/api-client.identity.test.tsx --maxWorkers 1
 
       - name: Type-check server (tsconfig.server.json)
         run: npx tsc --noEmit -p tsconfig.server.json
@@ -55,7 +58,7 @@ jobs:
           VITE_APP_NAME: Xmail (CI)
 
   identity-store:
-    name: Owned identity PostgreSQL foundation
+    name: Owned identity PostgreSQL foundation and HTTP pilot store
     runs-on: ubuntu-latest
     timeout-minutes: 10
     services:

@@ -70,6 +70,8 @@
         "drizzle-zod": "^0.8.3",
         "express": "^5.0.0-beta.2",
         "express-rate-limit": "^7.2.0",
+        "firebase": "^13.2.0",
+        "google-auth-library": "^10.9.1",
         "helmet": "^7.1.0",
         "html-to-text": "^9.0.5",
         "imap": "^0.8.19",

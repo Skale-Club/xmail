@@ -140,9 +140,14 @@ export default defineConfig(({ mode, command, isPreview }) => {
             port: 9000,
             host: '127.0.0.1',
             proxy: {
+                '/api/auth/identity': {
+                    target: 'http://localhost:9001',
+                    changeOrigin: false,
+                },
                 '/api': {
                     target: 'http://localhost:9001',
-                    changeOrigin: true,
+                    // Owned cookies are bound to the browser-visible origin/Host.
+                    changeOrigin: false,
                 },
             },
         },

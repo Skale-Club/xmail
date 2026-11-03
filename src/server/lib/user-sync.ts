@@ -28,7 +28,7 @@ export function getAuthenticatedUserFromRequest(req: Request): AuthenticatedUser
     }
 }
 
-export async function ensureLocalUser(snapshot: AuthenticatedUserSnapshot) {
+export async function ensureLocalUser(snapshot: AuthenticatedUserSnapshot, options: { existingOnly?: boolean } = {}) {
     const existing = await withRetry(
         () => db.query.users.findFirst({ where: eq(users.id, snapshot.id) }),
         2,
@@ -36,6 +36,7 @@ export async function ensureLocalUser(snapshot: AuthenticatedUserSnapshot) {
     )
 
     if (existing) {
+        if (options.existingOnly) return existing
         const shouldUpdate =
             existing.email !== snapshot.email ||
             existing.firstName !== snapshot.firstName ||
@@ -60,6 +61,7 @@ export async function ensureLocalUser(snapshot: AuthenticatedUserSnapshot) {
         return updated
     }
 
+    if (options.existingOnly) throw new Error('Existing identity account is unavailable.')
     const [created] = await db.insert(users)
         .values({
             id: snapshot.id,

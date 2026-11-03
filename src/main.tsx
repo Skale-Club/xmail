@@ -5,6 +5,7 @@ import { Route, Switch, useLocation, useSearch } from 'wouter'
 import { Toaster } from './components/ui/toaster'
 import { ThemeProvider } from './components/theme-provider'
 import { AuthProvider, useAuth } from './hooks/useAuth'
+import { ownedIdentityActive } from './lib/owned-identity'
 import { MultiSessionProvider } from './hooks/useMultiSession'
 import { MailboxProvider } from './hooks/useMailbox'
 import { useCompose } from './hooks/useCompose'
@@ -84,6 +85,7 @@ if ('serviceWorker' in navigator) {
 }
 
 const Login = React.lazy(() => import('./pages/Login'))
+const IdentityPilot = React.lazy(() => import('./pages/IdentityPilot'))
 const ResetPassword = React.lazy(() => import('./pages/ResetPassword'))
 
 const AdminDashboard = React.lazy(() => import('./pages/admin/AdminDashboard'))
@@ -155,7 +157,7 @@ function AdminCheck({ children }: { children: React.ReactNode }) {
     React.useEffect(() => {
         if (isLoading) return
         if (!user) {
-            navigate('/login')
+            navigate(ownedIdentityActive() ? '/auth/identity' : '/login')
             return
         }
         if (isAdmin === false) {
@@ -174,7 +176,7 @@ function MailCheck({ children }: { children: React.ReactNode }) {
     const [, navigate] = useLocation()
 
     React.useEffect(() => {
-        if (!isLoading && !user) navigate('/login')
+        if (!isLoading && !user) navigate(ownedIdentityActive() ? '/auth/identity' : '/login')
     }, [user, isLoading, navigate])
 
     if (isLoading || !user) return <Spinner />
@@ -233,7 +235,7 @@ function OutreachCheck({ children }: { children: React.ReactNode }) {
     const [, navigate] = useLocation()
 
     React.useEffect(() => {
-        if (!isLoading && !user) navigate('/login')
+        if (!isLoading && !user) navigate(ownedIdentityActive() ? '/auth/identity' : '/login')
     }, [user, isLoading, navigate])
 
     if (isLoading || !user) return <Spinner />
@@ -313,7 +315,7 @@ function RootRedirect() {
     React.useEffect(() => {
         if (isLoading) return
         if (!user) {
-            navigate('/login')
+            navigate(ownedIdentityActive() ? '/auth/identity' : '/login')
             return
         }
         if (isAdmin === null) return
@@ -542,6 +544,9 @@ function App() {
                                     </OutreachCheck>
                                 ) : (
                                 <Switch>
+                                <Route path="/auth/identity">
+                                    <PageSuspense><IdentityPilot /></PageSuspense>
+                                </Route>
                                 <Route path="/login">
                                     <PageSuspense><Login /></PageSuspense>
                                 </Route>

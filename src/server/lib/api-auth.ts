@@ -21,6 +21,7 @@ import {
 } from './service-auth'
 import { SERVICE_ORGANIZATION_HEADER, SERVICE_PRINCIPAL_HEADER } from './outreach-access'
 import { authenticateOutreachAgent, stripAgentHeaders } from './agent-auth'
+import { admitOwnedIdentity } from './identity/api-admission'
 
 // SEC — each entry binds a METHOD to a path. Matching on path alone would make a route
 // public for writes just because it is public for reads (see the branding write bypass note
@@ -103,6 +104,10 @@ export function createApiAuthMiddleware(): RequestHandler {
                 return next()
             }
         }
+
+        const owned = await admitOwnedIdentity(req, res)
+        if (owned === 'rejected') return
+        if (owned === 'authenticated') return next()
 
         const authHeader = req.headers.authorization
         if (!authHeader?.startsWith('Bearer ')) {

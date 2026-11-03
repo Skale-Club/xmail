@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
 import { clearTokenCache } from '../lib/api-client'
+import { ownedIdentityActive, probeOwnedIdentitySession } from '../lib/owned-identity'
 import {
     type StoredSession,
     type SessionInfo,
@@ -75,17 +76,26 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
     }, [refreshSessions])
 
     useEffect(() => {
-        const stored = getStoredSessions()
-        if (stored.length > 0) {
-            refreshSessions()
-            initializeActiveSession(stored).finally(() => setInitialized(true))
-        } else {
-            setInitialized(true)
-        }
+        let cancelled = false
+        // Share the own-cookie probe with AuthProvider before restoring any saved
+        // legacy credential. Once absent/disabled, preserve the existing parallel
+        // legacy bootstrap instead of waiting for a protected-route redirect.
+        void probeOwnedIdentitySession().then(result => {
+            if (cancelled) return
+            if (result.kind === 'active' || result.kind === 'expired' || ownedIdentityActive()) {
+                setSessions([]); setActiveSessionIdState(null); setInitialized(true); return
+            }
+            const stored = getStoredSessions()
+            if (stored.length > 0) {
+                refreshSessions()
+                void initializeActiveSession(stored).finally(() => { if (!cancelled) setInitialized(true) })
+            } else setInitialized(true)
+        })
+        return () => { cancelled = true }
     }, [refreshSessions, initializeActiveSession])
 
     useEffect(() => {
-        if (!initialized) return
+        if (!initialized || ownedIdentityActive()) return
 
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
             async (event, session) => {
@@ -123,6 +133,7 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
     }, [initialized, refreshSessions])
 
     const switchSession = useCallback(async (userId: string) => {
+        if (ownedIdentityActive()) throw new Error('Sign out of verified sign-in before switching legacy accounts.')
         if (userId === activeSessionId) return
 
         const stored = getStoredSessions()
@@ -153,6 +164,7 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
     }, [activeSessionId, refreshSessions, queryClient])
 
     const removeAccount = useCallback(async (userId: string) => {
+        if (ownedIdentityActive()) throw new Error('Use verified sign-in to manage this session.')
         const wasActive = userId === activeSessionId
         const stored = getStoredSessions()
         const remaining = stored.filter(s => s.userId !== userId)

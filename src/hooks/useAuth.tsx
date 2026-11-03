@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { apiFetch, clearTokenCache } from '../lib/api-client'
 import { supabase } from '../lib/supabase'
+import { ownedIdentityActive, probeOwnedIdentitySession } from '../lib/owned-identity'
 
 interface User {
     id: string
@@ -45,8 +46,18 @@ function useProvideAuth(): AuthState {
     }
 
     useEffect(() => {
+        let bootstrapComplete = false
         const initializeAuth = async () => {
             try {
+                const owned = await probeOwnedIdentitySession()
+                if (owned.kind === 'active' && owned.user) {
+                    setUser({ id: owned.user.id, email: owned.user.email, user_metadata: {
+                        firstName: owned.user.user_metadata?.firstName ?? undefined, lastName: owned.user.user_metadata?.lastName ?? undefined,
+                    } })
+                    setIsAdmin(owned.user.isAdmin === true)
+                    return
+                }
+                if (owned.kind === 'expired') { setUser(null); setIsAdmin(false); return }
                 // Race against a timeout so the app never stays on the spinner forever
                 const sessionResult = await Promise.race([
                     supabase.auth.getSession(),
@@ -71,6 +82,7 @@ function useProvideAuth(): AuthState {
                 setUser(null)
                 setIsAdmin(null)
             } finally {
+                bootstrapComplete = true
                 setIsLoading(false)
             }
         }
@@ -79,6 +91,7 @@ function useProvideAuth(): AuthState {
 
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
             async (event, session) => {
+                if (!bootstrapComplete || ownedIdentityActive()) return
                 if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
                     setUser(session.user as User)
                     await fetchProfile(session.access_token)

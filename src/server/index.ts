@@ -28,6 +28,8 @@ import { eq } from 'drizzle-orm'
 import { closeDatabaseConnection, db } from '../db'
 import { users } from '../db/schema'
 import authRoutes from './routes/auth'
+import { createIdentityRouter } from './routes/identity'
+import { identityBrowserSources } from './lib/identity/config'
 import userRoutes from './routes/users'
 import organizationRoutes from './routes/organizations'
 import domainRoutes from './routes/domains'
@@ -66,6 +68,7 @@ import { markShuttingDown } from './lib/shutdown'
 const app = express()
 const PORT = process.env.PORT || 9001
 const supabaseOrigin = supabasePublicConfig.url ? new URL(supabasePublicConfig.url).origin : null
+const identitySources = identityBrowserSources(process.env)
 
 app.set('trust proxy', 1)
 
@@ -74,7 +77,8 @@ app.use(helmet({
         directives: {
             ...helmet.contentSecurityPolicy.getDefaultDirectives(),
             'img-src': ["'self'", 'data:', 'https:', 'http:', supabaseOrigin].filter(Boolean) as string[],
-            'connect-src': ["'self'", supabaseOrigin].filter(Boolean) as string[],
+            'connect-src': ["'self'", supabaseOrigin, ...(identitySources?.connect || [])].filter(Boolean) as string[],
+            ...(identitySources ? { 'script-src': ["'self'", ...identitySources.script], 'frame-src': ["'self'", ...identitySources.frame] } : {}),
             // QUA-05 — see audit M10. Close clickjacking (frame-ancestors), plugin-content
             // (object-src), and base-URI hijack (base-uri) vectors. helmet defaults DO NOT
             // include these via getDefaultDirectives().
@@ -84,6 +88,10 @@ app.use(helmet({
         },
     },
 }))
+app.use((req, res, next) => {
+    if (identitySources && req.path === '/auth/identity') res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    next()
+})
 app.use(cors({
     origin: process.env.FRONTEND_URL || 'http://localhost:9000',
     credentials: true,
@@ -155,6 +163,8 @@ const unsubscribeLimiter = rateLimit({
 })
 app.use('/o/u/', unsubscribeLimiter)
 
+// The pilot owns its strict body parser/timeout before the generic 10 MB parser.
+app.use('/api/auth/identity', createIdentityRouter())
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 // Outlook autodiscover sends XML bodies; accept them as raw text

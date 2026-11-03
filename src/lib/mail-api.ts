@@ -1,4 +1,5 @@
 import { apiFetch, ApiClientError, getAccessToken } from '../lib/api-client'
+import { ownedIdentityActive } from './owned-identity'
 
 interface RecipientInput {
     address: string
@@ -389,13 +390,13 @@ export const mailApi = {
     // included.
     async fetchAttachmentBlob(mailboxId: string, messageId: string, index: number): Promise<Blob> {
         const token = await getAccessToken()
-        if (!token) {
+        if (!token && !ownedIdentityActive()) {
             throw new ApiClientError('Not authenticated', { status: 401, path: 'session', code: 'NOT_AUTHENTICATED' })
         }
 
         const path = `/api/mail/mailboxes/${mailboxId}/messages/${messageId}/attachments/${index}`
         const response = await fetch(path, {
-            headers: { Authorization: `Bearer ${token}` },
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
             cache: 'no-store',
         })
 

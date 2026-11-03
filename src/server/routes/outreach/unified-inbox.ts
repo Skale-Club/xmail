@@ -299,6 +299,7 @@ router.get('/counts', async (req: Request, res: Response) => {
 // predicate as every read endpoint, so it can never leak another org's activity. On client
 // disconnect the subscriber is released and the heartbeat cleared — no leaked intervals/handles.
 router.get('/events', async (req: Request, res: Response) => {
+    if (res.locals.xmailOwnedIdentity === true) return res.status(409).json({ error: 'Live streams are not available for the identity pilot. Refresh to update.' })
     const organizationId = await authorizeOrganization(req, res)
     if (!organizationId) return
 

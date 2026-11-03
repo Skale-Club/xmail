@@ -2,7 +2,7 @@ import { ReactNode, useState } from 'react'
 import { useLocation } from 'wouter'
 import { useAuth } from '../../hooks/useAuth'
 import { useBranding } from '../../lib/branding'
-import { supabase } from '../../lib/supabase'
+import { signOutOfXmail } from '../../lib/owned-identity'
 import { AppLogo } from '../AppLogo'
 import { Button } from '../ui/button'
 import { CommandPalette } from '../ui/command-palette'
@@ -56,7 +56,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     }
 
     const handleLogout = async () => {
-        await supabase.auth.signOut()
+        if (await signOutOfXmail()) { window.location.href = '/auth/identity'; return }
         navigate('/login')
     }
 

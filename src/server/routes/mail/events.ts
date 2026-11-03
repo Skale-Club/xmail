@@ -26,6 +26,9 @@ function maxStreamLifetimeMs(): number {
 // the client reacts by re-reading through the normal authorized API. On disconnect the subscriber
 // is released and the heartbeat cleared, so nothing leaks.
 router.get('/:mailboxId/events', async (req: Request, res: Response) => {
+    // A stream must recheck owned revocation during delivery before joining the
+    // pilot. This authority marker is server-owned; Accept is client-controlled.
+    if (res.locals.xmailOwnedIdentity === true) return res.status(409).json({ error: 'Live streams are not available for the identity pilot. Refresh to update.' })
     try {
         const userId = req.headers['x-user-id'] as string
         const mailboxId = req.params.mailboxId

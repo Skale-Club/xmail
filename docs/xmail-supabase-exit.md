@@ -215,3 +215,25 @@ Implementation references: [Firebase token verification](https://firebase.google
 and [Google account lookup](https://cloud.google.com/identity-platform/docs/reference/rest/v1/projects.accounts/lookup).
 No real Google/SMS authentication, migration apply, production cutover or deployment
 has been performed by this increment.
+
+## Increment 5 — disabled HTTP/cookie and phone/Google pilot
+
+The foundation correction `99ac323af3a2b90fa324ef8cd8a6c6287f6069ed` passed
+[complete CI](https://github.com/Skale-Club/xmail/actions/runs/41719104219), including
+both TypeScript configurations, lint/build, 117 focused tests and seven disposable
+PostgreSQL tests. The next uncommitted increment connects the isolated
+`/auth/identity` UI, HTTP cookies/challenges and owned API admission while preserving
+the default `/login`, immutable UUIDs, SQL roles/admin flags and native SMTP/IMAP.
+It adds migration `080` without running SQL outside CI. The flag remains false.
+
+See [the pilot contract and activation gates](xmail-identity-pilot.md) for exact-ID
+linking, fresh provider/local controls, bounded external lookups, isolated DEV
+API-key provenance, memory-only Firebase, body/Origin/CSRF guards and remaining
+runtime ADC/recovery/stream gates. A Supabase-free production login or database
+cutover is not claimed. Independent review identified an Accept-header bypass in
+the initial SSE exclusion; both actual handlers now reject the server-owned
+identity marker, and real mailbox-router HTTP tests cover absent/`*/*`/SSE Accept.
+The remaining review found no additional concrete blocker. Locally, 101 focused
+server tests and 11 client tests passed sequentially, plus targeted lint and diff
+validation. Eleven disposable PostgreSQL cases and full types/build await the new
+exact-SHA CI; no local integration SQL or heavy build was run.
