@@ -1,12 +1,10 @@
 import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import * as schema from './schema'
+import { resolveDatabaseTarget } from './database-target'
 
-const connectionString = process.env.DATABASE_URL
-
-if (!connectionString) {
-    throw new Error('Missing DATABASE_URL')
-}
+const target = resolveDatabaseTarget(process.env)
+const connectionString = target.databaseUrl
 
 // Determine if we're in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -86,10 +84,9 @@ export const queryClient = postgres(connectionString, {
 // arbitrary connection string, and a wrong guess would reintroduce the exact "prepared statement
 // does not exist" failure mode `prepare: false` exists to prevent on `queryClient` above. Kept
 // false unconditionally on both the `DIRECT_URL` and `DATABASE_URL` branches.
-const directConnectionString = process.env.DIRECT_URL
-const jobConnectionString = directConnectionString || connectionString
+const jobConnectionString = target.jobDatabaseUrl
 console.log(
-    `[DB] jobQueryClient using ${directConnectionString ? 'DIRECT_URL' : 'DATABASE_URL (DIRECT_URL not set)'}`
+    `[DB] jobQueryClient using ${isDev ? 'explicit development target' : 'production/test target'}`
 )
 
 export const jobQueryClient = postgres(jobConnectionString, {

@@ -116,6 +116,15 @@ npm run db:rls           # Run the RLS migration script
 npm run db:audit         # Audit schema drift between schema.ts and the DB
 ```
 
+**Development database selection (migration in progress):** `dev:server` forces
+`NODE_ENV=development`. Both Drizzle pools require `XMAIL_DEV_SUPABASE_PROJECT_REF`
+and `XMAIL_DEV_DATABASE_URL`; optional `XMAIL_DEV_DIRECT_URL` must target that same
+approved Supabase development project. They never inherit `DATABASE_URL` or
+`DIRECT_URL` in development, including with `XMAIL_ALLOW_REMOTE_DB=true`.
+Operational scripts still using raw URLs are not covered. Do not start development
+until Auth settings and external side effects are isolated too. See
+[`docs/xmail-supabase-exit.md`](docs/xmail-supabase-exit.md) for evidence and remaining work.
+
 > **Typechecking needs BOTH configs.** `tsconfig.json` **excludes `src/server/**` and
 > `src/db/**`**, so `npx tsc --noEmit -p tsconfig.json` type-checks only the client and
 > reports "clean" while real errors sit in server code. Server and DB code are covered by

@@ -7,7 +7,8 @@ import { ALLOW_REMOTE_DB_ENV, checkRemoteDbGuard } from './lib/remote-db-guard'
 const remoteDbRefusal = checkRemoteDbGuard({
     databaseUrl: process.env.DATABASE_URL,
     nodeEnv: process.env.NODE_ENV,
-    allowRemote: process.env[ALLOW_REMOTE_DB_ENV],
+    // development URLs are validated for BOTH pools by db/database-target.ts before use.
+    allowRemote: process.env.NODE_ENV === 'development' ? 'true' : process.env[ALLOW_REMOTE_DB_ENV],
 })
 if (remoteDbRefusal) {
     console.error(`
