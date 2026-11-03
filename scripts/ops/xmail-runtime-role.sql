@@ -40,7 +40,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE xmail_owner IN SCHEMA public
   GRANT USAGE, SELECT ON SEQUENCES TO xmail_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE xmail_owner IN SCHEMA public
   GRANT SELECT ON TABLES TO xmail_staging_reader;
-ALTER DEFAULT PRIVILEGES FOR ROLE xmail_owner IN SCHEMA public
+-- Function EXECUTE starts with a global PUBLIC default. A per-schema revoke
+-- cannot cancel that global grant; revoke globally, then grant runtime locally.
+ALTER DEFAULT PRIVILEGES FOR ROLE xmail_owner
   REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE xmail_owner IN SCHEMA public
   GRANT EXECUTE ON FUNCTIONS TO xmail_runtime;

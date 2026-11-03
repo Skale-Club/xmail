@@ -24,6 +24,8 @@ tables, and the staging reader cannot execute public functions, including
 SECURITY DEFINER writers. PUBLIC database CREATE/TEMP and public-schema CREATE
 are revoked. Future owner-created tables, sequences and functions inherit the
 same grants. Explicit grants by later migrations still require review.
+The function EXECUTE default is revoked globally for the migration owner: a
+schema-only revoke would leave PostgreSQL's global PUBLIC default effective.
 
 The CI integration test uses a dedicated loopback PG17 database and real
 nonsuperuser connections. It exercises DML under deny-all RLS, forbidden DDL,

@@ -89,6 +89,10 @@ test('runtime role cannot administer the database, bypasses backend RLS, and pre
     const [grants] = await owner`SELECT has_table_privilege('xmail_runtime','public.future_data','INSERT') AS future_insert, has_sequence_privilege('xmail_runtime','public.future_data_id_seq','USAGE') AS future_sequence`
     assert.deepEqual(grants, { future_insert: true, future_sequence: true })
     assert.equal((await owner`SELECT has_table_privilege('xmail_staging_reader','public.future_data','SELECT') AS allowed`)[0].allowed, true)
+    await owner.unsafe(`CREATE FUNCTION public.future_writer() RETURNS void LANGUAGE sql SECURITY DEFINER
+      AS 'INSERT INTO public.users(label) VALUES (''should never run'')'`)
+    await assert.rejects(reader.unsafe('SELECT public.future_writer()'), error => error.code === '42501')
+    assert.equal((await owner`SELECT has_function_privilege('xmail_runtime','public.future_writer()','EXECUTE') AS allowed`)[0].allowed, true)
     // Re-running never rotates/reuses an existing role or silently broadens it.
     await assert.rejects(owner.unsafe(source), /initial state refused/)
     await owner.unsafe('ROLLBACK')
