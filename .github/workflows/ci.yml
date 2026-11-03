@@ -40,7 +40,7 @@ jobs:
         run: npx tsc --noEmit -p tsconfig.json
 
       - name: Database target separation tests (no database or Docker)
-        run: npx vitest run --project server src/db/database-target.test.ts src/server/lib/__tests__/remote-db-guard.test.ts --maxWorkers 1
+        run: npx vitest run --project server src/db/database-target.test.ts src/lib/development-auth.test.ts src/server/lib/__tests__/development-supabase.test.ts src/server/lib/__tests__/crypto.test.ts src/server/lib/__tests__/remote-db-guard.test.ts src/server/jobs/__tests__/development-scheduler.test.ts --maxWorkers 1
 
       - name: Type-check server (tsconfig.server.json)
         run: npx tsc --noEmit -p tsconfig.server.json

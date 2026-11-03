@@ -36,6 +36,11 @@ const log = createLogger('outreach.jobs')
 // Lock IDs: outreach=4014, bounces=4015, replies=4016.
 
 export function startJobs(): void {
+    // Copied development rows may still carry real recipients and destinations.
+    if (process.env.NODE_ENV === 'development') {
+        log.info({ action: 'outreach.jobs.development_disabled' }, 'background jobs disabled in development')
+        return
+    }
     log.info({ action: 'outreach.jobs.scheduler_start' }, 'starting background job scheduler')
 
     // Process email queue every minute. Advisory-locked (message-queue-processor) — see

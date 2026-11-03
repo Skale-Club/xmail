@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { supabasePublicConfig } from './lib/supabase'
 import { ALLOW_REMOTE_DB_ENV, checkRemoteDbGuard } from './lib/remote-db-guard'
 
 // ANTES de qualquer import que abra conexão: um servidor de desenvolvimento apontado para o banco
@@ -64,7 +65,7 @@ import { markShuttingDown } from './lib/shutdown'
 
 const app = express()
 const PORT = process.env.PORT || 9001
-const supabaseOrigin = process.env.SUPABASE_URL ? new URL(process.env.SUPABASE_URL).origin : null
+const supabaseOrigin = supabasePublicConfig.url ? new URL(supabasePublicConfig.url).origin : null
 
 app.set('trust proxy', 1)
 
@@ -284,8 +285,8 @@ app.get('/app-config.js', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
 
     const publicConfig = {
-        VITE_SUPABASE_URL: process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '',
-        VITE_SUPABASE_ANON_KEY: process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '',
+        VITE_SUPABASE_URL: process.env.NODE_ENV === 'development' ? supabasePublicConfig.url : process.env.VITE_SUPABASE_URL || supabasePublicConfig.url || '',
+        VITE_SUPABASE_ANON_KEY: process.env.NODE_ENV === 'development' ? supabasePublicConfig.anonKey : process.env.VITE_SUPABASE_ANON_KEY || supabasePublicConfig.anonKey || '',
         VITE_APP_NAME: process.env.VITE_APP_NAME || process.env.APP_APPLICATION_NAME || 'Xmail',
     }
 
@@ -430,11 +431,11 @@ app.listen(PORT, async () => {
 
     // Install the in-app alert taps first, so a crash during the rest of
     // startup is still reported rather than becoming an unexplained restart.
-    await installAlerting()
+    if (process.env.NODE_ENV !== 'development') await installAlerting()
 
     // Then the watchdog that restarts a process whose database connections have all hung —
     // the failure mode no alert tap can see and no external probe can fix. See lib/db-liveness.ts.
-    dbLiveness = startDbLivenessWatchdog()
+    if (process.env.NODE_ENV !== 'development') dbLiveness = startDbLivenessWatchdog()
 
     // Warn if no platform admin exists
     try {
@@ -447,11 +448,13 @@ app.listen(PORT, async () => {
     import('./jobs/index').then((jobs) => jobs.startJobs())
 
     // Approval buttons on Telegram: register this server as the ops bot's webhook (production only).
-    void ensureTelegramWebhook().catch((error) => console.error('[telegram-approvals] setWebhook failed:', error))
+    if (process.env.NODE_ENV !== 'development') {
+        void ensureTelegramWebhook().catch((error) => console.error('[telegram-approvals] setWebhook failed:', error))
+    }
 
     // Start native SMTP + IMAP + MX servers (always on in production; set
     // ENABLE_MAIL_SERVER=false to disable for dev/CI runs).
-    if (process.env.ENABLE_MAIL_SERVER !== 'false') {
+    if (process.env.NODE_ENV !== 'development' && process.env.ENABLE_MAIL_SERVER !== 'false') {
         try {
             runningSmtpServer = createSMTPServer()
             runningImapServer = createIMAPServer()

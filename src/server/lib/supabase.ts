@@ -1,8 +1,14 @@
 import { createClient } from '@supabase/supabase-js'
+import { resolveDevelopmentServerAuth } from '../../lib/development-auth'
 
-const supabaseUrl = process.env.SUPABASE_URL!
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY!
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const auth = process.env.NODE_ENV === 'development'
+    ? resolveDevelopmentServerAuth(process.env)
+    : { url: process.env.SUPABASE_URL!, anonKey: process.env.SUPABASE_ANON_KEY!, serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY! }
+const supabaseUrl = auth.url
+const supabaseAnonKey = auth.anonKey
+const supabaseServiceRoleKey = auth.serviceRoleKey
+
+export const supabasePublicConfig = { url: supabaseUrl, anonKey: supabaseAnonKey }
 
 export const supabaseAnonClient = createClient(supabaseUrl, supabaseAnonKey)
 export const supabaseAdminClient = createClient(supabaseUrl, supabaseServiceRoleKey)

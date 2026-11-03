@@ -32,10 +32,13 @@ export class CredentialKeyMismatchError extends Error {
  * na hora, não produzir silenciosamente registros que ninguém mais consegue ler.
  */
 function getEncryptionKey(): Buffer {
-    const secret = process.env.OUTLOOK_TOKEN_ENCRYPTION_KEY
+    const keyName = process.env.NODE_ENV === 'development'
+        ? 'XMAIL_DEV_OUTLOOK_TOKEN_ENCRYPTION_KEY'
+        : 'OUTLOOK_TOKEN_ENCRYPTION_KEY'
+    const secret = process.env[keyName]
 
     if (!secret) {
-        throw new Error('Missing OUTLOOK_TOKEN_ENCRYPTION_KEY')
+        throw new Error(`Missing ${keyName}`)
     }
 
     return crypto.createHash('sha256').update(secret).digest()

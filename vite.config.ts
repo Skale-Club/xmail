@@ -2,6 +2,7 @@ import { defineConfig, loadEnv, Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from 'path'
+import { resolveDevelopmentAuth } from './src/lib/development-auth'
 
 function appConfigPlugin(config: {
     supabaseUrl: string
@@ -38,10 +39,11 @@ function appConfigPlugin(config: {
 }
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command, isPreview }) => {
     const env = loadEnv(mode, process.cwd(), '')
-    const supabaseUrl = env.VITE_SUPABASE_URL || env.SUPABASE_URL || ''
-    const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || ''
+    const devAuth = command === 'serve' && !isPreview ? resolveDevelopmentAuth(env) : null
+    const supabaseUrl = devAuth?.url || env.VITE_SUPABASE_URL || env.SUPABASE_URL || ''
+    const supabaseAnonKey = devAuth?.anonKey || env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || ''
     const appName = env.VITE_APP_NAME || 'Xmail'
 
     // Built-in icons are bundled with every release. Custom runtime branding may

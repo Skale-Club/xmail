@@ -281,6 +281,17 @@ be rebuilt from scratch. Keep its "achados abertos" table and audit date current
 
 Required: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `DATABASE_URL`, `OUTLOOK_TOKEN_ENCRYPTION_KEY`
 
+Development Auth additionally requires `XMAIL_DEV_SUPABASE_ANON_KEY` and
+`XMAIL_DEV_SUPABASE_SERVICE_ROLE_KEY` for the explicitly selected
+`XMAIL_DEV_SUPABASE_PROJECT_REF`. Vite development and server Auth never inherit
+production `SUPABASE_*` / `VITE_SUPABASE_*` aliases. Credential encryption in
+development uses only `XMAIL_DEV_OUTLOOK_TOKEN_ENCRYPTION_KEY`. Production keys and
+native mailbox password hashes remain unchanged. Development does not start cron
+jobs, native mail listeners, startup ops alerts or the DB liveness watchdog.
+This is **not** complete external-effect isolation: manual send/sync, route-driven
+webhooks, OAuth, R2 and stored integration credentials still need sanitization or
+dedicated sandbox targets. Do not start development against a production copy.
+
 > **`OUTLOOK_TOKEN_ENCRYPTION_KEY` has no fallback, on purpose.** It is the single key behind
 > `encryptSecret`/`decryptSecret` (stored SMTP/IMAP passwords, Outlook tokens). It used to fall back
 > to `JWT_SECRET`, which meant two servers pointed at the same database could encrypt with two

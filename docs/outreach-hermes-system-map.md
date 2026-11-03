@@ -150,6 +150,13 @@ Não existem como campos de campanha: limite diário (é da caixa) e "parar ao r
 
 ## 5. Workers (todos in-process, `src/server/jobs/index.ts`)
 
+Em desenvolvimento (`NODE_ENV=development`), `startJobs()` retorna sem registrar
+nenhum cron, mesmo com filas/campanhas copiadas no banco. Reconferência pontual em
+2026-11-03: teste do scheduler verifica zero agendamentos em desenvolvimento e
+preservação dos agendamentos em produção. Isso não isola envios manuais, integrações
+acionadas por rotas ou o processo separado do Hermes; não iniciar com dados/segredos
+de produção. A auditoria completa e os gates de produção acima não foram alterados.
+
 | Cadência | Job | Lock |
 |---|---|---|
 | 1 min | `processQueue`, `processInboxCommands`, `deliverOutreachEvents` | advisory por job |

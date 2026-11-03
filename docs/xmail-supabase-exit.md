@@ -68,6 +68,48 @@ Other operational scripts using raw `DATABASE_URL`, direct invocation of the ori
 
 ## Next required work
 
+### Cloud continuation — 2026-11-03
+
+Remote main was reconfirmed at `5cc007855df807fc21418e60af2d208b03e52e55`
+and the existing implementation branch at `dc3cf24c99e377e071d944edac6a19dd4402c963`.
+The cloud checkout was clean before continuation; no other repository was changed.
+Native Git read works through the injected proxy. GitHub CLI PR queries returned
+`Forbidden` from GraphQL, so current PR checks/merge state could not be independently
+read through that API. No production SSH, Google identity, development database or
+Auth bindings are present in this cloud runtime. The user requested completion of
+independent work before that access boundary.
+
+Increment 2 selects development Auth for Vite, backend clients, CSP and the runtime
+browser configuration from the same explicit project ref as the development DB.
+It requires dedicated `XMAIL_DEV_SUPABASE_ANON_KEY` and
+`XMAIL_DEV_SUPABASE_SERVICE_ROLE_KEY`, ignoring production aliases. Development
+credential encryption requires `XMAIL_DEV_OUTLOOK_TOKEN_ENCRYPTION_KEY`; production
+encryption and native mailbox password hashes are unchanged. Cron registration,
+native mail listeners, startup Telegram registration/alerts and DB watchdog startup
+are disabled in development. Production scheduling remains covered by a test.
+
+This is still not full development isolation. Manual send/sync, OAuth callbacks,
+route-driven webhooks/alerts, R2 selection, stored integration credentials and
+operational scripts need separate sandboxing/review. Do not start development
+with a raw production copy or production integration secrets. No development
+project has been provisioned or verified, and no migration has been applied.
+
+Cloud validation used Node 24.19.0 and the locked dependency graph: 43 focused tests
+passed, full ESLint passed, both TypeScript configs passed, and client/server build
+passed. CI now includes the isolation tests. Before this increment, the full suite
+on the clean main checkout completed with 174 files passing and 22 failing:
+2,620 tests passed and 77 failed. Failures include missing `content_language`,
+`enrichment_approval_id` and `warmup_only` columns in the disposable database,
+plus non-database assertions; no full-suite green result is claimed. These
+pre-existing failures were not hidden or repaired as part of Auth isolation.
+
+Next operational prerequisite: configure scoped SSH/Google access and the dedicated
+development target securely in cloud environment settings. Then verify the actual
+running production SHA/source and host capacity before provisioning or cutover.
+The historical source inventory above has not been promoted to a live verification.
+Phone/Google account bindings, sessions, recovery, storage reconciliation, backup
+restore and production cutover remain unimplemented/unverified by this increment.
+
 1. Read-only live dossier: deployed SHA, DB metadata/version/size/extensions/ledger, user and membership counts, identity cohorts, object manifest and encrypted-key references. Never commit personal records or secrets.
 2. Select and verify an isolated Supabase development project; guard migration and diagnostic entry points. Review mail, campaign, cron and webhook side effects before local startup.
 3. Implement additive issuer/project + subject bindings to immutable application UUIDs and per-app sessions. First association needs a valid legacy session plus recent verified Google/phone identity or documented operator recovery. Never claim by email or an unverified profile phone. Keep registration disabled and roles in the application database.
