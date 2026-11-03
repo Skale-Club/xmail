@@ -4,6 +4,8 @@ The reviewed host-local restore rehearsal passed; its aggregate result was repor
 by the coordinator on 2026-11-03 at 22:19 UTC. Production configuration/schema and
 application deployment were unchanged. Both scripts still default to an offline
 plan; execution requires review and an explicit flag.
+The exported-snapshot reconciliation extension also passed a second reviewed run,
+reported on 2026-11-03 at 22:42 UTC. Both results and their different scopes appear below.
 Existing eligible development Supabase targets are being inventoried separately;
 the user rejected new paid projects/costs. This rehearsal creates no Supabase project.
 
@@ -52,7 +54,7 @@ starting the restore target. Coolify's existing PostgreSQL15 database is never u
 
 ## Executed rehearsal and independent cleanup check
 
-Root executed the reviewed shell once with an outer 420-second deadline and
+Root executed the earlier reviewed shell once with an outer 420-second deadline and
 15-second kill grace. The official PostgreSQL17 Alpine image was already present
 and pinned to local ID
 `sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b`.
@@ -76,6 +78,31 @@ archive and restored database were destroyed. This verifies a temporary public-s
 and ledger restore under the stated gates, not a retained backup, full immutable-ID/
 content reconciliation or durable self-managed database deployment. No mail, campaign,
 Telegram job, application migration or provider configuration was executed.
+
+### V2 — exported-snapshot reconciliation passed
+
+After root reviewed the snapshot protocol, canonical SQL, comparator and cleanup,
+root executed V2 with the same approved PostgreSQL17 image and resource boundaries.
+The report was received on 2026-11-03 at 22:42 UTC: exit 0, no stderr and no timeout.
+
+| V2 aggregate result | Value |
+| --- | --- |
+| Exported source snapshot comparison |matched REPEATABLE READ snapshot |
+| Public table counts matched |70 |
+| Full users / organization memberships |39 / 38; digests matched |
+| Canonical SHA256 groups matched |4 |
+| Native password hashes / platform admins |37 / 1; counts and corresponding digests matched |
+| Migration ledger |78 records, latest 078 |
+| Owned-identity tables |0 |
+| Target network / cleanup |none / temporary resources removed before success |
+| Content digests for unrelated public tables |not performed |
+| Auth cutover |not tested |
+
+All source/target manifest and digest values stayed on the host and were destroyed
+with the archive and temporary database. This run verifies source/restore equality
+of all public row counts and the four specified digest groups in the same exported
+snapshot. It does not verify every unrelated table's row contents or final sequence
+state, retain a backup, provision durable storage, or enable production login/routing.
 
 ## Read-only launcher
 
@@ -111,14 +138,14 @@ bash xmail-database-rehearsal.sh --execute-reviewed-rehearsal --image sha256:<ap
 | --- | --- |
 | Host capacity admission |at least 1536MiB available RAM, at most 512MiB swap used, at least 2GiB free in /tmp |
 | Source connection |same fixed Xmail project, direct/session5432, CA+hostname verification; no transaction-pooler snapshot reliance |
-| Source dump |libpq sslmode=verify-full, explicit CA; default_transaction_read_only=on, bounded statements/locks; pg_dump consistent serializable snapshot |
+| Source dump |libpq sslmode=verify-full, explicit CA; default_transaction_read_only=on; imports the holder's exact exported REPEATABLE READ snapshot |
 | Dump scope |public and migration ledger only; excludes Auth directory, Storage, vault and platform schemas |
 | Archive |private 0700 temporary host directory, umask 077; custom archive hard limit 256MiB |
 | Dump client |128MiB RAM, no swap, 0.5 CPU, 64 PIDs; shares existing xmail network solely to read source; no server/listener |
 | Restore server |768MiB RAM, no swap, 0.5 CPU, 128 PIDs; network none, listen_addresses empty, no published port |
 | Target data |512MiB tmpfs plus 8MiB socket/16MiB temporary mounts; read-only root filesystem; no persistent volume or source credentials |
 | Privileges |non-root PostgreSQL user, all Linux capabilities dropped, no-new-privileges; image PostgreSQL major and UID/GID checked |
-| Timeout |dump 150 seconds, restore 180 seconds plus five-second termination grace |
+| Timeout |source holder 210-second absolute deadline; dump 150 seconds, restore 180 seconds plus five-second termination grace; target manifest 40 seconds |
 | Restore behavior |single transaction, exit on any error; TOC omits exactly one CREATE SCHEMA public entry, preserving all contained objects/data/constraints |
 | Target readiness |final postmaster PID1 plus ready Unix socket; initdb temporary server cannot admit bootstrap |
 | Cleanup |unique names + exact run-ownership labels; only own containers and validated mktemp directory removed; success withheld until Docker listing succeeds and is empty and directory removal is proven |
@@ -131,8 +158,9 @@ to the target. This is **not** proof of an Auth cutover or usable RLS identity c
 
 The target gate requires exactly 39 users, 38 memberships, 70 public tables, 78 ledger
 records ending 078, no invalid FK and no owned-identity tables. Existing UUIDs,
-native password hashes and encrypted fields are intended to be copied as data
-without rewriting; their complete integrity has not been verified by this plan.
+native password hashes and encrypted fields are copied without rewriting. V2 verifies
+complete users/membership row digests and the explicit authority/native-hash groups;
+complete contents of unrelated public tables remain outside this digest coverage.
 No migration 079/080 is applied. The archive and private diagnostics never leave
 the host. Credentials use remote memory/stdin with no separate env file, argv or
 log; Docker retains the dump client's ephemeral environment metadata until cleanup.
@@ -142,21 +170,70 @@ Failure traps retry cleanup without claiming that removal succeeded.
 
 ## Evidence limits and acceptance still required
 
-The inventory/pre-dump checks and pg_dump do **not** share an exported snapshot.
-Each collection is internally repeatable and pg_dump is internally consistent, but
-production can write between them. The 39/38 target gate is a preservation check
-against the approved baseline; it is not exact all-row fingerprint reconciliation.
-No source/dump fingerprint equality is claimed. A future full-fidelity rehearsal
-must hold an exported snapshot on direct/session5432 through dump completion and
-derive source aggregates/fingerprints from that same snapshot, or perform the final
-copy during a coordinated write pause. Sequence changes also require explicit
-reconciliation. The actual rehearsal evidence above is limited accordingly.
+The **earlier executed revision** did not share a snapshot between its source
+checks and dump; production could write between them. Its 39/38 gate was a count
+check against the approved baseline, without immutable-ID/content fingerprints.
+The reviewed V2 execution closes that gap for all 70 counts and the four digest
+groups below. It does not expand content coverage to every public table.
+
+### Exported-snapshot reconciliation protocol
+
+A separate helper inside the running Xmail container opens exactly one source
+connection on direct/session 5432 with the existing strict target/TLS guards. In
+REPEATABLE READ READ ONLY it verifies unfiltered visibility, exports a snapshot
+and computes one manifest. The helper keeps that transaction open while pg_dump
+imports **the exact snapshot ID**. `--serializable-deferrable` is deliberately
+removed: a SERIALIZABLE transaction cannot import an exported REPEATABLE READ
+snapshot. Snapshot identifiers are control metadata, never credentials.
+
+The exporter has an independent 210-second process deadline, bounded statements
+and a server idle-in-transaction deadline. A private Bash coprocess pipe carries
+only the public CA, reviewed SQL, snapshot ID and aggregate manifest on the host.
+It accepts `DUMP_COMPLETE` only after pg_dump exits successfully. The helper then
+explicitly rolls back, closes its source connection and acknowledges `SOURCE_CLOSED`;
+the orchestrator waits for both acknowledgment and a successful helper exit before
+restoring. EOF or any failure rolls back/closes without acknowledgment. The hard
+watchdog closes the connection even if the orchestrator disappears. Cleanup closes
+the unique pipe descriptors; no source transaction is intentionally retained.
+
+The exact same SQL runs on source and target with UTC timezone, ISO/YMD DateStyle,
+extra_float_digits=3 and bytea_output=hex. It counts all 70 public relations and
+builds four deterministic SHA256 groups from canonical JSONB payloads, sorted by
+immutable user/membership UUID with C collation. Each row is SHA256-hashed before
+the fixed-length row hashes are concatenated and hashed again:
+
+| Digest group | Exact data covered |
+| --- | --- |
+| users |Every column of every public.users row, including immutable UUID, admin flag, native credential hash and other existing fields |
+| users_authority |UUID, is_admin and email_verified |
+| organization_users |Every column, including membership UUID, organization/user UUIDs and role |
+| native_smtp_password_hashes |Each user's UUID and password_hash, including NULL values |
+
+The manifests additionally reconcile native-hash count, platform-admin count and
+ledger count/latest version. Source/target manifests and digest values stay in the
+private host directory and are destroyed during verified cleanup. No row, UUID,
+password, contact value or digest leaves the host. The comparator rejects any
+missing/extra field, wrong shape, changed count or digest and emits no success body
+on mismatch. Only group/table match counts and aggregate success booleans may be
+released after the established cleanup proof. No app or mail job uses the target.
+
+After the successful V2 run, content digests of unrelated public tables are not
+covered by these four groups; their row counts are covered. PostgreSQL sequence
+values are not MVCC snapshots and require separate final-write-pause reconciliation.
+This does not create a durable backup, deploy a persistent database or prove Auth
+acceptance. Both rehearsal results remain limited to their recorded gates.
 
 Local checks here are five offline Node policy/syntax tests, Bash syntax validation
 and both default plan modes; CI now repeats these offline checks. Heavy build/tests
 remain CI work. Independent
 review found the selected-public-schema restore conflict; the TOC now removes only
 the schema-creation entry and keeps strict restoration errors. No error is ignored.
+The expanded offline tests simulate the holder retaining its transaction until the
+release signal, successful rollback/close, EOF failure, the 210-second watchdog,
+matching manifests and nine kinds of count/authority/credential/ledger divergence.
+They also exercise the real Bash coprocess descriptor setup with a local fake holder
+for completion and EOF, without Docker, SSH or a database. Five tests passed after
+the final revision; exact-SHA CI will repeat them after publication.
 
 Primary references: [PostgreSQL17 pg_dump](https://www.postgresql.org/docs/17/app-pgdump.html),
 [Docker runtime resource constraints](https://docs.docker.com/engine/containers/run/),

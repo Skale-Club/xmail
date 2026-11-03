@@ -12,9 +12,10 @@ export const plan = {
         'Collect read-only catalog inventory and current host capacity',
         'Review Supabase extension/function/trigger/policy dependencies before selecting dump scope',
         'Review the separate host-only rehearsal shell script and capacity limits',
-        'After explicit review, pin a local PostgreSQL17 image and dump public plus migration ledger with source read-only options',
+        'After explicit review, export a direct/session REPEATABLE READ READ ONLY snapshot and hold it through pg_dump completion',
+        'Use that exact snapshot for public plus ledger dump, all 70 table counts and four private SHA256 digest groups',
         'Restore into a quota-limited, network-none temporary PostgreSQL17 container; never start Xmail',
-        'Validate 39 users, 38 memberships and catalog constraints; shared-snapshot fingerprint/sequence reconciliation remains unverified',
+        'Require exact source/restore counts and full users, application authority, memberships/roles and SMTP hash digests; sequence and other public row content digests are out of scope',
         'Remove only the uniquely named rehearsal resources and host-local dump under a cleanup trap',
     ],
 }

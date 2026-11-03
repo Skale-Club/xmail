@@ -16,8 +16,9 @@ Target: network none/no ports/no volumes,768MiB RAM+no swap,0.5CPU,128PIDs,
 512MiB PGDATA tmpfs plus small socket/tmp mounts; no production credentials.
 Target-only authenticated NOLOGIN role and auth.uid() NULL compatibility stub.
 Require restored39users/38memberships/70publictables/ledger78latest078.
-Separate source counts are not the pg_dump exported snapshot; concurrent data
-changes preclude a claim of exact whole-database fingerprint reconciliation.
+One exported REPEATABLE READ snapshot supplies pg_dump and all70 source counts.
+Compare full users/memberships, authority and native password hashes by SHA256.
+Digests remain private on the host; unrelated public row contents are not hashed.
 Cleanup removes only names with this run's ownership label and its own tempdir.
 PLAN
   exit 0
@@ -28,7 +29,7 @@ if [[ $# != 3 || $1 != --execute-reviewed-rehearsal || $2 != --image || ! $3 =~ 
 fi
 image=$3
 [[ $(id -u) == 0 ]] || { echo 'Refused: expected approved host root session.' >&2; exit 2; }
-for binary in docker timeout awk df mktemp; do command -v "$binary" >/dev/null || { echo 'Missing required host tool.' >&2; exit 2; }; done
+for binary in docker timeout awk df mktemp base64; do command -v "$binary" >/dev/null || { echo 'Missing required host tool.' >&2; exit 2; }; done
 docker image inspect "$image" >/dev/null 2>&1 || { echo 'Approved image must already exist; no pull performed.' >&2; exit 2; }
 
 # Hard admission limits; do not tune these during a live run to bypass a refusal.
@@ -49,8 +50,13 @@ target_name="xmail-db-rehearsal-$nonce-target"
 dump_name="xmail-db-rehearsal-$nonce-dump"
 probe_name="xmail-db-rehearsal-$nonce-probe"
 label_key=com.skale.xmail-db-rehearsal
+holder_pid='' holder_input='' holder_output=''
 cleanup() {
   local name owner
+  # Closing the private pipe makes the holder roll back on EOF. Its independent
+  #210-second watchdog also closes the source connection after a lost orchestrator.
+  if [[ ${holder_input:-} =~ ^[0-9]+$ ]]; then exec {holder_input}>&-; holder_input=''; fi
+  if [[ ${holder_output:-} =~ ^[0-9]+$ ]]; then exec {holder_output}<&-; holder_output=''; fi
   for name in "$dump_name" "$target_name" "$probe_name"; do
     owner=$(docker inspect --format "{{index .Config.Labels \"$label_key\"}}" "$name" 2>/dev/null || true)
     if [[ $owner == "$nonce" ]]; then docker rm -f "$name" >/dev/null 2>&1 || true; fi
@@ -116,6 +122,91 @@ mapfile -t image_details <<<"$image_probe"
 [[ ${#image_details[@]} == 3 && ${image_details[0]} =~ ^[1-9][0-9]{0,5}$ && ${image_details[1]} =~ ^[1-9][0-9]{0,5}$ && ${image_details[2]} == 'pg_dump (PostgreSQL) 17.'* ]] || exit 2
 uid=${image_details[0]}; gid=${image_details[1]}
 
+# This exact SQL runs on both databases with the same canonical output settings.
+# It exposes only aggregate counts/digests, which stay in private host artifacts.
+manifest_sql=$(cat <<'SQL'
+WITH relations AS MATERIALIZED (
+ SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='public' AND c.relkind IN ('r','p')
+), table_counts AS MATERIALIZED (
+ SELECT relname,((xpath('/row/n/text()',query_to_xml(format('SELECT count(*) AS n FROM public.%I',relname),false,true,'')))[1]::text)::bigint AS n FROM relations
+), digest_input AS (
+ SELECT 'users'::text AS name,u.id::text AS key,to_jsonb(u)::text AS payload FROM public.users u
+ UNION ALL SELECT 'users_authority',u.id::text,jsonb_build_object('id',u.id,'is_admin',u.is_admin,'email_verified',u.email_verified)::text FROM public.users u
+ UNION ALL SELECT 'organization_users',m.id::text,to_jsonb(m)::text FROM public.organization_users m
+ UNION ALL SELECT 'native_smtp_password_hashes',u.id::text,jsonb_build_object('id',u.id,'password_hash',u.password_hash)::text FROM public.users u
+), digest_rows AS (
+ SELECT name,key,encode(pg_catalog.sha256(convert_to(payload,'UTF8')),'hex') AS row_sha FROM digest_input
+), digest_groups AS (
+ SELECT names.name,encode(pg_catalog.sha256(convert_to(coalesce(string_agg(d.row_sha,'' ORDER BY d.key COLLATE "C"),''),'UTF8')),'hex') AS value
+ FROM (VALUES ('users'),('users_authority'),('organization_users'),('native_smtp_password_hashes')) names(name)
+ LEFT JOIN digest_rows d ON d.name=names.name GROUP BY names.name
+)
+SELECT jsonb_build_object('version',1,'publicTableCount',(SELECT count(*) FROM table_counts),
+ 'counts',(SELECT jsonb_object_agg(relname,n) FROM table_counts),
+ 'digests',(SELECT jsonb_object_agg(name,value) FROM digest_groups),
+ 'nativePasswordHashCount',(SELECT count(*) FROM public.users WHERE password_hash IS NOT NULL AND password_hash<>''),
+ 'platformAdminCount',(SELECT count(*) FROM public.users WHERE is_admin),
+ 'ledgerCount',(SELECT count(*) FROM supabase_migrations.schema_migrations),
+ 'ledgerLatest',(SELECT max(version) FROM supabase_migrations.schema_migrations)) AS manifest
+SQL
+)
+holder_program=$(cat <<'NODE'
+const postgres=require('postgres'),{X509Certificate}=require('node:crypto'),readline=require('node:readline');
+const deadline=setTimeout(()=>{process.stderr.write('Snapshot holder deadline exceeded.');process.exit(124);},210000);deadline.unref();
+const input=readline.createInterface({input:process.stdin,terminal:false,crlfDelay:Infinity});
+const lines=input[Symbol.asyncIterator]();const released=Symbol('snapshot-released');
+(async()=>{
+ if(process.env.NODE_ENV!=='production'||process.env.NODE_TLS_REJECT_UNAUTHORIZED==='0')throw Error();
+ const u=new URL(process.env.DATABASE_URL||''),expected='zzbudkfkcmqkavgwselc';
+ const ref=/^https:\/\/([a-z0-9]{20})\.supabase\.co\/?$/.exec(process.env.SUPABASE_URL||'')?.[1],user=decodeURIComponent(u.username);
+ const direct=u.hostname==='db.'+expected+'.supabase.co'&&user==='postgres';
+ const pooler=/^aws-[0-9]+-[a-z0-9-]+[.]pooler[.]supabase[.]com$/.test(u.hostname)&&user==='postgres.'+expected;
+ if(ref!==expected||!['postgres:','postgresql:'].includes(u.protocol)||!(direct||pooler)||u.pathname!=='/postgres'||!['5432','6543'].includes(u.port)||u.hash||!u.password)throw Error();
+ for(const [key,value] of u.searchParams){if(!['sslmode','application_name'].includes(key)||u.searchParams.getAll(key).length!==1||(key==='sslmode'&&!['require','verify-ca','verify-full'].includes(value)))throw Error();}
+ u.port='5432';u.search='';u.hash='';
+ const caLine=await lines.next(),sqlLine=await lines.next();
+ if(caLine.done||sqlLine.done||caLine.value.length>45000||sqlLine.value.length>45000||![caLine.value,sqlLine.value].every(s=>/^[A-Za-z0-9+/]+={0,2}$/.test(s)))throw Error();
+ const ca=Buffer.from(caLine.value,'base64').toString('utf8'),query=Buffer.from(sqlLine.value,'base64').toString('utf8');
+ const cert=new X509Certificate(ca);
+ if(!cert.ca||cert.fingerprint256.replaceAll(':','')!=='807025AD50D4ED219D2C9C7D299C004F824EB00CF7F65AFEF607D07B72E6CAFA'||Date.parse(cert.validFrom)>Date.now()||Date.parse(cert.validTo)<=Date.now())throw Error();
+ const sql=postgres(u.href,{max:1,prepare:false,ssl:{ca,rejectUnauthorized:true,servername:u.hostname},connect_timeout:8,idle_timeout:1,onnotice:()=>{}});
+ let complete=false;
+ try{
+  try{await sql.begin('isolation level repeatable read read only',async tx=>{
+   await tx.unsafe("SET LOCAL statement_timeout='30000ms'");await tx.unsafe("SET LOCAL lock_timeout='500ms'");await tx.unsafe("SET LOCAL idle_in_transaction_session_timeout='205000ms'");
+   await tx.unsafe("SET LOCAL timezone='UTC'");await tx.unsafe("SET LOCAL datestyle='ISO, YMD'");await tx.unsafe("SET LOCAL extra_float_digits=3");await tx.unsafe("SET LOCAL bytea_output='hex'");
+   const [visibility]=await tx.unsafe("SELECT count(*)::int AS tables,count(*) FILTER (WHERE has_table_privilege(c.oid,'SELECT'))::int AS readable,count(*) FILTER (WHERE c.relrowsecurity AND NOT (r.rolsuper OR r.rolbypassrls OR (NOT c.relforcerowsecurity AND pg_has_role(current_user,c.relowner,'USAGE'))))::int AS filtered FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.rolname=current_user WHERE n.nspname='public' AND c.relkind IN ('r','p')");
+   if(visibility.tables!==70||visibility.readable!==70||visibility.filtered!==0)throw Error();
+   const [state]=await tx.unsafe("SELECT current_setting('transaction_read_only') AS ro,pg_export_snapshot() AS snapshot");
+   if(state.ro!=='on'||!/^[a-fA-F0-9]{8}-[a-fA-F0-9]{8}-[0-9]+$/.test(state.snapshot))throw Error();
+   process.stdout.write(state.snapshot+'\n');
+   const [result]=await tx.unsafe(query);
+   const manifest=JSON.stringify(result.manifest);if(manifest.length>64000)throw Error();
+   process.stdout.write(manifest+'\n');
+   const command=await lines.next();if(command.done||command.value!=='DUMP_COMPLETE')throw Error();
+   complete=true;throw released; // Explicit rollback releases the exported snapshot.
+  });}catch(error){if(error!==released)throw error;}
+ }finally{await sql.end({timeout:2});input.close();}
+ if(!complete)throw Error();process.stdout.write('SOURCE_CLOSED\n');
+})().then(()=>clearTimeout(deadline)).catch(()=>{clearTimeout(deadline);input.close();process.stderr.write('Snapshot holder failed; details omitted.');process.exitCode=1;});
+NODE
+)
+coproc SNAPSHOT_HOLDER { docker exec -i xmail node -e "$holder_program" 2>"$work/snapshot-holder.log"; }
+holder_pid=$SNAPSHOT_HOLDER_PID
+exec {holder_input}>&"${SNAPSHOT_HOLDER[1]}"
+exec {holder_output}<&"${SNAPSHOT_HOLDER[0]}"
+holder_original_input=${SNAPSHOT_HOLDER[1]}; holder_original_output=${SNAPSHOT_HOLDER[0]}
+exec {holder_original_input}>&-; exec {holder_original_output}<&-
+base64 -w 0 "$work/source-ca.crt" >&"$holder_input"; printf '\n' >&"$holder_input"
+printf '%s' "$manifest_sql" | base64 -w 0 >&"$holder_input"; printf '\n' >&"$holder_input"
+IFS= read -r -t 40 snapshot_id <&"$holder_output"
+[[ $snapshot_id =~ ^[a-fA-F0-9]{8}-[a-fA-F0-9]{8}-[0-9]+$ ]] || exit 2
+IFS= read -r -t 40 source_manifest <&"$holder_output"
+[[ ${#source_manifest} -le 64000 && $source_manifest == \{* ]] || exit 2
+printf '%s\n' "$source_manifest" >"$work/source-manifest.json"
+unset source_manifest
+
 # The dump client is the only new process allowed source connectivity. It shares
 # Xmail's network namespace, has no server/listener and only read-only libpq options.
 (
@@ -125,10 +216,16 @@ uid=${image_details[0]}; gid=${image_details[1]}
     --cpus 0.5 --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,size=8388608 \
     --mount "type=bind,src=$work/source-ca.crt,dst=/source-ca.crt,readonly" --env-file /dev/stdin "$image" \
     pg_dump --format=custom --compress=6 --schema=public --schema=supabase_migrations --strict-names \
-      --no-owner --no-acl --no-comments --serializable-deferrable --lock-wait-timeout=5s >"$work/source.dump" 2>"$work/dump.log"
+      --no-owner --no-acl --no-comments --snapshot="$snapshot_id" --lock-wait-timeout=5s >"$work/source.dump" 2>"$work/dump.log"
 )
 unset source_environment
 [[ -s $work/source.dump ]] || exit 2
+printf 'DUMP_COMPLETE\n' >&"$holder_input"
+exec {holder_input}>&-; holder_input=''
+IFS= read -r -t 10 holder_status <&"$holder_output"
+[[ $holder_status == SOURCE_CLOSED ]] || exit 2
+wait "$holder_pid"; holder_pid=''
+exec {holder_output}<&-; holder_output=''
 
 check_capacity # Recheck after the source dump before reserving target resources.
 docker run -d --rm --pull=never --name "$target_name" --label "$label_key=$nonce" --log-driver=none \
@@ -167,7 +264,7 @@ timeout --kill-after=5s 180s docker exec -i "$target_name" pg_restore --exit-on-
   -U postgres -d xmail_rehearsal <"$work/source.dump" >"$work/restore.log" 2>&1
 
 # Only aggregate results leave the host; no rows/UUIDs/contact hashes are printed.
-target_report=$(docker exec -i "$target_name" psql -X -v ON_ERROR_STOP=1 -qAt -U postgres -d xmail_rehearsal 2>"$work/validation.log" <<'SQL'
+docker exec -i "$target_name" psql -X -v ON_ERROR_STOP=1 -qAt -U postgres -d xmail_rehearsal >"$work/validation.log" 2>&1 <<'SQL'
 DO $$ BEGIN
  IF (SELECT count(*) FROM public.users)<>39 OR (SELECT count(*) FROM public.organization_users)<>38
  OR (SELECT count(*) FROM pg_tables WHERE schemaname='public')<>70
@@ -178,9 +275,36 @@ DO $$ BEGIN
  THEN RAISE EXCEPTION 'Aggregate restoration gate failed'; END IF;
  IF auth.uid() IS NOT NULL OR (SELECT rolcanlogin FROM pg_roles WHERE rolname='authenticated') THEN RAISE EXCEPTION 'Compatibility cannot authenticate'; END IF;
 END $$;
-SELECT json_build_object('restore','passed','users',39,'organization_users',38,'public_tables',70,'ledger_count',78,'ledger_latest','078','owned_identity_tables',0,'network','none','source_snapshot_comparison','not_performed; concurrent rows may change','auth_cutover','not_tested','temporaryResourcesRemoved',true);
 SQL
+{
+  printf "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL timezone='UTC'; SET LOCAL datestyle='ISO, YMD'; SET LOCAL extra_float_digits=3; SET LOCAL bytea_output='hex'; SET LOCAL statement_timeout='30000ms';\n"
+  printf '%s;\n' "$manifest_sql"
+  printf 'ROLLBACK;\n'
+} | timeout --kill-after=5s 40s docker exec -i "$target_name" psql -X -v ON_ERROR_STOP=1 -qAt -U postgres -d xmail_rehearsal \
+  >"$work/target-manifest.json" 2>"$work/target-manifest.log"
+
+compare_program=$(cat <<'NODE'
+const fs=require('node:fs');
+try{
+ const text=fs.readFileSync(0,'utf8');if(text.length>130000)throw Error();
+ const lines=text.trim().split('\n');if(lines.length!==2)throw Error();
+ const [source,target]=lines.map(line=>JSON.parse(line));
+ const digestNames=['native_smtp_password_hashes','organization_users','users','users_authority'];
+ const fields=['counts','digests','ledgerCount','ledgerLatest','nativePasswordHashCount','platformAdminCount','publicTableCount','version'];
+ for(const manifest of [source,target]){
+  if(!manifest||Object.keys(manifest).sort().join('|')!==fields.join('|')||manifest.version!==1||manifest.publicTableCount!==70||manifest.ledgerCount!==78||manifest.ledgerLatest!=='078')throw Error();
+  if(!manifest.counts||Object.keys(manifest.counts).length!==70||manifest.counts.users!==39||manifest.counts.organization_users!==38||!Object.values(manifest.counts).every(n=>Number.isSafeInteger(n)&&n>=0))throw Error();
+  if(!Number.isSafeInteger(manifest.nativePasswordHashCount)||manifest.nativePasswordHashCount<0||manifest.nativePasswordHashCount>39||!Number.isSafeInteger(manifest.platformAdminCount)||manifest.platformAdminCount<0||manifest.platformAdminCount>39)throw Error();
+  if(!manifest.digests||Object.keys(manifest.digests).sort().join('|')!==digestNames.join('|')||!Object.values(manifest.digests).every(value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)))throw Error();
+ }
+ const canonical=value=>value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
+ if(JSON.stringify(canonical(source))!==JSON.stringify(canonical(target)))throw Error();
+ process.stdout.write(JSON.stringify({restore:'passed',users:39,organization_users:38,public_tables:70,ledger_count:78,ledger_latest:'078',native_password_hashes:source.nativePasswordHashCount,platform_admins:source.platformAdminCount,digest_groups_matched:4,table_counts_matched:70,source_snapshot_comparison:'matched_exported_repeatable_read_snapshot',full_public_row_digests:'not_performed',owned_identity_tables:0,network:'none',auth_cutover:'not_tested',temporaryResourcesRemoved:true}));
+}catch{process.stderr.write('Snapshot reconciliation failed; values omitted.');process.exitCode=1;}
+NODE
 )
+target_report=$({ cat "$work/source-manifest.json"; cat "$work/target-manifest.json"; } | \
+  timeout 10s docker exec -i xmail node -e "$compare_program" 2>"$work/compare.log")
 # Do not release a success report until removal is positively proved. On any
 # failure the EXIT trap remains a best-effort retry and no success JSON is printed.
 cleanup

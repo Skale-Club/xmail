@@ -269,3 +269,32 @@ claimed. Production configuration/schema, SMTP/IMAP and deploy state were unchan
 The user declined new paid Supabase projects/costs. Existing eligible targets from
 the respective environment files will be assessed for safe isolated reuse; no new
 project or account/organization lookup is needed for this preparation.
+
+## Increment 7 — exported-snapshot reconciliation
+
+The prior commit `51c9223a8eb1fe87d890cc6bc81cac9438ae755f` passed complete
+[CI41730237683](https://github.com/Skale-Club/xmail/actions/runs/41730237683): lint,
+both TypeScript configurations, build, offline operations checks, identity/UI tests
+and the disposable PostgreSQL store suite.
+
+The reviewed revision adds a bounded source holder on direct/session
+5432: one REPEATABLE READ READ ONLY snapshot supplies pg_dump and all 70 source
+table counts. The restored target must match full user/membership JSONB SHA256
+digests, application admin/role fields and native password hashes, without exposing
+any values or digests outside the host. The source holder rolls back/closes after
+dump completion and has an independent 210-second deadline. The previous TLS,
+resource, NULL Auth compatibility and verified-cleanup controls remain mandatory.
+
+After root reviewed the code, the coordinator executed V2 successfully; the report
+was received 2026-11-03 at 22:42 UTC. Exit 0, no stderr/timeout: all 70 public counts
+and four SHA256 groups matched the same exported RR snapshot; 39 users, 38
+memberships, 37 native password hashes, one platform admin and ledger 78/latest078
+were preserved within that checked scope. No owned-identity tables existed. The
+target had no network, and temporary resources/manifests were removed before success.
+No data, UUID, credential or digest value left the host. Auth acceptance, unrelated
+public row-content digests, final sequence state and retained/durable backups remain
+separate gates. Production routing/configuration and persistent storage were unchanged.
+
+Five expanded offline tests, including holder release/EOF and real local Bash pipe
+descriptor checks, plus Bash syntax/diff checks passed. Exact-SHA CI is pending
+publication. See [the snapshot protocol and coverage limits](xmail-database-rehearsal.md#exported-snapshot-reconciliation-protocol).
