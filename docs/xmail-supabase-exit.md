@@ -298,3 +298,20 @@ separate gates. Production routing/configuration and persistent storage were unc
 Five expanded offline tests, including holder release/EOF and real local Bash pipe
 descriptor checks, plus Bash syntax/diff checks passed. Exact-SHA CI is pending
 publication. See [the snapshot protocol and coverage limits](xmail-database-rehearsal.md#exported-snapshot-reconciliation-protocol).
+
+## Increment 8 — persistent candidate restored, application source unchanged
+
+The reviewed import ran on the existing host starting 2026-11-03 at 23:24:09 UTC.
+The coordinator independently confirmed the exact candidate's committed receipt
+by 23:29 UTC: 70 public counts/four digest groups matched, preserving 39 users,
+38 memberships, 37 native password hashes and one platform admin. A private local
+archive/checksum/receipts were retained; temporary clients/work/code directories
+were gone. The source stayed read-only during export and production Xmail remained
+healthy on its existing Supabase source with its observed image unchanged.
+
+The candidate remains private/healthy with persistent storage. It is populated and
+must not be reimported by the empty-only script. No Auth/application cutover, off-host
+backup or final sequence/write-pause reconciliation is claimed. Evidence is in
+[the target dossier](xmail-private-postgres-target.md) and
+[the import runbook](xmail-private-postgres-import.md). HTTP-only fail-closed staging
+preparation follows separately; production flags/routing remain unchanged.

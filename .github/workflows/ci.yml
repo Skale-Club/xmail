@@ -36,8 +36,12 @@ jobs:
       - name: Database rehearsal offline policy (no SSH, Docker or source database)
         run: |
           node --test scripts/ops/xmail-database-rehearsal.test.mjs
+          node --test scripts/ops/import-private-postgres-candidate.test.mjs
           bash -n scripts/ops/xmail-database-rehearsal.sh
+          bash -n scripts/ops/xmail-database-protocol.sh
+          bash -n scripts/ops/import-private-postgres-candidate.sh
           bash scripts/ops/xmail-database-rehearsal.sh --plan
+          bash scripts/ops/import-private-postgres-candidate.sh --plan
 
       - name: Lint (eslint --max-warnings 0)
         run: npm run lint
