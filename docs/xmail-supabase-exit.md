@@ -150,3 +150,63 @@ The dedicated development project is still an operational prerequisite; declarin
 its ref does not prove isolation. The live production source/capacity dossier,
 restorable backup, Google/phone bindings and sessions, recovery, invitations,
 independent mailbox credentials and Storage reconciliation remain required.
+
+## Increment 4 — disabled owned identity foundation
+
+The existing preparation commit `d4fd1a91c1a5005889ce3b432b09f193bacc28a4`
+was pushed without force to `codex/xmail-development-database` after an immediate
+remote-head check. Draft PR [23](https://github.com/Skale-Club/xmail/pull/23)
+passed [CI](https://github.com/Skale-Club/xmail/actions/runs/41716300951)
+(both TypeScript configs, lint, focused tests and build) and GitGuardian.
+
+The new backend foundation adapts to Xmail's existing CommonJS/Express stack
+using its installed `jsonwebtoken` library. It validates RS256 against Google's
+fixed certificate endpoint, exact project/issuer/audience, bounded UID/timestamps,
+and only Google or verified-phone sign-in. It rejects unconfigured Identity
+Platform tenants and unsupported providers. Profile email, phone metadata and
+custom claims never choose an application account or grant permission.
+
+The live account adapter performs exact-UID `accounts:lookup` for the configured
+Google project. It needs an injected short-lived ADC/federation access-token
+supplier with `firebaseauth.users.get`; no JSON key, hardcoded bearer token,
+provider-write permission or shared-project modification is introduced. The
+production credential adapter is still an operational/integration prerequisite.
+Provider failure, bans and revocation deny session admission and use.
+
+Migration `079_owned_identity_foundation.sql` adds three server-only RLS tables:
+exact project/UID bindings, reviewed local user controls, and hashed owned sessions.
+It inserts no user, binding or control record and changes no existing UUID,
+organization ownership/role, `isAdmin` or SMTP/IMAP password hash. The next free
+migration number is now `080`; recheck the remote tree before reserving it.
+An audited control import must preserve the previously observed banned account;
+an absent reviewed control denies admission. First binding still requires a live
+independent exact-ID legacy proof or reviewed operator recovery. No automatic
+email/phone matching or account-creation function exists in this foundation.
+
+Opaque sessions use 32 random bytes, persist only SHA-256 hashes and expire
+absolutely after twelve hours. New-session admission requires recent provider
+authentication and rechecks binding/user controls inside the insertion transaction.
+User-wide revocation locks the same control row; each session read also checks
+provider status and re-reads local revocation after that network round-trip.
+The returned principal contains the existing application UUID only; the current
+application authorization helpers remain responsible for organization/admin access.
+
+The template flag `XMAIL_GOOGLE_AUTH_ENABLED=false` remains off. There is no pilot
+HTTP route, cookie parser, CSRF adapter, frontend session consumer or sign-in UI
+connected in this increment. Setting the flag alone does not change current login.
+Do not activate or remove Supabase settings until those consumers, audited imports,
+invitations/recovery and independent native mailbox credential management pass.
+
+Fifty-seven identity/provider/session tests passed locally with mocked provider
+requests and in-memory session storage. Targeted lint and diff validation passed.
+Seven real PostgreSQL tests are intentionally skipped locally: a separate CI job
+uses a loopback-only disposable database, an exact test-database name and a sentinel
+to rehearse this additive migration, role privileges, ownership, session bounds and
+concurrent revocation. No repository dotenv or production database is used. The
+new CI run must pass before this foundation is described as database-validated.
+
+Implementation references: [Firebase token verification](https://firebase.google.com/docs/auth/admin/verify-id-tokens),
+[session revocation](https://firebase.google.com/docs/auth/admin/manage-sessions),
+and [Google account lookup](https://cloud.google.com/identity-platform/docs/reference/rest/v1/projects.accounts/lookup).
+No real Google/SMS authentication, migration apply, production cutover or deployment
+has been performed by this increment.

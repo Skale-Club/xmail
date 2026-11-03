@@ -142,6 +142,15 @@ until Auth settings and external side effects are isolated too. See
 ## Architecture Notes
 
 ### Authentication Flow
+
+**Owned identity foundation (not activated):** `src/server/lib/identity/` provides
+Firebase Google/verified-phone token verification, a live account-status adapter,
+hashed opaque session policy and a postgres.js store. Migration `079` is additive
+and unapplied; it preserves application UUIDs, organization roles, `isAdmin` and
+SMTP/IMAP `password_hash`. `XMAIL_GOOGLE_AUTH_ENABLED` defaults off. No pilot route,
+cookie/CSRF wiring or browser login is connected yet; setting the flag alone does
+not switch authentication. Read `docs/xmail-supabase-exit.md` before integration.
+
 1. Frontend authenticates via Supabase Auth (`supabase.auth.signInWithPassword`)
 2. JWT token sent as `Authorization: Bearer <token>` header
 3. Express middleware validates token with Supabase, sets `x-user-id` header

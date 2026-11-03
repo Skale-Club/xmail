@@ -55,6 +55,40 @@ export const users = pgTable('users', {
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
 })
 
+// Additive identity pilot. Existing application UUIDs and SMTP/IMAP hashes are
+// unchanged; provider contacts/claims never create memberships or platform roles.
+export const identityUserControls = pgTable('xmail_identity_user_controls', {
+    userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+    disabledAt: timestamp('disabled_at', { withTimezone: true }),
+    sessionsValidAfter: timestamp('sessions_valid_after', { withTimezone: true }).default(sql`'epoch'::timestamptz`).notNull(),
+    reviewSource: text('review_source').notNull(),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }).defaultNow().notNull(),
+})
+
+export const identityBindings = pgTable('xmail_identity_bindings', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: text('project_id').notNull(),
+    subject: text('subject').notNull(),
+    userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    proofReference: text('proof_reference').notNull(),
+    disabledAt: timestamp('disabled_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, table => ({
+    projectSubjectUnique: uniqueIndex('xmail_identity_project_subject_unique').on(table.projectId, table.subject),
+    userIndex: index('xmail_identity_bindings_user_idx').on(table.userId),
+}))
+
+export const identityOwnedSessions = pgTable('xmail_identity_owned_sessions', {
+    tokenHash: text('token_hash').primaryKey(),
+    bindingId: uuid('binding_id').notNull().references(() => identityBindings.id, { onDelete: 'cascade' }),
+    authenticatedAt: bigint('authenticated_at', { mode: 'number' }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, table => ({
+    bindingIndex: index('xmail_identity_sessions_binding_idx').on(table.bindingId),
+}))
+
 // Organizations table
 export const organizations = pgTable('organizations', {
     id: uuid('id').primaryKey().defaultRandom(),

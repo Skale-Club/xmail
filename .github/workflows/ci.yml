@@ -39,8 +39,8 @@ jobs:
       - name: Type-check client (tsconfig.json)
         run: npx tsc --noEmit -p tsconfig.json
 
-      - name: Database target separation tests (no database or Docker)
-        run: npx vitest run --project server src/db/database-target.test.ts src/lib/development-auth.test.ts src/server/lib/__tests__/development-supabase.test.ts src/server/lib/__tests__/crypto.test.ts src/server/lib/__tests__/remote-db-guard.test.ts src/server/jobs/__tests__/development-scheduler.test.ts --maxWorkers 1
+      - name: Development isolation and identity policy tests (no database or Docker)
+        run: npx vitest run --project server src/db/database-target.test.ts src/lib/development-auth.test.ts src/server/lib/__tests__/development-supabase.test.ts src/server/lib/__tests__/crypto.test.ts src/server/lib/__tests__/remote-db-guard.test.ts src/server/jobs/__tests__/development-scheduler.test.ts src/server/lib/identity/google-provider.test.ts src/server/lib/identity/owned-session.test.ts --maxWorkers 1 --testTimeout 15000
 
       - name: Type-check server (tsconfig.server.json)
         run: npx tsc --noEmit -p tsconfig.server.json
@@ -53,3 +53,32 @@ jobs:
           VITE_SUPABASE_URL: https://ci-placeholder.supabase.co
           VITE_SUPABASE_ANON_KEY: ci-placeholder-anon-key
           VITE_APP_NAME: Xmail (CI)
+
+  identity-store:
+    name: Owned identity PostgreSQL foundation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: xmail_identity_test
+          # Disposable runner database, reachable only over runner loopback.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['127.0.0.1:5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d xmail_identity_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Rehearse additive identity migration and session revocation
+        run: npx vitest run --project server src/server/lib/identity/postgres-store.integration.test.ts --maxWorkers 1
+        env:
+          XMAIL_IDENTITY_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xmail_identity_test
+          XMAIL_IDENTITY_TEST_SENTINEL: xmail-owned-identity-ci
