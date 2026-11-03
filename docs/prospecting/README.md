@@ -13,6 +13,7 @@ systems in four repositories plus one home server.
   step, a host move) updates this file **in the same commit** as the code. The other repos'
   `CLAUDE.md` files point here with the same rule. After updating, refresh the Notion mirror.
 - **Last reviewed:** 2026-10-17.
+- **Xcraper hosting updated:** 2026-11-03 (Coolify/Hetzner; public URL unchanged).
 - **Taking over?** Read [`handoff-2026-10-08.md`](handoff-2026-10-08.md) first: story, access, current state, open items.
 
 ---
@@ -48,7 +49,7 @@ phone backlog for a future call campaign.
 | Component | What it does | Where it runs | Repo / docs |
 |---|---|---|---|
 | **Homelab scraper** | Google Maps scraping (`gosom/google-maps-scraper`), free per run | ZimaOS box at home, container `gmaps-scraper`, public only as `https://scraper.skale.club` behind Cloudflare Access | Not a repo. Notes: `hermes/xcraper-homelab.md` |
-| **Xcraper** | Scrape orchestration: queue, provider choice (homelab or Apify), push to Xphere | Vercel, `https://xcraper.skale.club` | `xcraper` repo: `docs/SELF-HOSTING.md`, `docs/DOMAIN-CHANGE.md` |
+| **Xcraper** | Scrape orchestration: queue, provider choice (homelab or Apify), push to Xphere | Coolify/Hetzner, Docker Compose, `https://xcraper.skale.club` | `xcraper` repo: `docs/SELF-HOSTING.md`, `docs/DOMAIN-CHANGE.md` |
 | **Xphere** | CRM and prospect home: email verification (MillionVerifier), website analyzer, Meta audiences, import to Xmail | `https://xphere.app`, Docker on a Coolify VPS | `xphere` repo |
 | **Xmail** | Email platform: leads, campaigns, sequences, sending, reply detection, unsubscribe, approvals, Telegram alerts | Hetzner VPS, Docker, `https://mail.skale.club` | this repo: `CLAUDE.md`, `docs/outreach-hermes-system-map.md` |
 | **Hermes** | The operator. LLM agent that drives the whole pipeline through tools | Hetzner VPS, container `hermes`, Telegram bot `skaleclubhermesbot` | `hermes/README.md`, MCP server `hermes/xmail-mcp/server.mjs` |
@@ -261,7 +262,11 @@ analysis is wrong.
 - **Deploys:**
   - Xmail deploys on push to `main` (blue-green on Hetzner). Avoid deploying while a campaign is
     mid-send. Inbox reading now recovers in about 5 minutes after a restart.
-  - Xcraper deploys on Vercel (push to `main`).
+  - Xcraper runs on Coolify/Hetzner since 2026-11-03. Successful CI for a push to `main`
+    triggers `.github/workflows/deploy.yml`, which pins the tested commit and verifies health.
+    The dedicated Cloudflare token `Xcraper Coolify Production` permits only the homelab
+    scraper. Supabase database/auth, the public URL, Hermes service key and the existing
+    two-minute tick scheduler are unchanged. Vercel remains a temporary DNS rollback target.
   - Xphere deploys by GitHub Actions on push to `main`: the image is built on GitHub, pushed to
     GHCR, and Coolify rolls it out with zero downtime (`.github/workflows/build-deploy.yml`).
 - **Migrations (Xmail):** hand-written SQL in `supabase/migrations/`, applied by hand with a
@@ -295,8 +300,10 @@ analysis is wrong.
   - a matching MCP tool;
   - an update to the system map and to this file.
 - **Moving home base:** change `OUTREACH_HOME_BASE_ZIP` / `OUTREACH_HOME_RADIUS_MILES`.
-- **Moving Xcraper off Vercel or to a new domain:** see `xcraper/docs/DOMAIN-CHANGE.md`. Then
-  update `XCRAPER_SERVICE_URL` for Hermes and recreate the tick cron.
+- **Moving Xcraper to another host or domain:** see `xcraper/docs/SELF-HOSTING.md` and
+  `xcraper/docs/DOMAIN-CHANGE.md`. Change `XCRAPER_SERVICE_URL` only if the public URL changes;
+  recreate the tick cron only if its own scheduler host changes. The 2026-11-03 app-host move
+  needed neither change.
 
 ---
 
