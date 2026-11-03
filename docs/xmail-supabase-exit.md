@@ -118,3 +118,35 @@ restore and production cutover remain unimplemented/unverified by this increment
 6. Separate auth, database and file releases. During final data copy drain/queue inbound mail and suspend all writers; reconcile before resuming. Define numeric rollback thresholds and recovery objectives from measured evidence.
 
 Google default is `skaleclub` unless a suitable product project already exists. No global Google changes or shared-host reservation is included here. XmartMenu reported code-only work with no server reservation on 2026-11-03; recheck coordination before any operational change.
+
+## Increment 3 — development SQL transport validation
+
+Continuation fetched the remote implementation branch at
+`57d5dfdfe6bcb727714aae7955bb371f3ca9af24` and retained its existing SQL/Auth
+isolation. Work is isolated in `codex/xmail-identity-preparation`; the main
+checkout and the unrelated Xcraper documentation worktree remain untouched.
+
+The development SQL selector previously accepted transaction-pooler/arbitrary
+ports, direct connections with an arbitrary user, missing explicit passwords,
+disabled/opportunistic TLS, and arbitrary driver/startup URI options. Both
+runtime pools and the development migration wrapper now share a normalized
+direct/session target: database `postgres`, port 5432, an explicit password,
+and the project-specific user. Missing TLS mode becomes `sslmode=require`;
+the only accepted URI option is one `sslmode` using `require`, `verify-ca` or
+`verify-full`. Malformed URL encodings and invalid settings fail with sanitized
+errors before client construction. Production/test target selection is unchanged.
+
+Focused offline tests exercise both pool URLs, credential redaction and actual
+postgres.js connection options without opening a connection. Local execution
+uses the existing dependency installation, no dotenv files, database, Docker,
+mail listener or external integration. Full lint/types/build remain CI work.
+Sixty focused tests across six files passed sequentially with `--maxWorkers 1
+--testTimeout 15000`; the pre-existing scheduler import exceeded its default
+five-second limit on this PC, then passed with the stated cold-import allowance.
+Targeted ESLint and `git diff --check` passed.
+
+This is a preparation increment, not a production database or identity cutover.
+The dedicated development project is still an operational prerequisite; declaring
+its ref does not prove isolation. The live production source/capacity dossier,
+restorable backup, Google/phone bindings and sessions, recovery, invitations,
+independent mailbox credentials and Storage reconciliation remain required.

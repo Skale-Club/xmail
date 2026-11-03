@@ -121,6 +121,12 @@ npm run db:audit         # Audit schema drift between schema.ts and the DB
 and `XMAIL_DEV_DATABASE_URL`; optional `XMAIL_DEV_DIRECT_URL` must target that same
 approved Supabase development project. They never inherit `DATABASE_URL` or
 `DIRECT_URL` in development, including with `XMAIL_ALLOW_REMOTE_DB=true`.
+Both URLs require an explicit password, database `postgres`, and direct/session
+port 5432 (an omitted port is pinned). Direct connections require user `postgres`;
+pooler users must be `postgres.<approved-ref>`. The selector adds `sslmode=require`
+when absent and accepts only required TLS modes (`require`, `verify-ca`,
+`verify-full`); other/duplicate query options and URL fragments fail before pool
+construction. The development migration wrapper uses the same normalized target.
 Operational scripts still using raw URLs are not covered. Do not start development
 until Auth settings and external side effects are isolated too. See
 [`docs/xmail-supabase-exit.md`](docs/xmail-supabase-exit.md) for evidence and remaining work.
