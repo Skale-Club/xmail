@@ -8,6 +8,13 @@ import { Script, createContext } from 'node:vm'
 import { randomUUID } from 'node:crypto'
 import { inventoryProgram, readSshHost } from './xmail-database-rehearsal.mjs'
 
+function sourceFixtureUrl() {
+    const url = new URL('postgres://aws-0-us-east-1.pooler.supabase.com:6543/postgres')
+    url.username = 'postgres.zzbudkfkcmqkavgwselc'
+    url.password = randomUUID()
+    return url
+}
+
 const directory = mkdtempSync(join(tmpdir(), 'xmail-ops-policy-'))
 after(() => {
     assert.ok(resolve(directory).startsWith(resolve(tmpdir()) + '\\xmail-ops-policy-') || resolve(directory).startsWith(resolve(tmpdir()) + '/xmail-ops-policy-'))
@@ -89,7 +96,7 @@ test('remote helpers parse; holder preserves snapshot until release and reconcil
         }, end: async () => { ended = true } }
         const pg = (_url, options) => { assert.equal(options.ssl.rejectUnauthorized, true); return database }
         const context = createContext({ URL, Buffer, process: { env: { NODE_ENV: 'production',
-            DATABASE_URL: `postgres://postgres.zzbudkfkcmqkavgwselc:${randomUUID()}@aws-0-us-east-1.pooler.supabase.com:6543/postgres`,
+            DATABASE_URL: sourceFixtureUrl().href,
             SUPABASE_URL: 'https://zzbudkfkcmqkavgwselc.supabase.co' }, stdin: {}, stdout: { write: text => output.push(text) }, stderr: { write: text => errors.push(text) } },
         require: name => name === 'postgres' ? pg : name === 'node:readline' ? { createInterface: () => interfaceMock } : {
             X509Certificate: class { ca = true; fingerprint256 = '807025AD50D4ED219D2C9C7D299C004F824EB00CF7F65AFEF607D07B72E6CAFA'; validFrom = '2020-01-01'; validTo = '2100-01-01' },
@@ -138,7 +145,7 @@ printf 'PIPE_CLOSED\\n'
 })
 test('source validation rejects wrong project/user/db/port/query and global TLS weakening before any fetch/connect', async () => {
     const expected = 'zzbudkfkcmqkavgwselc'
-    const base = new URL(`postgres://postgres.${expected}:${randomUUID()}@aws-0-us-east-1.pooler.supabase.com:6543/postgres`)
+    const base = sourceFixtureUrl()
     const cases = [
         ['SUPABASE_URL', 'https://abcdefghijklmnopqrst.supabase.co'],
         ['NODE_TLS_REJECT_UNAUTHORIZED', '0'],
