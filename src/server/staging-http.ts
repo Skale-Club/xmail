@@ -52,7 +52,7 @@ async function readSummary(sql: Sql) {
 export async function startStagingHttp(config: StagingHttpConfig) {
     const sql = postgres(config.databaseUrl, { max: 2, prepare: false, connect_timeout: 8, idle_timeout: 10,
         ssl: false, onnotice: () => {}, connection: { application_name: 'xmail-staging-http-only',
-            default_transaction_read_only: 'on', statement_timeout: '5000', lock_timeout: '500' } })
+            default_transaction_read_only: true, statement_timeout: 5000, lock_timeout: 500 } })
     try { await sql.begin('read only', verifyReader) } catch {
         await sql.end({ timeout: 2 }); throw new Error('Staging reader startup verification failed.')
     }

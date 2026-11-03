@@ -95,7 +95,7 @@ describe('explicit HTTP-only staging bootstrap', () => {
         expect(summary.headers['cache-control']).toBe('no-store')
         expect(mocks.legacy).not.toHaveBeenCalled(); expect(mocks.dangerous).not.toHaveBeenCalled()
         expect(fetch).not.toHaveBeenCalled()
-        expect(mocks.factory).toHaveBeenCalledWith(database.href, expect.objectContaining({ max: 2, connection: expect.objectContaining({ default_transaction_read_only: 'on' }) }))
+        expect(mocks.factory).toHaveBeenCalledWith(database.href, expect.objectContaining({ max: 2, connection: expect.objectContaining({ default_transaction_read_only: true }) }))
     })
     it('refuses mutations, Auth/integrations/tracking and wrong host without touching SQL after boot', async () => {
         await boot(); const before = mocks.query.mock.calls.length
