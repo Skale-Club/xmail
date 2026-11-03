@@ -203,7 +203,12 @@ Seven real PostgreSQL tests are intentionally skipped locally: a separate CI job
 uses a loopback-only disposable database, an exact test-database name and a sentinel
 to rehearse this additive migration, role privileges, ownership, session bounds and
 concurrent revocation. No repository dotenv or production database is used. The
-new CI run must pass before this foundation is described as database-validated.
+first [foundation CI run](https://github.com/Skale-Club/xmail/actions/runs/41718502224)
+passed all seven PostgreSQL tests on `650dc95`. Its full lint/client types and
+117 focused unit tests passed; server type-checking identified postgres.js's
+non-callable `TransactionSql` declaration. The adapter now uses its supported
+constant-SQL/parameter API, preserving transaction locks and bind parameters;
+the complete CI run must be repeated after that compatibility correction.
 
 Implementation references: [Firebase token verification](https://firebase.google.com/docs/auth/admin/verify-id-tokens),
 [session revocation](https://firebase.google.com/docs/auth/admin/manage-sessions),
