@@ -57,6 +57,8 @@ functions. Runtime TRUNCATE was false. A transaction using
 native password hashes and 1 platform administrator. These aggregate values
 match the committed import receipt; no customer rows or hashes were emitted.
 
-No login password has been generated, no app URL changed and no source write
-performed. This proves candidate role preparation and database privileges,
-not a separately authenticated TCP connection or an HTTP staging boot.
+At that preparation checkpoint no password was generated. Subsequently the
+restricted HTTP probe enabled only the staging reader temporarily, verified TCP
+authentication and HTTP counts, and restored NOLOGIN/passwordNULL. The runtime
+role was never enabled. See [the real staging proof](xmail-http-staging.md#real-candidate-proof--2026-11-03).
+No app URL changed or source write occurred.

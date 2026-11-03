@@ -44,6 +44,8 @@ jobs:
           bash scripts/ops/xmail-database-rehearsal.sh --plan
           bash scripts/ops/import-private-postgres-candidate.sh --plan
           bash scripts/ops/prepare-xmail-runtime-roles.sh --plan
+          python3 -m py_compile scripts/ops/probe-xmail-staging.py
+          python3 scripts/ops/probe-xmail-staging.py --plan
 
       - name: Lint (eslint --max-warnings 0)
         run: npm run lint
