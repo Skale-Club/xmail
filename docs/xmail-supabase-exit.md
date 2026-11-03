@@ -315,3 +315,19 @@ backup or final sequence/write-pause reconciliation is claimed. Evidence is in
 [the target dossier](xmail-private-postgres-target.md) and
 [the import runbook](xmail-private-postgres-import.md). HTTP-only fail-closed staging
 preparation follows separately; production flags/routing remain unchanged.
+
+## Increment 9 — isolated HTTP-only staging bootstrap
+
+The default server entry now selects its runtime before importing application
+dependencies. Production/development load the byte-identical former server from
+`production-server.ts`. Explicit HTTP staging instead loads only a loopback HTTP
+allowlist and a fixed private-candidate SELECT-only reader connection, with no
+Supabase/mail/jobs/watchdog/seed/integration imports or source-URL fallback.
+
+The new mode stays disabled in the template. Seven small tests boot the actual
+index/Express listener with mocked SQL and dependency sentinels, including production
+NODE_ENV and ENABLE_MAIL_SERVER=true, and verify no dangerous startup import or
+external request. Lint/diff passed; full types/build and the compiled five-file
+staging artifact are CI gates. No real stage process/login credential was started
+by this code change. The coordinator separately owns reader activation and an
+isolated artifact smoke probe. See [the HTTP staging contract](xmail-http-staging.md).

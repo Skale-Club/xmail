@@ -141,6 +141,12 @@ until Auth settings and external side effects are isolated too. See
 
 ## Architecture Notes
 
+`src/server/index.ts` selects a runtime before importing application modules. Its
+default path loads the unchanged production server from `production-server.ts`.
+Explicit `XMAIL_STAGING_HTTP_ONLY=true` loads only the restricted private-candidate
+reader/aggregate HTTP probe; see `docs/xmail-http-staging.md`. Do not use development
+mode or ENABLE_MAIL_SERVER alone to isolate a copied database from startup jobs.
+
 ### Authentication Flow
 
 **Owned identity pilot (not activated):** `src/server/lib/identity/` provides

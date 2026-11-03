@@ -35,5 +35,28 @@ grants and refusal to rerun. It never reads `.env` or `DATABASE_URL`.
 
 Preparation creates no passwords and changes no app URL. Enabling LOGIN requires
 separately reviewed secret generation and protected storage, followed by real
-authentication/network/privilege checks. This operation has not yet been run on
-the candidate. Staging HTTP probes and production cutover remain separate gates.
+authentication/network/privilege checks. Staging HTTP probes and production
+cutover remain separate gates.
+
+## Execution evidence — 2026-11-03
+
+The PG17 CI integration test passed at commit
+`51745c9f40462ffd782a014f4dc5cdbab72016b9`, with one runtime-role test and zero
+skips, after all 11 identity-store tests passed:
+[Actions job](https://github.com/Skale-Club/xmail/actions/runs/41740247275/job/126280243666).
+The new future SECURITY DEFINER writer was denied to the staging reader;
+the runtime's explicitly granted function execution remained available.
+
+The reviewed preparation then ran successfully on the exact private candidate.
+A separate READ ONLY catalog probe confirmed both roles remain NOLOGIN,
+NOSUPERUSER, NOCREATEDB, NOCREATEROLE and NOREPLICATION, with zero memberships.
+Connection limits are 20 for runtime and 2 for staging. Staging INSERT, database
+CREATE and public-schema CREATE were false; it can execute zero public
+functions. Runtime TRUNCATE was false. A transaction using
+`SET LOCAL ROLE xmail_staging_reader` read 39 users, 38 memberships, 37 nonempty
+native password hashes and 1 platform administrator. These aggregate values
+match the committed import receipt; no customer rows or hashes were emitted.
+
+No login password has been generated, no app URL changed and no source write
+performed. This proves candidate role preparation and database privileges,
+not a separately authenticated TCP connection or an HTTP staging boot.

@@ -57,6 +57,9 @@ jobs:
       - name: Owned identity browser policy tests (mocked provider; no SMS/network)
         run: npx vitest run --project client src/pages/IdentityPilot.test.tsx src/hooks/useMultiSession.identity.test.tsx src/lib/api-client.identity.test.tsx --maxWorkers 1
 
+      - name: HTTP staging bootstrap policy (mocked SQL; no mail/jobs/external services)
+        run: npx vitest run --project server src/server/staging-http.test.ts --maxWorkers 1
+
       - name: Type-check server (tsconfig.server.json)
         run: npx tsc --noEmit -p tsconfig.server.json
 
@@ -68,6 +71,19 @@ jobs:
           VITE_SUPABASE_URL: https://ci-placeholder.supabase.co
           VITE_SUPABASE_ANON_KEY: ci-placeholder-anon-key
           VITE_APP_NAME: Xmail (CI)
+
+      - name: Retain compiled isolated HTTP staging entry
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmail-staging-http-${{ github.sha }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            dist/package.json
+            dist/server/index.js
+            dist/server/runtime-entry.js
+            dist/server/staging-config.js
+            dist/server/staging-http.js
 
   identity-store:
     name: Owned identity PostgreSQL foundation and HTTP pilot store
