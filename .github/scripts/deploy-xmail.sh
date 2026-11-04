@@ -431,7 +431,7 @@ def admin_acceptance_predicate_sql():
       AND ab.proof_reference IN ('legacy-session:'||u.id::text,'legacy-password:'||u.id::text)
       AND s.revoked_at IS NULL AND s.expires_at>transaction_timestamp()
       AND s.created_at>=b.created_at AND s.created_at<=transaction_timestamp()
-      AND s.authenticated_at>=extract(epoch FROM transaction_timestamp())-300
+      AND s.authenticated_at>0
       AND s.authenticated_at<=extract(epoch FROM transaction_timestamp())+5
       AND c.sessions_valid_after<=to_timestamp(s.authenticated_at)
       AND c.sessions_valid_after<=to_timestamp(a.authenticated_at)

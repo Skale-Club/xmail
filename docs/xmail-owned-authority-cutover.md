@@ -62,13 +62,18 @@ current own-SQL UUIDs. It performs online legacy Auth status reads for those
 exact UUIDs while authority is still legacy. The frozen Supabase public business
 tables are never a user inventory and are never imported again.
 
-Initial live acceptance requires a phone authentication at most 90 seconds old,
-before the slow review and backup. A fresh private custom backup, previous
+Publication reuses the original phone session while it is still active,
+unrevoked and unexpired. It does not require another SMS merely because the
+operator's review or backup took time. The operator's deployment authorization
+is separate from the original independently proven account link. No timestamp,
+session expiry, binding, parent record or provider state is refreshed or rewritten.
+A fresh private custom backup, previous
 profiles/receipts and pending rotated credentials are durable before stopping
 the old writer.
 The exact same chain, current SQL admission and provider statuses are repeated
-after backup and before stop within the unchanged 300-second session window.
-This avoids spending the short entry margin on the operator itself. Clean stop,
+after backup and before stop against the same original session's actual expiry.
+The 300-second freshness rule still applies at the original phone LINK, and
+current Source/SQL/provider bans, cutoffs and grants remain mandatory. Clean stop,
 role NOLOGIN fencing,
 current controls refresh and SCRAM rotation follow the already reviewed pilot
 protocol. Bans and cutoffs only stay or tighten. All 70 business fingerprints,
@@ -76,7 +81,7 @@ UUIDs, binding/challenge digests and session count are reconciled. The native
 hashes and memberships are included in those full-row business fingerprints.
 
 After controls commit the exact same admin chain and Google statuses are
-rechecked within the original five-minute authentication window. Only then are
+rechecked against the unchanged original session and current liveness. Only then are
 fresh 15-minute freeze/snapshot/controls/admin-acceptance receipts and the
 `identity` profile published, with both authorities `owned`. Google configuration
 is preserved. This prepares the profile; the separately reviewed official
@@ -91,9 +96,13 @@ writer restart, unfreeze, credential rollback or receipt TTL extension.
 ## Verification
 
 Offline Python tests cover default no-I/O, pinned helpers, exact selected facts,
-missing/ambiguous/stale chains and fixed-origin read-only provider transport,
+missing/ambiguous/future/invalid chains and fixed-origin read-only provider transport,
 including disabled, revoked, wrong-UID and mixed-capability refusal. The actual
 deployment consumer SQL is executed by the disposable identity PostgreSQL CI
 suite against a valid parent/child chain and broken ancestry/controls fixtures.
+It also accepts an unchanged active two-hour-old phone session, and still rejects
+its real expiry/revocation, invalid authentication time or a stale original parent
+at the link. The `freshGoogleProof` receipt field attests to that original link's
+fresh proof; it does not claim a new provider authentication at publication.
 Local no-database runs skip that SQL suite and cannot establish live readiness.
 Real personal factor acceptance and the final runtime readback remain required.

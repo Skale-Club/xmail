@@ -279,14 +279,14 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
         expect(await admitted()).toBe(true)
     })
 
-    it('keeps the original historical parent window and current cutoff after a fresh phone sign-in', async () => {
+    it('keeps original ownership freshness and current controls while reusing an active two-hour-old phone session', async () => {
         const child = randomUUID(), parentHash = 'c'.repeat(64), currentHash = 'd'.repeat(64)
         await sql`UPDATE public.xmail_identity_bindings SET proof_reference=${`legacy-password:${binding.userId}`}, created_at=now()-interval '1 day 60 seconds' WHERE id=${binding.id}`
         await sql`INSERT INTO public.xmail_identity_bindings(id,project_id,subject,user_id,proof_reference,created_at)
             VALUES (${child},'skaleclub','historical-phone-fixture',${binding.userId},${`owned-session:${binding.userId}`},now()-interval '1 day 20 seconds')`
         await sql`INSERT INTO public.xmail_identity_owned_sessions(token_hash,binding_id,authenticated_at,created_at,expires_at,revoked_at) VALUES
             (${parentHash},${binding.id},extract(epoch FROM now()-interval '1 day 50 seconds')::bigint,now()-interval '1 day 45 seconds',now()-interval '23 hours',now()-interval '1 day 19 seconds'),
-            (${currentHash},${child},extract(epoch FROM now()-interval '2 seconds')::bigint,now()-interval '1 second',now()+interval '1 hour',NULL)`
+            (${currentHash},${child},extract(epoch FROM now()-interval '2 hours')::bigint,now()-interval '119 minutes',now()+interval '1 hour',NULL)`
         const query = acceptanceQuery({ adminUserId: binding.userId, bindingId: child, sessionHash: currentHash,
             legacyAnchorBindingId: binding.id, legacyAnchorSessionHash: parentHash })
         expect((await sql.unsafe(query))[0].exists).toBe(true)
@@ -295,6 +295,9 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
             `UPDATE public.xmail_identity_owned_sessions SET expires_at=now()-interval '1 day 21 seconds' WHERE token_hash='${parentHash}'`,
             `UPDATE public.xmail_identity_owned_sessions SET revoked_at=now()-interval '1 day 21 seconds' WHERE token_hash='${parentHash}'`,
             `UPDATE public.xmail_identity_user_controls SET sessions_valid_after=now()-interval '12 hours'`,
+            `UPDATE public.xmail_identity_owned_sessions SET expires_at=now()-interval '1 second' WHERE token_hash='${currentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET revoked_at=now() WHERE token_hash='${currentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET authenticated_at=extract(epoch FROM now()+interval '60 seconds')::bigint WHERE token_hash='${currentHash}'`,
         ]) {
             await sql.begin(async tx => {
                 await tx.unsafe(invalid)
@@ -302,6 +305,9 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
                 throw new Error('rollback-historical-fixture')
             }).catch(error => { if (error.message !== 'rollback-historical-fixture') throw error })
         }
+        // The original table constraint rejects zero before admission SQL runs.
+        await expect(sql`UPDATE public.xmail_identity_owned_sessions SET authenticated_at=0 WHERE token_hash=${currentHash}`)
+            .rejects.toMatchObject({ code: '23514' })
         expect((await sql.unsafe(query))[0].exists).toBe(true)
     })
 
