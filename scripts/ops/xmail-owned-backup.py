@@ -292,7 +292,8 @@ def main():
     need(sys.platform.startswith('linux') and os.geteuid()==0);os.umask(0o077)
     import signal
     def timeout(_signal,_frame):raise TimeoutError('Backup deadline')
-    signal.signal(signal.SIGALRM,timeout);signal.alarm(600)
+    for interrupt in [signal.SIGALRM,signal.SIGTERM,signal.SIGHUP,signal.SIGINT]:signal.signal(interrupt,timeout)
+    signal.alarm(600)
     m,c=libraries()
     try:print(json.dumps(receive(m,c) if args.receive else backup(m,c)))
     finally:signal.alarm(0)
