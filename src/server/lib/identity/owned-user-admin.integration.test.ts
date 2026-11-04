@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import postgres, { type Sql } from 'postgres'
+import { drizzle } from 'drizzle-orm/postgres-js'
 import { createOwnedUserAdminStore } from './owned-user-admin-store'
 import type { OwnedAdminPrincipal, OwnedAdminStore } from './owned-user-admin'
 import { readOwnedStreamLease } from './owned-stream-access'
@@ -36,6 +37,8 @@ describe.skipIf(!databaseUrl)('owned user administration PostgreSQL atomicity (d
         created = true
         const targetUrl = new URL(databaseUrl!); targetUrl.pathname = '/xmail_owned_admin_test'
         sql = postgres(targetUrl.toString(), { max: 4, prepare: false, onnotice: () => {} })
+        // Production initializes Drizzle on this SAME raw client before identity stores.
+        drizzle(sql)
         await sql.unsafe(`
             CREATE TABLE public.users(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),email text NOT NULL UNIQUE,
                 first_name text,last_name text,password_hash text,is_admin boolean NOT NULL DEFAULT false,

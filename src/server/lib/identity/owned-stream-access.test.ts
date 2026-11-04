@@ -13,7 +13,7 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllEnvs())
 function fixture() {
-    let rows = [{ expiresAt: new Date(Date.now() + 60000) }]
+    let rows: { expiresAt: Date | string }[] = [{ expiresAt: new Date(Date.now() + 60000) }]
     const cancel = vi.fn()
     const query = vi.fn((_statement: string, _parameters: unknown[]) => Object.assign(Promise.resolve(rows), { cancel }))
     const sql = { unsafe: query } as unknown as Sql
@@ -47,6 +47,15 @@ describe('owned stream provider proof followed by final local snapshot', () => {
         test.req.get = (() => 'other.example.invalid') as unknown as Request['get']
         expect(await test.authorize(new AbortController().signal)).toBeNull()
         expect(test.query).not.toHaveBeenCalled()
+    })
+    it('accepts the production Drizzle string timestamp and rejects malformed or expired values', async () => {
+        const test = fixture(), expires = new Date(Date.now() + 60000)
+        test.setRows([{ expiresAt: expires.toISOString() }])
+        expect(await test.authorize(new AbortController().signal)).toEqual({ expiresAt: expires.getTime() })
+        for (const value of ['invalid', new Date(Date.now() - 1).toISOString()]) {
+            test.setRows([{ expiresAt: value }])
+            expect(await test.authorize(new AbortController().signal)).toBeNull()
+        }
     })
     it('requires final local authorization even when the provider proof succeeded', async () => {
         const test = fixture()
