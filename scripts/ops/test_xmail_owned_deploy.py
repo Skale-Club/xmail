@@ -65,7 +65,7 @@ class PolicyFixture(unittest.TestCase):
         self.source_kind = 'owned'
         self.admin_accepted = True
         self.facts = {
-            'freeze': {'allSourceWritersStopped': True, 'oldContainerStopped': True},
+            'freeze': {'allSourceWritersStopped': True, 'oldContainerStopped': True, 'oldOwnedCredentialsRejected': True},
             'snapshot': {'sourceReadOnlySnapshotComplete': True, 'snapshotDigest': '9'*64, 'businessTables': 70},
             'final-import': {'snapshotReceiptSha256': '', 'restoredAndReconciled': True, 'nativeHashesPreserved': True,
                 'referenceMetadataPreserved': True, 'identityTables': 4, 'businessTables': 70},
@@ -170,6 +170,7 @@ class PolicyFixture(unittest.TestCase):
         self.p['XMAIL_OWNED_AUTH_PHASE'] = 'data'
         self.p['XMAIL_BROWSER_AUTH_AUTHORITY'] = self.p['XMAIL_USER_ADMIN_AUTHORITY'] = 'legacy'
         self.source_kind = 'supabase'
+        self.facts['freeze'].pop('oldOwnedCredentialsRejected')
         self.base['SUPABASE_URL'] = 'https://zzbudkfkcmqkavgwselc.supabase.co'
         source = 'postgres://postgres:offline-source@db.zzbudkfkcmqkavgwselc.supabase.co:5432/postgres'
         self.states[self.old_id]['Config']['Env'] = self.env_list({**self.base, 'DATABASE_URL': source, 'DIRECT_URL': source})

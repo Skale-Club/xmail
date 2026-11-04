@@ -354,6 +354,7 @@ def receipt(p, profile_digest, root=ROOT, now=None):
     if 'admin-acceptance' in times: need(times['controls'] <= times['admin-acceptance'] <= captured)
     freeze_facts = {'allSourceWritersStopped': True, 'oldContainerStopped': True}
     if r['sourceKind'] == 'supabase': freeze_facts['sourceWriteFenceEnforced'] = True
+    else: freeze_facts['oldOwnedCredentialsRejected'] = True
     need(exact_facts(proofs['freeze'], freeze_facts))
     snap = proofs['snapshot']
     need(set(snap) == {'sourceReadOnlySnapshotComplete', 'snapshotDigest', 'businessTables'}
