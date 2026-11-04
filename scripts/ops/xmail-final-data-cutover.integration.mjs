@@ -23,21 +23,22 @@ spec=importlib.util.spec_from_file_location('reviewed_operator',sys.argv[1])
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 `
 function publicSql() {
-  const result = spawnSync(python, ['-B', '-c', loader+`print(json.dumps({'snapshot':m.source_snapshot_sql(),'schema':m.business_schema_sql(),'fingerprints':m.fingerprints_sql(),'fks':m.fk_inventory_sql(),'sequences':m.sequences_sql(),'triggers':m.trigger_inventory_sql()}))`, operator], { encoding: 'utf8' })
+  const result = spawnSync(python, ['-B', '-c', loader+`print(json.dumps({'snapshot':m.source_snapshot_sql(),'fencedSnapshot':m.source_snapshot_sql(True),'inventory':m.source_fence_inventory_sql(),'schema':m.business_schema_sql(),'fingerprints':m.fingerprints_sql(),'fks':m.fk_inventory_sql(),'sequences':m.sequences_sql(),'triggers':m.trigger_inventory_sql()}))`, operator], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   return JSON.parse(result.stdout)
 }
-function render(values) {
-  const result = spawnSync(python, ['-B', '-c', loader+`v=json.loads(sys.stdin.read());print(m.refresh_sql(**v),end='')`, operator], {
+function render(values, method='refresh_sql') {
+  assert.ok(['refresh_sql','source_fence_sql','source_fence_denial_sql','source_fence_release_sql'].includes(method))
+  const result = spawnSync(python, ['-B', '-c', loader+`v=json.loads(sys.stdin.read());print(getattr(m,sys.argv[2])(**v),end='')`, operator, method], {
     input: JSON.stringify(values), encoding: 'utf8', maxBuffer: 4*1024*1024,
   })
   assert.equal(result.status, 0, result.stderr)
   return result.stdout
 }
-function runPsql(sql) {
+function runPsql(sql, database='xmail') {
   return spawnSync('psql', ['-X', '-qAt', '-v', 'ON_ERROR_STOP=1'], {
     input: sql, encoding: 'utf8', timeout: 30000, maxBuffer: 4*1024*1024,
-    env: { ...process.env, PGHOST: '127.0.0.1', PGPORT: '5432', PGDATABASE: 'xmail', PGUSER: 'xmail_owner',
+    env: { ...process.env, PGHOST: '127.0.0.1', PGPORT: '5432', PGDATABASE: database, PGUSER: 'xmail_owner',
       PGPASSWORD: '', PGPASSFILE: '/dev/null', PGSSLMODE: 'disable', PGOPTIONS: '' },
   })
 }
@@ -112,6 +113,25 @@ test('first data refresh preserves DDL/FK/trigger modes and rolls all rows/contr
     const [{coalesce:triggers}]=await target.unsafe(sql.triggers)
     const [{coalesce:beforeSequences}]=await target.unsafe(sql.sequences)
     const [{fingerprints:beforeRows}]=await target.unsafe(sql.fingerprints)
+    const [inventory]=await source.unsafe(`SELECT manifest,encode(sha256(convert_to(manifest::text,'UTF8')),'hex') AS sha FROM (${sql.inventory}) q`)
+    const fence=render({tables,expected_schema:snapshot.schema,inventory_sha:inventory.sha},'source_fence_sql')
+    const badFence=render({tables,expected_schema:{},inventory_sha:inventory.sha},'source_fence_sql')
+    await assert.rejects(source.begin(tx=>tx.unsafe(badFence)),{code:'P0001'})
+    assert.equal((await source`SELECT to_regnamespace('xmail_final_data_fence') IS NULL AS absent`)[0].absent,true)
+    await source.begin(tx=>tx.unsafe(fence))
+    await source.begin(tx=>tx.unsafe(render({tables},'source_fence_denial_sql')))
+    assert.deepEqual((await source.unsafe(sql.fencedSnapshot))[0].manifest.schema,snapshot.schema)
+    assert.equal(Number((await source`SELECT count(*) AS n FROM auth.users`)[0].n),2,'Auth read/proof remains available')
+    for(const statement of [
+      'INSERT INTO users(id) SELECT NULL::uuid WHERE false',
+      'UPDATE users SET id=id WHERE false','DELETE FROM users WHERE false','TRUNCATE users CASCADE',
+    ]) await assert.rejects(source.unsafe(statement),{code:'55000'})
+    await assert.rejects(source.begin(async tx=>{
+      await tx.unsafe("SET LOCAL session_replication_role='replica'")
+      await tx.unsafe('DELETE FROM users WHERE false')
+    }),{code:'55000'})
+    const copyDenied=runPsql(`COPY public.users(id) FROM stdin;\n\\.\n`,'xmail_final_source_test')
+    assert.notEqual(copyDenied.status,0);assert.match(copyDenied.stderr,/Xmail source writes frozen/)
     let copy=`COPY public.users(id,email,password_hash,is_admin) FROM stdin;\n${user1}\tfixture@example.invalid\tunchanged-native-hash\tt\n${user2}\tnew@example.invalid\tnew-native-hash\tf\n\\.\n`
     copy+=`COPY public.organization_users(id,user_id,role) FROM stdin;\n${member}\t${user1}\tadmin\n\\.\n`
     for(const table of tables.slice(2))copy+=`COPY public.${table}(id,label,parent) FROM stdin;\n1\tauthoritative\t\\N\n\\.\n`
@@ -141,6 +161,10 @@ test('first data refresh preserves DDL/FK/trigger modes and rolls all rows/contr
     assert.equal(String(sequence.last_value),'56');assert.equal(sequence.is_called,false)
     assert.equal((await target`SELECT label FROM business_000`)[0].label,'authoritative')
     assert.equal(Number((await target`SELECT count(*) AS n FROM supabase_migrations.schema_migrations`)[0].n),80)
+    await source.unsafe(render({tables},'source_fence_release_sql'))
+    assert.deepEqual((await source.unsafe(sql.schema))[0].schema,snapshot.schema)
+    assert.deepEqual((await source.unsafe(sql.inventory))[0].manifest,inventory.manifest,'release preserves original ACL/function/trigger metadata')
+    assert.deepEqual((await source.unsafe(sql.fingerprints))[0].fingerprints,snapshot.fingerprints)
   } finally {
     if(target)await target.end({timeout:2})
     if(source)await source.end({timeout:2})

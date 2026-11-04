@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 from pathlib import Path
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -95,6 +96,30 @@ class FinalDataPolicy(unittest.TestCase):
         with patch.object(operator, 'call', side_effect=AssertionError('Forbidden process')):
             with self.assertRaises(ValueError): operator.load_public_sources(PATH.parent, '0'*64)
 
+    def test_source_fence_locks_all_tables_before_guards_and_covers_every_dml_even_replica(self):
+        sql = operator.source_fence_sql(self.tables, {'tables': {}}, 'a'*64)
+        self.assertLess(sql.index('LOCK TABLE'), sql.index('Source write-fence admission refused'))
+        self.assertLess(sql.index('Source fence preflight drift'), sql.index('CREATE SCHEMA'))
+        self.assertIn('BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE', sql)
+        self.assertIn('ENABLE ALWAYS TRIGGER', sql)
+        self.assertIn('FOREACH target IN ARRAY ARRAY[', sql)
+        for table in self.tables: self.assertIn("'"+table+"'", sql)
+        self.assertIn('pg_get_functiondef', operator.source_fence_inventory_sql())
+        self.assertIn("n.nspname='auth'", operator.source_fence_guard_sql())
+        for forbidden in ['DISABLE TRIGGER', 'DROP ', ' CASCADE', 'ALTER ROLE', 'UPDATE auth.', 'DELETE FROM auth.']:
+            self.assertNotIn(forbidden, sql)
+
+    def test_only_fenced_snapshots_omit_the_exact_guard_and_release_is_explicit_noncascading(self):
+        self.assertNotIn('g.tgname<>', operator.business_schema_sql())
+        self.assertIn("g.tgname<>'"+operator.FENCE_TRIGGER+"'", operator.source_snapshot_sql(True))
+        release = operator.source_fence_release_sql(self.tables)
+        self.assertLess(release.index('Source write-fence proof refused'), release.index('DROP TRIGGER'))
+        self.assertEqual(release.count('DROP TRIGGER'), 70)
+        self.assertNotIn('CASCADE', release)
+        denial = operator.source_fence_denial_sql(self.tables)
+        self.assertEqual(denial.count(' WHERE false;'), 70)
+        self.assertIn("SQLERRM<>'Xmail source writes frozen'", denial)
+
     def test_exact_reviewed_public_policy_and_v2_protocol_load_without_any_process_or_env_access(self):
         deploy = PATH.parents[2]/'.github/scripts/deploy-xmail.sh'
         digest = operator.sha(deploy.read_bytes().replace(b'\r\n', b'\n'))
@@ -103,6 +128,27 @@ class FinalDataPolicy(unittest.TestCase):
         self.assertEqual(policy['TARGET'], operator.TARGET)
         self.assertEqual(set(programs), {'ca_program', 'holder_program'})
         self.assertIn('repeatable read read only', programs['holder_program'])
+
+    def test_source_statement_has_explicit_write_mode_stdin_query_and_requires_commit_completion(self):
+        deploy = PATH.parents[2]/'.github/scripts/deploy-xmail.sh'
+        _, programs = operator.load_public_sources(PATH.parent, operator.sha(deploy.read_bytes().replace(b'\r\n', b'\n')))
+        def fake_call(arguments, payload=None, timeout=15):
+            self.assertIn('--log-driver=none', arguments)
+            program = arguments[-1]
+            self.assertIn('isolation level read committed read write', program)
+            self.assertIn('rejectUnauthorized:true', program)
+            self.assertIn("expected='zzbudkfkcmqkavgwselc'", program)
+            self.assertNotIn('private-query-marker', program)
+            self.assertIn(b'DUMP_COMPLETE\n', payload)
+            checked = subprocess.run(['node', '--check'], input=program.encode(), capture_output=True, timeout=10)
+            self.assertEqual(checked.returncode, 0, checked.stderr.decode())
+            return b'{"committed":true}\nSOURCE_CLOSED\n'
+        args = (programs['holder_program'], 'SELECT private-query-marker', Path('/private/source.env'), b'fixture-ca',
+            'nonce', 'fixture-container', 'sha256:'+'a'*64)
+        with patch.object(operator, 'call', side_effect=fake_call):
+            self.assertEqual(operator.source_statement(*args, mutation=True), {'committed': True})
+        with patch.object(operator, 'call', return_value=b'{"committed":true}\n'):
+            with self.assertRaises(ValueError): operator.source_statement(*args, mutation=True)
 
 
 if __name__ == '__main__': unittest.main()

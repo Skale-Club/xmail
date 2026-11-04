@@ -49,6 +49,44 @@ read-only snapshot held by an ephemeral Node client; the stopped application is
 not restarted to obtain credentials or run a snapshot holder. A bounded PG17
 client writes a new private source archive with verified CA/hostname TLS.
 
+Docker stop alone does not enforce this freeze: the existing Supabase REST and
+GraphQL entrypoints retain their original grants. A read-only source inventory
+confirmed70 writable tables, eight read-only SQL RLS helpers, a GraphQL wrapper,
+no noninternal Auth/public triggers and no active cron job. Full definitions and
+ACLs remain only on the host in root0700/root0600 private metadata; output is
+limited to counts/hashes. This inventory does not itself change any permission.
+
+After OLD stops, one source transaction takes ACCESS EXCLUSIVE locks on all70
+tables, rechecks exact schema/catalog metadata and installs a BEFORE STATEMENT
+INSERT/UPDATE/DELETE/TRUNCATE rejection trigger on each table. ENABLE ALWAYS
+covers replica sessions too. A private schema holds the fixed invoker function;
+no existing ACL, RLS policy, public function or Auth setting is rewritten. The
+operator refuses new Auth hooks, active cron, partitions/foreign relations,
+unexpected owners and pre-existing BEFORE STATEMENT hooks. Old in-flight table
+writes must finish before those locks can be acquired. All70 empty DELETE
+statements must then fail with the exact fence SQLSTATE/message, proving the
+actual committed barrier before the frozen snapshot starts. This blocks normal
+REST, GraphQL, RPC, SQL and COPY business writes without disabling Auth reads or
+old-account possession proof. Deliberate owner/admin DDL can remove a barrier;
+administrative changes must remain excluded during this coordinated window.
+
+Each later source snapshot rechecks the exact function and70 ALWAYS triggers.
+Only those exact fence trigger names are omitted from business-schema parity,
+after that independent check; other drift still refuses. The private archive
+includes the fence schema so its trigger dependencies are self-contained. A
+source-fence attempt without acknowledgement is treated as ambiguous and never
+retried automatically. The consumer requires an explicit verified source-fence
+fact for the initial Supabase data cutover; a Docker-only receipt is rejected.
+
+The private bundle includes an exact noncascading release SQL artifact. It is
+never run automatically. Releasing the source requires a separate reviewed
+recovery decision proving that no owned writer started and no target COMMIT is
+ambiguous; after owned writes begin, source remains frozen. No application or
+database role is restarted to manufacture that proof. Statement trigger and
+ALWAYS behavior are documented in PostgreSQL's
+[CREATE TRIGGER](https://www.postgresql.org/docs/17/sql-createtrigger.html) and
+[ALTER TABLE](https://www.postgresql.org/docs/17/sql-altertable.html).
+
 The legacy delivery queue has no durable in-flight marker. The operator therefore
 requires no unheld dispatchable pending/queued deliveries, no sending/claimed
 inbox commands and no claimed/started pending outreach sends, both before stop

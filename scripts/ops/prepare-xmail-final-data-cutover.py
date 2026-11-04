@@ -23,6 +23,9 @@ OPS = Path('/opt/xmail/owned-runtime-ops')
 IDENTITY = ['xmail_identity_bindings', 'xmail_identity_browser_challenges', 'xmail_identity_owned_sessions', 'xmail_identity_user_controls']
 V2_SHA = '154b8a09399548daed7ebe73df758a1f9b4ee5d44bcd5fea1f1ac2d4f297fdd2'
 MAXIMUM = 256*1024*1024
+FENCE_SCHEMA = 'xmail_final_data_fence'
+FENCE_TRIGGER = 'xmail_final_data_write_fence'
+FENCE_BODY = "BEGIN RAISE EXCEPTION 'Xmail source writes frozen' USING ERRCODE='55000'; END;"
 
 
 def need(value):
@@ -103,7 +106,7 @@ def load_public_sources(directory, policy_sha):
     return namespace, programs
 
 
-def business_schema_sql():
+def business_schema_sql(ignore_fence=False):
     excluded = ','.join("'"+name+"'" for name in IDENTITY)
     return """WITH tables AS MATERIALIZED (
       SELECT c.oid,c.relname,c.relrowsecurity,c.relforcerowsecurity FROM pg_class c
@@ -125,8 +128,9 @@ def business_schema_sql():
         'triggers',(SELECT jsonb_agg(jsonb_build_array(pg_get_triggerdef(g.oid),g.tgenabled) ORDER BY g.tgname) FROM pg_trigger g WHERE g.tgrelid=t.oid AND NOT g.tgisinternal)
       ) AS signature FROM tables t
     ) SELECT jsonb_build_object('tables',(SELECT jsonb_object_agg(relname,encode(sha256(convert_to(signature::text,'UTF8')),'hex')) FROM signatures),
-      'functions',(SELECT encode(sha256(convert_to(coalesce(string_agg(pg_get_functiondef(p.oid),'' ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)),''),'UTF8')),'hex') FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND NOT EXISTS(SELECT 1 FROM pg_depend d WHERE d.objid=p.oid AND d.deptype='e')),
-      'types',(SELECT jsonb_agg(jsonb_build_array(t.typname,e.enumlabel,e.enumsortorder) ORDER BY t.typname,e.enumsortorder) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace JOIN pg_enum e ON e.enumtypid=t.oid WHERE n.nspname='public')) AS schema"""
+      'functions',(SELECT encode(sha256(convert_to(coalesce(string_agg(pg_get_functiondef(p.oid),'' ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)),''),'UTF8')),'hex') FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND NOT EXISTS(SELECT 1 FROM pg_depend d WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e')),
+      'types',(SELECT jsonb_agg(jsonb_build_array(t.typname,e.enumlabel,e.enumsortorder) ORDER BY t.typname,e.enumsortorder) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace JOIN pg_enum e ON e.enumtypid=t.oid WHERE n.nspname='public')) AS schema""".replace(
+          "AND NOT g.tgisinternal)", "AND NOT g.tgisinternal AND g.tgname<>'"+FENCE_TRIGGER+"')" if ignore_fence else "AND NOT g.tgisinternal)")
 
 
 def fingerprints_sql():
@@ -281,11 +285,117 @@ def trigger_inventory_sql():
         "WHERE n.nspname='public' AND NOT g.tgisinternal AND c.relname NOT IN ("+names+")"
 
 
-def source_snapshot_sql():
-    return "SELECT jsonb_build_object('schema',(SELECT schema FROM ("+business_schema_sql()+") q)," \
+def source_snapshot_sql(fenced=False):
+    return "SELECT jsonb_build_object('schema',(SELECT schema FROM ("+business_schema_sql(fenced)+") q)," \
         "'fingerprints',("+fingerprints_sql()+"),'controls',("+control_source_sql()+"),'sequences',("+sequences_sql()+")," \
         "'unsafeDispatches',("+dispatch_admission_sql()+")," \
         "'capturedAt',to_char(transaction_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')) AS manifest"
+
+
+def source_fence_inventory_sql():
+    # Definitions/ACLs stay in host memory or the private fsynced backup bundle.
+    return """SELECT jsonb_build_object(
+      'relations',(SELECT jsonb_agg(jsonb_build_array(c.relname,c.relkind,c.relowner::regrole::text,c.relacl::text)
+        ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S')),
+      'functions',(SELECT jsonb_agg(jsonb_build_array(n.nspname,p.proname,pg_get_function_identity_arguments(p.oid),
+        p.proowner::regrole::text,p.proacl::text,pg_get_functiondef(p.oid)) ORDER BY n.nspname,p.proname,p.oid)
+        FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname IN ('public','graphql_public') AND p.prokind IN ('f','p')),
+      'authTriggers',(SELECT jsonb_agg(jsonb_build_array(pg_get_triggerdef(g.oid),g.tgenabled,pg_get_functiondef(g.tgfoid)) ORDER BY g.oid)
+        FROM pg_trigger g JOIN pg_class c ON c.oid=g.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='auth' AND NOT g.tgisinternal),
+      'publicTriggers',(SELECT jsonb_agg(jsonb_build_array(pg_get_triggerdef(g.oid),g.tgenabled) ORDER BY g.oid)
+        FROM pg_trigger g JOIN pg_class c ON c.oid=g.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND NOT g.tgisinternal),
+      'defaults',(SELECT jsonb_agg(jsonb_build_array(d.defaclrole::regrole::text,n.nspname,d.defaclobjtype,d.defaclacl::text)
+        ORDER BY d.oid) FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace),
+      'publicSchemaAcl',(SELECT nspacl::text FROM pg_namespace WHERE nspname='public')) AS manifest"""
+
+
+def source_fence_guard_sql():
+    # Auth remains online. Refuse an unreviewed Auth-to-public hook or scheduled
+    # writer rather than disabling Auth or guessing what an opaque RPC does.
+    return """DO $fence_guard$ DECLARE visible boolean; active_jobs bigint; BEGIN
+      IF EXISTS(SELECT FROM pg_trigger g JOIN pg_class c ON c.oid=g.tgrelid
+        JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='auth' AND NOT g.tgisinternal)
+      OR EXISTS(SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f') AND (c.relkind<>'r' OR c.relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)))
+      OR (SELECT count(*) FROM pg_tables WHERE schemaname='public')<>70
+      OR EXISTS(SELECT FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public')
+      OR EXISTS(SELECT FROM pg_trigger g JOIN pg_class c ON c.oid=g.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND NOT g.tgisinternal AND (g.tgtype&2)=2 AND (g.tgtype&1)=0
+        AND g.tgname<>'xmail_final_data_write_fence')
+      THEN RAISE EXCEPTION 'Source write-fence admission refused'; END IF;
+      IF to_regclass('cron.job') IS NOT NULL THEN
+        SELECT NOT c.relrowsecurity OR r.rolsuper OR r.rolbypassrls OR
+          (NOT c.relforcerowsecurity AND pg_has_role(current_user,c.relowner,'USAGE')) INTO visible
+          FROM pg_class c JOIN pg_roles r ON r.rolname=current_user WHERE c.oid='cron.job'::regclass;
+        IF visible IS DISTINCT FROM true THEN RAISE EXCEPTION 'Source cron visibility refused'; END IF;
+        EXECUTE 'SELECT count(*) FROM cron.job WHERE active' INTO active_jobs;
+        IF active_jobs<>0 THEN RAISE EXCEPTION 'Active source scheduled writer refused'; END IF;
+      END IF;
+    END $fence_guard$;"""
+
+
+def source_fence_assert_sql(tables):
+    need(len(tables) == len(set(tables)) == 70 and all(re.fullmatch(r'[a-z_][a-z0-9_]*', x) for x in tables))
+    names = ','.join("'"+x+"'" for x in sorted(tables))
+    body = FENCE_BODY.replace("'", "''")
+    return """DO $fence_assert$ BEGIN IF
+      (SELECT count(*) FROM pg_trigger g JOIN pg_class c ON c.oid=g.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND c.relname IN ("""+names+""") AND g.tgname='"""+FENCE_TRIGGER+"""'
+        AND NOT g.tgisinternal AND g.tgtype=62 AND g.tgenabled='A' AND g.tgnargs=0 AND g.tgqual IS NULL
+        AND g.tgattr=''::int2vector AND g.tgconstraint=0 AND NOT g.tgdeferrable AND NOT g.tginitdeferred
+        AND g.tgoldtable IS NULL AND g.tgnewtable IS NULL
+        AND g.tgfoid='"""+FENCE_SCHEMA+""".reject_write()'::regprocedure)<>70
+      OR (SELECT count(*) FROM pg_trigger WHERE tgname='"""+FENCE_TRIGGER+"""')<>70
+      OR NOT EXISTS(SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname='"""+FENCE_SCHEMA+"""' AND p.proname='reject_write' AND p.pronargs=0
+        AND p.prosrc='"""+body+"""' AND p.prorettype='trigger'::regtype AND NOT p.prosecdef
+        AND p.proconfig=ARRAY['search_path=pg_catalog'] AND p.proowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
+        AND n.nspowner=p.proowner AND NOT EXISTS(SELECT FROM aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE a.grantee=0))
+      THEN RAISE EXCEPTION 'Source write-fence proof refused'; END IF; END $fence_assert$;"""
+
+
+def source_fence_sql(tables, expected_schema, inventory_sha):
+    need(len(tables) == len(set(tables)) == 70)
+    need(re.fullmatch(r'[a-f0-9]{64}', inventory_sha))
+    relations = ','.join('public.'+identifier(x) for x in sorted(tables))
+    literal = lambda v: "convert_from(decode('"+base64.b64encode(encoded(v)).decode()+"','base64'),'UTF8')::jsonb"
+    sql = 'LOCK TABLE '+relations+' IN ACCESS EXCLUSIVE MODE;\n'+source_fence_guard_sql()
+    sql += "DO $fence_preflight$ BEGIN IF to_regnamespace('"+FENCE_SCHEMA+"') IS NOT NULL OR EXISTS(SELECT FROM pg_trigger WHERE tgname='"+FENCE_TRIGGER+"') "
+    sql += 'OR (SELECT schema FROM ('+business_schema_sql()+') q)::jsonb IS DISTINCT FROM '+literal(expected_schema)
+    sql += " OR (SELECT encode(sha256(convert_to(manifest::text,'UTF8')),'hex') FROM ("+source_fence_inventory_sql()+") q) IS DISTINCT FROM '"+inventory_sha+"'"
+    sql += " THEN RAISE EXCEPTION 'Source fence preflight drift'; END IF; END $fence_preflight$;\n"
+    sql += 'CREATE SCHEMA '+FENCE_SCHEMA+'; REVOKE ALL ON SCHEMA '+FENCE_SCHEMA+' FROM PUBLIC;\n'
+    sql += 'CREATE FUNCTION '+FENCE_SCHEMA+'.reject_write() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $reject$'+FENCE_BODY+'$reject$;\n'
+    sql += 'REVOKE ALL ON FUNCTION '+FENCE_SCHEMA+'.reject_write() FROM PUBLIC;\n'
+    names = ','.join("'"+x+"'" for x in sorted(tables))
+    sql += 'DO $install$ DECLARE target text; BEGIN FOREACH target IN ARRAY ARRAY['+names+'] LOOP '
+    sql += "EXECUTE format('CREATE TRIGGER "+FENCE_TRIGGER+' BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON public.%I FOR EACH STATEMENT EXECUTE FUNCTION '+FENCE_SCHEMA+".reject_write()',target); "
+    sql += "EXECUTE format('ALTER TABLE public.%I ENABLE ALWAYS TRIGGER "+FENCE_TRIGGER+"',target); END LOOP; END $install$;\n"
+    return sql+source_fence_assert_sql(tables)+"SELECT jsonb_build_object('sourceWriteFenceEnforced',true,'tables',70) AS manifest;"
+
+
+def source_fence_release_sql(tables):
+    # Private recovery artifact only. No automatic execution path exists. The
+    # host/candidate evidence must be reviewed before any source unfreeze.
+    sql = 'BEGIN; SET LOCAL lock_timeout=\'2s\'; SET LOCAL statement_timeout=\'30s\';\n'
+    sql += 'LOCK TABLE '+','.join('public.'+identifier(x) for x in sorted(tables))+' IN ACCESS EXCLUSIVE MODE;\n'
+    sql += source_fence_assert_sql(tables)
+    for table in sorted(tables): sql += 'DROP TRIGGER '+FENCE_TRIGGER+' ON public.'+identifier(table)+';\n'
+    return sql+'DROP FUNCTION '+FENCE_SCHEMA+'.reject_write(); DROP SCHEMA '+FENCE_SCHEMA+'; COMMIT;\n'
+
+
+def source_fence_denial_sql(tables):
+    sql = source_fence_guard_sql()+source_fence_assert_sql(tables)
+    # Empty DELETE still fires a BEFORE STATEMENT trigger and touches no rows,
+    # sequences, native credentials, timestamps or provider-side resources.
+    for table in sorted(tables):
+        sql += 'DO $deny$ BEGIN BEGIN DELETE FROM public.'+identifier(table)+' WHERE false; '
+        sql += "RAISE EXCEPTION 'Missing source fence'; EXCEPTION WHEN SQLSTATE '55000' THEN "
+        sql += "IF SQLERRM<>'Xmail source writes frozen' THEN RAISE; END IF; END; END $deny$;\n"
+    return sql+"SELECT jsonb_build_object('sourceWriteFenceEnforced',true,'emptyStatementDenials',70) AS manifest;"
 
 
 def dispatch_admission_sql():
@@ -382,12 +492,40 @@ def source_client(arguments, name, nonce, env_file, image=OLD_IMAGE):
             '--entrypoint', 'node', image]+arguments
 
 
-def node_snapshot(program, source_file, ca, nonce, name, image=OLD_IMAGE):
+def node_snapshot(program, source_file, ca, nonce, name, image=OLD_IMAGE, fenced_tables=None):
     marker = 'await tx.unsafe("SET LOCAL timezone=\'UTC\'");'
     need(program.count(marker) == 1)
     program = program.replace(marker, marker+'await tx.unsafe("SET LOCAL search_path=public,pg_catalog");await tx.unsafe("SET LOCAL work_mem=\'2MB\'");')
-    initial = base64.b64encode(ca)+b'\n'+base64.b64encode(source_snapshot_sql().encode())+b'\n'
+    if fenced_tables:
+        guard = source_fence_guard_sql()+source_fence_assert_sql(fenced_tables)
+        marker = 'const [result]=await tx.unsafe(query);'
+        need(program.count(marker) == 1)
+        program = program.replace(marker, 'await tx.unsafe('+json.dumps(guard)+');'+marker)
+    initial = base64.b64encode(ca)+b'\n'+base64.b64encode(source_snapshot_sql(bool(fenced_tables)).encode())+b'\n'
     return source_client(['-e', program], name, nonce, source_file, image), initial
+
+
+def source_statement(program, query, source_file, ca, nonce, name, image, mutation=False):
+    # Reuse the exact reviewed URL/CA admission and bounded Node runtime. Only
+    # this explicit operator path changes transaction mode; snapshots stay RO.
+    start = program.index('   const [visibility]=')
+    end_marker = '   complete=true;throw released;'
+    end = program.index('\n', program.index(end_marker, start))
+    body = '''   const result=await tx.unsafe(query),rows=Array.isArray(result.at(-1))?result.at(-1):result;
+   if(rows.length!==1||!rows[0].manifest)throw Error();
+   const manifest=JSON.stringify(rows[0].manifest);if(manifest.length>4000000)throw Error();process.stdout.write(manifest+'\\n');
+   const command=await lines.next();if(command.done||command.value!=='DUMP_COMPLETE')throw Error();
+   complete=true;'''
+    program = program[:start]+body+program[end:]
+    if mutation:
+        need(program.count("isolation level repeatable read read only") == 1)
+        program = program.replace('isolation level repeatable read read only', 'isolation level read committed read write')
+    raw = base64.b64encode(query.encode())
+    need(len(raw) <= 45000)
+    result = call(source_client(['-e', program], name, nonce, source_file, image),
+        base64.b64encode(ca)+b'\n'+raw+b'\nDUMP_COMPLETE\n', timeout=60).splitlines()
+    need(len(result) == 2 and result[1] == b'SOURCE_CLOSED')
+    return json_result(result[0])
 
 
 def copy_data_sql(archive, work, tables, nonce):
@@ -484,7 +622,7 @@ def finish_receipts(args, policy, old, source, bundle, frozen_at, profile):
         raw = encoded(value); filename = policy['PROOF_FILES'][kind]
         durable_file(OPS/filename, raw)
         pointers[kind] = {'file': filename, 'sha256': sha(raw)}
-    proof('freeze', {'allSourceWritersStopped': True, 'oldContainerStopped': True}, frozen)
+    proof('freeze', {'allSourceWritersStopped': True, 'oldContainerStopped': True, 'sourceWriteFenceEnforced': True}, frozen)
     proof('snapshot', {'sourceReadOnlySnapshotComplete': True, 'snapshotDigest': sha((bundle/'private-work/source.dump').read_bytes()), 'businessTables': 70})
     proof('final-import', {'snapshotReceiptSha256': pointers['snapshot']['sha256'], 'restoredAndReconciled': True,
         'nativeHashesPreserved': True, 'referenceMetadataPreserved': True, 'identityTables': 4, 'businessTables': 70})
@@ -575,7 +713,9 @@ def apply(args):
     source_file = work/'source-reader.env'
     durable_file(source_file, env_bytes({'NODE_ENV': 'production', 'SUPABASE_URL': source_env['SUPABASE_URL'],
         'DATABASE_URL': source_env.get('DIRECT_URL') or source_env['DATABASE_URL']}))
-    resources = []; holder = None; transaction = None; committed = False
+    resources = ['xmail-final-'+phase+'-'+nonce for phase in
+        ['ca', 'preflight', 'inventory', 'fence', 'fence-denial', 'stability', 'postcommit']]
+    holder = None; transaction = None; committed = False
     try:
         ca = call(source_client(['-e', programs['ca_program']], 'xmail-final-ca-'+nonce, nonce, source_file, old['Image']), timeout=20)
         durable_file(work/'source-ca.crt', ca)
@@ -586,6 +726,16 @@ def apply(args):
         need(len(preflight) == 3 and preflight[2] == b'SOURCE_CLOSED')
         preliminary = json_result(preflight[1]); validate_source_snapshot(preliminary)
         need(preliminary['schema'] == candidate_schema and sequence_definitions(preliminary['sequences']) == sequence_definitions(sequences))
+        tables = sorted(preliminary['schema']['tables'])
+        inventory_query = source_fence_guard_sql()+"SELECT jsonb_build_object('metadata',manifest,'sha256',encode(sha256(convert_to(manifest::text,'UTF8')),'hex')) AS manifest FROM ("+source_fence_inventory_sql()+') q;'
+        inventory = source_statement(programs['holder_program'], inventory_query, source_file, ca, nonce,
+            'xmail-final-inventory-'+nonce, old['Image'])
+        need(set(inventory) == {'metadata', 'sha256'} and re.fullmatch(r'[a-f0-9]{64}', inventory['sha256']))
+        durable_file(bundle/'source-before-fence-metadata.json', encoded(inventory))
+        durable_file(bundle/'source-fence-release-reviewed-only.sql', source_fence_release_sql(tables).encode())
+        fence_query = source_fence_sql(tables, candidate_schema, inventory['sha256'])
+        denial_query = source_fence_denial_sql(tables)
+        need(all(len(base64.b64encode(query.encode())) <= 45000 for query in [fence_query, denial_query]))
         ensure_no_other_writers(policy, old, args.approved_image_id)
         # This is the first production mutation. No failure path restarts OLD.
         call(['docker', 'update', '--restart=no', old['Id']])
@@ -593,8 +743,16 @@ def apply(args):
         stopped = inspect(old['Id'])
         need(stopped['State']['Running'] is False and stopped['State'].get('Pid', 0) == 0 and stopped['Image'] == old['Image']
              and stopped['State'].get('ExitCode') == 0 and stopped['State'].get('OOMKilled') is False)
+        durable_file(bundle/'source-fence-attempt.json', encoded({'attempted': True, 'acknowledged': False}))
+        fenced = source_statement(programs['holder_program'], fence_query,
+            source_file, ca, nonce, 'xmail-final-fence-'+nonce, old['Image'], mutation=True)
+        need(fenced == {'sourceWriteFenceEnforced': True, 'tables': 70})
+        denial = source_statement(programs['holder_program'], denial_query, source_file, ca, nonce,
+            'xmail-final-fence-denial-'+nonce, old['Image'], mutation=True)
+        need(denial == {'sourceWriteFenceEnforced': True, 'emptyStatementDenials': 70})
+        durable_file(bundle/'source-fence-acknowledged.json', encoded({**denial, 'metadataSha256': inventory['sha256']}))
         frozen_at = dt.datetime.now(dt.timezone.utc)
-        command, initial = node_snapshot(programs['holder_program'], source_file, ca, nonce, 'xmail-final-source-'+nonce, old['Image'])
+        command, initial = node_snapshot(programs['holder_program'], source_file, ca, nonce, 'xmail-final-source-'+nonce, old['Image'], tables)
         resources.append('xmail-final-source-'+nonce)
         error_fd = os.open(work/'source-protocol.log', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(error_fd, 'wb') as errors:
@@ -616,7 +774,7 @@ def apply(args):
                 '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.5', '--pids-limit', '64', '--cap-drop', 'ALL',
                 '--security-opt', 'no-new-privileges', '--env-file', str(work/'source-pg.env'),
                 '--mount', 'type=bind,src='+str(work/'source-ca.crt')+',dst=/source-ca.crt,readonly', PG_IMAGE,
-                'pg_dump', '--format=custom', '--compress=6', '--schema=public', '--schema=supabase_migrations', '--strict-names',
+                'pg_dump', '--format=custom', '--compress=6', '--schema=public', '--schema=supabase_migrations', '--schema='+FENCE_SCHEMA, '--strict-names',
                 '--no-owner', '--no-acl', '--no-comments', '--snapshot='+snapshot_id, '--lock-wait-timeout=5s']
             resources.append('xmail-final-dump-'+nonce)
             archive_sha = archive_command(dump_command, archive)
@@ -642,7 +800,7 @@ def apply(args):
             need(actual == source['fingerprints'] and line(transaction, 5) == b'REFRESH_READY')
             # No receipt claims success before both pre-COMMIT reconciliation and
             # a fresh source snapshot agree with the frozen source.
-            command, initial = node_snapshot(programs['holder_program'], source_file, ca, nonce, 'xmail-final-stability-'+nonce, old['Image'])
+            command, initial = node_snapshot(programs['holder_program'], source_file, ca, nonce, 'xmail-final-stability-'+nonce, old['Image'], tables)
             stability = call(command, initial+b'DUMP_COMPLETE\n', timeout=60).splitlines()
             need(len(stability) == 3 and stability[2] == b'SOURCE_CLOSED')
             current = json_result(stability[1]); validate_source_snapshot(current)
@@ -660,7 +818,7 @@ def apply(args):
         need(sequence_definitions(after_sequences) == sequence_definitions(source['sequences'])
              and [next_sequence_value(s) for s in after_sequences] == [next_sequence_value(s) for s in source['sequences']])
         need(json_result(read_only(trigger_inventory_sql())) == triggers)
-        command, initial = node_snapshot(programs['holder_program'], source_file, ca, nonce, 'xmail-final-postcommit-'+nonce, old['Image'])
+        command, initial = node_snapshot(programs['holder_program'], source_file, ca, nonce, 'xmail-final-postcommit-'+nonce, old['Image'], tables)
         final_source = call(command, initial+b'DUMP_COMPLETE\n', timeout=60).splitlines()
         need(len(final_source) == 3 and final_source[2] == b'SOURCE_CLOSED')
         final_snapshot = json_result(final_source[1]); validate_source_snapshot(final_snapshot)
