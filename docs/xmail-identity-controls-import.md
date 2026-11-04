@@ -1,10 +1,28 @@
-# Reviewed Xmail identity-control import — prepared, not executed
+# Reviewed Xmail identity-control import — completed on private candidate
 
 The owned login pilot requires `xmail_identity_user_controls` for every existing
 application UUID. Migration 079 deliberately creates no controls; the reconciled
 candidate imported the legacy application data without these new identity tables.
 The legacy inventory included one banned Auth user, whose denial must survive the
 transition. An absent control denies login, so this is an activation prerequisite.
+
+## Completed candidate operation
+
+The reviewed source capture found 39 Auth users, including 1 disabled account. A
+root-private backup was retained before schema DDL. Migrations 079/080 and the
+`schema_migrations` ledger entry 080 were applied atomically, creating four new
+identity tables. The controls import then committed all 39 rows, including the
+disabled control; post-commit readback matched and the commit acknowledgment was
+received. An independent read-only audit confirmed 39 controls, 38 memberships,
+the latest ledger entry at 080, and RLS enabled on all four tables. It found zero
+provider bindings, sessions or browser challenges. The complete users and
+organization-membership native-hash digests matched the stable source capture.
+The source database was not written.
+
+No provider bindings were created. Candidate runtime roles remain NOLOGIN (with
+identity DML grants staged), `XMAIL_GOOGLE_AUTH_ENABLED=false`, and the
+production container is unchanged. The application still uses its prior source;
+this import does not activate login or establish end-user identity cutover.
 
 `scripts/ops/prepare-xmail-identity-controls.py` prepares that import without
 matching contacts, creating provider bindings or altering account authority. Its
@@ -47,12 +65,12 @@ digest. Organization membership UUIDs/roles are similarly reconciled.
 
 ## Candidate transaction and refusal policy
 
-Migrations **079 and 080 must already have been separately reviewed and applied
-on this candidate**. The importer neither installs schema nor changes grants or
-the migration ledger. It refuses if any required table is missing, the controls
-schema/owner/RLS differs, user triggers/rules exist on controls, or bindings,
-sessions or browser challenges already exist. It is an initial import operator,
-not a recovery or live account-administration service.
+Before the import, migrations **079 and 080 were separately reviewed and applied
+on this candidate**, with the ledger at 080. The importer neither installs schema
+nor changes grants or the migration ledger. It refuses if any required table is
+missing, the controls schema/owner/RLS differs, user triggers/rules exist on
+controls, or bindings, sessions or browser challenges already exist. It is an
+initial import operator, not a recovery or live account-administration service.
 
 `xmail-identity-controls.sql` is SHA-pinned by the operator. One transaction takes
 bounded advisory/table locks, checks the exact complete UUID set and full
@@ -84,12 +102,12 @@ existing bindings, unreviewed triggers and atomic constraint failure. The fixtur
 creates and removes only its own database/owner before the existing runtime-role
 test; it never reads repository dotenv or production aliases.
 
-This preparation has not captured real Auth status or changed the candidate.
-Live status/ban import, migrations, independent review and exact-SHA CI remain
-required before activation. Account linking/recovery/invitations, legacy
-Supabase-dependent administration and native credential-management endpoints,
-Google/SMS browser acceptance, long-lived-stream revocation, final writer freeze,
-database cutover and continued backup/restore proof remain separate work. This
+The live status/ban import and migrations are complete on the private candidate;
+the independent review and exact-SHA CI are recorded separately. Account
+linking/recovery/invitations, legacy Supabase-dependent administration and native
+credential-management endpoints, Google/SMS browser acceptance, long-lived-stream
+revocation, final writer freeze, database cutover and continued backup/restore
+proof remain separate work. This
 operator does not claim a complete database/login migration.
 
 Sources: [PostgreSQL 17 locking](https://www.postgresql.org/docs/17/explicit-locking.html),

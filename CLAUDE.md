@@ -152,8 +152,13 @@ mode or ENABLE_MAIL_SERVER alone to isolate a copied database from startup jobs.
 **Owned identity pilot (not activated):** `src/server/lib/identity/` provides
 Firebase Google/verified-phone token verification, a live account-status adapter,
 hashed opaque session policy and a postgres.js store. Migrations `079`/`080` are
-additive and unapplied; they preserve application UUIDs, organization roles,
-`isAdmin` and SMTP/IMAP `password_hash`. `XMAIL_GOOGLE_AUTH_ENABLED` defaults off.
+additive and applied on the private candidate; they preserve application UUIDs,
+organization roles, `isAdmin` and SMTP/IMAP `password_hash`. The reviewed controls
+import reconciled 39 users (1 disabled), with matching readback and native-hash
+digests; independent audit confirmed 39 controls/38 memberships, RLS on all four
+tables and zero bindings, sessions or challenges. Candidate runtime roles remain
+NOLOGIN, `XMAIL_GOOGLE_AUTH_ENABLED=false`, and the production container and
+application source are unchanged. `XMAIL_GOOGLE_AUTH_ENABLED` defaults off.
 The isolated `/auth/identity` pilot uses host-only HttpOnly cookies, single-use
 CSRF challenges, fresh local controls/provider status and in-memory Firebase
 persistence. Current `/login` remains the default. DEV needs distinct explicit
