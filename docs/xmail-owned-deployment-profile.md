@@ -19,6 +19,28 @@ deployment path is preserved. A present invalid profile fails closed. A valid
 profile selects the owned path and never reaches the legacy blue/green handoff
 or its rollback function. The existing Google-only host file remains separate.
 
+`XMAIL_OWNED_AUTH_PHASE=data` keeps browser/admin authority explicitly `legacy`.
+For the first SQL cutover (`sourceKind=supabase`), Google must remain false and
+the old runtime's actual SQL/Auth URLs must identify the pinned Supabase project.
+Existing users continue their existing login while business SQL moves to the
+private database. Zero Google bindings do not prevent this data-only phase.
+
+After that data cutover, a controlled Google pilot can run on the already-owned
+SQL target while both authorities stay explicitly legacy (`sourceKind=owned`).
+The existing link flow requires an online exact-UUID legacy proof plus fresh
+Google proof and current local controls. The reader preview is never used for
+linking. No additional identity SQL pool, hosted project or matching by contact
+is introduced. An owned cookie cannot administer the explicitly legacy admin
+surface during this pilot; the separate legacy session remains available.
+
+Only `authPhase=identity` switches both authorities to owned. It requires the old
+runtime already using the exact owned SQL URLs, Google true and a fresh private
+admin-acceptance receipt. A bounded read-only SQL check independently requires
+the exact active admin/control/binding/session, a direct `legacy-session:<UUID>`
+link proof, project `skaleclub`, current unrevoked session and authentication
+within five minutes. Zero bindings or an unaccepted admin therefore refuses
+this phase. Hash/UUID inputs travel on stdin; no raw session token is used.
+
 The owned candidate uses the existing isolated `staging-http` entry selector and
 the dedicated reader role, with a two-connection pool, internal temporary Docker
 network, read-only root filesystem, no host ports and no production routes.
@@ -51,11 +73,13 @@ are never sourced/evaluated. The consumer accepts no alternate CLI root.
 
 | File | Contract |
 | --- | --- |
-| `owned-runtime.env` | Exact allowlist: both private runtime URLs; owned browser/admin authorities; six pool-budget declarations; deploy mode; approved image ID/source SHA; cutover-receipt SHA256 |
+| `owned-runtime.env` | Exact allowlist: both private runtime URLs; explicit browser/admin authorities; six pool-budget declarations; auth phase; deploy mode; approved image ID/source SHA; cutover-receipt SHA256 |
 | `reader.env` | Exact six fields: production NODE_ENV, staging HTTP true, loopback origin9001, private reader URL, both Google enable flagsfalse |
 | `production-base.env` | Allowlisted existing native/R2/integration/runtime values, compared in memory with the stopped OLD container's actual environment; no SQL targets, Google settings or authority overrides |
 | `cutover-receipt.json` | SHA256 pinned by the profile; exact receipt v1 described below |
-| `freeze-receipt.json`, `snapshot-receipt.json`, `final-import-receipt.json`, `controls-receipt.json` | Exact filenames and SHA256s referenced by the cutover receipt |
+| `freeze-receipt.json`, `snapshot-receipt.json`, `controls-receipt.json` | Exact filenames and SHA256s referenced in every cutover receipt |
+| `final-import-receipt.json` | Required only for the first Supabase→owned SQL cutover; never reimport managed-source data after the owned writer starts |
+| `admin-acceptance-receipt.json` | Required only when switching to owned browser/admin identity |
 | `deploy.lock` | Empty root0600 file; nonblocking flock serializes this deployment path |
 
 The profile URL validator requires the exact private candidate
@@ -77,6 +101,7 @@ is inserted into a new command argument, shell source/eval or log.
 The cutover receipt has exactly: `version=1`, `app=xmail`, fixed `target`,
 `database=xmail`, `role=xmail_runtime`, pinned `postgresImage`, exact
 `applicationImage` and `sourceSha`, immutable `oldContainerId`, `oldImageId`,
+`authPhase` (`data` or `identity`), `sourceKind` (`supabase` or `owned`),
 `profileDigest`, `baseEnvironmentSha256`, `createdAt`, `expiresAt`, and `proofs`.
 Each proof pointer has only its fixed `file` and `sha256`.
 
@@ -86,11 +111,12 @@ The baseline and all receipt-file hashes cover their exact bytes. This avoids
 a circular profile/receipt hash dependency. Timestamps are strict UTC second
 precision. Every receipt/proof must be currently valid, at most15 minutes old,
 with a positive validity interval no longer than15 minutes. Proof creation order
-is freeze→snapshot→final-import→controls→cutover, allowing equal seconds.
+is freeze→snapshot→final-import (when required)→controls→admin-acceptance (when
+required)→cutover, allowing equal seconds.
 
 Each proof has the exact common fields `version`, `app`, `kind`, `target`,
 `database`, `role`, `postgresImage`, `applicationImage`, `sourceSha`,
-`oldContainerId`, `createdAt`, `expiresAt`, and `facts`. All scope fields must
+`authPhase`, `sourceKind`, `oldContainerId`, `createdAt`, `expiresAt`, and `facts`. All scope fields must
 agree with the cutover receipt/profile. Facts are typed exactly:
 
 - Freeze: `allSourceWritersStopped=true`, `oldContainerStopped=true`.
@@ -102,6 +128,10 @@ agree with the cutover receipt/profile. Facts are typed exactly:
 - Controls: exact snapshot-receipt SHA, `exactUuidControlsReviewed=true`,
   `disabledStatePreserved=true`, `noContactAutoLinks=true`,
   `runtimeGrantsReviewed=true`.
+- Admin acceptance: exact `adminUserId`, `bindingId`, `sessionHash`, and typed
+  true `independentLegacyProof`, `freshGoogleProof`, `ownedSessionAccepted`,
+  `applicationAdminVerified`. The consumer rechecks these identifiers in SQL;
+  a producer assertion alone cannot admit an absent binding/session/admin.
 
 These are producer attestations backed by the future reviewed operation, not
 work performed by this consumer. The consumer independently rechecks Docker
@@ -111,7 +141,9 @@ writer may be restarted between its freeze and deployment.
 
 ## Failure and remaining actual work
 
-Promotion also requires the separately validated Google host profile enabled.
+Promotion requires the separately validated Google host profile in the selected
+phase's explicit state: false for the first SQL-only cutover, true for owned
+identity. A controlled pilot is permitted only after SQL is already owned.
 It preserves the original native/R2 credentials, verifies the full container's
 actual environment, original published ports, image and read-only Google mount,
 and requires selected SQL/Auth/R2 readiness before recording success. It never

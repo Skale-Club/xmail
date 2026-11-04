@@ -40,7 +40,7 @@ class PolicyFixture(unittest.TestCase):
         self.p = {
             'DATABASE_URL': 'postgres://xmail_runtime:offline-password@'+self.ns['TARGET']+':5432/xmail',
             'DIRECT_URL': 'postgres://xmail_runtime:offline-password@'+self.ns['TARGET']+':5432/xmail',
-            'XMAIL_BROWSER_AUTH_AUTHORITY': 'owned', 'XMAIL_USER_ADMIN_AUTHORITY': 'owned',
+            'XMAIL_BROWSER_AUTH_AUTHORITY': 'owned', 'XMAIL_USER_ADMIN_AUTHORITY': 'owned', 'XMAIL_OWNED_AUTH_PHASE': 'identity',
             'DB_POOL_MAX': '4', 'DB_JOB_POOL_MAX': '12', 'XMAIL_ADMIN_DB_POOL_MAX': '2',
             'XMAIL_DB_ROLE_CONNECTION_LIMIT': '20', 'XMAIL_DB_CONNECTION_RESERVE': '2', 'XMAIL_DB_PROCESS_COUNT': '1',
             'XMAIL_OWNED_DEPLOY_MODE': 'promote', 'XMAIL_OWNED_APPROVED_IMAGE_ID': 'sha256:'+'a'*64,
@@ -60,6 +60,8 @@ class PolicyFixture(unittest.TestCase):
         now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)-dt.timedelta(seconds=2)
         self.created = now.strftime('%Y-%m-%dT%H:%M:%SZ')
         self.expiry = (now+dt.timedelta(minutes=10)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        self.source_kind = 'owned'
+        self.admin_accepted = True
         self.facts = {
             'freeze': {'allSourceWritersStopped': True, 'oldContainerStopped': True},
             'snapshot': {'sourceReadOnlySnapshotComplete': True, 'snapshotDigest': '9'*64, 'businessTables': 70},
@@ -68,13 +70,16 @@ class PolicyFixture(unittest.TestCase):
             'controls': {'snapshotReceiptSha256': '', 'exactUuidControlsReviewed': True, 'disabledStatePreserved': True,
                 'noContactAutoLinks': True, 'runtimeGrantsReviewed': True},
         }
+        self.facts['admin-acceptance'] = {'adminUserId': '11111111-1111-4111-8111-111111111111',
+            'bindingId': '22222222-2222-4222-8222-222222222222', 'sessionHash': '8'*64,
+            'independentLegacyProof': True, 'freshGoogleProof': True, 'ownedSessionAccepted': True, 'applicationAdminVerified': True}
         self.regenerate()
         ports = {'9001/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '9001'}]}
         self.states = {
             self.p['XMAIL_OWNED_APPROVED_IMAGE_ID']: {'Id': self.p['XMAIL_OWNED_APPROVED_IMAGE_ID'],
                 'Config': {'Labels': {'org.opencontainers.image.revision': self.p['XMAIL_OWNED_APPROVED_SOURCE_SHA']}}},
             self.old_id: {'Id': self.old_id, 'Image': self.old_image, 'Name': '/xmail', 'State': {'Running': False, 'Pid': 0},
-                'Config': {'Env': self.env_list(self.base)}, 'HostConfig': {'PortBindings': ports}},
+                'Config': {'Env': self.env_list({**self.base, 'DATABASE_URL': self.p['DATABASE_URL'], 'DIRECT_URL': self.p['DIRECT_URL']})}, 'HostConfig': {'PortBindings': ports}},
             self.pg_id: {'Id': self.pg_id, 'Image': self.ns['PG_IMAGE'], 'Name': '/'+self.ns['TARGET'],
                 'State': {'Running': True, 'Health': {'Status': 'healthy'}}, 'Config': {'Env': []},
                 'NetworkSettings': {'Ports': {'5432/tcp': None}},
@@ -91,8 +96,12 @@ class PolicyFixture(unittest.TestCase):
         if not 0 < len(value) <= maximum: raise ValueError('fixture size refused')
         return value
 
-    def docker(self, arguments):
+    def docker(self, arguments, payload=None):
         self.commands.append(arguments)
+        if arguments[:2] == ['exec', '-i']:
+            self.assertIn(b'BEGIN READ ONLY', payload)
+            self.assertNotIn('8'*64, ' '.join(arguments))
+            return b't\n' if self.admin_accepted else b'f\n'
         if arguments == ['ps', '-q']: return '\n'.join(self.running_ids).encode()
         raise AssertionError('Unexpected Docker command: fixture accepts read-only ps only')
 
@@ -115,10 +124,13 @@ class PolicyFixture(unittest.TestCase):
         common = {'version': 1, 'app': 'xmail', 'target': self.ns['TARGET'], 'database': 'xmail', 'role': 'xmail_runtime',
             'postgresImage': self.ns['PG_IMAGE'], 'applicationImage': self.p['XMAIL_OWNED_APPROVED_IMAGE_ID'],
             'sourceSha': self.p['XMAIL_OWNED_APPROVED_SOURCE_SHA'], 'oldContainerId': self.old_id,
+            'authPhase': self.p['XMAIL_OWNED_AUTH_PHASE'], 'sourceKind': self.source_kind,
             'createdAt': self.created, 'expiresAt': self.expiry}
         self.proofs = {}
         pointers = {}
         for kind, filename in self.ns['PROOF_FILES'].items():
+            if kind == 'final-import' and self.source_kind != 'supabase': continue
+            if kind == 'admin-acceptance' and self.p['XMAIL_OWNED_AUTH_PHASE'] != 'identity': continue
             if kind in ['final-import', 'controls']: self.facts[kind]['snapshotReceiptSha256'] = pointers['snapshot']['sha256']
             proof = {**common, 'kind': kind, 'facts': self.facts[kind]}
             raw = self.encoded(proof)
@@ -142,7 +154,8 @@ class PolicyFixture(unittest.TestCase):
         self.assertIn('promote sha256:', output)
         self.assertNotIn('offline-password', output)
         self.assertNotIn('offline-preserved-native-proof', output)
-        self.assertEqual(self.commands, [['ps', '-q']])
+        self.assertEqual(self.commands[0], ['ps', '-q'])
+        self.assertEqual(self.commands[1][:2], ['exec', '-i'])
 
     def test_preview_needs_no_freeze_receipts_and_does_not_inspect_or_stop_old_writer(self):
         self.p['XMAIL_OWNED_DEPLOY_MODE'] = 'preview'; self.regenerate()
@@ -150,6 +163,30 @@ class PolicyFixture(unittest.TestCase):
         self.states[self.old_id]['State']['Running'] = True
         self.assertTrue(self.execute().startswith('preview '))
         self.assertEqual(self.commands, [])
+
+    def test_first_data_cutover_preserves_explicit_legacy_auth_with_google_disabled_and_no_binding(self):
+        self.p['XMAIL_OWNED_AUTH_PHASE'] = 'data'
+        self.p['XMAIL_BROWSER_AUTH_AUTHORITY'] = self.p['XMAIL_USER_ADMIN_AUTHORITY'] = 'legacy'
+        self.source_kind = 'supabase'
+        self.base['SUPABASE_URL'] = 'https://zzbudkfkcmqkavgwselc.supabase.co'
+        source = 'postgres://postgres:offline-source@db.zzbudkfkcmqkavgwselc.supabase.co:5432/postgres'
+        self.states[self.old_id]['Config']['Env'] = self.env_list({**self.base, 'DATABASE_URL': source, 'DIRECT_URL': source})
+        self.google['XMAIL_GOOGLE_AUTH_ENABLED'] = 'false'
+        self.files[Path('/opt/xmail/google-identity-ops/google-auth.env')] = self.env(self.google)
+        self.regenerate(); self.admin_accepted = False
+        self.assertTrue(self.execute().startswith('promote '))
+        self.assertEqual(self.commands, [['ps', '-q']])
+
+    def test_pilot_on_already_owned_sql_keeps_legacy_auth_and_does_not_reimport_supabase(self):
+        self.p['XMAIL_OWNED_AUTH_PHASE'] = 'data'
+        self.p['XMAIL_BROWSER_AUTH_AUTHORITY'] = self.p['XMAIL_USER_ADMIN_AUTHORITY'] = 'legacy'
+        self.regenerate(); self.admin_accepted = False
+        self.assertNotIn('final-import', self.r['proofs'])
+        self.assertTrue(self.execute().startswith('promote '))
+
+    def test_identity_authority_refuses_missing_current_independently_linked_admin(self):
+        self.admin_accepted = False
+        with self.assertRaises(ValueError): self.execute()
 
     def test_unsafe_targets_ambiguous_authority_and_overlap_budget_refused(self):
         for key, value in [('DIRECT_URL', 'postgres://xmail_runtime:offline@foreign.invalid:5432/xmail'),
@@ -177,9 +214,9 @@ class PolicyFixture(unittest.TestCase):
         self.facts['freeze']['oldContainerStopped'] = 1; self.regenerate()
         with self.assertRaises(ValueError): self.execute()
         self.facts['freeze']['oldContainerStopped'] = True
-        self.facts['final-import']['restoredAndReconciled'] = False; self.regenerate()
+        self.facts['controls']['runtimeGrantsReviewed'] = False; self.regenerate()
         with self.assertRaises(ValueError): self.execute()
-        self.facts['final-import']['restoredAndReconciled'] = True
+        self.facts['controls']['runtimeGrantsReviewed'] = True
         self.created = (dt.datetime.now(dt.timezone.utc)-dt.timedelta(minutes=16)).strftime('%Y-%m-%dT%H:%M:%SZ')
         self.regenerate()
         with self.assertRaises(ValueError): self.execute()
@@ -208,7 +245,7 @@ class PolicyFixture(unittest.TestCase):
     def test_baseline_change_and_google_disabled_never_start_a_writer(self):
         self.states[self.old_id]['Config']['Env'].append('R2_SECRET_ACCESS_KEY=offline-new-value')
         with self.assertRaises(ValueError): self.execute()
-        self.states[self.old_id]['Config']['Env'] = self.env_list(self.base)
+        self.states[self.old_id]['Config']['Env'] = self.env_list({**self.base, 'DATABASE_URL': self.p['DATABASE_URL'], 'DIRECT_URL': self.p['DIRECT_URL']})
         self.google['XMAIL_GOOGLE_AUTH_ENABLED'] = 'false'
         self.files[Path('/opt/xmail/google-identity-ops/google-auth.env')] = self.env(self.google)
         with self.assertRaises(ValueError): self.execute()
@@ -237,8 +274,8 @@ class PolicyFixture(unittest.TestCase):
                 'Networks': {'xmail-owned-preview': {'NetworkID': 'offline-network'}}}}
         self.states[self.new_id] = stage
         original = self.ns['docker']
-        self.ns['docker'] = lambda args: self.encoded([{'Internal': True, 'Labels': {'com.skale.xmail.runtime': 'isolated-preview'},
-            'Containers': {self.new_id: {}, self.pg_id: {}}}]) if args == ['network', 'inspect', 'offline-network'] else original(args)
+        self.ns['docker'] = lambda args, payload=None: self.encoded([{'Internal': True, 'Labels': {'com.skale.xmail.runtime': 'isolated-preview'},
+            'Containers': {self.new_id: {}, self.pg_id: {}}}]) if args == ['network', 'inspect', 'offline-network'] else original(args, payload)
         self.assertEqual(self.execute('preview-readback', self.new_id), 'isolated-preview-readback-ok\n')
         stage['Config']['Env'].append('SUPABASE_SERVICE_ROLE_KEY=offline-forbidden')
         with self.assertRaises(ValueError): self.execute('preview-readback', self.new_id)

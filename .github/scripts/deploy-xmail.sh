@@ -168,17 +168,17 @@ import re
 import stat
 import subprocess
 import sys
-from urllib.parse import urlsplit, unquote
+from urllib.parse import urlsplit, unquote, parse_qsl
 
 ROOT = Path('/opt/xmail/owned-runtime-ops')
 TARGET = 'e12scyfsrp822dag7m9wwd4x'
 PG_IMAGE = 'sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b'
 IDENTITY = ['xmail_identity_bindings', 'xmail_identity_browser_challenges', 'xmail_identity_owned_sessions', 'xmail_identity_user_controls']
 BASE_KEYS = set('NODE_ENV PORT SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY JWT_SECRET ENCRYPTION_KEY OUTLOOK_TOKEN_ENCRYPTION_KEY MAIL_DOMAIN OUTREACH_PROTECTED_DOMAINS OUTREACH_HOME_BASE_ZIP OUTREACH_HOME_RADIUS_MILES MAIL_HOST MAIL_TLS_CERT_PATH MAIL_TLS_KEY_PATH APP_COMPANY_NAME APP_APPLICATION_NAME SMTP_PASS SMTP_FROM FRONTEND_URL SMTP_SUBMISSION_PORT MX_PORT IMAP_PORT ENABLE_MAIL_SERVER XMAIL_SERVICE_KEY XMAIL_SERVICE_USER_ID XMAIL_SERVICE_ORGANIZATION_ID XPHERE_EVENTS_URL XPHERE_EVENTS_API_KEY APOLLO_API_KEY XCRAPER_SERVICE_URL XCRAPER_SERVICE_KEY PROSPECTING_DAILY_BUDGET_USD R2_ACCOUNT_ID R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_PUBLIC_BASE_URL MONITOR_API_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID DB_LIVENESS_INTERVAL_MS DB_LIVENESS_PROBE_TIMEOUT_MS DB_LIVENESS_EXIT_AFTER_MS'.split())
-PROFILE_KEYS = set('DATABASE_URL DIRECT_URL XMAIL_BROWSER_AUTH_AUTHORITY XMAIL_USER_ADMIN_AUTHORITY DB_POOL_MAX DB_JOB_POOL_MAX XMAIL_ADMIN_DB_POOL_MAX XMAIL_DB_ROLE_CONNECTION_LIMIT XMAIL_DB_CONNECTION_RESERVE XMAIL_DB_PROCESS_COUNT XMAIL_OWNED_DEPLOY_MODE XMAIL_OWNED_APPROVED_IMAGE_ID XMAIL_OWNED_APPROVED_SOURCE_SHA XMAIL_OWNED_RECEIPT_SHA256'.split())
+PROFILE_KEYS = set('DATABASE_URL DIRECT_URL XMAIL_BROWSER_AUTH_AUTHORITY XMAIL_USER_ADMIN_AUTHORITY DB_POOL_MAX DB_JOB_POOL_MAX XMAIL_ADMIN_DB_POOL_MAX XMAIL_DB_ROLE_CONNECTION_LIMIT XMAIL_DB_CONNECTION_RESERVE XMAIL_DB_PROCESS_COUNT XMAIL_OWNED_AUTH_PHASE XMAIL_OWNED_DEPLOY_MODE XMAIL_OWNED_APPROVED_IMAGE_ID XMAIL_OWNED_APPROVED_SOURCE_SHA XMAIL_OWNED_RECEIPT_SHA256'.split())
 READER_KEYS = set('NODE_ENV XMAIL_STAGING_HTTP_ONLY XMAIL_STAGING_ORIGIN XMAIL_STAGING_DATABASE_URL XMAIL_GOOGLE_AUTH_ENABLED GOOGLE_AUTH_ENABLED'.split())
-PROOF_FILES = {'freeze': 'freeze-receipt.json', 'snapshot': 'snapshot-receipt.json', 'final-import': 'final-import-receipt.json', 'controls': 'controls-receipt.json'}
-COMMON = set('version app kind target database role postgresImage applicationImage sourceSha oldContainerId createdAt expiresAt facts'.split())
+PROOF_FILES = {'freeze': 'freeze-receipt.json', 'snapshot': 'snapshot-receipt.json', 'final-import': 'final-import-receipt.json', 'controls': 'controls-receipt.json', 'admin-acceptance': 'admin-acceptance-receipt.json'}
+COMMON = set('version app kind target database role postgresImage applicationImage sourceSha authPhase sourceKind oldContainerId createdAt expiresAt facts'.split())
 
 def need(value):
     if not value: raise ValueError('Owned deployment policy refused')
@@ -237,6 +237,18 @@ def database_url(value, role):
          and url.path == '/xmail' and unquote(url.username or '') == role and bool(url.password)
          and not any(c in unquote(url.password) for c in '\r\n\x00') and not url.query and not url.fragment)
 
+def source_database_url(value):
+    url = urlsplit(value)
+    user = unquote(url.username or '')
+    ref = 'zzbudkfkcmqkavgwselc'
+    need(url.scheme in ['postgres', 'postgresql'] and url.path == '/postgres' and url.port in [5432, 6543]
+         and bool(url.password) and not url.fragment
+         and ((url.hostname == 'db.'+ref+'.supabase.co' and user == 'postgres')
+              or (re.fullmatch(r'aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com', url.hostname or '') and user == 'postgres.'+ref)))
+    options = parse_qsl(url.query)
+    need(len({k for k, v in options}) == len(options) and all(k in ['sslmode', 'application_name']
+         and (k != 'sslmode' or v in ['require', 'verify-ca', 'verify-full']) for k, v in options))
+
 def timestamp(value):
     need(isinstance(value, str) and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', value))
     return dt.datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
@@ -247,8 +259,8 @@ def live_window(value, now):
          and created <= now < expiry and now-created <= dt.timedelta(minutes=15))
     return created
 
-def docker(args):
-    result = subprocess.run(['docker']+args, capture_output=True, timeout=10, check=False)
+def docker(args, payload=None):
+    result = subprocess.run(['docker']+args, input=payload, capture_output=True, timeout=10, check=False)
     need(result.returncode == 0 and len(result.stdout) <= 2*1024*1024)
     return result.stdout
 
@@ -272,7 +284,9 @@ def profiles(root=ROOT):
     p = env_file(raw, PROFILE_KEYS)
     need(p['XMAIL_OWNED_DEPLOY_MODE'] in ('preview', 'promote') and image(p['XMAIL_OWNED_APPROVED_IMAGE_ID'])
          and re.fullmatch(r'[a-f0-9]{40}', p['XMAIL_OWNED_APPROVED_SOURCE_SHA']))
-    need(p['XMAIL_BROWSER_AUTH_AUTHORITY'] == p['XMAIL_USER_ADMIN_AUTHORITY'] == 'owned')
+    need(p['XMAIL_OWNED_AUTH_PHASE'] in ['data', 'identity'])
+    authority = 'owned' if p['XMAIL_OWNED_AUTH_PHASE'] == 'identity' else 'legacy'
+    need(p['XMAIL_BROWSER_AUTH_AUTHORITY'] == p['XMAIL_USER_ADMIN_AUTHORITY'] == authority)
     for key in ['DATABASE_URL', 'DIRECT_URL']: database_url(p[key], 'xmail_runtime')
     numbers = {}
     for key in ['DB_POOL_MAX', 'DB_JOB_POOL_MAX', 'XMAIL_ADMIN_DB_POOL_MAX', 'XMAIL_DB_ROLE_CONNECTION_LIMIT', 'XMAIL_DB_CONNECTION_RESERVE', 'XMAIL_DB_PROCESS_COUNT']:
@@ -294,12 +308,13 @@ def profiles(root=ROOT):
     profile_digest = sha(json.dumps(unsigned, sort_keys=True, separators=(',', ':')).encode())
     return p, reader, profile_digest, sha(raw), sha(reader_raw)
 
-def scoped(value, kind, p, old, now):
+def scoped(value, kind, p, old, source, now):
     need(set(value) == COMMON and type(value['version']) is int and value['version'] == 1
          and value['app'] == 'xmail' and value['kind'] == kind and value['target'] == TARGET
          and value['database'] == 'xmail' and value['role'] == 'xmail_runtime' and value['postgresImage'] == PG_IMAGE
          and value['applicationImage'] == p['XMAIL_OWNED_APPROVED_IMAGE_ID']
-         and value['sourceSha'] == p['XMAIL_OWNED_APPROVED_SOURCE_SHA'] and value['oldContainerId'] == old)
+         and value['sourceSha'] == p['XMAIL_OWNED_APPROVED_SOURCE_SHA'] and value['oldContainerId'] == old
+         and value['authPhase'] == p['XMAIL_OWNED_AUTH_PHASE'] and value['sourceKind'] == source)
     return live_window(value, now)
 
 def exact_facts(value, expected):
@@ -310,33 +325,50 @@ def receipt(p, profile_digest, root=ROOT, now=None):
     raw = secure_read(root/'cutover-receipt.json')
     need(sha(raw) == p['XMAIL_OWNED_RECEIPT_SHA256'])
     r = json_file(raw)
-    keys = set('version app target database role postgresImage applicationImage sourceSha oldContainerId oldImageId profileDigest baseEnvironmentSha256 createdAt expiresAt proofs'.split())
+    keys = set('version app target database role postgresImage applicationImage sourceSha authPhase sourceKind oldContainerId oldImageId profileDigest baseEnvironmentSha256 createdAt expiresAt proofs'.split())
     need(set(r) == keys and type(r['version']) is int and r['version'] == 1 and r['app'] == 'xmail'
          and r['target'] == TARGET and r['database'] == 'xmail' and r['role'] == 'xmail_runtime'
          and r['postgresImage'] == PG_IMAGE and r['applicationImage'] == p['XMAIL_OWNED_APPROVED_IMAGE_ID']
          and r['sourceSha'] == p['XMAIL_OWNED_APPROVED_SOURCE_SHA'] and digest(r['oldContainerId'])
-         and image(r['oldImageId']) and r['profileDigest'] == profile_digest and digest(r['baseEnvironmentSha256']))
+         and image(r['oldImageId']) and r['profileDigest'] == profile_digest and digest(r['baseEnvironmentSha256'])
+         and r['authPhase'] == p['XMAIL_OWNED_AUTH_PHASE'] and r['sourceKind'] in ['supabase', 'owned']
+         and (r['authPhase'] != 'identity' or r['sourceKind'] == 'owned'))
     captured = live_window(r, now)
-    need(isinstance(r['proofs'], dict) and set(r['proofs']) == set(PROOF_FILES))
+    expected_proofs = {'freeze', 'snapshot', 'controls'}
+    if r['sourceKind'] == 'supabase': expected_proofs.add('final-import')
+    if r['authPhase'] == 'identity': expected_proofs.add('admin-acceptance')
+    need(isinstance(r['proofs'], dict) and set(r['proofs']) == expected_proofs)
     proofs, times = {}, {}
     for kind, filename in PROOF_FILES.items():
+        if kind not in expected_proofs: continue
         pointer = r['proofs'][kind]
         need(isinstance(pointer, dict) and set(pointer) == {'file', 'sha256'} and pointer['file'] == filename and digest(pointer['sha256']))
         proof_raw = secure_read(root/filename)
         need(sha(proof_raw) == pointer['sha256'])
         proof = json_file(proof_raw)
-        times[kind] = scoped(proof, kind, p, r['oldContainerId'], now)
+        times[kind] = scoped(proof, kind, p, r['oldContainerId'], r['sourceKind'], now)
         need(isinstance(proof['facts'], dict))
         proofs[kind] = proof['facts']
-    need(times['freeze'] <= times['snapshot'] <= times['final-import'] <= times['controls'] <= captured)
+    need(times['freeze'] <= times['snapshot'] <= times['controls'] <= captured)
+    if 'final-import' in times: need(times['snapshot'] <= times['final-import'] <= times['controls'])
+    if 'admin-acceptance' in times: need(times['controls'] <= times['admin-acceptance'] <= captured)
     need(exact_facts(proofs['freeze'], {'allSourceWritersStopped': True, 'oldContainerStopped': True}))
     snap = proofs['snapshot']
     need(set(snap) == {'sourceReadOnlySnapshotComplete', 'snapshotDigest', 'businessTables'}
          and snap['sourceReadOnlySnapshotComplete'] is True and digest(snap['snapshotDigest']) and type(snap['businessTables']) is int and snap['businessTables'] == 70)
-    need(exact_facts(proofs['final-import'], {'snapshotReceiptSha256': r['proofs']['snapshot']['sha256'], 'restoredAndReconciled': True,
-         'nativeHashesPreserved': True, 'referenceMetadataPreserved': True, 'identityTables': 4, 'businessTables': 70}))
+    if 'final-import' in proofs:
+        need(exact_facts(proofs['final-import'], {'snapshotReceiptSha256': r['proofs']['snapshot']['sha256'], 'restoredAndReconciled': True,
+             'nativeHashesPreserved': True, 'referenceMetadataPreserved': True, 'identityTables': 4, 'businessTables': 70}))
     need(exact_facts(proofs['controls'], {'snapshotReceiptSha256': r['proofs']['snapshot']['sha256'], 'exactUuidControlsReviewed': True,
          'disabledStatePreserved': True, 'noContactAutoLinks': True, 'runtimeGrantsReviewed': True}))
+    if 'admin-acceptance' in proofs:
+        acceptance = proofs['admin-acceptance']
+        ids = ['adminUserId', 'bindingId']
+        need(set(acceptance) == set(ids+['sessionHash', 'independentLegacyProof', 'freshGoogleProof', 'ownedSessionAccepted', 'applicationAdminVerified'])
+             and all(isinstance(acceptance[k], str) and re.fullmatch(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', acceptance[k]) for k in ids)
+             and digest(acceptance['sessionHash']) and all(acceptance[k] is True for k in
+                 ['independentLegacyProof', 'freshGoogleProof', 'ownedSessionAccepted', 'applicationAdminVerified']))
+        r['_acceptedAdmin'] = acceptance
     base_raw = secure_read(root/'production-base.env', 32768)
     need(sha(base_raw) == r['baseEnvironmentSha256'])
     return r, env_file(base_raw, BASE_KEYS, False)
@@ -347,6 +379,14 @@ def runtime_state(p, r, base, admitted=None):
          and old['State'].get('Pid', 0) == 0 and old['Name'] in ['/xmail', '/xmail-frozen-'+r['oldContainerId'][:12]])
     old_env = container_env(old)
     need({k: v for k, v in old_env.items() if k in BASE_KEYS} == base)
+    if r['sourceKind'] == 'owned':
+        for key in ['DATABASE_URL', 'DIRECT_URL']: database_url(old_env.get(key, ''), 'xmail_runtime')
+    else:
+        need(old_env.get('SUPABASE_URL', '').rstrip('/') == 'https://zzbudkfkcmqkavgwselc.supabase.co')
+        source_database_url(old_env.get('DATABASE_URL', ''))
+        source_database_url(old_env.get('DIRECT_URL') or old_env.get('DATABASE_URL', ''))
+    if p['XMAIL_OWNED_AUTH_PHASE'] == 'data':
+        need(old_env.get('XMAIL_BROWSER_AUTH_AUTHORITY', 'legacy') == old_env.get('XMAIL_USER_ADMIN_AUTHORITY', 'legacy') == 'legacy')
     pg = inspect(TARGET)
     pgdata = [m for m in pg.get('Mounts', []) if m.get('Destination') == '/var/lib/postgresql/data']
     need(pg['Image'] == PG_IMAGE and pg['State']['Running'] is True and pg['State'].get('Health', {}).get('Status') == 'healthy'
@@ -368,6 +408,26 @@ def runtime_state(p, r, base, admitted=None):
             except Exception: pass
         need(not writer)
     return old
+
+def verify_linked_admin(r):
+    a = r['_acceptedAdmin']
+    # UUID/hash fields were strictly validated above. Sensitive hashes stay on
+    # stdin; no email, contact matching, raw session token or SQL value is logged.
+    query = """BEGIN READ ONLY; SET LOCAL log_statement='none'; SET LOCAL log_min_error_statement='panic';
+    SET LOCAL statement_timeout='2s'; SET LOCAL lock_timeout='500ms';
+    SELECT EXISTS(SELECT 1 FROM public.users u
+      JOIN public.xmail_identity_user_controls c ON c.user_id=u.id
+      JOIN public.xmail_identity_bindings b ON b.user_id=u.id
+      JOIN public.xmail_identity_owned_sessions s ON s.binding_id=b.id
+      WHERE u.id='%s'::uuid AND u.is_admin AND c.disabled_at IS NULL
+      AND b.id='%s'::uuid AND b.project_id='skaleclub' AND b.disabled_at IS NULL
+      AND b.proof_reference='legacy-session:'||u.id::text
+      AND s.token_hash='%s' AND s.revoked_at IS NULL AND s.expires_at>transaction_timestamp()
+      AND s.authenticated_at>=extract(epoch FROM transaction_timestamp())-300
+      AND s.authenticated_at<=extract(epoch FROM transaction_timestamp())+5
+      AND c.sessions_valid_after<=to_timestamp(s.authenticated_at)); ROLLBACK;""" % (a['adminUserId'], a['bindingId'], a['sessionHash'])
+    result = docker(['exec', '-i', TARGET, 'psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'xmail_owner', '-d', 'xmail'], query.encode())
+    need(result.strip() == b't')
 
 def execute(action, root=ROOT, admitted=None):
     p, reader, profile_digest, raw_sha, reader_sha = profiles(root)
@@ -403,7 +463,10 @@ def execute(action, root=ROOT, admitted=None):
         secure_directory(google_path, True)
         google = env_file(secure_read(google_path/'google-auth.env', 16384),
              set('XMAIL_GOOGLE_AUTH_ENABLED XMAIL_GOOGLE_AUTH_PROJECT_ID XMAIL_GOOGLE_AUTH_PROJECT_NUMBER XMAIL_GOOGLE_AUTH_WEB_API_KEY XMAIL_GOOGLE_AUTH_ADC_FILE XMAIL_GOOGLE_AUTH_ADC_AUDIENCE XMAIL_GOOGLE_AUTH_ADC_SERVICE_ACCOUNT XMAIL_GOOGLE_AUTH_ADC_SUBJECT'.split()))
-        need(google['XMAIL_GOOGLE_AUTH_ENABLED'] == 'true')
+        expected_google = 'true' if r['authPhase'] == 'identity' else 'false' if r['sourceKind'] == 'supabase' else None
+        need(google['XMAIL_GOOGLE_AUTH_ENABLED'] in ['true', 'false']
+             and (expected_google is None or google['XMAIL_GOOGLE_AUTH_ENABLED'] == expected_google))
+        if r['authPhase'] == 'identity': verify_linked_admin(r)
         old_id = r['oldContainerId']
         if action == 'readback':
             need(digest(admitted))
@@ -792,4 +855,3 @@ docker builder prune -f --keep-storage=500MB || true
 echo "::endgroup::"
 
 echo "DEPLOYED version $DEPLOY_VERSION at $DEPLOYED_AT"
-
