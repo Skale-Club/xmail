@@ -20,8 +20,8 @@ path matches accounts by an email/phone claim or changes the native password.
 It accepts explicit `--capture` or `--apply`, plus the exact approved current
 application image digest, OCI source SHA, reviewed consumer SHA256 and immutable
 current container ID. These are public pins; credentials never go in arguments.
-It imports the unchanged reviewed pilot helper (`f730Ã¢â‚¬Â¦`) and first-cutover
-primitives (`6e9aÃ¢â‚¬Â¦`) by their full normalized source SHA256.
+It imports the unchanged reviewed pilot helper (`f730...`) and first-cutover
+primitives (`6e9a...`) by their full normalized source SHA256.
 
 Capture reads actual SQL bindings/sessions and fresh Google account status. It
 does not sign in, manufacture a provider token, create sessions or mark a user
