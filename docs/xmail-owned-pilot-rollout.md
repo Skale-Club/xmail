@@ -24,6 +24,9 @@ database clients. No unknown connection is killed. No error path restarts OLD.
 The authoritative UUID list comes from current owned `public.users`, including
 users created after phase1. While browser authority remains legacy, a bounded
 GET-only Auth Admin lookup checks each exact UUID in the original Auth project.
+It supports the existing opaque `sb_secret_` key or a matching legacy service-role
+JWT; public keys never qualify. Opaque keys still require authenticated success
+and exact UUID responses from the fixed project origin for every requested user.
 The request uses the existing server credential in memory only, never a browser
 key, source public-user list, admin SDK, contact search or source database import.
 There are at most1000 users, four concurrent requests, eight-second per-request

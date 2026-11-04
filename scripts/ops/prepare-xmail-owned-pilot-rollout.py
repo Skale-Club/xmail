@@ -22,8 +22,11 @@ const fs=require('node:fs');const hard=setTimeout(()=>process.exit(124),55000);h
  if(process.env.NODE_TLS_REJECT_UNAUTHORIZED==='0')throw Error();
  const x=JSON.parse(fs.readFileSync(0,'utf8')),ref='zzbudkfkcmqkavgwselc';
  if(x.origin!=='https://'+ref+'.supabase.co'||!Array.isArray(x.ids)||!x.ids.length||x.ids.length>1000||new Set(x.ids).size!==x.ids.length||x.ids.some(v=>!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v)))throw Error();
- if(typeof x.key!=='string'||x.key.length>16384||!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(x.key))throw Error();
- const claims=JSON.parse(Buffer.from(x.key.split('.')[1],'base64url').toString('utf8'));if(claims.ref!==ref||claims.role!=='service_role')throw Error();
+ if(typeof x.key!=='string'||x.key.length>16384)throw Error();
+ if(!/^sb_secret_[A-Za-z0-9_-]+$/.test(x.key)){
+  if(!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(x.key))throw Error();
+  const claims=JSON.parse(Buffer.from(x.key.split('.')[1],'base64url').toString('utf8'));if(claims.ref!==ref||claims.role!=='service_role')throw Error();
+ }
  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),50000),rows=[];let next=0;
  async function one(id){
   const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(8000)]);
