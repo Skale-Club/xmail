@@ -174,6 +174,9 @@ class PolicyFixture(unittest.TestCase):
         self.google['XMAIL_GOOGLE_AUTH_ENABLED'] = 'false'
         self.files[Path('/opt/xmail/google-identity-ops/google-auth.env')] = self.env(self.google)
         self.regenerate(); self.admin_accepted = False
+        with self.assertRaises(ValueError): self.execute()  # Docker stop alone cannot fence REST/RPC.
+        self.facts['freeze']['sourceWriteFenceEnforced'] = True
+        self.regenerate()
         self.assertTrue(self.execute().startswith('promote '))
         self.assertEqual(self.commands, [['ps', '-q']])
 
