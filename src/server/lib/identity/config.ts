@@ -54,8 +54,16 @@ export function identityBrowserSources(env: Env) {
         const config = resolveIdentityConfig(env)
         return config ? {
             connect: ['https://identitytoolkit.googleapis.com', 'https://securetoken.googleapis.com', 'https://www.googleapis.com', `https://${config.authDomain}`],
-            script: ['https://www.google.com/recaptcha/', 'https://www.gstatic.com/recaptcha/'],
+            script: ['https://apis.google.com', 'https://www.google.com/recaptcha/', 'https://www.gstatic.com/recaptcha/'],
             frame: [`https://${config.authDomain}`, 'https://www.google.com/recaptcha/', 'https://www.recaptcha.net/recaptcha/'],
         } : null
     } catch { return null }
+}
+
+/** Restricted browser API keys need the origin, never a page's query or path. */
+export function identityBrowserDocumentHeaders(path: string, enabled: boolean): Record<string, string> {
+    return enabled && path === '/auth/identity' ? {
+        'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+        'Referrer-Policy': 'origin',
+    } : {}
 }
