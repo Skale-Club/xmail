@@ -207,7 +207,8 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
         expect((await sql`SELECT subject FROM public.xmail_identity_bindings WHERE subject=${identity.subject}`)).toHaveLength(0)
     })
     it('evaluates the actual deployment temporal legacy-anchor chain and refuses broken ownership', async () => {
-        const childId = randomUUID(), parentHash = 'a'.repeat(64), childHash = 'b'.repeat(64)
+        const childId = randomUUID(), otherUser = randomUUID(), parentHash = 'a'.repeat(64), childHash = 'b'.repeat(64)
+        await sql`INSERT INTO public.users(id,email) VALUES (${otherUser},${`${randomUUID()}@example.invalid`})`
         const facts = { adminUserId: binding.userId, bindingId: childId, sessionHash: childHash,
             legacyAnchorBindingId: binding.id, legacyAnchorSessionHash: parentHash }
         const program = String.raw`import json,sys,textwrap
@@ -234,6 +235,7 @@ print(n['admin_acceptance_query'](json.load(sys.stdin)))`
             `UPDATE public.xmail_identity_owned_sessions SET authenticated_at=extract(epoch FROM now()-interval '400 seconds')::bigint WHERE token_hash='${parentHash}'`,
             `UPDATE public.xmail_identity_owned_sessions SET revoked_at=now()+interval '11 seconds' WHERE token_hash='${parentHash}'`,
             `UPDATE public.xmail_identity_bindings SET project_id='otherproject' WHERE id='${binding.id}'`,
+            `UPDATE public.xmail_identity_bindings SET user_id='${otherUser}' WHERE id='${binding.id}'`,
             `UPDATE public.xmail_identity_bindings SET proof_reference='legacy-password:${randomUUID()}' WHERE id='${binding.id}'`,
             `UPDATE public.xmail_identity_bindings SET proof_reference='owned-session:${randomUUID()}' WHERE id='${childId}'`,
             `UPDATE public.xmail_identity_bindings SET disabled_at=now() WHERE id='${binding.id}'`,

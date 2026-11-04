@@ -436,8 +436,8 @@ def admin_acceptance_predicate_sql():
       AND c.sessions_valid_after<=to_timestamp(s.authenticated_at)
       AND c.sessions_valid_after<=to_timestamp(a.authenticated_at)
       AND ((ab.id=b.id AND a.token_hash=s.token_hash
-        AND b.proof_reference IN ('legacy-session:'||u.id::text,'legacy-password:'||u.id::text))
-       OR (ab.id<>b.id AND ab.subject<>b.subject AND a.token_hash<>s.token_hash
+        AND b.proof_reference IN ('legacy-session:'||u.id::text,'legacy-password:'||u.id::text)
+       ) OR (ab.id<>b.id AND ab.subject<>b.subject AND a.token_hash<>s.token_hash
         AND b.proof_reference='owned-session:'||u.id::text
         AND a.created_at>=ab.created_at AND a.created_at<=b.created_at
         AND a.expires_at>b.created_at
