@@ -54,6 +54,8 @@ jobs:
           python3 -B scripts/ops/prepare-xmail-final-data-cutover.py --plan
           python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_owned_pilot_rollout.py -v
           python3 -B scripts/ops/prepare-xmail-owned-pilot-rollout.py --plan
+          python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_owned_authority_cutover.py -v
+          python3 -B scripts/ops/prepare-xmail-owned-authority-cutover.py --plan
           python3 -B scripts/ops/prepare-xmail-identity-controls.py
 
       - name: Lint (eslint --max-warnings 0)

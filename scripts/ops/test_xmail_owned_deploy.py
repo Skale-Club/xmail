@@ -74,6 +74,7 @@ class PolicyFixture(unittest.TestCase):
         }
         self.facts['admin-acceptance'] = {'adminUserId': '11111111-1111-4111-8111-111111111111',
             'bindingId': '22222222-2222-4222-8222-222222222222', 'sessionHash': '8'*64,
+            'legacyAnchorBindingId': '22222222-2222-4222-8222-222222222222', 'legacyAnchorSessionHash': '8'*64,
             'independentLegacyProof': True, 'freshGoogleProof': True, 'ownedSessionAccepted': True, 'applicationAdminVerified': True}
         self.regenerate()
         ports = {'9001/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '9001'}]}
