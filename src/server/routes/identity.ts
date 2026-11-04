@@ -60,7 +60,7 @@ export function createIdentityRouter(dependencies: {
     router.get('/challenge', async (req, res) => {
         try {
             const runtime = res.locals.identityRuntime as IdentityRuntime
-            const operation = z.enum(['session', 'link', 'logout', 'revoke-all', 'api']).parse(req.query.purpose)
+            const operation = z.enum(['session', 'link', 'existing-account-link', 'logout', 'revoke-all', 'api']).parse(req.query.purpose)
             let target: string = operation
             if (operation === 'api') target = z.string().regex(/^(POST|PUT|PATCH|DELETE) \/api\/[a-zA-Z0-9_/%.-]{1,900}$/).parse(req.query.target)
             const browser = identityCookie(req, runtime.config.browserCookie) || newBrowserSecret()
@@ -83,6 +83,21 @@ export function createIdentityRouter(dependencies: {
         } catch { res.status(401).json({ error: 'Identity session is unavailable.' }) }
     })
     const providerBody = z.object({ token: z.string().min(1).max(16_384) }).strict()
+    router.post('/existing-account-link', async (req, res) => {
+        const runtime = res.locals.identityRuntime as IdentityRuntime
+        try {
+            const body = providerBody.extend({ email: z.string().trim().email().max(320), password: z.string().min(1).max(4096) }).strict().parse(req.body)
+            if (!await consumeIdentityChallenge(req, runtime, 'existing-account-link')) return res.status(403).json({ error: 'Identity challenge is invalid or expired.' })
+            await runtime.assertReady(res.locals.identitySignal as AbortSignal)
+            const old = identityCookie(req, runtime.config.sessionCookie)
+            await runtime.linkExistingAccount(body.token, { email: body.email, password: body.password }, old, res.locals.identitySignal as AbortSignal)
+            // A separate explicit owned login rechecks provider, binding and
+            // local controls. The old provider's session never admits the app.
+            return res.json({ linked: true })
+        } catch (error) {
+            return res.status(error instanceof z.ZodError ? 400 : 401).json({ error: 'Account ownership could not be confirmed. Use reviewed recovery if needed.' })
+        }
+    })
     for (const action of ['session', 'link', 'logout', 'revoke-all'] as const) {
         router.post(`/${action}`, async (req, res) => {
             const runtime = res.locals.identityRuntime as IdentityRuntime

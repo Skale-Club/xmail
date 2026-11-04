@@ -423,7 +423,7 @@ def verify_linked_admin(r):
       JOIN public.xmail_identity_owned_sessions s ON s.binding_id=b.id
       WHERE u.id='%s'::uuid AND u.is_admin AND c.disabled_at IS NULL
       AND b.id='%s'::uuid AND b.project_id='skaleclub' AND b.disabled_at IS NULL
-      AND b.proof_reference='legacy-session:'||u.id::text
+      AND b.proof_reference IN ('legacy-session:'||u.id::text,'legacy-password:'||u.id::text)
       AND s.token_hash='%s' AND s.revoked_at IS NULL AND s.expires_at>transaction_timestamp()
       AND s.authenticated_at>=extract(epoch FROM transaction_timestamp())-300
       AND s.authenticated_at<=extract(epoch FROM transaction_timestamp())+5

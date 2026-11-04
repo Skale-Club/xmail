@@ -12,7 +12,7 @@ export interface IdentityPilotStore {
     profile(userId: string): Promise<IdentityProfile | null>
     createChallenge(challenge: BrowserChallenge, now: Date): Promise<void>
     consumeChallenge(challenge: Omit<BrowserChallenge, 'expiresAt'>, now: Date): Promise<boolean>
-    linkExisting(identity: GoogleIdentity, userId: string, proofSource: 'legacy-session' | 'owned-session', now: Date): Promise<boolean>
+    linkExisting(identity: GoogleIdentity, userId: string, proofSource: 'legacy-session' | 'legacy-password' | 'owned-session', now: Date): Promise<boolean>
     setDisabled(userId: string, disabled: boolean, now: Date): Promise<void>
 }
 
