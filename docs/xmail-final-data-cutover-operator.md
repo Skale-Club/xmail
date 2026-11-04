@@ -1,4 +1,31 @@
-# First Xmail SQL-only cutover operator (prepared, not executed)
+# First Xmail SQL-only cutover operator
+
+Phase1 ran successfully on2026-11-04. The actual application now uses the owned
+PostgreSQL database, while browser/admin authentication remains explicitly
+legacy and Google remains false. The live acceptance at17:49UTC confirmed:
+
+- Runtime `bf9362dda606997d35f4a21389449be12f83f3175142bc4766488d2cc78bd4fc`, image
+  `sha256:8e4573126706587b10c8ebdadc81c35f49199d86baac488a55e5f19ebdbffe1e`,
+  application revision `aa5e1418f2c9e9efb4e3d04208aa46b3273af348`.
+- Both SQL URLs target the existing private PostgreSQL as `xmail_runtime`;
+  HTTP/readiness, SMTP25/587, IMAP993 with valid TLS, existing R2 metadata access
+  and the read-only Google mount passed. No user's password was exercised.
+- All70 business fingerprints, schema, FKs, trigger modes, native hashes and
+  sequence next values reconciled before the new runtime started. The target
+  COMMIT was acknowledged and a fresh source snapshot remained identical.
+- One full writer, old PID zero, source70-table ALWAYS fence independently
+  rechecked, and isolated preview container/network removed. Private backups,
+  COMMIT evidence and phase1 runtime acceptance remain root-owned on the host.
+
+The final producer inspection initially refused the Google env contract after
+the successful COMMIT: its fixture assumed eight fields including ADC_SUBJECT,
+where the real Xmail file has nine fields including ADC_MODE and ORIGIN. The
+consumer now accepts exactly those nine fields and validates external_account
+and the fixed production origin. The reviewed corrected consumer promoted the
+same published image using the existing valid receipt; no data was reimported,
+no native password changed, no source was unfrozen and no TTL was extended.
+The source remains frozen after the owned writer started. Identity phase2 is
+still pending and this result does not claim browser-login migration complete.
 
 `scripts/ops/prepare-xmail-final-data-cutover.py` defaults to an offline plan.
 It does not run the application or complete browser-identity migration. Actual
@@ -142,8 +169,8 @@ until bounded temporary-client cleanup succeeds. No failure path starts a new
 writer or resumes the frozen legacy writer. Never delete/reset the candidate,
 volume, backup or failed state to force a retry.
 
-Actual phase1 still requires running the reviewed operator, deploying its pinned
-profile and validating real HTTP/native behavior and workload. Phase2 requires
+Future first-source executions still require the reviewed operator and fresh
+pins/receipts; never replay this import after owned writes begin. Phase2 requires
 refreshing controls against **all current owned-SQL users**, independently linked
 admin acceptance and a dedicated late-link possession-proof path for users whose
 old local bearer expired. The data-only operation does not claim those identity
