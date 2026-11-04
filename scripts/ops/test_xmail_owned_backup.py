@@ -25,6 +25,10 @@ backup=load('xmail-owned-backup');installer=load('install-xmail-owned-backup')
 
 
 class OwnedBackupGuards(unittest.TestCase):
+    def setUp(self):
+        if sys.platform=='win32':
+            flag=patch.object(backup.os,'O_NOFOLLOW',0,create=True);flag.start();self.addCleanup(flag.stop)
+
     def test_both_defaults_are_offline_without_library_or_process_access(self):
         for m in [backup,installer]:
             with patch('sys.argv',['offline']),patch.object(m,'run' if m is installer else 'libraries',side_effect=AssertionError('No I/O')),contextlib.redirect_stdout(io.StringIO()) as out:m.main()
