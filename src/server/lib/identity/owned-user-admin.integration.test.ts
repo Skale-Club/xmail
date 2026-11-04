@@ -227,7 +227,8 @@ describe.skipIf(!databaseUrl)('owned user administration PostgreSQL atomicity (d
         await sql`UPDATE public.xmail_identity_user_controls SET sessions_valid_after=clock_timestamp() WHERE user_id=${principal.userId}`
         expect(await lease()).toBeNull()
         await sql`UPDATE public.xmail_identity_user_controls SET sessions_valid_after='epoch'::timestamptz WHERE user_id=${principal.userId}`
-        await sql`UPDATE public.xmail_identity_owned_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE token_hash=${principal.sessionHash}`
+        await sql`UPDATE public.xmail_identity_owned_sessions SET created_at=to_timestamp(authenticated_at),
+            expires_at=to_timestamp(authenticated_at)+interval '1 second' WHERE token_hash=${principal.sessionHash}`
         expect(await lease()).toBeNull()
     })
 })

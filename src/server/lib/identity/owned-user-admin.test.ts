@@ -43,7 +43,7 @@ describe('owned user administration authority and HTTP contract', () => {
             sessions: { authenticate: vi.fn(async () => verified) },
             store: { profile: vi.fn(async () => ({ id: actor, email: 'local@example.invalid', firstName: null, lastName: null, emailVerified: false })) },
         } as unknown as IdentityRuntime
-        const req = { method: 'GET', headers: { cookie: `__Host-xmail_identity=${'s'.repeat(43)}`, 'x-user-id': target }, once: vi.fn(),
+        const req = { method: 'GET', originalUrl: '/api/users', headers: { cookie: `__Host-xmail_identity=${'s'.repeat(43)}`, 'x-user-id': target }, once: vi.fn(),
             get: (name: string) => name === 'host' ? 'app.example.invalid' : undefined } as unknown as Request
         const res = { locals: {}, once: vi.fn() } as unknown as Response
         expect(await admitOwnedIdentity(req, res, { enabled: () => true, runtime: async () => runtime })).toBe('authenticated')
