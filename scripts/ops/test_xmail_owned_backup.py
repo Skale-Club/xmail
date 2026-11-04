@@ -10,6 +10,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import tarfile
 import types
 import unittest
 from unittest.mock import patch
@@ -98,6 +99,21 @@ class OwnedBackupGuards(unittest.TestCase):
         host='188.245.112.3 '+key
         with patch.object(installer,'HOST_SHA',hashlib.sha256(raw).hexdigest()):self.assertEqual(installer.host_line(host),host+'\n')
         with self.assertRaises(ValueError):installer.host_line(host)
+
+    def test_archive_extraction_refuses_links_traversal_duplicates_and_extra_members(self):
+        for entries in [['snapshot.dump','manifest.json'],['../outside','manifest.json'],['snapshot.dump','snapshot.dump'],['snapshot.dump','manifest.json','extra'],['snapshot.dump','link']]:
+            with tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);archive=root/'input.tar';stage=root/'out';stage.mkdir()
+                with tarfile.open(archive,'w',format=tarfile.USTAR_FORMAT) as out:
+                    for name in entries:
+                        info=tarfile.TarInfo(name)
+                        if name=='link':info.type=tarfile.SYMTYPE;info.linkname='outside';out.addfile(info)
+                        else:info.size=3;out.addfile(info,io.BytesIO(b'abc'))
+                if entries==['snapshot.dump','manifest.json']:
+                    backup.extract_archive(archive,stage);self.assertEqual((stage/'snapshot.dump').read_bytes(),b'abc')
+                else:
+                    with self.assertRaises(ValueError):backup.extract_archive(archive,stage)
+                self.assertFalse((root/'outside').exists())
 
     def test_daily_unit_has_no_secret_arguments_or_app_restart_or_key_export(self):
         self.assertIn('03:15:00 UTC',installer.TIMER);self.assertIn('Persistent=true',installer.TIMER)

@@ -147,11 +147,25 @@ def restore(m,c,stage,expected,operation):
         need(not m.call(['docker','ps','-aq','--filter','name=^/'+name+'$']).strip())
 
 
+def extract_archive(archive,stage):
+    names=set()
+    with tarfile.open(archive,'r|') as tar:
+        for entry in tar:
+            need(entry.name in {'snapshot.dump','manifest.json'} and entry.name not in names and len(names)<2
+                and entry.isfile() and 0<entry.size<MAX and (entry.name!='manifest.json' or entry.size<=65536))
+            names.add(entry.name)
+            fd=os.open(stage/entry.name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,'wb') as out,tar.extractfile(entry) as source:
+                shutil.copyfileobj(source,out,65536);out.flush();os.fsync(out.fileno())
+    need(names=={'snapshot.dump','manifest.json'})
+
+
 def receive(m,c):
     need(os.environ.get('SSH_CONNECTION','').split()[0:1]==[SOURCE] and os.environ.get('SSH_CONNECTION','').split()[2:3]==[TARGET]
         and os.environ.get('SSH_ORIGINAL_COMMAND')=='xmail-owned-backup')
     raw=sys.stdin.buffer.readline(32769);need(len(raw)<=32768 and raw.endswith(b'\n'));value=packet(json.loads(raw))
     private_dir(c,OPS);private_dir(c,ARCHIVES,True)
+    need(shutil.disk_usage(ARCHIVES).free>=max(1024**3,3*value['cipherBytes']+256*1024*1024))
     import fcntl
     lock=os.open(OPS/'receiver.lock',os.O_WRONLY|os.O_NOFOLLOW);info=os.fstat(lock)
     need(info.st_uid==info.st_gid==0 and stat.S_IMODE(info.st_mode)==0o600 and info.st_nlink==1 and info.st_size==0)
@@ -173,13 +187,7 @@ def receive(m,c):
             c['command'](['openssl','cms','-decrypt','-binary','-inform','DER','-in',str(encrypted),'-recip',str(RECIPIENT/'recipient.crt'),'-inkey',str(RECIPIENT/'recipient.key')],stdout=out)
             out.flush();os.fsync(out.fileno())
         need(fingerprint(c,archive)==(value['archiveSha256'],value['archiveBytes']))
-        with tarfile.open(archive,'r:') as tar:
-            entries=tar.getmembers();need(len(entries)==2 and {x.name for x in entries}=={'snapshot.dump','manifest.json'}
-                and all(x.isfile() and 0<x.size<MAX for x in entries))
-            for entry in entries:
-                need(entry.name!='manifest.json' or entry.size<=65536)
-                fd=os.open(stage/entry.name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-                with os.fdopen(fd,'wb') as out,tar.extractfile(entry) as source:shutil.copyfileobj(source,out,65536);out.flush();os.fsync(out.fileno())
+        extract_archive(archive,stage)
         expected=c['read_json'](stage/'manifest.json');validate_manifest(expected)
         restore(m,c,stage,expected,value['operation'])
         for name in ['plaintext.tar','snapshot.dump','manifest.json']:(stage/name).unlink()
