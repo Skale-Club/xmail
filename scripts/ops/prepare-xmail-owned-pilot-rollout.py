@@ -142,6 +142,9 @@ def controls_sql(m, review, frozen, runtime_password, reader_password, expiry):
     payload = base64.b64encode(m.encoded(review['users'])).decode()
     ref = 'owned-auth-review:'+m.sha(m.encoded(review))
     captured = dt.datetime.fromisoformat(review['capturedAt'].replace('Z', '+00:00')).isoformat()
+    expiry_time = dt.datetime.fromisoformat(expiry.replace('Z','+00:00'))
+    require(expiry_time.tzinfo is not None and 0 < (expiry_time-dt.datetime.now(dt.timezone.utc)).total_seconds() <= 900)
+    expiry = expiry_time.isoformat()
     require(re.fullmatch(r'[0-9T:+.\-]+', captured) and re.fullmatch(r'[0-9T:+.\-]+', expiry))
     sql = "BEGIN; SET LOCAL log_statement='none'; SET LOCAL log_min_error_statement='panic'; SET LOCAL statement_timeout='20s'; SET LOCAL lock_timeout='2s';\n"
     sql += 'LOCK TABLE public.users,public.organization_users IN SHARE MODE; LOCK TABLE public.xmail_identity_user_controls IN SHARE ROW EXCLUSIVE MODE; '
