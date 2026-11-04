@@ -112,25 +112,26 @@ def restore(m,c,stage,expected,operation):
     need(shutil.disk_usage('/opt').free>=1024**3)
     mem={k:int(v.split()[0]) for k,v in (line.split(':',1) for line in open('/proc/meminfo'))}
     need(mem['MemAvailable']>=1536*1024)
-    image=m.inspect(PG_IMAGE);need(image['Id']==PG_IMAGE)
+    image=m.inspect(PG_IMAGE);need(image['Id']==PG_IMAGE and set(image['Config'].get('Volumes') or {})=={'/var/lib/postgresql/data'})
     name='xmail-dr-'+operation
     need(not m.call(['docker','ps','-aq','--filter','name=^/'+name+'$']).strip())
     started=False
     try:
         m.call(['docker','run','-d','--pull=never','--name',name,'--label','com.skale.xmail-dr='+operation,'--network','none',
-            '--read-only','--tmpfs','/var/lib/postgresql:rw,size=268435456','--tmpfs','/var/run/postgresql:rw,size=8388608',
+            '--read-only','--tmpfs','/var/lib/postgresql/data:rw,size=268435456','--tmpfs','/var/run/postgresql:rw,size=8388608',
             '--tmpfs','/tmp:rw,size=16777216','--memory','384m','--memory-swap','384m','--cpus','0.5','--pids-limit','96',
             '--log-driver','none','--security-opt','no-new-privileges','--env','POSTGRES_HOST_AUTH_METHOD=trust',PG_IMAGE,
             '-c','shared_buffers=32MB','-c','work_mem=2MB','-c','max_connections=5'],timeout=15);started=True
         for _ in range(60):
-            ready=subprocess.run(['docker','exec',name,'pg_isready','-U','postgres'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=3)
+            ready=subprocess.run(['docker','exec',name,'pg_isready','-h','127.0.0.1','-U','postgres'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=3)
             if ready.returncode==0:break
             time.sleep(.5)
         need(ready.returncode==0)
         state=m.inspect(name)
         need(state['Image']==PG_IMAGE and state['NetworkSettings'].get('Networks')=={'none':state['NetworkSettings']['Networks'].get('none')}
             and not any((state['NetworkSettings'].get('Ports') or {}).values())
-            and not any(x.get('Type') in ['volume','bind'] for x in state.get('Mounts',[])))
+            and not any(x.get('Type') in ['volume','bind'] for x in state.get('Mounts',[]))
+            and state['HostConfig']['Tmpfs'].get('/var/lib/postgresql/data')=='rw,size=268435456')
         roles=expected['policyRoles']
         sql=''.join('CREATE ROLE "'+r+'" NOLOGIN;' for r in roles)+'CREATE DATABASE xmail_dr;'
         m.call(['docker','exec','-i',name,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres','-d','postgres'],sql.encode())
@@ -143,7 +144,7 @@ def restore(m,c,stage,expected,operation):
     finally:
         if started:
             state=m.inspect(name);need((state['Config'].get('Labels') or {}).get('com.skale.xmail-dr')==operation and state['Image']==PG_IMAGE)
-            m.call(['docker','rm','-f',name])
+            m.call(['docker','rm','-f','-v',name])
         need(not m.call(['docker','ps','-aq','--filter','name=^/'+name+'$']).strip())
 
 

@@ -45,7 +45,10 @@ decryption before trusting plaintext size/hash. Tar extraction admits exactly
 two regular filenames and no links or traversal. It then restores into a fresh
 temporary PostgreSQL container using the exact cached PG image, no network,
 no published ports, no host data mounts, read-only root filesystem, tmpfs data,
-384MiB memory and half a CPU. Restore uses one transaction and stops on error.
+384MiB memory and half a CPU. The exact image Config.Volumes path
+`/var/lib/postgresql/data` is tmpfs, with no anonymous data volume. Readiness
+probes TCP127.0.0.1 so the temporary initdb socket server cannot pass admission.
+Cleanup removes only the nonce-owned container and its anonymous volumes. Restore uses one transaction and stops on error.
 All74 table schema/full-row fingerprints, public function/type signatures,
 referenced policy roles and the complete migration ledger hash are compared.
 No object is restored over either application's real database. Temporary
@@ -56,6 +59,9 @@ credentials and application secrets remain a separate host provisioning concern;
 the archive intentionally does not restore global role passwords or grants.
 
 ## Paths and schedule
+
+The installed design is **push from49 to188**, with the transport private key
+only on49. An earlier pull proposal was discarded before installation.
 
 Both hosts use `/opt/xmail/owned-backup-ops` root0700, with public reviewed code
 under `code/` and files root0600. Source49 retains `transport.key`, `known_hosts`,

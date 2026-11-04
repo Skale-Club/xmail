@@ -11,6 +11,7 @@ import stat
 import sys
 import tempfile
 import tarfile
+from types import SimpleNamespace
 import types
 import unittest
 from unittest.mock import patch
@@ -124,6 +125,49 @@ class OwnedBackupGuards(unittest.TestCase):
         self.assertIn('xmail-owned-backup.py --backup',installer.SERVICE)
         for forbidden in ['DATABASE_URL','PRIVATE KEY','docker restart','docker stop','ssh-agent','Environment=']:
             self.assertNotIn(forbidden,installer.SERVICE+installer.TIMER)
+
+    def test_restore_waits_for_final_tcp_server_and_removes_exact_tmpfs_container(self):
+        operation='owned-20261104T200000Z-'+'a'*16
+        names=list(backup.IDENTITY)+[str(i) for i in range(70)]
+        expected={'schema':{'tables':{n:'a'*64 for n in names}},
+            'fingerprints':{n:{'count':0,'sha256':'b'*64} for n in names},
+            'ledger':{'count':80,'sha256':'c'*64},'policyRoles':[]}
+        calls=[];state={'tcpAttempts':0,'finalServer':False,'removed':False}
+        container={'Image':backup.PG_IMAGE,'Config':{'Labels':{'com.skale.xmail-dr':operation}},
+            'NetworkSettings':{'Networks':{'none':{}},'Ports':{}},'Mounts':[],
+            'HostConfig':{'Tmpfs':{'/var/lib/postgresql/data':'rw,size=268435456'}}}
+        def inspect(identifier):
+            return {'Id':backup.PG_IMAGE,'Config':{'Volumes':{'/var/lib/postgresql/data':{}}}} if identifier==backup.PG_IMAGE else container
+        def call(args,payload=None,timeout=None):
+            calls.append(args)
+            if args[:2]==['docker','ps']:return b''
+            if args[:2]==['docker','rm']:
+                self.assertEqual(args[2:4],['-f','-v']);state['removed']=True;return b''
+            if payload and payload.startswith(b'BEGIN READ ONLY'):return json.dumps(expected).encode()
+            return b''
+        def run(args,**_kwargs):
+            if 'pg_isready' in args:
+                if '-h' in args and args[args.index('-h')+1]=='127.0.0.1':
+                    state['tcpAttempts']+=1;state['finalServer']=state['tcpAttempts']>1
+                    return SimpleNamespace(returncode=0 if state['finalServer'] else 1)
+                return SimpleNamespace(returncode=0) # The unsafe initdb socket is already ready.
+            self.assertIn('pg_restore',args);self.assertTrue(state['finalServer'])
+            return SimpleNamespace(returncode=0)
+        real,_=self.libraries()
+        m=SimpleNamespace(IDENTITY=real.IDENTITY,business_schema_sql=real.business_schema_sql,
+            fingerprints_sql=real.fingerprints_sql,inspect=inspect,call=call,json_result=lambda x:json.loads(x))
+        real_open=open
+        def opened(path,*args,**kwargs):
+            if str(path)=='/proc/meminfo':return io.StringIO('MemAvailable: 2097152 kB\n')
+            return real_open(path,*args,**kwargs)
+        with tempfile.TemporaryDirectory() as tmp:
+            stage=Path(tmp);(stage/'snapshot.dump').write_bytes(b'offline fixture')
+            with patch.object(backup.shutil,'disk_usage',return_value=SimpleNamespace(free=2*1024**3)),patch('builtins.open',side_effect=opened),patch.object(backup.subprocess,'run',side_effect=run),patch.object(backup.time,'sleep'):
+                backup.restore(m,{},stage,expected,operation)
+        self.assertEqual(state['tcpAttempts'],2);self.assertTrue(state['removed'])
+        create=next(x for x in calls if x[:2]==['docker','run'])
+        self.assertIn('/var/lib/postgresql/data:rw,size=268435456',create)
+        self.assertNotIn('/var/lib/postgresql:rw,size=268435456',create)
 
 
 if __name__=='__main__':unittest.main()
