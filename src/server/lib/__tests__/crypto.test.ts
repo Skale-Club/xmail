@@ -29,6 +29,17 @@ afterEach(() => {
 })
 
 describe('crypto — ida e volta', () => {
+    it('never inherits the production encryption key in development', () => {
+        const productionCiphertext = encryptSecret('mailbox-password')
+        vi.stubEnv('NODE_ENV', 'development')
+        vi.stubEnv('XMAIL_DEV_OUTLOOK_TOKEN_ENCRYPTION_KEY', '')
+        expect(() => encryptSecret('x')).toThrow('Missing XMAIL_DEV_OUTLOOK_TOKEN_ENCRYPTION_KEY')
+        vi.stubEnv('XMAIL_DEV_OUTLOOK_TOKEN_ENCRYPTION_KEY', KEY_B)
+        expect(decryptSecret(encryptSecret('development-password'))).toBe('development-password')
+        expect(() => decryptSecret(productionCiphertext)).toThrow(CredentialKeyMismatchError)
+        vi.stubEnv('NODE_ENV', 'production')
+        expect(decryptSecret(productionCiphertext)).toBe('mailbox-password')
+    })
     it('decifra o que cifrou com a mesma chave', () => {
         expect(decryptSecret(encryptSecret('senha-secreta'))).toBe('senha-secreta')
     })

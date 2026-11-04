@@ -21,11 +21,14 @@ import {
 } from './service-auth'
 import { SERVICE_ORGANIZATION_HEADER, SERVICE_PRINCIPAL_HEADER } from './outreach-access'
 import { authenticateOutreachAgent, stripAgentHeaders } from './agent-auth'
+import { admitOwnedIdentity } from './identity/api-admission'
+import { browserAuthAuthority } from './identity/browser-auth-authority'
 
 // SEC — each entry binds a METHOD to a path. Matching on path alone would make a route
 // public for writes just because it is public for reads (see the branding write bypass note
 // this replaced).
 const PUBLIC_ROUTES: { method: string; path: string }[] = [
+    { method: 'GET', path: '/api/auth/authority' },
     { method: 'POST', path: '/api/auth/login' },
     { method: 'POST', path: '/api/auth/register' },
     { method: 'POST', path: '/api/auth/reset-password' },
@@ -103,6 +106,17 @@ export function createApiAuthMiddleware(): RequestHandler {
                 return next()
             }
         }
+
+        let authority: 'legacy' | 'owned'
+        try { authority = browserAuthAuthority(process.env) }
+        catch { return res.status(503).json({ error: 'Browser identity authority is unavailable.' }) }
+        const owned = await admitOwnedIdentity(req, res)
+        if (owned === 'rejected') return
+        if (owned === 'authenticated') return next()
+
+        // Public and capability-scoped machine paths were handled above. An
+        // absent cookie under owned authority is never permission to try bearer.
+        if (authority === 'owned') return res.status(401).json({ error: 'Owned identity authentication is required.' })
 
         const authHeader = req.headers.authorization
         if (!authHeader?.startsWith('Bearer ')) {

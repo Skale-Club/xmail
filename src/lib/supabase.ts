@@ -1,14 +1,25 @@
 import { createClient } from '@supabase/supabase-js'
+import { legacyBrowserAuthConfirmed, subscribeBrowserAuthBoundary } from './browser-auth-authority'
 
 const runtimeConfig = typeof window !== 'undefined' ? window.__APP_CONFIG__ : undefined
 const supabaseUrl = runtimeConfig?.VITE_SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = runtimeConfig?.VITE_SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY
 
-if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error('Missing Supabase environment variables')
-}
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+let client: ReturnType<typeof createClient> | undefined
+subscribeBrowserAuthBoundary(() => {
+    if (client && !legacyBrowserAuthConfirmed()) void client.auth.stopAutoRefresh().catch(() => {})
+})
+// Imports cannot restore browser storage, detect recovery URL tokens or start an
+// auto-refresh timer. Only a confirmed server legacy authority permits creation.
+export const supabase = new Proxy({} as ReturnType<typeof createClient>, {
+    get(_target, property) {
+        if (!legacyBrowserAuthConfirmed()) throw new Error('Legacy browser authentication is unavailable.')
+        if (!supabaseUrl || !supabaseAnonKey) throw new Error('Missing Supabase environment variables')
+        // Refresh is explicit and preceded by a fresh authority check in callers.
+        client ??= createClient(supabaseUrl, supabaseAnonKey, { auth: { autoRefreshToken: false } })
+        return Reflect.get(client, property, client)
+    },
+})
 
 // Types for Supabase auth
 export interface AuthUser {

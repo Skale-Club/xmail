@@ -14,6 +14,8 @@ import {
     outreachConversations,
 } from '../../../db/schema'
 import { requireOutreachRead, requireOutreachWrite, type OutreachMembership } from '../../lib/outreach-access'
+import { serveOwnedStream } from '../../lib/identity/owned-stream'
+import { createOwnedStreamAuthorizer } from '../../lib/identity/owned-stream-access'
 import { evaluateEffectiveAutonomy, type AutonomyDenyReason } from '../../lib/inbox-ai-automation'
 import { createLogger } from '../../lib/logger'
 import {
@@ -299,6 +301,17 @@ router.get('/counts', async (req: Request, res: Response) => {
 // predicate as every read endpoint, so it can never leak another org's activity. On client
 // disconnect the subscriber is released and the heartbeat cleared — no leaked intervals/handles.
 router.get('/events', async (req: Request, res: Response) => {
+    if (res.locals.xmailOwnedIdentity === true) {
+        const target = uuid.safeParse(req.query.organizationId)
+        if (!target.success) return res.status(400).json({ error: 'organizationId is required' })
+        return serveOwnedStream(req, res, {
+            userId: res.locals.xmailOwnedPrincipal?.userId,
+            authorize: createOwnedStreamAuthorizer(req, res, { kind: 'organization', id: target.data }),
+            subscribe: listener => subscribeToInboxEvents(target.data, listener),
+            frame: formatInboxSseEvent, headers: INBOX_SSE_HEADERS,
+            connected: formatInboxSseComment('connected'), heartbeat: formatInboxSseComment('ping'), heartbeatMs: INBOX_SSE_HEARTBEAT_MS,
+        })
+    }
     const organizationId = await authorizeOrganization(req, res)
     if (!organizationId) return
 

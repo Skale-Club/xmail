@@ -9,8 +9,9 @@
 import bcrypt from 'bcrypt'
 import { eq, and } from 'drizzle-orm'
 import { db } from '../../db'
-import { users, domains, mailboxes, mailFolders, mailMessages, mailFilters, signatures } from '../../db/schema'
+import { users, domains, mailboxes, mailFolders, mailMessages, mailFilters, signatures, identityUserControls } from '../../db/schema'
 import { encryptSecret } from './crypto'
+import { browserAuthAuthority } from './identity/browser-auth-authority'
 
 const BCRYPT_ROUNDS = 12
 // QUA-06 — see audit M11. Gate PII-bearing debug logs behind this flag so production
@@ -26,25 +27,49 @@ const isProd = process.env.NODE_ENV === 'production'
  * tied to their email and may use webmail/SMTP/IMAP normally.
  */
 export async function authenticateNativeUser(email: string, password: string) {
-    const user = await db.query.users.findFirst({
-        where: eq(users.email, email.toLowerCase()),
-    })
+    let owned: boolean
+    try { owned = browserAuthAuthority(process.env) === 'owned' } catch { return null }
+    try {
+        const user = await db.query.users.findFirst({
+            where: eq(users.email, email.toLowerCase()),
+        })
 
-    if (!user || !user.passwordHash) return null
+        if (!user || !user.passwordHash) return null
 
-    const activeMailbox = await db.query.mailboxes.findFirst({
-        where: and(
-            eq(mailboxes.userId, user.id),
-            eq(mailboxes.email, user.email.toLowerCase()),
-            eq(mailboxes.isNative, true),
-            eq(mailboxes.isActive, true),
-        ),
-        columns: { id: true },
-    })
-    if (!activeMailbox) return null
+        const activeMailbox = await db.query.mailboxes.findFirst({
+            where: and(
+                eq(mailboxes.userId, user.id),
+                eq(mailboxes.email, user.email.toLowerCase()),
+                eq(mailboxes.isNative, true),
+                eq(mailboxes.isActive, true),
+            ),
+            columns: { id: true },
+        })
+        if (!activeMailbox) return null
 
-    const valid = await bcrypt.compare(password, user.passwordHash)
-    return valid ? user : null
+        const reviewedActiveControl = async () => {
+            const control = await db.query.identityUserControls.findFirst({ where: eq(identityUserControls.userId, user.id) })
+            return !!control && control.disabledAt === null
+        }
+        if (owned && !await reviewedActiveControl()) return null
+
+        const valid = await bcrypt.compare(password, user.passwordHash)
+        if (!valid) return null
+        // bcrypt work can outlast a concurrent local deactivation. Never
+        // change the hash or mailbox flags here; re-read admission before success.
+        if (owned) {
+            const [control, mailbox] = await Promise.all([
+                reviewedActiveControl(),
+                db.query.mailboxes.findFirst({ where: and(eq(mailboxes.userId, user.id), eq(mailboxes.email, user.email.toLowerCase()),
+                    eq(mailboxes.isNative, true), eq(mailboxes.isActive, true)), columns: { id: true } }),
+            ])
+            if (!control || !mailbox) return null
+        }
+        return user
+    } catch (error) {
+        if (owned) return null // Both protocols return their existing generic authentication failure.
+        throw error // Preserve legacy failure handling outside the owned cutover.
+    }
 }
 
 /**

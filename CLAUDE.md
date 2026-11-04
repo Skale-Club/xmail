@@ -116,6 +116,21 @@ npm run db:rls           # Run the RLS migration script
 npm run db:audit         # Audit schema drift between schema.ts and the DB
 ```
 
+**Development database selection (migration in progress):** `dev:server` forces
+`NODE_ENV=development`. Both Drizzle pools require `XMAIL_DEV_SUPABASE_PROJECT_REF`
+and `XMAIL_DEV_DATABASE_URL`; optional `XMAIL_DEV_DIRECT_URL` must target that same
+approved Supabase development project. They never inherit `DATABASE_URL` or
+`DIRECT_URL` in development, including with `XMAIL_ALLOW_REMOTE_DB=true`.
+Both URLs require an explicit password, database `postgres`, and direct/session
+port 5432 (an omitted port is pinned). Direct connections require user `postgres`;
+pooler users must be `postgres.<approved-ref>`. The selector adds `sslmode=require`
+when absent and accepts only required TLS modes (`require`, `verify-ca`,
+`verify-full`); other/duplicate query options and URL fragments fail before pool
+construction. The development migration wrapper uses the same normalized target.
+Operational scripts still using raw URLs are not covered. Do not start development
+until Auth settings and external side effects are isolated too. See
+[`docs/xmail-supabase-exit.md`](docs/xmail-supabase-exit.md) for evidence and remaining work.
+
 > **Typechecking needs BOTH configs.** `tsconfig.json` **excludes `src/server/**` and
 > `src/db/**`**, so `npx tsc --noEmit -p tsconfig.json` type-checks only the client and
 > reports "clean" while real errors sit in server code. Server and DB code are covered by
@@ -126,7 +141,30 @@ npm run db:audit         # Audit schema drift between schema.ts and the DB
 
 ## Architecture Notes
 
+`src/server/index.ts` selects a runtime before importing application modules. Its
+default path loads the unchanged production server from `production-server.ts`.
+Explicit `XMAIL_STAGING_HTTP_ONLY=true` loads only the restricted private-candidate
+reader/aggregate HTTP probe; see `docs/xmail-http-staging.md`. Do not use development
+mode or ENABLE_MAIL_SERVER alone to isolate a copied database from startup jobs.
+
 ### Authentication Flow
+
+**Owned identity pilot (not activated):** `src/server/lib/identity/` provides
+Firebase Google/verified-phone token verification, a live account-status adapter,
+hashed opaque session policy and a postgres.js store. Migrations `079`/`080` are
+additive and applied on the private candidate; they preserve application UUIDs,
+organization roles, `isAdmin` and SMTP/IMAP `password_hash`. The reviewed controls
+import reconciled 39 users (1 disabled), with matching readback and native-hash
+digests; independent audit confirmed 39 controls/38 memberships, RLS on all four
+tables and zero bindings, sessions or challenges. Candidate runtime roles remain
+NOLOGIN, `XMAIL_GOOGLE_AUTH_ENABLED=false`, and the production container and
+application source are unchanged. `XMAIL_GOOGLE_AUTH_ENABLED` defaults off.
+The isolated `/auth/identity` pilot uses host-only HttpOnly cookies, single-use
+CSRF challenges, fresh local controls/provider status and in-memory Firebase
+persistence. Current `/login` remains the default. DEV needs distinct explicit
+SQL/Auth/Google projects; API-key provenance is checked before exposing browser
+config. Read `docs/xmail-identity-pilot.md` and `docs/xmail-supabase-exit.md` before activation.
+
 1. Frontend authenticates via Supabase Auth (`supabase.auth.signInWithPassword`)
 2. JWT token sent as `Authorization: Bearer <token>` header
 3. Express middleware validates token with Supabase, sets `x-user-id` header
@@ -272,6 +310,17 @@ be rebuilt from scratch. Keep its "achados abertos" table and audit date current
 
 Required: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `DATABASE_URL`, `OUTLOOK_TOKEN_ENCRYPTION_KEY`
 
+Development Auth additionally requires `XMAIL_DEV_SUPABASE_ANON_KEY` and
+`XMAIL_DEV_SUPABASE_SERVICE_ROLE_KEY` for the explicitly selected
+`XMAIL_DEV_SUPABASE_PROJECT_REF`. Vite development and server Auth never inherit
+production `SUPABASE_*` / `VITE_SUPABASE_*` aliases. Credential encryption in
+development uses only `XMAIL_DEV_OUTLOOK_TOKEN_ENCRYPTION_KEY`. Production keys and
+native mailbox password hashes remain unchanged. Development does not start cron
+jobs, native mail listeners, startup ops alerts or the DB liveness watchdog.
+This is **not** complete external-effect isolation: manual send/sync, route-driven
+webhooks, OAuth, R2 and stored integration credentials still need sanitization or
+dedicated sandbox targets. Do not start development against a production copy.
+
 > **`OUTLOOK_TOKEN_ENCRYPTION_KEY` has no fallback, on purpose.** It is the single key behind
 > `encryptSecret`/`decryptSecret` (stored SMTP/IMAP passwords, Outlook tokens). It used to fall back
 > to `JWT_SECRET`, which meant two servers pointed at the same database could encrypt with two
@@ -335,7 +384,7 @@ All tables have RLS enabled (policies in `supabase/migrations/001_enable_rls.sql
 - **Do NOT run `drizzle-kit generate` to produce migrations.** The Drizzle-generated diff would conflict with the hand-rolled SQL we've accumulated since `drizzle/archive/0000_dear_wolverine.sql` (the original genesis DDL — moved into `drizzle/archive/` because it targets the pre-`organization_id`, server-scoped schema and must never be applied against the current database; see `drizzle/archive/README.md`). The `db:generate`/`db:push` scripts have been removed from `package.json` (Phase 13 QUA-02 / audit M3) to prevent accidental destruction. `db:studio` (read-only Drizzle Studio) and `db:indexes` remain available.
 - **Do NOT add Drizzle relations / constraints expecting them to apply automatically.** The TS-side schema is for type information; the DB side comes from the SQL migration.
 
-**Numbering convention:** Migrations are sequential integers. As of 2026-10-28 the files run through `078_campaign_enrollment_approval.sql`; the next free number is `079`. Migrations `070` through `078` are applied in production with their ledger rows (`077` and `078` verified on 2026-10-28; `078` widens the `outreach_action_approvals.action_kind` check for `campaign_enrollment`). Re-verify what is actually applied against `supabase_migrations.schema_migrations` before assuming. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
+**Numbering convention:** Migrations are sequential integers. This branch reserves `079_owned_identity_foundation.sql` and `080_identity_browser_challenges.sql` (unapplied outside disposable CI); the next free number is `081`. Migrations `070` through `078` are applied in production with their ledger rows (`077` and `078` verified on 2026-10-28; `078` widens the `outreach_action_approvals.action_kind` check for `campaign_enrollment`). Re-verify what is actually applied against `supabase_migrations.schema_migrations` before assuming. When two phases plan migrations in parallel, the second to land takes the next number and rewrites its planning docs accordingly.
 
 > **Resolved collision (2026-08-15):** `051_warmup_engine.sql` shared its prefix with the
 > already-applied `051_prospecting_journey_and_costs.sql`. Because the ledger keys on the numeric

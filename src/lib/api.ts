@@ -8,6 +8,7 @@
  * stray import doesn't hard-fail while the migration is verified.
  */
 import { supabase } from './supabase'
+import { requireLegacyBrowserAuth } from './browser-auth-authority'
 
 export class ApiError extends Error {
     status: number
@@ -26,6 +27,7 @@ export class ApiError extends Error {
 const REQUEST_TIMEOUT_MS = 30_000
 
 async function getAccessToken(): Promise<string> {
+    await requireLegacyBrowserAuth()
     const { data: { session } } = await supabase.auth.getSession()
     if (!session?.access_token) {
         throw new ApiError('Not authenticated', 401, 'NOT_AUTHENTICATED')
@@ -33,8 +35,8 @@ async function getAccessToken(): Promise<string> {
     return session.access_token
 }
 
-function handleUnauthorized() {
-    supabase.auth.signOut().catch(() => {})
+async function handleUnauthorized() {
+    try { await requireLegacyBrowserAuth(); await supabase.auth.signOut() } catch { /* No legacy cleanup after an authority change. */ }
     window.location.href = '/login'
 }
 
@@ -65,7 +67,7 @@ export async function apiFetch<T = unknown>(path: string, init: ApiFetchOptions 
         })
 
         if (response.status === 401) {
-            handleUnauthorized()
+            await handleUnauthorized()
             throw new ApiError('Unauthorized', 401, 'UNAUTHORIZED')
         }
 

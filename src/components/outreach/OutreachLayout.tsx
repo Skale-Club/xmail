@@ -6,7 +6,7 @@ import { useInboxUnreadCount } from '../../hooks/useUnifiedInbox'
 import { InboxRealtimeProvider } from '../../hooks/useUnifiedInboxEvents'
 import { clearComposerDraftsForUser } from './inbox/composer-draft'
 import { useBranding } from '../../lib/branding'
-import { supabase } from '../../lib/supabase'
+import { signOutOfXmail } from '../../lib/owned-identity'
 import { AppLogo } from '../AppLogo'
 import { Button } from '../ui/button'
 import { DeployFooter } from '../DeployFooter'
@@ -96,7 +96,7 @@ export function OutreachLayout({ children }: OutreachLayoutProps) {
     const handleSignOut = async () => {
         // Drafts are per user: drop this user's unsent inbox replies from the browser on sign-out.
         clearComposerDraftsForUser(user?.id)
-        await supabase.auth.signOut()
+        if (await signOutOfXmail()) { window.location.href = '/auth/identity'; return }
         navigate('/login')
     }
 

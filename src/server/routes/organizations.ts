@@ -7,6 +7,7 @@ import { deleteOrganizationCascade } from '../lib/cascade'
 import { isPlatformAdmin } from '../lib/admin'
 import { validateEmailDomainForOrg, createUserMailbox, deleteUserMailbox, hashPassword } from '../lib/native-mail'
 import { supabaseAdminClient } from '../lib/supabase'
+import { browserAuthAuthority } from '../lib/identity/browser-auth-authority'
 
 const router = Router()
 const createOrganizationSchema = z.object({
@@ -279,6 +280,9 @@ router.post('/:id/members', async (req: Request, res: Response) => {
 
         // Auto-create user if they don't exist and a password was provided
         if (!userToAdd) {
+            if (browserAuthAuthority(process.env) === 'owned') {
+                return res.status(409).json({ error: 'Create a local account through owned administration first. Owned invitation onboarding is unavailable.', code: 'OWNED_ONBOARDING_UNAVAILABLE' })
+            }
             if (!password) {
                 return res.status(400).json({ error: 'Password is required to create a new user' })
             }

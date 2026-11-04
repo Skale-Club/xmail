@@ -6,8 +6,10 @@ import { eq } from 'drizzle-orm'
 import { hashPassword, createUserMailbox } from '../lib/native-mail'
 import { createSupabaseUserClient, supabaseAnonClient } from '../lib/supabase'
 import { invalidateToken, invalidateUser } from '../lib/auth-cache'
+import { createBrowserAuthRouteGuard } from '../lib/identity/browser-auth-authority'
 
 const router = Router()
+router.use(createBrowserAuthRouteGuard(() => process.env))
 
 const REFRESH_TOKEN_COOKIE_NAME = 'sb_refresh_token'
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000

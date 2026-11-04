@@ -1,0 +1,505 @@
+import 'dotenv/config'
+import { supabasePublicConfig } from './lib/supabase'
+import { ALLOW_REMOTE_DB_ENV, checkRemoteDbGuard } from './lib/remote-db-guard'
+
+// ANTES de qualquer import que abra conexão: um servidor de desenvolvimento apontado para o banco
+// de produção já cadastrou credenciais cifradas com a chave errada, e o estrago só apareceu dias
+// depois, no envio. Ver lib/remote-db-guard.ts.
+const remoteDbRefusal = checkRemoteDbGuard({
+    databaseUrl: process.env.DATABASE_URL,
+    nodeEnv: process.env.NODE_ENV,
+    // development URLs are validated for BOTH pools by db/database-target.ts before use.
+    allowRemote: process.env.NODE_ENV === 'development' ? 'true' : process.env[ALLOW_REMOTE_DB_ENV],
+})
+if (remoteDbRefusal) {
+    console.error(`
+${remoteDbRefusal}
+`)
+    process.exit(1)
+}
+import express, { type Request, type Response } from 'express'
+import cors from 'cors'
+import { join } from 'path'
+import { timingSafeEqual } from 'node:crypto'
+import { existsSync } from 'fs'
+import helmet from 'helmet'
+import rateLimit from 'express-rate-limit'
+import { eq } from 'drizzle-orm'
+import { closeDatabaseConnection, db } from '../db'
+import { users } from '../db/schema'
+import authRoutes from './routes/auth'
+import { createIdentityRouter } from './routes/identity'
+import { identityBrowserSources } from './lib/identity/config'
+import userRoutes from './routes/users'
+import organizationRoutes from './routes/organizations'
+import domainRoutes from './routes/domains'
+import messageRoutes from './routes/messages'
+import webhookRoutes from './routes/webhooks'
+import credentialRoutes from './routes/credentials'
+import routeRoutes from './routes/routes'
+import systemRoutes from './routes/system'
+import trackRoutes from './routes/track'
+import templateRoutes from './routes/templates'
+import outreachRoutes from './routes/outreach'
+import agentOutreachRoutes from './routes/agent-outreach'
+import outreachHealthRoutes from './routes/admin/outreach-health'
+import dmarcRoutes from './routes/admin/dmarc'
+import integrationsRoutes from './routes/integrations'
+import healthEmailRoutes from './routes/health-email'
+import unsubscribeRoutes from './routes/outreach/unsubscribe'
+import outlookRoutes from './routes/outlook'
+import mailRoutes from './routes/mail'
+import notificationRoutes from './routes/notifications'
+import autodiscoverRoutes from './routes/autodiscover'
+import { createSMTPServer } from './smtp-server'
+import { createIMAPServer, loadImapBranding } from './imap-server'
+import { createMXServer } from './mx-server'
+import { runReadinessChecks } from './lib/health'
+import { getMailTLSOptions } from './lib/mail-tls'
+import { createApiAuthMiddleware } from './lib/api-auth'
+import { describeServiceAuthState } from './lib/service-auth'
+import { installAlerting } from './lib/install-alerting'
+import { ensureTelegramWebhook, handleTelegramUpdate, telegramWebhookPath } from './lib/telegram-approvals'
+import { startDbLivenessWatchdog, type DbLivenessWatchdog } from './lib/db-liveness'
+import { alertOps } from './lib/ops-alert'
+import { escapeHtml } from './lib/telegram'
+import { markShuttingDown } from './lib/shutdown'
+
+const app = express()
+const PORT = process.env.PORT || 9001
+const supabaseOrigin = supabasePublicConfig.url ? new URL(supabasePublicConfig.url).origin : null
+const identitySources = identityBrowserSources(process.env)
+
+app.set('trust proxy', 1)
+
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+            'img-src': ["'self'", 'data:', 'https:', 'http:', supabaseOrigin].filter(Boolean) as string[],
+            'connect-src': ["'self'", supabaseOrigin, ...(identitySources?.connect || [])].filter(Boolean) as string[],
+            ...(identitySources ? { 'script-src': ["'self'", ...identitySources.script], 'frame-src': ["'self'", ...identitySources.frame] } : {}),
+            // QUA-05 — see audit M10. Close clickjacking (frame-ancestors), plugin-content
+            // (object-src), and base-URI hijack (base-uri) vectors. helmet defaults DO NOT
+            // include these via getDefaultDirectives().
+            'frame-ancestors': ["'none'"],
+            'object-src': ["'none'"],
+            'base-uri': ["'self'"],
+        },
+    },
+}))
+app.use((req, res, next) => {
+    if (identitySources && req.path === '/auth/identity') res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    next()
+})
+app.use(cors({
+    origin: process.env.FRONTEND_URL || 'http://localhost:9000',
+    credentials: true,
+}))
+
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: process.env.NODE_ENV === 'production' ? 500 : 2000,
+    message: { error: 'Too many requests, please try again later.' },
+})
+app.use('/api/', limiter)
+
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10, // QUA-07 — see audit M8. Bumped from 5 → 10 to reduce false lockouts of honest users.
+    message: { error: 'Too many authentication attempts, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+})
+app.use('/api/auth/login', authLimiter)
+app.use('/api/auth/reset-password', authLimiter)
+
+const trackingLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 100,
+    message: { error: 'Too many requests, please try again later.' },
+})
+app.use('/t/', trackingLimiter)
+
+// Per-user limiter for /api/mail/mailboxes/test-connection (SMTP/IMAP probe abuse defense).
+// Applied AFTER the auth middleware below so keyGenerator can read req.headers['x-user-id'].
+const testConnectionLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+        const uid = req.headers['x-user-id']
+        return typeof uid === 'string' && uid ? `user:${uid}` : `ip:${req.ip}`
+    },
+    message: { error: 'Too many connection tests; please wait a minute.' },
+})
+
+// Public unsubscribe endpoint — pre-empts P1-20. Tighter limit than /t/ because
+// /o/u/ is human-interactive (one click per recipient), not pixel-hit volume.
+//
+// Keyed on the token (the path segment right after /o/u/) + IP rather than IP alone: an IP-only
+// key lets one shared IP (corporate NAT, a mail-scanner farm) exhaust the whole bucket and lock
+// out every OTHER recipient's unsubscribe link on that IP. Keying on the token means each
+// recipient's own link has its own budget, and a missing/malformed token still falls back to
+// IP-only so the limiter never throws on a malformed request.
+//
+// max is higher for POST than GET: GET renders the RFC 8058 confirmation page (one per click,
+// plus prefetch/scanner GETs); POST is the one-click action itself, which Gmail/Outlook can
+// retry on transient failure, and which the confirmation page's own form also POSTs — a lower
+// ceiling than GET would make retries fail exactly when they're needed.
+function unsubscribeRateLimitKey(req: Request): string {
+    const pathname = req.originalUrl.split('?')[0]
+    const token = pathname.match(/\/o\/u\/([^/]+)/)?.[1]
+    return token ? `${token}:${req.ip}` : `ip:${req.ip}`
+}
+const unsubscribeLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: (req) => (req.method === 'POST' ? 120 : 30),
+    keyGenerator: unsubscribeRateLimitKey,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many unsubscribe requests, please try again later.' },
+})
+app.use('/o/u/', unsubscribeLimiter)
+
+// The pilot owns its strict body parser/timeout before the generic 10 MB parser.
+app.use('/api/auth/identity', createIdentityRouter())
+app.use(express.json({ limit: '10mb' }))
+app.use(express.urlencoded({ extended: true, limit: '10mb' }))
+// Outlook autodiscover sends XML bodies; accept them as raw text
+app.use(express.text({ type: ['application/xml', 'text/xml'], limit: '100kb' }))
+
+// Prevent browsers from caching API responses
+app.use('/api/', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+    res.setHeader('Pragma', 'no-cache')
+    next()
+})
+
+app.get('/health', (_req, res) => {
+    const uptimeSeconds = Math.floor(process.uptime())
+    const memoryUsage = process.memoryUsage()
+
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        version: process.env.DEPLOY_VERSION || 'unknown',
+        deployedAt: process.env.DEPLOYED_AT || null,
+        uptime: {
+            seconds: uptimeSeconds,
+            human: `${Math.floor(uptimeSeconds / 3600)}h ${Math.floor((uptimeSeconds % 3600) / 60)}m ${uptimeSeconds % 60}s`
+        },
+        memory: {
+            heapUsedMB: Math.round(memoryUsage.heapUsed / 1024 / 1024),
+            heapTotalMB: Math.round(memoryUsage.heapTotal / 1024 / 1024),
+            rssMB: Math.round(memoryUsage.rss / 1024 / 1024)
+        },
+        node: process.version,
+        env: process.env.NODE_ENV || 'development'
+    })
+})
+
+app.get('/health/db', async (_req, res) => {
+    const readiness = await runReadinessChecks()
+    const statusCode = readiness.services.database.ok ? 200 : 503
+
+    res.status(statusCode).json({
+        status: readiness.services.database.ok ? 'ok' : 'error',
+        checkedAt: readiness.checkedAt,
+        database: readiness.services.database,
+    })
+})
+
+app.get('/health/auth', async (_req, res) => {
+    const readiness = await runReadinessChecks()
+    const statusCode = readiness.services.auth.ok ? 200 : 503
+
+    res.status(statusCode).json({
+        status: readiness.services.auth.ok ? 'ok' : 'error',
+        checkedAt: readiness.checkedAt,
+        auth: readiness.services.auth,
+    })
+})
+
+app.get('/health/ready', async (_req, res) => {
+    const readiness = await runReadinessChecks()
+    res.status(readiness.ok ? 200 : 503).json(readiness)
+})
+
+// Mail-server health endpoint. The full diagnostic (which env vars are set, cert paths,
+// ports) is an infrastructure fingerprint, so it is only returned to the host itself
+// (runbook: `curl localhost:9001/health/mail`) or to the external monitor presenting
+// MONITOR_API_TOKEN in x-monitor-token. Everyone else gets just the TLS status.
+function isLoopbackRequest(req: Request): boolean {
+    const ip = req.ip || ''
+    return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
+}
+
+function hasMonitorToken(req: Request): boolean {
+    const expected = process.env.MONITOR_API_TOKEN
+    const provided = req.headers['x-monitor-token']
+    if (!expected || typeof provided !== 'string') return false
+    const a = Buffer.from(provided)
+    const b = Buffer.from(expected)
+    return a.length === b.length && timingSafeEqual(a, b)
+}
+
+app.get('/health/mail', (req, res) => {
+    const tls = getMailTLSOptions()
+    if (!isLoopbackRequest(req) && !hasMonitorToken(req)) {
+        return res.json({ status: 'ok', timestamp: new Date().toISOString(), tls: { loaded: tls !== null } })
+    }
+    const envChecks = {
+        SUPABASE_URL:                    !!process.env.SUPABASE_URL,
+        SUPABASE_ANON_KEY:               !!process.env.SUPABASE_ANON_KEY,
+        DATABASE_URL:                    !!process.env.DATABASE_URL,
+        JWT_SECRET:                      !!process.env.JWT_SECRET,
+        ENCRYPTION_KEY:                  !!process.env.ENCRYPTION_KEY,
+        OUTLOOK_TOKEN_ENCRYPTION_KEY:    !!process.env.OUTLOOK_TOKEN_ENCRYPTION_KEY,
+        MAIL_HOST:                       process.env.MAIL_HOST || '(not set)',
+        MAIL_DOMAIN:                     process.env.MAIL_DOMAIN || '(not set)',
+        MAIL_TLS_CERT_PATH:              process.env.MAIL_TLS_CERT_PATH || '(not set)',
+        MAIL_TLS_KEY_PATH:               process.env.MAIL_TLS_KEY_PATH || '(not set)',
+        ENABLE_MAIL_SERVER:              process.env.ENABLE_MAIL_SERVER || '(not set, defaults on)',
+        MX_PORT:                         process.env.MX_PORT || '(not set, defaults to 25 in prod / 2525 in dev)',
+        SMTP_HOST:                       process.env.SMTP_HOST ? '✓ set' : '(not set)',
+    }
+
+    const encryptionKeyPresent = !!process.env.OUTLOOK_TOKEN_ENCRYPTION_KEY
+
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        tls: {
+            loaded: tls !== null,
+            note: tls ? 'TLS certificate active — IMAP/SMTP running with TLS' : 'No TLS cert found — mail servers running in plaintext mode',
+        },
+        encryptionKey: {
+            ok: encryptionKeyPresent,
+            note: encryptionKeyPresent
+                ? 'Encryption key present (OUTLOOK_TOKEN_ENCRYPTION_KEY)'
+                : '⚠️  MISSING — mailbox provisioning will fail with 500 (set OUTLOOK_TOKEN_ENCRYPTION_KEY in Coolify)',
+        },
+        ports: {
+            smtp: parseInt(process.env.SMTP_SUBMISSION_PORT || '587'),
+            imap: parseInt(process.env.IMAP_PORT || '993'),
+            mx:   parseInt(process.env.MX_PORT || '25'),
+        },
+        env: envChecks,
+    })
+})
+
+app.get('/app-config.js', (_req, res) => {
+    res.type('application/javascript')
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+
+    const publicConfig = {
+        VITE_SUPABASE_URL: process.env.NODE_ENV === 'development' ? supabasePublicConfig.url : process.env.VITE_SUPABASE_URL || supabasePublicConfig.url || '',
+        VITE_SUPABASE_ANON_KEY: process.env.NODE_ENV === 'development' ? supabasePublicConfig.anonKey : process.env.VITE_SUPABASE_ANON_KEY || supabasePublicConfig.anonKey || '',
+        VITE_APP_NAME: process.env.VITE_APP_NAME || process.env.APP_APPLICATION_NAME || 'Xmail',
+    }
+
+    res.send(`window.__APP_CONFIG__ = ${JSON.stringify(publicConfig)};`)
+})
+
+// API authentication (public routes, machine-to-machine service-key with a bound
+// principal/organization, then Supabase JWT). Extracted to src/server/lib/api-auth.ts so it
+// can be exercised directly in tests; this is the only place that overwrites x-user-id from a
+// verified identity.
+app.use('/api', createApiAuthMiddleware())
+
+// Loud startup diagnostic when the machine service principal is partially configured — the
+// service path stays disabled (fails closed) until the full set is present.
+{
+    const serviceAuth = describeServiceAuthState()
+    if (serviceAuth.partial) {
+        console.warn(
+            `⚠️  Outreach service auth is partially configured — machine auth is DISABLED (fails closed). Missing: ${serviceAuth.missing.join(', ')}`,
+        )
+    }
+}
+
+type MailServer = { start: () => void; close: () => Promise<void> }
+let runningSmtpServer: MailServer | null = null
+let runningImapServer: MailServer | null = null
+let runningMxServer: MailServer | null = null
+let dbLiveness: DbLivenessWatchdog | null = null
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+        console.log(`[shutdown] Received ${signal}, closing mail servers and DB...`)
+        // First, so in-flight cron work that fails from here on is not recorded as a mailbox fault.
+        markShuttingDown()
+        dbLiveness?.stop()
+        const closers: Promise<void>[] = []
+        if (runningSmtpServer) closers.push(runningSmtpServer.close().catch(() => undefined))
+        if (runningImapServer) closers.push(runningImapServer.close().catch(() => undefined))
+        if (runningMxServer) closers.push(runningMxServer.close().catch(() => undefined))
+        const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5000))
+        void Promise.race([Promise.all(closers), timeout])
+            .then(() => closeDatabaseConnection())
+            .finally(() => process.exit(0))
+    })
+}
+
+app.use('/api/auth', authRoutes)
+app.use('/api/users', userRoutes)
+app.use('/api/organizations', organizationRoutes)
+app.use('/api/domains', domainRoutes)
+app.use('/api/messages', messageRoutes)
+app.use('/api/webhooks', webhookRoutes)
+app.use('/api/credentials', credentialRoutes)
+app.use('/api/routes', routeRoutes)
+app.use('/api/system', systemRoutes)
+app.use('/api/templates', templateRoutes)
+app.use('/api/outreach', outreachRoutes)
+app.use('/api/agent/outreach', agentOutreachRoutes)
+// Phase 17 — platform-admin observability endpoints (GET /api/admin/outreach/health).
+// JWT auth is applied by the /api middleware above; the route handler additionally
+// gates on isPlatformAdmin so non-admin users get 403 instead of 200.
+app.use('/api/admin/outreach', outreachHealthRoutes)
+// Fase 1 (docs/outbound-authentication-audit.md) — GET /api/admin/dmarc/rates. Same
+// platform-admin gate as outreachHealthRoutes above.
+app.use('/api/admin/dmarc', dmarcRoutes)
+app.use('/api/admin/integrations', integrationsRoutes)
+// Platform-admin email-subsystem health (GET /api/health/email).
+// JWT auth applied by the /api middleware; handler gates on isPlatformAdmin.
+app.use('/api/health/email', healthEmailRoutes)
+app.use('/api/outlook', outlookRoutes)
+app.use('/api/mail/mailboxes/test-connection', testConnectionLimiter)
+app.use('/api/mail', mailRoutes)
+app.use('/api/notifications', notificationRoutes)
+
+// Mail client autodiscovery — Thunderbird/Outlook use paths outside /api,
+// so mounted on root. Apple .mobileconfig is under /api/system/mail-config/.
+app.use('/', autodiscoverRoutes)
+
+// Public unsubscribe endpoint — mounted OUTSIDE /api so the JWT middleware does
+// not 401 recipients clicking the link from their inbox. The HMAC token IS the auth.
+app.use('/o/u', unsubscribeRoutes)
+
+app.use('/t', trackRoutes)
+
+// Telegram approval buttons (lib/telegram-approvals.ts). Outside /api: Telegram cannot send a JWT.
+// The secret header derived from the bot token plus the configured chat id are the auth.
+app.post(telegramWebhookPath(), async (req: Request, res: Response) => {
+    try {
+        const header = req.headers['x-telegram-bot-api-secret-token']
+        const status = await handleTelegramUpdate(req.body ?? {}, typeof header === 'string' ? header : undefined)
+        res.sendStatus(status)
+    } catch (error) {
+        console.error('[telegram-approvals] webhook failed:', error instanceof Error ? error.message : error)
+        // 200 so Telegram does not redeliver a tap that may already have been acted on.
+        res.sendStatus(200)
+    }
+})
+
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error('Error:', err.message)
+    console.error('Stack:', err.stack)
+
+    res.status(500).json({
+        error: 'Internal server error',
+        message: process.env.NODE_ENV === 'development' ? err.message : undefined,
+    })
+})
+
+// Serve static frontend files in production (dist/client built by Vite)
+const clientDist = join(process.cwd(), 'dist', 'client')
+
+if (existsSync(clientDist)) {
+    // sw.js and registerSW.js must never be cached by HTTP intermediaries.
+    // The browser's SW update algorithm compares the byte content of the
+    // new sw.js against the installed copy; if an HTTP cache returns the
+    // old sw.js the browser thinks nothing changed and won't install the
+    // new build's service worker, causing stale-chunk blank screens.
+    app.get('/sw.js', (_req, res) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+        res.setHeader('Content-Type', 'application/javascript')
+        res.sendFile(join(clientDist, 'sw.js'))
+    })
+    app.get('/registerSW.js', (_req, res) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+        res.setHeader('Content-Type', 'application/javascript')
+        res.sendFile(join(clientDist, 'registerSW.js'))
+    })
+
+    app.use(express.static(clientDist))
+    // SPA fallback — serve index.html for all non-API routes
+    app.use((_req: express.Request, res: express.Response) => {
+        res.sendFile(join(clientDist, 'index.html'))
+    })
+} else {
+    app.use((_req: express.Request, res: express.Response) => {
+        res.status(404).json({ error: 'Not found' })
+    })
+}
+
+app.listen(PORT, async () => {
+    console.log(`Server running on port ${PORT}`)
+
+    // Install the in-app alert taps first, so a crash during the rest of
+    // startup is still reported rather than becoming an unexplained restart.
+    if (process.env.NODE_ENV !== 'development') await installAlerting()
+
+    // Then the watchdog that restarts a process whose database connections have all hung —
+    // the failure mode no alert tap can see and no external probe can fix. See lib/db-liveness.ts.
+    if (process.env.NODE_ENV !== 'development') dbLiveness = startDbLivenessWatchdog()
+
+    // Warn if no platform admin exists
+    try {
+        const adminUser = await db.query.users.findFirst({ where: eq(users.isAdmin, true) })
+        if (!adminUser) {
+            console.warn('⚠️  No platform admin found. Run: npx tsx scripts/set-admin.ts <email>')
+        }
+    } catch { /* ignore */ }
+
+    import('./jobs/index').then((jobs) => jobs.startJobs())
+
+    // Approval buttons on Telegram: register this server as the ops bot's webhook (production only).
+    if (process.env.NODE_ENV !== 'development') {
+        void ensureTelegramWebhook().catch((error) => console.error('[telegram-approvals] setWebhook failed:', error))
+    }
+
+    // Start native SMTP + IMAP + MX servers (always on in production; set
+    // ENABLE_MAIL_SERVER=false to disable for dev/CI runs).
+    if (process.env.NODE_ENV !== 'development' && process.env.ENABLE_MAIL_SERVER !== 'false') {
+        try {
+            runningSmtpServer = createSMTPServer()
+            runningImapServer = createIMAPServer()
+            runningMxServer = createMXServer()
+            runningSmtpServer.start()
+            runningMxServer.start()
+            loadImapBranding()
+                .then(() => runningImapServer!.start())
+                .catch((err) => {
+                    console.warn('⚠️  IMAP branding load failed, starting IMAP server anyway:', (err as Error).message)
+                    runningImapServer!.start()
+                })
+        } catch (err) {
+            const message = (err as Error).message
+            console.warn('⚠️  SMTP/IMAP/MX servers failed to start:', message)
+            // The most important alert in the system. Ports 25/587/993 are raw
+            // TCP, published straight from the container and bypassing Traefik
+            // entirely — so the HTTP uptime probe stays perfectly green while
+            // the mail server, which is the actual product, is not listening.
+            // Nothing outside this process can detect it over HTTP.
+            void alertOps(
+                'mail.servers_failed_to_start',
+                '📮 <b>Xmail: mail servers did NOT start</b>',
+                [
+                    `SMTP (587), IMAP (993) and/or MX (25) failed to bind.`,
+                    '',
+                    `<b>Error:</b> ${escapeHtml(message)}`,
+                    '',
+                    '<i>The HTTP app on :9001 is still up, so the uptime probe will stay green. Mail is not being received or sent.</i>',
+                ].join('\n'),
+            )
+        }
+    } else {
+        console.log('ℹ️  SMTP/IMAP/MX servers disabled (ENABLE_MAIL_SERVER=false)')
+    }
+})
+
+export default app

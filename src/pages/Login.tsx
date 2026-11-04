@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { browserAuthGeneration, currentBrowserAuthAuthority, legacyBrowserAuthSnapshotCurrent, requireLegacyBrowserAuth, resolveBrowserAuthAuthority, subscribeBrowserAuthBoundary } from '../lib/browser-auth-authority'
 import { Mail, Lock, ArrowRight, Eye, EyeOff } from 'lucide-react'
 import { defaultBranding, useBranding } from '../lib/branding'
 import { apiFetch } from '../lib/api-client'
@@ -12,6 +13,17 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { toast } from '../components/ui/toaster'
 
 export default function Login() {
+    const [authority, setAuthority] = useState<'loading' | 'legacy' | 'owned' | 'unavailable'>('loading')
+    useEffect(() => {
+        let mounted = true
+        const unsubscribe = subscribeBrowserAuthBoundary(() => {
+            const current = currentBrowserAuthAuthority()
+            if (mounted && current !== 'unresolved') setAuthority(current)
+        })
+        void resolveBrowserAuthAuthority().then(value => { if (mounted) setAuthority(value) }).catch(() => { if (mounted) setAuthority('unavailable') })
+        return () => { mounted = false; unsubscribe() }
+    }, [])
+    useEffect(() => { if (authority === 'owned') window.location.replace('/auth/identity') }, [authority])
     const { branding } = useBranding()
     const applicationName =
         branding.applicationName === defaultBranding.applicationName
@@ -32,7 +44,10 @@ export default function Login() {
         setIsLoading(true)
 
         try {
+            await requireLegacyBrowserAuth()
+            const generation = browserAuthGeneration()
             const { error } = await supabase.auth.signInWithPassword({ email, password })
+            if (!legacyBrowserAuthSnapshotCurrent(generation)) throw new Error('Sign-in authority changed. Reload to continue.')
 
             if (error) {
                 setError(error.message)
@@ -60,6 +75,7 @@ export default function Login() {
         if (!resetEmail.trim()) return
         setIsSendingReset(true)
         try {
+            await requireLegacyBrowserAuth()
             await apiFetch('/api/auth/reset-password', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -75,6 +91,8 @@ export default function Login() {
         }
     }
 
+    if (authority === 'owned') return <div role="status">Opening verified sign-in…</div>
+    if (authority !== 'legacy') return <div className="flex min-h-[100dvh] items-center justify-center p-6"><p role={authority === 'unavailable' ? 'alert' : 'status'}>{authority === 'unavailable' ? 'Sign-in is unavailable. Reload to try again.' : 'Checking sign-in availability…'}</p></div>
     return (
         <div className="flex min-h-[100dvh] items-center justify-center bg-background p-4 sm:p-6">
             <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-secondary via-background to-background -z-10" />

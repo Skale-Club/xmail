@@ -57,6 +57,12 @@ async function main() {
     for (const p of pending) console.log(`  - ${p.file} [${p.version}]`)
     console.log('')
 
+    if (process.argv.includes('--plan')) {
+        console.log('Plan only: no migrations applied.')
+        await sql.end()
+        return
+    }
+
     for (const { file, version } of pending) {
         const fullPath = path.join(MIGRATIONS_DIR, file)
         const body = await fs.readFile(fullPath, 'utf8')

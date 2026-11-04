@@ -1,12 +1,12 @@
 import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import * as schema from './schema'
+import { resolveDatabaseTarget } from './database-target'
+import { resolveDatabasePoolBudget } from './pool-budget'
 
-const connectionString = process.env.DATABASE_URL
-
-if (!connectionString) {
-    throw new Error('Missing DATABASE_URL')
-}
+const target = resolveDatabaseTarget(process.env)
+const poolBudget = resolveDatabasePoolBudget(process.env, target)
+const connectionString = target.databaseUrl
 
 // Determine if we're in development
 const isDev = process.env.NODE_ENV === 'development'
@@ -24,7 +24,7 @@ const isDev = process.env.NODE_ENV === 'development'
 // ~265k reconnects shipped ~3 GB out of Supabase and dominated egress after the
 // IMAP fix below. Lower it via DB_IDLE_TIMEOUT_SECONDS if pooler slots get tight.
 export const queryClient = postgres(connectionString, {
-    max: Number(process.env.DB_POOL_MAX || 20),
+    max: poolBudget.http,
     idle_timeout: Number(process.env.DB_IDLE_TIMEOUT_SECONDS || 300),
     connect_timeout: Number(process.env.DB_CONNECT_TIMEOUT_SECONDS || 30),
     max_lifetime: Number(process.env.DB_MAX_LIFETIME_SECONDS || 60 * 30),
@@ -86,14 +86,13 @@ export const queryClient = postgres(connectionString, {
 // arbitrary connection string, and a wrong guess would reintroduce the exact "prepared statement
 // does not exist" failure mode `prepare: false` exists to prevent on `queryClient` above. Kept
 // false unconditionally on both the `DIRECT_URL` and `DATABASE_URL` branches.
-const directConnectionString = process.env.DIRECT_URL
-const jobConnectionString = directConnectionString || connectionString
+const jobConnectionString = target.jobDatabaseUrl
 console.log(
-    `[DB] jobQueryClient using ${directConnectionString ? 'DIRECT_URL' : 'DATABASE_URL (DIRECT_URL not set)'}`
+    `[DB] jobQueryClient using ${isDev ? 'explicit development target' : 'production/test target'}`
 )
 
 export const jobQueryClient = postgres(jobConnectionString, {
-    max: 12, // see POOL SIZE ARITHMETIC above: 10 measured peak concurrent job bodies + 2 headroom
+    max: poolBudget.jobs, // default12 preserves measured10 jobs plus2 headroom; any reduction requires load review
     idle_timeout: Number(process.env.DB_IDLE_TIMEOUT_SECONDS || 300),
     connect_timeout: Number(process.env.DB_CONNECT_TIMEOUT_SECONDS || 30),
     max_lifetime: Number(process.env.DB_MAX_LIFETIME_SECONDS || 60 * 30),

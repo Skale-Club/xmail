@@ -8,8 +8,14 @@ import { hashPassword, createUserMailbox, validateEmailDomainForOrg, deleteUserM
 import { supabaseAdminClient, supabaseAnonClient } from '../lib/supabase'
 import { ensureLocalUser, getAuthenticatedUserFromRequest } from '../lib/user-sync'
 import { invalidateUser } from '../lib/auth-cache'
+import { syncOwnedUserStatus } from '../lib/identity/runtime'
+import { createOwnedUserAdminAdmission } from '../lib/identity/owned-user-admin'
 
 const router = Router()
+router.use(createOwnedUserAdminAdmission({
+    env: () => process.env,
+    store: async () => (await import('../lib/identity/owned-user-admin-runtime')).getOwnedUserAdminStore(),
+}))
 
 function mapAdminUser(user: {
     id: string
@@ -91,7 +97,7 @@ router.get('/profile', async (req: Request, res: Response) => {
             return res.status(401).json({ error: 'Unauthorized' })
         }
 
-        const user = await ensureLocalUser(authUser)
+        const user = await ensureLocalUser(authUser, { existingOnly: res.locals.xmailOwnedIdentity === true })
 
         res.json({
             user: {
@@ -115,7 +121,7 @@ router.patch('/profile', async (req: Request, res: Response) => {
             return res.status(401).json({ error: 'Unauthorized' })
         }
 
-        await ensureLocalUser(authUser)
+        await ensureLocalUser(authUser, { existingOnly: res.locals.xmailOwnedIdentity === true })
 
         const updateSchema = z.object({
             firstName: z.string().optional(),
@@ -163,7 +169,7 @@ router.get('/organizations', async (req: Request, res: Response) => {
             return res.status(401).json({ error: 'Unauthorized' })
         }
 
-        await ensureLocalUser(authUser)
+        await ensureLocalUser(authUser, { existingOnly: res.locals.xmailOwnedIdentity === true })
 
         const isAdmin = await isPlatformAdmin(authUser.id)
 
@@ -494,6 +500,10 @@ router.post('/:id/deactivate', async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Remove platform admin access before deactivating this user' })
         }
 
+        // Revoke owned admission before the hosted identity mutation, so a provider
+        // outage cannot leave a previously admitted owned session active.
+        await syncOwnedUserStatus(targetUserId, true)
+
         const { data: authData, error: lookupError } = await supabaseAdminClient.auth.admin.getUserById(targetUserId)
         if (lookupError || !authData.user) {
             return res.status(400).json({ error: lookupError?.message ?? 'Auth user not found' })
@@ -542,6 +552,8 @@ router.post('/:id/activate', async (req: Request, res: Response) => {
             app_metadata: { ...authData.user.app_metadata, xmail_disabled: false },
         })
         if (authError) return res.status(400).json({ error: authError.message })
+
+        await syncOwnedUserStatus(targetUserId, false)
 
         await db.update(mailboxes)
             .set({ isActive: true, updatedAt: new Date() })
@@ -746,7 +758,7 @@ router.post('/me/change-password', async (req: Request, res: Response) => {
         const authUser = getAuthenticatedUserFromRequest(req)
         if (!authUser) return res.status(401).json({ error: 'Unauthorized' })
 
-        await ensureLocalUser(authUser)
+        await ensureLocalUser(authUser, { existingOnly: res.locals.xmailOwnedIdentity === true })
 
         const { currentPassword, newPassword } = z.object({
             currentPassword: z.string(),

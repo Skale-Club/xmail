@@ -7,6 +7,8 @@ import {
     subscribeToMailboxEvents,
 } from '../../lib/mailbox-events'
 import { INBOX_SSE_HEADERS, INBOX_SSE_HEARTBEAT_MS } from '../../lib/inbox-events'
+import { serveOwnedStream } from '../../lib/identity/owned-stream'
+import { createOwnedStreamAuthorizer } from '../../lib/identity/owned-stream-access'
 
 const router = Router()
 
@@ -26,6 +28,18 @@ function maxStreamLifetimeMs(): number {
 // the client reacts by re-reading through the normal authorized API. On disconnect the subscriber
 // is released and the heartbeat cleared, so nothing leaks.
 router.get('/:mailboxId/events', async (req: Request, res: Response) => {
+    if (res.locals.xmailOwnedIdentity === true) {
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.mailboxId)) return res.status(400).json({ error: 'Invalid mailbox.' })
+        return serveOwnedStream(req, res, {
+            userId: res.locals.xmailOwnedPrincipal?.userId,
+            authorize: createOwnedStreamAuthorizer(req, res, { kind: 'mailbox', id: req.params.mailboxId }),
+            subscribe: listener => subscribeToMailboxEvents(req.params.mailboxId, listener, res.locals.xmailOwnedPrincipal?.userId),
+            frame: formatMailboxSseEvent, headers: INBOX_SSE_HEADERS,
+            connected: formatMailboxSseComment('connected'), heartbeat: formatMailboxSseComment('ping'), heartbeatMs: INBOX_SSE_HEARTBEAT_MS,
+            maxLifetimeMs: maxStreamLifetimeMs(),
+            subscriptionErrorStatus: error => error instanceof MailboxEventCapacityError && error.scope === 'user' ? 429 : 503,
+        })
+    }
     try {
         const userId = req.headers['x-user-id'] as string
         const mailboxId = req.params.mailboxId
