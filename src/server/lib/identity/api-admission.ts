@@ -20,9 +20,12 @@ export async function admitOwnedIdentity(req: Request, res: Response, dependenci
         const principal = raw ? await runtime.sessions.authenticate(raw, controller.signal) : null
         const profile = principal ? await runtime.store.profile(principal.userId) : null
         if (!profile) { res.status(401).json({ error: 'Identity session is unavailable.' }); return 'rejected' }
-        // Existing SSE handlers authenticate only at connection creation. Keep them
-        // out of the pilot until they can recheck revocation for each emitted event.
-        if (req.get('accept')?.includes('text/event-stream')) {
+        // Only these handlers continuously revalidate owned/provider/local/target
+        // admission. Other SSE routes retain the explicit fail-closed boundary.
+        const streamPath = req.originalUrl.split('?')[0]
+        const auditedStream = req.method === 'GET' && (/^\/api\/mail\/mailboxes\/[0-9a-f-]{36}\/events$/i.test(streamPath)
+            || streamPath === '/api/outreach/unified-inbox/events')
+        if (req.get('accept')?.includes('text/event-stream') && !auditedStream) {
             res.status(409).json({ error: 'Live streams are not available for the identity pilot. Refresh to update.' }); return 'rejected'
         }
         if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)

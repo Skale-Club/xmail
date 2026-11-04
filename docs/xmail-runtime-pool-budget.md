@@ -59,8 +59,8 @@ Remaining concrete gates for an actual provider exit:
   explicit storage cutover; missing R2 settings cannot imply a completed exit.
 - Owned invitation/onboarding, reviewed recovery, self-service credential
   management and destructive deletion still return explicit unavailable states.
-- Owned mailbox SSE remains denied until session/provider/local ownership can be
-  rechecked before delivery and resources closed on revocation or failure.
+- Owned SSE has a separate bounded, revalidated preparation in
+  `xmail-owned-streams.md`; production workload/capacity remains unverified.
 - Candidate/runtime activation, actual role/cluster counts, replica/rollout
   strategy, workload validation and backups remain operational work. No LOGIN,
   reimport, flags or deployment is performed by this budget preparation.

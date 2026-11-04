@@ -38,6 +38,6 @@ This does not finish the provider exit. The explicit legacy Storage driver still
 uses `supabaseAdminClient.storage` when R2 is absent; object inventories/private
 attachments/branding still need an independently verified storage cutover. Owned
 onboarding/invitations, reviewed recovery, deletion, self-service native credential
-management, SSE delivery revocation, production pool sizing and controlled
+management, production SSE/pool workload sizing and controlled
 runtime activation remain separate gates. Candidate roles remain NOLOGIN and
 all production flags/configuration remain unchanged by this preparation.

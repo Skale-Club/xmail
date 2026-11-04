@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import postgres, { type Sql } from 'postgres'
 import { createOwnedUserAdminStore } from './owned-user-admin-store'
 import type { OwnedAdminPrincipal, OwnedAdminStore } from './owned-user-admin'
+import { readOwnedStreamLease } from './owned-stream-access'
 
 // Never loads dotenv, the application database module or a provider SDK. Only
 // the declared loopback CI service can create this dedicated disposable DB.
@@ -194,5 +195,39 @@ describe.skipIf(!databaseUrl)('owned user administration PostgreSQL atomicity (d
         expect(JSON.stringify(listed)).not.toMatch(/password_hash|passwordHash|sessionHash|token_hash|actor-fixture/)
         await expect(store.setActive(principal, principal.userId, false)).rejects.toMatchObject({ status: 400 })
         await expect(store.update(principal, principal.userId, { isAdmin: false })).rejects.toMatchObject({ status: 400 })
+    })
+    it('authorizes mailbox streams from one fresh session/control/ownership snapshot', async () => {
+        await store.resetNativePassword(principal, target, 'native-stream-fixture')
+        const mailbox = (await sql`SELECT id FROM public.mailboxes WHERE user_id=${target}`)[0].id
+        const resource = { kind: 'mailbox' as const, id: mailbox }
+        const lease = () => readOwnedStreamLease(sql, principal, resource, 'skaleclub', new AbortController().signal)
+        expect(await lease()).toMatchObject({ expiresAt: expect.any(Number) })
+        await sql`UPDATE public.users SET is_admin=false WHERE id=${principal.userId}`
+        expect(await lease()).toBeNull()
+        await sql`UPDATE public.mailboxes SET user_id=${principal.userId},email='admin@example.invalid' WHERE id=${mailbox}`
+        expect(await lease()).not.toBeNull()
+        await sql`UPDATE public.mailboxes SET email='different@example.invalid' WHERE id=${mailbox}`
+        expect(await lease()).toBeNull()
+        await sql`UPDATE public.mailboxes SET email='admin@example.invalid' WHERE id=${mailbox}`
+        await sql`UPDATE public.xmail_identity_user_controls SET disabled_at=clock_timestamp() WHERE user_id=${principal.userId}`
+        expect(await lease()).toBeNull()
+    })
+    it('revokes organization stream leases on membership, session, project, cutoff or expiry changes', async () => {
+        const resource = { kind: 'organization' as const, id: organization }
+        const lease = (project = 'skaleclub') => readOwnedStreamLease(sql, principal, resource, project, new AbortController().signal)
+        expect(await lease()).not.toBeNull()
+        await sql`UPDATE public.users SET is_admin=false WHERE id=${principal.userId}`
+        expect(await lease()).toBeNull()
+        await sql`INSERT INTO public.organization_users(organization_id,user_id,role) VALUES(${organization},${principal.userId},'viewer')`
+        expect(await lease()).not.toBeNull()
+        expect(await lease('different-project')).toBeNull()
+        await sql`UPDATE public.xmail_identity_owned_sessions SET revoked_at=now() WHERE token_hash=${principal.sessionHash}`
+        expect(await lease()).toBeNull()
+        await sql`UPDATE public.xmail_identity_owned_sessions SET revoked_at=NULL WHERE token_hash=${principal.sessionHash}`
+        await sql`UPDATE public.xmail_identity_user_controls SET sessions_valid_after=clock_timestamp() WHERE user_id=${principal.userId}`
+        expect(await lease()).toBeNull()
+        await sql`UPDATE public.xmail_identity_user_controls SET sessions_valid_after='epoch'::timestamptz WHERE user_id=${principal.userId}`
+        await sql`UPDATE public.xmail_identity_owned_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE token_hash=${principal.sessionHash}`
+        expect(await lease()).toBeNull()
     })
 })

@@ -9,6 +9,7 @@ import type { BrowserChallenge } from '../lib/identity/pilot-store'
 import mailEventsRouter from './mail/events'
 
 vi.mock('./mail/mailboxes', () => ({ checkUserMailboxAccess: vi.fn() }))
+vi.mock('../lib/identity/owned-stream-access', () => ({ createOwnedStreamAuthorizer: () => async () => null }))
 
 let server: Server, origin: string, runtime: IdentityRuntime, runtimeResolver: ReturnType<typeof vi.fn<() => Promise<IdentityRuntime>>>
 const token = 's'.repeat(43)
@@ -18,12 +19,12 @@ beforeEach(async () => {
         config: { projectId: 'offline-project', projectNumber: '123456789012', apiKey: 'offline-public-key', authDomain: 'offline-project.firebaseapp.com', origin: '', secure: true,
             sessionCookie: '__Host-xmail_identity', browserCookie: '__Host-xmail_identity_browser', adcMode: '' },
         sessions: {
-            issue: vi.fn(async () => ({ token, expiresAt: new Date(Date.now() + 60_000), userId: 'existing-user' })),
-            authenticate: vi.fn(async () => ({ userId: 'existing-user', sessionHash: 'hash', authenticatedAt: Date.now() / 1000 })),
+            issue: vi.fn(async () => ({ token, expiresAt: new Date(Date.now() + 60_000), userId: '10000000-0000-4000-8000-000000000001' })),
+            authenticate: vi.fn(async () => ({ userId: '10000000-0000-4000-8000-000000000001', sessionHash: 'hash', authenticatedAt: Date.now() / 1000 })),
             revoke: vi.fn(async () => {}),
         },
         store: {
-            profile: vi.fn(async () => ({ id: 'existing-user', email: 'existing@example.invalid', firstName: 'Local', lastName: 'User', isAdmin: false, emailVerified: true })),
+            profile: vi.fn(async () => ({ id: '10000000-0000-4000-8000-000000000001', email: 'existing@example.invalid', firstName: 'Local', lastName: 'User', isAdmin: false, emailVerified: true })),
             createChallenge: vi.fn(async value => { challenges.set(value.challengeHash, value) }),
             consumeChallenge: vi.fn(async value => {
                 const row = challenges.get(value.challengeHash)
@@ -149,7 +150,7 @@ describe('disabled-by-default owned identity HTTP pilot', () => {
     })
     it('admits the fresh SQL principal and rejects invalid owned cookies without legacy fallback', async () => {
         const response = await fetch(`${origin}/api/example`, { headers: { Cookie: `__Host-xmail_identity=${token}`, Authorization: 'Bearer unrelated-legacy', 'X-User-Id': 'forged-user' } })
-        expect(await response.json()).toEqual({ id: 'existing-user' })
+        expect(await response.json()).toEqual({ id: '10000000-0000-4000-8000-000000000001' })
         vi.mocked(runtime.sessions.authenticate).mockResolvedValue(null)
         expect((await fetch(`${origin}/api/example`, { headers: { Cookie: `__Host-xmail_identity=${token}`, Authorization: 'Bearer unrelated-legacy' } })).status).toBe(401)
         expect((await fetch(`${origin}/api/example`, { headers: { Cookie: `__Host-xmail_identity=${token}; __Host-xmail_identity=${token}` } })).status).toBe(503)
@@ -160,14 +161,14 @@ describe('disabled-by-default owned identity HTTP pilot', () => {
         expect((await fetch(`${origin}/api/example`, { method: 'POST', headers: { Origin: origin, Cookie: `${proof.cookie}; __Host-xmail_identity=${token}`, 'X-Xmail-CSRF': proof.csrf } })).status).toBe(200)
         expect((await fetch(`${origin}/api/example`, { headers: { Cookie: `__Host-xmail_identity=${token}`, Accept: 'text/event-stream' } })).status).toBe(409)
     })
-    it.each([undefined, '*/*', 'text/event-stream'])('denies the actual owned mail stream regardless of Accept=%s', async accept => {
+    it.each([undefined, '*/*', 'text/event-stream'])('requires current stream admission regardless of Accept=%s', async accept => {
         const status = await new Promise<number>((resolve, reject) => {
-            const request = httpRequest(`${origin}/api/mail/mailboxes/existing-mailbox/events`, { headers: {
+            const request = httpRequest(`${origin}/api/mail/mailboxes/20000000-0000-4000-8000-000000000002/events`, { headers: {
                 Cookie: `__Host-xmail_identity=${token}`, ...(accept ? { Accept: accept } : {}),
             } }, response => { response.resume(); resolve(response.statusCode || 0) })
             request.setTimeout(1000, () => request.destroy(new Error('Unexpected open stream')))
             request.on('error', reject); request.end()
         })
-        expect(status).toBe(409)
+        expect(status).toBe(401)
     })
 })

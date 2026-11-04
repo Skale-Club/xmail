@@ -52,7 +52,8 @@ account. A newly created local UUID has no hosted proof automatically.
 
 This is preparation for a later controlled cutover. Owned invitation/onboarding,
 reviewed recovery and destructive deletion remain incomplete and explicit `409`
-actions. Existing owned SSE restrictions remain. Server startup/readiness and
+actions. Owned SSE has a separate prepared boundary in `xmail-owned-streams.md`.
+Server startup/readiness and
 pool budgeting have separate prepared boundaries; the legacy Storage exit and
 complete production admission remain work, and the runtime is still `NOLOGIN`.
 Do not describe this batch as a
