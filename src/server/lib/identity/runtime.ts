@@ -8,6 +8,8 @@ import { createPostgresOwnedIdentityStore } from './postgres-store'
 import { createIdentityPilotStore, type IdentityPilotStore } from './pilot-store'
 import { loadValidatedGoogleAdc } from './google-adc-config'
 import { getGoogleX509AccessToken } from './google-x509-access-token'
+import { readLegacyPasswordProof } from './legacy-account-proof'
+import { createExistingAccountLinker } from './existing-account-link'
 
 export interface IdentityRuntime {
     config: IdentityConfig
@@ -16,6 +18,7 @@ export interface IdentityRuntime {
     assertReady(signal?: AbortSignal): Promise<void>
     revokeAll(token: string, signal?: AbortSignal): Promise<boolean>
     link(providerToken: string, proof: { ownedToken?: string; legacyToken?: string }, signal?: AbortSignal): Promise<void>
+    linkExistingAccount(providerToken: string, credentials: { email: string; password: string }, ownedToken?: string, signal?: AbortSignal): Promise<void>
 }
 
 /** Absolute deadline even when an external credential supplier fails to cancel. */
@@ -110,8 +113,10 @@ export function getIdentityRuntime(): Promise<IdentityRuntime> {
         const verify = createGoogleIdentityVerifier(config.projectId, createGoogleSigningKeyResolver(identityFetch))
         const status = createGoogleAccountStatusReader(config.projectId, token, identityFetch)
         const sessions = createOwnedIdentitySessions({ enabled: () => ownedIdentityEnabled(process.env), verifyIdentity: verify, readProviderStatus: status, store: ownedStore })
+        const linkExistingAccount = createExistingAccountLinker({ verify, status, sessions, store,
+            passwordProof: (email, password, signal) => readLegacyPasswordProof(email, password, { signal }) })
         return {
-            config, sessions, store,
+            config, sessions, store, linkExistingAccount,
             async assertReady(signal) {
                 await token(signal)
                 await verifyGoogleWebProject(config, signal)

@@ -33,7 +33,7 @@ beforeEach(async () => {
             }),
             linkExisting: vi.fn(async () => true), setDisabled: vi.fn(async () => {}),
         },
-        assertReady: vi.fn(async () => {}), revokeAll: vi.fn(async () => true), link: vi.fn(async () => {}),
+        assertReady: vi.fn(async () => {}), revokeAll: vi.fn(async () => true), link: vi.fn(async () => {}), linkExistingAccount: vi.fn(async () => {}),
     }
     runtimeResolver = vi.fn(async () => runtime)
     const app = express()
@@ -137,6 +137,33 @@ describe('disabled-by-default owned identity HTTP pilot', () => {
         const proof = await challenge('link')
         expect((await post('link', proof, { token: 'verified' }, { Authorization: 'Bearer offline-legacy-proof' })).status).toBe(200)
         expect(runtime.link).toHaveBeenCalledWith('verified', { ownedToken: undefined, legacyToken: 'offline-legacy-proof' }, expect.any(AbortSignal))
+    })
+    it('accepts a separate late-link proof without legacy bearer admission, cookies or sessions in its response', async () => {
+        const proof = await challenge('existing-account-link'), password = crypto.randomUUID()
+        const response = await post('existing-account-link', proof, { token: 'fresh-provider', email: 'old@example.invalid', password },
+            { Authorization: 'Bearer expired-legacy-must-not-authorize' })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ linked: true })
+        expect(response.headers.get('set-cookie')).toBeNull()
+        expect(runtime.linkExistingAccount).toHaveBeenCalledWith('fresh-provider', { email: 'old@example.invalid', password }, undefined, expect.any(AbortSignal))
+        expect(runtime.link).not.toHaveBeenCalled(); expect(runtime.sessions.issue).not.toHaveBeenCalled()
+        expect((await post('existing-account-link', proof, { token: 'fresh-provider', email: 'old@example.invalid', password })).status).toBe(403)
+    })
+    it('binds late-link intent to its own one-use origin/browser challenge and strict body', async () => {
+        const wrong = await challenge('link'), body = { token: 'fresh-provider', email: 'old@example.invalid', password: crypto.randomUUID() }
+        expect((await post('existing-account-link', wrong, body)).status).toBe(403)
+        const proof = await challenge('existing-account-link')
+        expect((await post('existing-account-link', proof, { ...body, userId: 'forged' })).status).toBe(400)
+        expect((await post('existing-account-link', proof, body, { Origin: 'https://other.invalid' })).status).toBe(403)
+        expect(runtime.linkExistingAccount).not.toHaveBeenCalled()
+    })
+    it('sanitizes late-link provider failures and never mints a cookie on failed possession proof', async () => {
+        vi.mocked(runtime.linkExistingAccount).mockRejectedValueOnce(new Error('private-password-and-provider-token'))
+        const response = await post('existing-account-link', await challenge('existing-account-link'),
+            { token: 'fresh-provider', email: 'old@example.invalid', password: crypto.randomUUID() })
+        expect(response.status).toBe(401)
+        expect(await response.text()).not.toContain('private-password-and-provider-token')
+        expect(response.headers.get('set-cookie')).toBeNull(); expect(runtime.sessions.issue).not.toHaveBeenCalled()
     })
     it('revokes local/all sessions and clears only the host cookie', async () => {
         const proof = await challenge('logout')

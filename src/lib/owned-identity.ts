@@ -59,6 +59,22 @@ export async function ownedIdentityAction(action: 'session' | 'link' | 'logout' 
     preferOwnedIdentity()
     probe = undefined
 }
+
+/** User-initiated linking only. Credentials stay in this request and never enter
+ * the SDK, app session store, URL, returned response or legacy sign-in flow. */
+export async function linkExistingIdentityAccount(token: string, email: string, password: string) {
+    const challengeResponse = await request('challenge?purpose=existing-account-link')
+    if (!challengeResponse.ok) throw new Error('Account confirmation is unavailable.')
+    const { challenge } = await challengeResponse.json() as { challenge: string }
+    const response = await request('existing-account-link', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Xmail-CSRF': challenge },
+        body: JSON.stringify({ token, email, password }),
+    })
+    if (!response.ok || (await response.json() as { linked?: unknown }).linked !== true) {
+        throw new Error('Account ownership could not be confirmed. Use reviewed recovery if needed.')
+    }
+    probe = undefined
+}
 export async function loadFirebaseIdentityConfig(): Promise<FirebaseIdentityConfig> {
     await resolveBrowserAuthAuthority()
     const response = await request('config')

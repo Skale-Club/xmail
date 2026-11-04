@@ -4,15 +4,15 @@ import userEvent from '@testing-library/user-event'
 import IdentityPilot from './IdentityPilot'
 
 const mocks = vi.hoisted(() => ({
-    config: vi.fn(), probe: vi.fn(), action: vi.fn(), google: vi.fn(), phone: vi.fn(), confirm: vi.fn(), dispose: vi.fn(),
+    config: vi.fn(), probe: vi.fn(), action: vi.fn(), google: vi.fn(), phone: vi.fn(), confirm: vi.fn(), dispose: vi.fn(), linkExisting: vi.fn(), storedLegacy: vi.fn(),
 }))
 vi.mock('../components/AppLogo', () => ({ AppLogo: () => <span>Xmail</span> }))
 vi.mock('../lib/owned-identity', () => ({
     loadFirebaseIdentityConfig: mocks.config, probeOwnedIdentitySession: mocks.probe, ownedIdentityAction: mocks.action,
-    ownedIdentityActive: () => false, leaveOwnedIdentity: vi.fn(),
+    ownedIdentityActive: () => false, leaveOwnedIdentity: vi.fn(), linkExistingIdentityAccount: mocks.linkExisting, storedLegacyFirstLinkToken: mocks.storedLegacy,
 }))
 vi.mock('../lib/firebase-identity', () => ({ googleIdentityToken: mocks.google, beginPhoneIdentity: mocks.phone }))
-vi.mock('../lib/browser-auth-authority', () => ({ currentBrowserAuthAuthority: () => 'legacy', resolveBrowserAuthAuthority: async () => 'legacy' }))
+vi.mock('../lib/browser-auth-authority', () => ({ currentBrowserAuthAuthority: () => 'legacy', resolveBrowserAuthAuthority: async () => 'legacy', legacyBrowserAuthConfirmed: () => false }))
 
 beforeEach(() => {
     vi.clearAllMocks()
@@ -23,6 +23,7 @@ beforeEach(() => {
     mocks.confirm.mockResolvedValue('offline-phone-token')
     mocks.phone.mockResolvedValue({ confirm: mocks.confirm, dispose: mocks.dispose })
     mocks.action.mockRejectedValue(new Error('Existing ownership proof is required.'))
+    mocks.linkExisting.mockResolvedValue(undefined)
 })
 
 it('shows phone first, then Google, only after server configuration proof succeeds', async () => {
@@ -72,4 +73,32 @@ it('blocks a provider action when configuration is withdrawn after the page load
     await userEvent.click(google)
     expect(await screen.findByRole('alert')).toHaveTextContent('Pilot disabled')
     expect(mocks.google).not.toHaveBeenCalled()
+})
+
+it('offers an explicit previous-account path without a generic legacy login fallback', async () => {
+    render(<IdentityPilot />)
+    expect(await screen.findByRole('link', { name: 'Link an existing account' })).toHaveAttribute('href', '/auth/identity?action=existing-account-link')
+})
+
+it('links an expired old account using previous credentials plus fresh Google, then attempts only owned login', async () => {
+    window.history.replaceState(null, '', '/auth/identity?action=existing-account-link')
+    const password = crypto.randomUUID()
+    render(<IdentityPilot />)
+    await userEvent.type(await screen.findByLabelText('Previous account email'), 'old@example.invalid')
+    await userEvent.type(screen.getByLabelText('Previous account password'), password)
+    await userEvent.click(screen.getByRole('button', { name: /Continue with Google/ }))
+    await waitFor(() => expect(mocks.linkExisting).toHaveBeenCalledWith('offline-provider-token', 'old@example.invalid', password))
+    expect(mocks.storedLegacy).not.toHaveBeenCalled()
+    expect(mocks.action).toHaveBeenCalledWith('session', 'offline-provider-token')
+    expect(screen.getByLabelText('Previous account password')).toHaveValue('')
+    expect(JSON.stringify(window.localStorage)).not.toContain(password)
+    expect(JSON.stringify(window.sessionStorage)).not.toContain(password)
+})
+
+it('does not begin Google or SMS until previous-account details are supplied', async () => {
+    window.history.replaceState(null, '', '/auth/identity?action=existing-account-link')
+    render(<IdentityPilot />)
+    await userEvent.click(await screen.findByRole('button', { name: /Continue with Google/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('previous account email and password')
+    expect(mocks.google).not.toHaveBeenCalled(); expect(mocks.phone).not.toHaveBeenCalled()
 })

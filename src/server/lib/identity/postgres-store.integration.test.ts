@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import postgres, { type Sql } from 'postgres'
 import { createPostgresOwnedIdentityStore } from './postgres-store'
 import { createIdentityPilotStore } from './pilot-store'
+import { createExistingAccountLinker } from './existing-account-link'
 import { createOwnedIdentitySessions, hashOwnedSessionToken, OWNED_SESSION_LIFETIME_MS, type IdentityBinding, type OwnedIdentityStore, type OwnedSession } from './owned-session'
 
 // This standalone gate never loads dotenv, application DB aliases or the shared
@@ -174,5 +175,34 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
         const winner = results[0] ? binding.userId : otherUser
         expect((await store.findBinding(identity.projectId, identity.subject))?.binding.userId).toBe(winner)
         expect(await pilot.linkExisting(identity, winner === otherUser ? binding.userId : otherUser, 'owned-session', new Date(now))).toBe(false)
+    })
+    it('links previous-password proof by exact UUID without changing native hash/admin role or issuing a session', async () => {
+        const pilot = createIdentityPilotStore(sql)
+        let identity = { projectId: 'skaleclub', subject: randomUUID(), provider: 'phone' as const, providerSubject: '+12025550123', authenticatedAt: authTime }
+        const linker = createExistingAccountLinker({ verify: async () => identity, status: async () => ({ disabled: false, validSince: 0 }),
+            passwordProof: async () => ({ id: binding.userId }), sessions: { authenticate: async () => null }, store: pilot, clock: () => now })
+        await linker('fresh-phone-proof', { email: 'different-form@example.invalid', password: randomUUID() })
+        expect((await sql`SELECT proof_reference FROM public.xmail_identity_bindings WHERE subject=${identity.subject}`)[0].proof_reference).toBe(`legacy-password:${binding.userId}`)
+        expect((await sql`SELECT id,password_hash,is_admin FROM public.users WHERE id=${binding.userId}`)[0])
+            .toEqual({ id: binding.userId, password_hash: existingPasswordHash, is_admin: true })
+        expect(Number((await sql`SELECT count(*) AS n FROM public.xmail_identity_owned_sessions`)[0].n)).toBe(0)
+        // Evaluate the actual deployment consumer's changed proof predicate
+        // against PostgreSQL, rather than imitating it with a mocked boolean.
+        const policy = readFileSync(resolve('.github/scripts/deploy-xmail.sh'), 'utf8')
+        const proofPredicate = /AND (b\.proof_reference IN \([^\n]+\))/.exec(policy)?.[1]
+        expect(proofPredicate).toBeTruthy()
+        const admitted = async () => (await sql.unsafe(`SELECT (${proofPredicate}) AS admitted FROM public.users u
+            JOIN public.xmail_identity_bindings b ON b.user_id=u.id WHERE b.subject=$1`, [identity.subject]))[0].admitted
+        expect(await admitted()).toBe(true)
+        for (const invalid of [`legacy-password:${randomUUID()}`, `owned-session:${binding.userId}`, binding.userId]) {
+            await sql`UPDATE public.xmail_identity_bindings SET proof_reference=${invalid} WHERE subject=${identity.subject}`
+            expect(await admitted()).toBe(false)
+        }
+        await sql`UPDATE public.xmail_identity_bindings SET proof_reference=${`legacy-session:${binding.userId}`} WHERE subject=${identity.subject}`
+        expect(await admitted()).toBe(true)
+        identity = { ...identity, subject: randomUUID() }
+        await sql`UPDATE public.xmail_identity_user_controls SET sessions_valid_after=to_timestamp(${authTime + 60}) WHERE user_id=${binding.userId}`
+        await expect(linker('fresh-phone-proof', { email: 'different-form@example.invalid', password: randomUUID() })).rejects.toThrow()
+        expect((await sql`SELECT subject FROM public.xmail_identity_bindings WHERE subject=${identity.subject}`)).toHaveLength(0)
     })
 })
