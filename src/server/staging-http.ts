@@ -7,16 +7,22 @@ import type { StagingHttpConfig } from './staging-config'
 type ReaderProof = {
     database: string; current_role: string; session_role: string; read_only: string
     login: boolean; superuser: boolean; create_db: boolean; create_role: boolean; replication: boolean; bypass_rls: boolean
-    memberships: number; tables: number; readable: number; owns_database: boolean; owns_tables: boolean
+    memberships: number; tables: number; readable: number; business_tables: number; identity_tables: string[]; identity_rls: number
+    owns_database: boolean; owns_tables: boolean
     create_schema: boolean; create_database: boolean; temp_database: boolean; table_writes: boolean
     sequence_writes: boolean; function_execute: boolean
 }
+const identityTables = ['xmail_identity_bindings', 'xmail_identity_browser_challenges', 'xmail_identity_owned_sessions', 'xmail_identity_user_controls']
+const identityNamesSql = identityTables.map(name => `'${name}'`).join(',')
 const proofSql = `SELECT current_database() AS database,current_user AS current_role,session_user AS session_role,
  current_setting('transaction_read_only') AS read_only,r.rolcanlogin AS login,r.rolsuper AS superuser,
  r.rolcreatedb AS create_db,r.rolcreaterole AS create_role,r.rolreplication AS replication,r.rolbypassrls AS bypass_rls,
  (SELECT count(*)::int FROM pg_auth_members WHERE member=r.oid) AS memberships,
  (SELECT count(*)::int FROM pg_tables WHERE schemaname='public') AS tables,
  (SELECT count(*)::int FROM pg_tables WHERE schemaname='public' AND has_table_privilege(current_user,quote_ident(schemaname)||'.'||quote_ident(tablename),'SELECT')) AS readable,
+ (SELECT count(*)::int FROM pg_tables WHERE schemaname='public' AND tablename NOT IN (${identityNamesSql})) AS business_tables,
+ (SELECT array_agg(c.relname::text ORDER BY c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relname IN (${identityNamesSql})) AS identity_tables,
+ (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='r' AND c.relname IN (${identityNamesSql}) AND c.relrowsecurity) AS identity_rls,
  (SELECT datdba=r.oid FROM pg_database WHERE datname=current_database()) AS owns_database,
  EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND pg_has_role(current_user,c.relowner,'USAGE')) AS owns_tables,
  has_schema_privilege(current_user,'public','CREATE') AS create_schema,
@@ -30,7 +36,8 @@ const proofSql = `SELECT current_database() AS database,current_user AS current_
 function assertReader(proof?: ReaderProof) {
     if (!proof || proof.database !== 'xmail' || proof.current_role !== 'xmail_staging_reader' || proof.session_role !== 'xmail_staging_reader'
         || proof.read_only !== 'on' || proof.login !== true || proof.bypass_rls !== true || proof.memberships !== 0
-        || proof.tables !== 70 || proof.readable !== 70
+        || proof.tables !== 74 || proof.readable !== 74 || proof.business_tables !== 70 || proof.identity_rls !== 4
+        || JSON.stringify(proof.identity_tables) !== JSON.stringify(identityTables)
         || ['superuser', 'create_db', 'create_role', 'replication', 'owns_database', 'owns_tables', 'create_schema',
             'create_database', 'temp_database', 'table_writes', 'sequence_writes', 'function_execute'].some(key => proof[key as keyof ReaderProof] !== false)) {
         throw new Error('Staging reader authority is unavailable.')

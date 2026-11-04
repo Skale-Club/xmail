@@ -49,6 +49,7 @@ jobs:
           python3 scripts/ops/probe-xmail-staging.py --plan
           node scripts/ops/xmail-offsite-backup.mjs --self-test
           python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_identity_controls.py -v
+          python3 -B -m unittest discover -s scripts/ops -p test_xmail_owned_deploy.py -v
           python3 -B scripts/ops/prepare-xmail-identity-controls.py
 
       - name: Lint (eslint --max-warnings 0)

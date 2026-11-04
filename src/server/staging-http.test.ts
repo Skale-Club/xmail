@@ -28,7 +28,9 @@ database.username = 'xmail_staging_reader'; database.password = randomUUID()
 const env = { NODE_ENV: 'test', XMAIL_STAGING_HTTP_ONLY: 'true', XMAIL_STAGING_DATABASE_URL: database.href,
     XMAIL_STAGING_ORIGIN: 'http://127.0.0.1:0', XMAIL_GOOGLE_AUTH_ENABLED: 'false', GOOGLE_AUTH_ENABLED: 'false' }
 const safeProof = () => ({ database: 'xmail', current_role: 'xmail_staging_reader', session_role: 'xmail_staging_reader', read_only: 'on',
-    login: true, bypass_rls: true, memberships: 0, tables: 70, readable: 70, superuser: false, create_db: false, create_role: false,
+    login: true, bypass_rls: true, memberships: 0, tables: 74, readable: 74, business_tables: 70, identity_rls: 4,
+    identity_tables: ['xmail_identity_bindings', 'xmail_identity_browser_challenges', 'xmail_identity_owned_sessions', 'xmail_identity_user_controls'],
+    superuser: false, create_db: false, create_role: false,
     replication: false, owns_database: false, owns_tables: false, create_schema: false, create_database: false, temp_database: false,
     table_writes: false, sequence_writes: false, function_execute: false })
 let proof = safeProof()
@@ -118,6 +120,18 @@ describe('explicit HTTP-only staging bootstrap', () => {
         const { startSelectedRuntime } = await import('./runtime-entry')
         await expect(startSelectedRuntime(env)).rejects.toThrow('Staging reader startup verification failed.')
         expect(mocks.end).toHaveBeenCalledOnce(); expect(mocks.legacy).not.toHaveBeenCalled()
+    })
+    it('requires exactly 70 business tables and the four reviewed RLS identity tables', async () => {
+        await boot()
+        for (const change of [
+            { tables: 73 }, { tables: 75 }, { readable: 70 }, { business_tables: 69 }, { identity_rls: 3 },
+            { identity_tables: [...safeProof().identity_tables.slice(0, 3), 'unreviewed_identity_table'] },
+        ]) {
+            proof = { ...safeProof(), ...change }
+            const response = await request('/health/ready')
+            expect(response.status).toBe(503)
+            expect(response.body).not.toContain('native_password_hashes')
+        }
     })
     it('sanitizes database errors without falling back to legacy services', async () => {
         await boot(); mocks.query.mockRejectedValue(new Error('private-database-credential-value'))
