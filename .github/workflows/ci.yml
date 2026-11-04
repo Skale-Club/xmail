@@ -48,6 +48,9 @@ jobs:
           python3 -m py_compile scripts/ops/probe-xmail-staging.py
           python3 scripts/ops/probe-xmail-staging.py --plan
           node scripts/ops/xmail-offsite-backup.mjs --self-test
+          python3 -B -m unittest discover -s scripts/ops -p test_xmail_owned_backup.py -v
+          python3 -B scripts/ops/xmail-owned-backup.py --plan
+          python3 -B scripts/ops/install-xmail-owned-backup.py
           python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_identity_controls.py -v
           python3 -B -m unittest discover -s scripts/ops -p test_xmail_owned_deploy.py -v
           python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_final_data_cutover.py -v
