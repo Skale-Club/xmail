@@ -366,10 +366,10 @@ def receipt(p, profile_digest, root=ROOT, now=None):
          'disabledStatePreserved': True, 'noContactAutoLinks': True, 'runtimeGrantsReviewed': True}))
     if 'admin-acceptance' in proofs:
         acceptance = proofs['admin-acceptance']
-        ids = ['adminUserId', 'bindingId']
-        need(set(acceptance) == set(ids+['sessionHash', 'independentLegacyProof', 'freshGoogleProof', 'ownedSessionAccepted', 'applicationAdminVerified'])
+        ids = ['adminUserId', 'bindingId', 'legacyAnchorBindingId']
+        need(set(acceptance) == set(ids+['sessionHash', 'legacyAnchorSessionHash', 'independentLegacyProof', 'freshGoogleProof', 'ownedSessionAccepted', 'applicationAdminVerified'])
              and all(isinstance(acceptance[k], str) and re.fullmatch(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', acceptance[k]) for k in ids)
-             and digest(acceptance['sessionHash']) and all(acceptance[k] is True for k in
+             and digest(acceptance['sessionHash']) and digest(acceptance['legacyAnchorSessionHash']) and all(acceptance[k] is True for k in
                  ['independentLegacyProof', 'freshGoogleProof', 'ownedSessionAccepted', 'applicationAdminVerified']))
         r['_acceptedAdmin'] = acceptance
     base_raw = secure_read(root/'production-base.env', 32768)
@@ -412,25 +412,59 @@ def runtime_state(p, r, base, admitted=None):
         need(not writer)
     return old
 
-def verify_linked_admin(r):
-    a = r['_acceptedAdmin']
-    # UUID/hash fields were strictly validated above. Sensitive hashes stay on
-    # stdin; no email, contact matching, raw session token or SQL value is logged.
-    query = """BEGIN READ ONLY; SET LOCAL log_statement='none'; SET LOCAL log_min_error_statement='panic';
-    SET LOCAL statement_timeout='2s'; SET LOCAL lock_timeout='500ms';
-    SELECT EXISTS(SELECT 1 FROM public.users u
+def admin_acceptance_from_sql():
+    return """FROM public.users u
       JOIN public.xmail_identity_user_controls c ON c.user_id=u.id
       JOIN public.xmail_identity_bindings b ON b.user_id=u.id
       JOIN public.xmail_identity_owned_sessions s ON s.binding_id=b.id
-      WHERE u.id='%s'::uuid AND u.is_admin AND c.disabled_at IS NULL
-      AND b.id='%s'::uuid AND b.project_id='skaleclub' AND b.disabled_at IS NULL
-      AND b.proof_reference IN ('legacy-session:'||u.id::text,'legacy-password:'||u.id::text)
-      AND s.token_hash='%s' AND s.revoked_at IS NULL AND s.expires_at>transaction_timestamp()
+      JOIN public.xmail_identity_bindings ab ON ab.user_id=u.id
+      JOIN public.xmail_identity_owned_sessions a ON a.binding_id=ab.id"""
+
+
+def admin_acceptance_predicate_sql():
+    # The legacy anchor must have been usable during the child link. A retained
+    # parent revoked immediately afterwards is expected: /link replaces its cookie.
+    # No email, phone, profile claim, or merely existing binding establishes ownership.
+    return """u.is_admin AND c.disabled_at IS NULL
+      AND b.project_id='skaleclub' AND b.disabled_at IS NULL
+      AND ab.project_id=b.project_id AND ab.disabled_at IS NULL
+      AND ab.proof_reference IN ('legacy-session:'||u.id::text,'legacy-password:'||u.id::text)
+      AND s.revoked_at IS NULL AND s.expires_at>transaction_timestamp()
+      AND s.created_at>=b.created_at AND s.created_at<=transaction_timestamp()
       AND s.authenticated_at>=extract(epoch FROM transaction_timestamp())-300
       AND s.authenticated_at<=extract(epoch FROM transaction_timestamp())+5
-      AND c.sessions_valid_after<=to_timestamp(s.authenticated_at)); ROLLBACK;""" % (a['adminUserId'], a['bindingId'], a['sessionHash'])
+      AND c.sessions_valid_after<=to_timestamp(s.authenticated_at)
+      AND c.sessions_valid_after<=to_timestamp(a.authenticated_at)
+      AND ((ab.id=b.id AND a.token_hash=s.token_hash
+        AND b.proof_reference IN ('legacy-session:'||u.id::text,'legacy-password:'||u.id::text))
+       OR (ab.id<>b.id AND ab.subject<>b.subject AND a.token_hash<>s.token_hash
+        AND b.proof_reference='owned-session:'||u.id::text
+        AND a.created_at>=ab.created_at AND a.created_at<=b.created_at
+        AND a.expires_at>b.created_at
+        AND a.authenticated_at>=extract(epoch FROM b.created_at)-300
+        AND a.authenticated_at<=extract(epoch FROM b.created_at)+5
+        AND a.revoked_at>=b.created_at AND a.revoked_at<=b.created_at+interval '30 seconds'))"""
+
+
+def admin_acceptance_candidates_sql():
+    return "SELECT coalesce(jsonb_agg(to_jsonb(q)),'[]') FROM (SELECT u.id::text AS \"adminUserId\", b.id::text AS \"bindingId\", s.token_hash AS \"sessionHash\", ab.id::text AS \"legacyAnchorBindingId\", a.token_hash AS \"legacyAnchorSessionHash\", b.subject AS \"subject\", ab.subject AS \"anchorSubject\", s.authenticated_at AS \"authenticatedAt\", a.authenticated_at AS \"anchorAuthenticatedAt\", s.created_at AS \"sessionCreatedAt\" "+admin_acceptance_from_sql()+" WHERE "+admin_acceptance_predicate_sql()+" ORDER BY s.created_at DESC,s.token_hash,ab.id,a.token_hash LIMIT 101) q"
+
+
+def admin_acceptance_query(a):
+    # Defense in depth: these private values may enter SQL only after strict validation.
+    for key in ['adminUserId','bindingId','legacyAnchorBindingId']:
+        need(isinstance(a.get(key),str) and re.fullmatch(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}',a[key]))
+    for key in ['sessionHash','legacyAnchorSessionHash']: need(digest(a.get(key)))
+    fields = "u.id='%s'::uuid AND b.id='%s'::uuid AND s.token_hash='%s' AND ab.id='%s'::uuid AND a.token_hash='%s'" % tuple(a[k] for k in ['adminUserId','bindingId','sessionHash','legacyAnchorBindingId','legacyAnchorSessionHash'])
+    return "SELECT EXISTS(SELECT 1 "+admin_acceptance_from_sql()+" WHERE "+fields+" AND "+admin_acceptance_predicate_sql()+")"
+
+
+def verify_linked_admin(r):
+    # UUIDs/hashes stay on stdin, never command arguments or logs.
+    query = "BEGIN READ ONLY; SET LOCAL log_statement='none'; SET LOCAL log_min_error_statement='panic'; SET LOCAL statement_timeout='2s'; SET LOCAL lock_timeout='500ms'; "+admin_acceptance_query(r['_acceptedAdmin'])+"; ROLLBACK;"
     result = docker(['exec', '-i', TARGET, 'psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'xmail_owner', '-d', 'xmail'], query.encode())
     need(result.strip() == b't')
+
 
 def execute(action, root=ROOT, admitted=None):
     p, reader, profile_digest, raw_sha, reader_sha = profiles(root)

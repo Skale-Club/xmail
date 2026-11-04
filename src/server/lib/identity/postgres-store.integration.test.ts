@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { randomBytes, randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import postgres, { type Sql } from 'postgres'
@@ -205,4 +206,49 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
         await expect(linker('fresh-phone-proof', { email: 'different-form@example.invalid', password: randomUUID() })).rejects.toThrow()
         expect((await sql`SELECT subject FROM public.xmail_identity_bindings WHERE subject=${identity.subject}`)).toHaveLength(0)
     })
+    it('evaluates the actual deployment temporal legacy-anchor chain and refuses broken ownership', async () => {
+        const childId = randomUUID(), parentHash = 'a'.repeat(64), childHash = 'b'.repeat(64)
+        const facts = { adminUserId: binding.userId, bindingId: childId, sessionHash: childHash,
+            legacyAnchorBindingId: binding.id, legacyAnchorSessionHash: parentHash }
+        const program = String.raw`import json,sys,textwrap
+from pathlib import Path
+s=Path('.github/scripts/deploy-xmail.sh').read_text()
+a=s.index('import datetime as dt\n',s.index('# BEGIN XMAIL OWNED POLICY'));b=s.index('XMAIL_OWNED_POLICY_PY',a)
+n={'__name__':'offline_fixture'};exec(compile(textwrap.dedent(s[a:b]),'policy','exec'),n)
+print(n['admin_acceptance_query'](json.load(sys.stdin)))`
+        const query = execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-B', '-c', program],
+            { input: JSON.stringify(facts), encoding: 'utf8', timeout: 5000 }).trim()
+        const admitted = async () => (await sql.unsafe(query))[0].exists
+        await sql`UPDATE public.xmail_identity_bindings SET proof_reference=${`legacy-password:${binding.userId}`}, created_at=now()-interval '60 seconds' WHERE id=${binding.id}`
+        await sql`INSERT INTO public.xmail_identity_bindings(id,project_id,subject,user_id,proof_reference,created_at)
+            VALUES (${childId},'skaleclub','offline-phone-child',${binding.userId},${`owned-session:${binding.userId}`},now()-interval '20 seconds')`
+        await sql`INSERT INTO public.xmail_identity_owned_sessions(token_hash,binding_id,authenticated_at,created_at,expires_at,revoked_at)
+            VALUES (${parentHash},${binding.id},extract(epoch FROM now()-interval '50 seconds')::bigint,now()-interval '45 seconds',now()+interval '1 hour',now()-interval '19 seconds'),
+                (${childHash},${childId},extract(epoch FROM now()-interval '20 seconds')::bigint,now()-interval '19 seconds',now()+interval '1 hour',NULL)`
+        expect(await admitted()).toBe(true)
+        // Each mutation is rolled back to test the exact same valid API-shaped chain.
+        for (const invalid of [
+            `UPDATE public.xmail_identity_owned_sessions SET revoked_at=now()-interval '21 seconds' WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET revoked_at=NULL WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET expires_at=now()-interval '21 seconds' WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET authenticated_at=extract(epoch FROM now()-interval '400 seconds')::bigint WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET revoked_at=now()+interval '11 seconds' WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_bindings SET project_id='otherproject' WHERE id='${binding.id}'`,
+            `UPDATE public.xmail_identity_bindings SET proof_reference='legacy-password:${randomUUID()}' WHERE id='${binding.id}'`,
+            `UPDATE public.xmail_identity_bindings SET proof_reference='owned-session:${randomUUID()}' WHERE id='${childId}'`,
+            `UPDATE public.xmail_identity_bindings SET disabled_at=now() WHERE id='${binding.id}'`,
+            `UPDATE public.xmail_identity_user_controls SET disabled_at=now()`,
+            `UPDATE public.xmail_identity_user_controls SET sessions_valid_after=now()`,
+            `UPDATE public.users SET is_admin=false`,
+            `UPDATE public.xmail_identity_owned_sessions SET revoked_at=now() WHERE token_hash='${childHash}'`,
+        ]) {
+            await sql.begin(async tx => {
+                await tx.unsafe(invalid)
+                expect((await tx.unsafe(query))[0].exists).toBe(false)
+                throw new Error('rollback-negative-fixture')
+            }).catch(error => { if (error.message !== 'rollback-negative-fixture') throw error })
+        }
+        expect(await admitted()).toBe(true)
+    })
+
 })
