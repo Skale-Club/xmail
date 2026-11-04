@@ -37,6 +37,7 @@ jobs:
         run: |
           node --test scripts/ops/xmail-database-rehearsal.test.mjs
           node --test scripts/ops/import-private-postgres-candidate.test.mjs
+          node --test scripts/ops/test-xmail-google-deploy.mjs
           bash -n scripts/ops/xmail-database-rehearsal.sh
           bash -n scripts/ops/xmail-database-protocol.sh
           bash -n scripts/ops/import-private-postgres-candidate.sh

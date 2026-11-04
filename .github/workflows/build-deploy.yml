@@ -183,10 +183,101 @@ jobs:
             # PTR de 49.13.197.250 = mx.skale.club. Testes no .env.example.
             # ROLLBACK: re-adicionar as duas linhas -e SMTP_HOST=... e -e SMTP_USER=... na lista
             # de -e abaixo (os secrets continuam no repositorio).
+            GOOGLE_RUNTIME_PARENT_DIR="/opt"
+            GOOGLE_RUNTIME_ROOT="/opt/xmail"
+            GOOGLE_RUNTIME_OPS_DIR="${GOOGLE_RUNTIME_ROOT}/google-identity-ops"
+            GOOGLE_RUNTIME_ENV_FILE="${GOOGLE_RUNTIME_OPS_DIR}/google-auth.env"
+            GOOGLE_RUNTIME_HOST_DIR="${GOOGLE_RUNTIME_ROOT}/google-identity-runtime"
+            GOOGLE_RUNTIME_CONTAINER_DIR="/run/secrets/xmail-google-identity"
+            GOOGLE_RUNTIME_ARGS=""
+
+            google_runtime_failure() {
+              echo "::error::The fixed Xmail Google runtime binding failed host-file validation." >&2
+              return 1
+            }
+
+            google_runtime_check_directory() {
+              local path="$1"
+              local expected_mode="$2"
+              local metadata uid gid mode links permissions
+              [ -d "$path" ] && [ ! -L "$path" ] || return 1
+              metadata=$(stat -c '%u:%g:%a:%h' -- "$path" 2>/dev/null) || return 1
+              IFS=: read -r uid gid mode links <<< "$metadata"
+              [ "$uid" = "0" ] && [ "$gid" = "0" ] || return 1
+              if [ "$expected_mode" = "safe" ]; then
+                permissions=$((8#$mode))
+                (( (permissions & 18) == 0 )) || return 1
+              else
+                [ "$mode" = "$expected_mode" ] || return 1
+              fi
+            }
+
+            google_runtime_check_file() {
+              local path="$1"
+              local maximum="$2"
+              local metadata uid gid mode links size
+              [ -f "$path" ] && [ ! -L "$path" ] || return 1
+              metadata=$(stat -c '%u:%g:%a:%h:%s' -- "$path" 2>/dev/null) || return 1
+              IFS=: read -r uid gid mode links size <<< "$metadata"
+              [ "$uid" = "0" ] && [ "$gid" = "0" ] && [ "$mode" = "600" ] \
+                && [ "$links" = "1" ] && [ "$size" -gt 0 ] && [ "$size" -le "$maximum" ]
+            }
+
+            prepare_google_runtime_binding() {
+              GOOGLE_RUNTIME_ARGS=""
+              # No staged file means the existing production invocation and image defaults
+              # are unchanged. A dangling symlink counts as present and fails closed below.
+              if [ ! -e "$GOOGLE_RUNTIME_ENV_FILE" ] && [ ! -L "$GOOGLE_RUNTIME_ENV_FILE" ]; then
+                return 0
+              fi
+
+              google_runtime_check_directory "$GOOGLE_RUNTIME_PARENT_DIR" safe \
+                && google_runtime_check_directory "$GOOGLE_RUNTIME_ROOT" safe \
+                && google_runtime_check_directory "$GOOGLE_RUNTIME_OPS_DIR" 700 \
+                && google_runtime_check_directory "$GOOGLE_RUNTIME_HOST_DIR" 750 \
+                || { google_runtime_failure; return 1; }
+              google_runtime_check_file "$GOOGLE_RUNTIME_ENV_FILE" 16384 \
+                || { google_runtime_failure; return 1; }
+              if ! awk '
+                /^[[:space:]]*($|#)/ { next }
+                {
+                  separator = index($0, "=")
+                  if (!separator) exit 1
+                  key = substr($0, 1, separator - 1)
+                  if (key !~ /^XMAIL_GOOGLE_AUTH_[A-Z0-9_]+$/ || seen[key]++) exit 1
+                  count++
+                }
+                END { if (!count) exit 1 }
+              ' "$GOOGLE_RUNTIME_ENV_FILE" >/dev/null 2>&1; then
+                google_runtime_failure
+                return 1
+              fi
+
+              for runtime_file in adc.json certificate-config.json client.crt client.key trust-chain.pem; do
+                case "$runtime_file" in
+                  adc.json) maximum=65536 ;;
+                  certificate-config.json) maximum=16384 ;;
+                  client.crt|client.key) maximum=32768 ;;
+                  trust-chain.pem) maximum=131072 ;;
+                esac
+                google_runtime_check_file "${GOOGLE_RUNTIME_HOST_DIR}/${runtime_file}" "$maximum" \
+                  || { google_runtime_failure; return 1; }
+              done
+              expected_entries=$(printf '%s\n' adc.json certificate-config.json client.crt client.key trust-chain.pem | LC_ALL=C sort)
+              actual_entries=$(find "$GOOGLE_RUNTIME_HOST_DIR" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | LC_ALL=C sort) \
+                || { google_runtime_failure; return 1; }
+              [ "$actual_entries" = "$expected_entries" ] || { google_runtime_failure; return 1; }
+
+              # This is the one fixed Xmail Google config file, never the workflow env set.
+              GOOGLE_RUNTIME_ARGS="--env-file ${GOOGLE_RUNTIME_ENV_FILE} --mount type=bind,source=${GOOGLE_RUNTIME_HOST_DIR},target=${GOOGLE_RUNTIME_CONTAINER_DIR},readonly"
+            }
+
             run_app_container() {
               NAME="$1"
               IMAGE="$2"
               PUBLISH_PORTS="$3"
+
+              prepare_google_runtime_binding || return 1
 
               PUBLISH_ARGS=""
               if [ "$PUBLISH_PORTS" = "true" ]; then
@@ -213,6 +304,7 @@ jobs:
                 $NETWORK_FLAG \
                 $PUBLISH_ARGS \
                 -v /etc/letsencrypt:/etc/letsencrypt:ro \
+                $GOOGLE_RUNTIME_ARGS \
                 -e NODE_ENV=production \
                 -e PORT=9001 \
                 -e DEPLOY_VERSION="$DEPLOY_VERSION" \
