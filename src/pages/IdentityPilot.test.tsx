@@ -12,6 +12,7 @@ vi.mock('../lib/owned-identity', () => ({
     ownedIdentityActive: () => false, leaveOwnedIdentity: vi.fn(),
 }))
 vi.mock('../lib/firebase-identity', () => ({ googleIdentityToken: mocks.google, beginPhoneIdentity: mocks.phone }))
+vi.mock('../lib/browser-auth-authority', () => ({ currentBrowserAuthAuthority: () => 'legacy', resolveBrowserAuthAuthority: async () => 'legacy' }))
 
 beforeEach(() => {
     vi.clearAllMocks()

@@ -68,10 +68,10 @@ Native provisioning during an allowed non-admin reset keeps
 a disabled account disabled. Ordinary profile/status changes preserve all native
 hashes. The current UI's generic password wording has not been changed, so this
 authority must remain off until that wording and operational recovery are reviewed.
-It must also remain off until global API admission has an explicit owned authority
-or enforces local controls on every legacy principal: the current global bearer
-middleware can still admit Supabase sessions to other routes, so this batch alone
-cannot claim to disable all legacy browser access.
+Activation also requires `XMAIL_BROWSER_AUTH_AUTHORITY=owned`; the dispatcher
+rejects local administration without that matching global boundary. See
+`xmail-browser-auth-authority.md` for the prepared bearer/SDK isolation and its
+remaining operational and onboarding gates. No flags are activated by this work.
 
 Invitation/resend, destructive account deletion, and the existing self-service
 `POST /api/users/me/change-password` recovery/password flow are explicitly

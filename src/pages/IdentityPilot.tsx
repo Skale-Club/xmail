@@ -5,7 +5,8 @@ import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Label } from '../components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
-import { loadFirebaseIdentityConfig, ownedIdentityAction, ownedIdentityActive, probeOwnedIdentitySession, leaveOwnedIdentity, type OwnedIdentityUser } from '../lib/owned-identity'
+import { loadFirebaseIdentityConfig, ownedIdentityAction, ownedIdentityActive, probeOwnedIdentitySession, leaveOwnedIdentity, storedLegacyFirstLinkToken, type OwnedIdentityUser } from '../lib/owned-identity'
+import { currentBrowserAuthAuthority, legacyBrowserAuthConfirmed, resolveBrowserAuthAuthority } from '../lib/browser-auth-authority'
 
 export default function IdentityPilot() {
     const [available, setAvailable] = useState(false)
@@ -24,16 +25,20 @@ export default function IdentityPilot() {
         let mounted = true
         void Promise.all([loadFirebaseIdentityConfig(), probeOwnedIdentitySession()]).then(([, session]) => {
             if (mounted) { setAvailable(true); setUser(session.user || null) }
-        }).catch(() => { if (mounted) setError('Verified sign-in is not available yet. You can continue with the current sign-in page.') })
+        }).catch(() => { if (mounted) setError('Verified sign-in is not available yet. Contact support for reviewed recovery.') })
             .finally(() => { if (mounted) setLoading(false) })
         return () => { mounted = false; pending.current?.dispose() }
     }, [])
 
     async function finish(token: string) {
         let legacyToken: string | undefined
-        if (linking && !ownedIdentityActive()) {
-            const { supabase } = await import('../lib/supabase')
-            legacyToken = (await supabase.auth.getSession()).data.session?.access_token
+        if (linking && (await probeOwnedIdentitySession()).kind !== 'active') {
+            await resolveBrowserAuthAuthority({ force: true })
+            if (!legacyBrowserAuthConfirmed()) legacyToken = storedLegacyFirstLinkToken()
+            else {
+                const { supabase } = await import('../lib/supabase')
+                legacyToken = (await supabase.auth.getSession()).data.session?.access_token
+            }
             if (!legacyToken) throw new Error('Sign in to your existing account first, then return to link a verified sign-in.')
         }
         await ownedIdentityAction(linking ? 'link' : 'session', token, legacyToken)
@@ -107,10 +112,10 @@ export default function IdentityPilot() {
                     {ownedIdentityActive() ? <Button variant="ghost" className="w-full" disabled={busy} onClick={() => void perform(async () => {
                         await ownedIdentityAction('logout'); window.location.href = '/auth/identity'
                     })}><LogOut className="mr-2 h-4 w-4" />Sign out</Button> : null}
-                    <button className="w-full text-center text-sm text-muted-foreground underline underline-offset-4" disabled={busy} onClick={() => {
+                    {currentBrowserAuthAuthority() === 'legacy' ? <button className="w-full text-center text-sm text-muted-foreground underline underline-offset-4" disabled={busy} onClick={() => {
                         if (ownedIdentityActive()) void perform(leaveOwnedIdentity)
                         else window.location.href = '/login'
-                    }}>Use the current sign-in page</button>
+                    }}>Use the current sign-in page</button> : null}
                 </CardContent>
             </Card>
         </main>

@@ -4,6 +4,7 @@ import { Lock, Eye, EyeOff } from 'lucide-react'
 import { defaultBranding, useBranding } from '../lib/branding'
 import { apiFetch } from '../lib/api-client'
 import { supabase } from '../lib/supabase'
+import { browserAuthGeneration, legacyBrowserAuthConfirmed, legacyBrowserAuthSnapshotCurrent, requireLegacyBrowserAuth, subscribeBrowserAuthBoundary } from '../lib/browser-auth-authority'
 import { AppLogo } from '../components/AppLogo'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
@@ -36,24 +37,31 @@ export default function ResetPassword() {
 
     useEffect(() => {
         let mounted = true
-
-        const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
-            if (!mounted) return
-            if (event === 'PASSWORD_RECOVERY' || (event === 'SIGNED_IN' && session)) {
-                setHasSession(true)
-                setIsReady(true)
+        let unsubscribe: (() => void) | undefined
+        const unsubscribeBoundary = subscribeBrowserAuthBoundary(() => {
+            if (mounted && !legacyBrowserAuthConfirmed()) {
+                unsubscribe?.(); setHasSession(false); setIsReady(true)
+                setError('This password recovery is unavailable. Use verified sign-in or contact support for reviewed recovery.')
             }
         })
-
-        void supabase.auth.getSession().then(({ data }) => {
-            if (!mounted) return
-            if (data.session) setHasSession(true)
-            setIsReady(true)
-        })
+        void (async () => {
+            try {
+                await requireLegacyBrowserAuth()
+                if (!mounted) return
+                const generation = browserAuthGeneration()
+                const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+                    if (mounted && legacyBrowserAuthSnapshotCurrent(generation) && (event === 'PASSWORD_RECOVERY' || (event === 'SIGNED_IN' && session))) { setHasSession(true); setIsReady(true) }
+                })
+                unsubscribe = () => listener.subscription.unsubscribe()
+                const { data } = await supabase.auth.getSession()
+                if (mounted && legacyBrowserAuthSnapshotCurrent(generation)) { if (data.session) setHasSession(true); setIsReady(true) }
+            } catch { if (mounted) { setError('This password recovery is unavailable. Use verified sign-in or contact support for reviewed recovery.'); setIsReady(true) } }
+        })()
 
         return () => {
             mounted = false
-            listener.subscription.unsubscribe()
+            unsubscribeBoundary()
+            unsubscribe?.()
         }
     }, [])
 
@@ -72,6 +80,7 @@ export default function ResetPassword() {
 
         setIsLoading(true)
         try {
+            await requireLegacyBrowserAuth()
             // Goes through the server route (not supabase.auth.updateUser directly)
             // so users.passwordHash gets synced and a native mailbox is created on
             // first password set for invited users — see auth.ts /update-password.

@@ -1,8 +1,9 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../lib/supabase'
 import { clearTokenCache } from '../lib/api-client'
 import { ownedIdentityActive, probeOwnedIdentitySession } from '../lib/owned-identity'
+import { browserAuthGeneration, legacyBrowserAuthConfirmed, legacyBrowserAuthSnapshotCurrent, requireLegacyBrowserAuth, subscribeBrowserAuthBoundary } from '../lib/browser-auth-authority'
 import {
     type StoredSession,
     type SessionInfo,
@@ -25,12 +26,15 @@ interface MultiSessionContextType {
 }
 
 const MultiSessionContext = createContext<MultiSessionContextType | null>(null)
+async function signOutLegacy() { await requireLegacyBrowserAuth(); await supabase.auth.signOut() }
 
 export function MultiSessionProvider({ children }: { children: React.ReactNode }) {
     const queryClient = useQueryClient()
     const [sessions, setSessions] = useState<SessionInfo[]>([])
     const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null)
     const [initialized, setInitialized] = useState(false)
+    const mounted = useRef(true)
+    useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
 
     const refreshSessions = useCallback(() => {
         const stored = getStoredSessions()
@@ -39,6 +43,9 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
     }, [])
 
     const initializeActiveSession = useCallback(async (stored: StoredSession[]) => {
+        await requireLegacyBrowserAuth()
+        if (!mounted.current) return
+        const generation = browserAuthGeneration()
         const savedActiveId = getActiveSessionId()
         const target = savedActiveId
             ? stored.find(s => s.userId === savedActiveId)
@@ -50,6 +57,7 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
                     access_token: target.accessToken,
                     refresh_token: target.refreshToken,
                 })
+                if (!mounted.current || ownedIdentityActive() || !legacyBrowserAuthSnapshotCurrent(generation)) return
                 if (error) {
                     if (stored.length > 1) {
                         removeStoredSession(target.userId)
@@ -59,21 +67,30 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
                             initializeActiveSession(remaining)
                         } else {
                             clearAllSessions()
-                            await supabase.auth.signOut()
+                            await signOutLegacy()
                         }
                     } else {
                         clearAllSessions()
-                        await supabase.auth.signOut()
+                        await signOutLegacy()
                     }
                     return
                 }
                 setActiveSessionIdState(target.userId)
             } catch {
+                if (!mounted.current || ownedIdentityActive() || !legacyBrowserAuthSnapshotCurrent(generation)) return
                 clearAllSessions()
-                await supabase.auth.signOut().catch(() => {})
+                await signOutLegacy().catch(() => {})
             }
         }
     }, [refreshSessions])
+
+    useEffect(() => {
+        return subscribeBrowserAuthBoundary(() => {
+            if (ownedIdentityActive() || !legacyBrowserAuthConfirmed()) {
+                setSessions([]); setActiveSessionIdState(null); queryClient.clear(); clearTokenCache()
+            }
+        })
+    }, [queryClient])
 
     useEffect(() => {
         let cancelled = false
@@ -82,23 +99,24 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
         // legacy bootstrap instead of waiting for a protected-route redirect.
         void probeOwnedIdentitySession().then(result => {
             if (cancelled) return
-            if (result.kind === 'active' || result.kind === 'expired' || ownedIdentityActive()) {
+            if (result.kind === 'active' || result.kind === 'expired' || result.kind === 'unavailable' || ownedIdentityActive() || !legacyBrowserAuthConfirmed()) {
                 setSessions([]); setActiveSessionIdState(null); setInitialized(true); return
             }
             const stored = getStoredSessions()
             if (stored.length > 0) {
                 refreshSessions()
-                void initializeActiveSession(stored).finally(() => { if (!cancelled) setInitialized(true) })
+                void initializeActiveSession(stored).catch(() => {}).finally(() => { if (!cancelled) setInitialized(true) })
             } else setInitialized(true)
         })
         return () => { cancelled = true }
     }, [refreshSessions, initializeActiveSession])
 
     useEffect(() => {
-        if (!initialized || ownedIdentityActive()) return
+        if (!initialized || ownedIdentityActive() || !legacyBrowserAuthConfirmed()) return
 
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
             async (event, session) => {
+                if (!mounted.current || ownedIdentityActive() || !legacyBrowserAuthConfirmed()) return
                 if (event === 'SIGNED_IN' && session) {
                     const stored = supabaseSessionToStored(session)
                     addStoredSession(stored)
@@ -133,6 +151,8 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
     }, [initialized, refreshSessions])
 
     const switchSession = useCallback(async (userId: string) => {
+        await requireLegacyBrowserAuth()
+        const generation = browserAuthGeneration()
         if (ownedIdentityActive()) throw new Error('Sign out of verified sign-in before switching legacy accounts.')
         if (userId === activeSessionId) return
 
@@ -146,6 +166,7 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
             access_token: target.accessToken,
             refresh_token: target.refreshToken,
         })
+        if (!mounted.current || ownedIdentityActive() || !legacyBrowserAuthSnapshotCurrent(generation)) throw new Error('Sign-in authority changed. Reload to continue.')
 
         if (error) {
             removeStoredSession(userId)
@@ -164,6 +185,8 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
     }, [activeSessionId, refreshSessions, queryClient])
 
     const removeAccount = useCallback(async (userId: string) => {
+        await requireLegacyBrowserAuth()
+        const generation = browserAuthGeneration()
         if (ownedIdentityActive()) throw new Error('Use verified sign-in to manage this session.')
         const wasActive = userId === activeSessionId
         const stored = getStoredSessions()
@@ -180,6 +203,7 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
                     access_token: next.accessToken,
                     refresh_token: next.refreshToken,
                 })
+                if (!mounted.current || ownedIdentityActive() || !legacyBrowserAuthSnapshotCurrent(generation)) throw new Error('Sign-in authority changed. Reload to continue.')
                 if (error) {
                     removeStoredSession(next.userId)
                     refreshSessions()
@@ -189,7 +213,7 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
                     } else {
                         clearAllSessions()
                         queryClient.clear()
-                        await supabase.auth.signOut().catch(() => {})
+                        await signOutLegacy().catch(() => {})
                     }
                     return
                 }
@@ -199,7 +223,7 @@ export function MultiSessionProvider({ children }: { children: React.ReactNode }
             } else {
                 clearAllSessions()
                 queryClient.clear()
-                await supabase.auth.signOut().catch(() => {})
+                await signOutLegacy().catch(() => {})
             }
         }
     }, [activeSessionId, refreshSessions, queryClient])

@@ -13,7 +13,7 @@ const now = 1800000000000
 let server: Server, origin: string, env: Record<string, string | undefined>, admitted: boolean, authTime: number
 let store: OwnedAdminStore, resolveStore: ReturnType<typeof vi.fn<() => Promise<OwnedAdminStore>>>, legacy: ReturnType<typeof vi.fn<() => void>>
 beforeEach(async () => {
-    env = { XMAIL_GOOGLE_AUTH_ENABLED: 'true', XMAIL_USER_ADMIN_AUTHORITY: 'owned' }
+    env = { XMAIL_GOOGLE_AUTH_ENABLED: 'true', XMAIL_USER_ADMIN_AUTHORITY: 'owned', XMAIL_BROWSER_AUTH_AUTHORITY: 'owned' }
     admitted = true; authTime = now / 1000
     store = { list: vi.fn(async () => [{ id: target }]), create: vi.fn(async () => ({ id: target })), update: vi.fn(async () => ({ id: target })),
         setActive: vi.fn(async () => ({ id: target })), resetNativePassword: vi.fn(async () => {}) }
@@ -71,6 +71,11 @@ describe('owned user administration authority and HTTP contract', () => {
         delete env.XMAIL_USER_ADMIN_AUTHORITY
         expect((await request('/', 'POST', { email: 'a@example.invalid' })).status).toBe(409)
         expect(legacy).not.toHaveBeenCalled(); expect(resolveStore).not.toHaveBeenCalled()
+    })
+    it('requires the global authority before local administration can disable legacy-browser admission', async () => {
+        delete env.XMAIL_BROWSER_AUTH_AUTHORITY
+        expect((await request(`/${target}/deactivate`, 'POST', {})).status).toBe(409)
+        expect(resolveStore).not.toHaveBeenCalled(); expect(legacy).not.toHaveBeenCalled()
     })
     it('rejects forged headers and a stale or future proof', async () => {
         admitted = false

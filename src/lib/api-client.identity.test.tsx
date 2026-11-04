@@ -4,6 +4,7 @@ import { apiFetch, clearTokenCache, getAccessToken } from './api-client'
 const mocks = vi.hoisted(() => ({ active: vi.fn(), csrf: vi.fn(), getSession: vi.fn(), refresh: vi.fn() }))
 vi.mock('./owned-identity', () => ({ ownedIdentityActive: mocks.active, ownedMutationHeaders: mocks.csrf }))
 vi.mock('./supabase', () => ({ supabase: { auth: { getSession: mocks.getSession, refreshSession: mocks.refresh } } }))
+vi.mock('./browser-auth-authority', () => ({ resolveBrowserAuthAuthority: async () => 'legacy', requireLegacyBrowserAuth: async () => {}, browserAuthGeneration: () => 0, legacyBrowserAuthSnapshotCurrent: () => true }))
 beforeEach(() => {
     vi.clearAllMocks(); clearTokenCache()
     mocks.active.mockReturnValue(true)

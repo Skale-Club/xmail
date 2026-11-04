@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { ownedIdentityActive, ownedMutationHeaders } from './owned-identity'
+import { browserAuthGeneration, legacyBrowserAuthSnapshotCurrent, requireLegacyBrowserAuth, resolveBrowserAuthAuthority } from './browser-auth-authority'
 
 type ApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD'
 
@@ -110,7 +111,10 @@ async function getValidSession() {
         return { access_token: cachedToken, expires_at: tokenExpiresAt }
     }
 
+    await requireLegacyBrowserAuth()
+    const generation = browserAuthGeneration()
     const { data, error } = await supabase.auth.getSession()
+    if (ownedIdentityActive() || !legacyBrowserAuthSnapshotCurrent(generation)) throw new ApiClientError('Sign-in authority changed.', { status: 401, path: 'session' })
 
     if (error) {
         cachedToken = null
@@ -126,7 +130,9 @@ async function getValidSession() {
     const expiresSoon = session?.expires_at ? (session.expires_at * 1000) - Date.now() < 60_000 : false
 
     if (expiresSoon) {
+        await requireLegacyBrowserAuth()
         const refreshed = await supabase.auth.refreshSession()
+        if (ownedIdentityActive() || !legacyBrowserAuthSnapshotCurrent(generation)) throw new ApiClientError('Sign-in authority changed.', { status: 401, path: 'session' })
         if (refreshed.error) {
             cachedToken = null
             tokenExpiresAt = 0
@@ -148,6 +154,7 @@ async function getValidSession() {
 }
 
 export async function getAccessToken() {
+    await resolveBrowserAuthAuthority()
     if (ownedIdentityActive()) return undefined
     const session = await getValidSession()
     return session?.access_token
@@ -182,6 +189,7 @@ async function executeRequest(path: string, init: RequestInit, token?: string | 
 
 export async function apiRequest(path: string, options: ApiRequestOptions = {}): Promise<Response> {
     const { auth = true, retry = true, ...init } = options
+    if (auth || new Headers(init.headers).has('Authorization')) await resolveBrowserAuthAuthority()
     const method = (init.method || 'GET').toUpperCase()
     let token = auth ? await getAccessToken() : null
 
@@ -190,7 +198,10 @@ export async function apiRequest(path: string, options: ApiRequestOptions = {}):
 
         if (response.status === 401 && auth && !ownedIdentityActive()) {
             clearTokenCache()
+            await requireLegacyBrowserAuth()
+            const generation = browserAuthGeneration()
             const refreshed = await supabase.auth.refreshSession()
+            if (ownedIdentityActive() || !legacyBrowserAuthSnapshotCurrent(generation)) throw new ApiClientError('Sign-in authority changed.', { status: 401, path })
             if (refreshed.error || !refreshed.data.session?.access_token) {
                 throw new ApiClientError(refreshed.error?.message || 'Unauthorized', {
                     status: 401,

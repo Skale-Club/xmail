@@ -1,5 +1,6 @@
 import type { RequestHandler } from 'express'
 import { z } from 'zod'
+import { browserAuthAuthority } from './browser-auth-authority'
 
 export interface OwnedAdminPrincipal { userId: string; sessionHash: string; authenticatedAt: number }
 export class OwnedAdminError extends Error {
@@ -56,6 +57,9 @@ export function createOwnedUserAdminAdmission(dependencies: {
         const authority = userAdminAuthority(dependencies.env())
         if (authority === 'legacy' && res.locals.xmailOwnedIdentity !== true) return next()
         if (authority !== 'owned') return void res.status(409).json({ error: 'Select the user administration authority explicitly before using owned identity.' })
+        try {
+            if (browserAuthAuthority(dependencies.env()) !== 'owned') return void res.status(409).json({ error: 'Owned administration also requires the explicit global browser authority.' })
+        } catch { return void res.status(503).json({ error: 'Browser identity authority is unavailable.' }) }
         const principal: OwnedAdminPrincipal | undefined = res.locals.xmailOwnedIdentity === true ? res.locals.xmailOwnedPrincipal : undefined
         const now = (dependencies.clock ?? Date.now)() / 1000
         if (!principal || !uuid.safeParse(principal.userId).success || !/^[a-f0-9]{64}$/.test(principal.sessionHash)
