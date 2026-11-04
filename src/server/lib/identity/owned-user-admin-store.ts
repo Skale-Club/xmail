@@ -1,9 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import type { Sql } from 'postgres'
+import { nullableSqlTimestampDate, sqlTimestampDate } from './sql-timestamp'
 import { OwnedAdminError, type OwnedAdminPrincipal, type OwnedAdminStore } from './owned-user-admin'
 
 type Transaction = Pick<Sql, 'unsafe'>
 type NativeSettings = { host: string; smtpPort: number; imapPort: number; placeholder: string }
+type UserRow = {
+    id: string; email: string; firstName: string | null; lastName: string | null
+    isAdmin: boolean; emailVerified: boolean; isActive: boolean; organizations: unknown[]
+    createdAt: Date | string; lastLoginAt: Date | string | null
+}
 
 /** No ambient database, provider client, dotenv, retry or credential initialization. */
 export function createOwnedUserAdminStore(sql: Sql, dependencies: {
@@ -45,7 +51,7 @@ export function createOwnedUserAdminStore(sql: Sql, dependencies: {
     async function readUsers(tx: Transaction, id?: string) {
         // Explicit projection: no password hashes, 2FA secrets, provider subjects,
         // session tokens or encrypted mailbox credentials may leave this store.
-        return tx.unsafe(`SELECT u.id,u.email,u.first_name AS "firstName",u.last_name AS "lastName",
+        const rows = await tx.unsafe<UserRow[]>(`SELECT u.id,u.email,u.first_name AS "firstName",u.last_name AS "lastName",
             u.is_admin AS "isAdmin",u.email_verified AS "emailVerified",u.created_at AS "createdAt",u.last_login_at AS "lastLoginAt",
             (c.disabled_at IS NULL AND NOT EXISTS(SELECT 1 FROM public.mailboxes m
                 WHERE m.user_id=u.id AND m.is_native AND NOT m.is_active)) AS "isActive",
@@ -53,6 +59,7 @@ export function createOwnedUserAdminStore(sql: Sql, dependencies: {
                 FROM public.organization_users ou JOIN public.organizations o ON o.id=ou.organization_id WHERE ou.user_id=u.id),'[]'::jsonb) AS organizations
             FROM public.users u JOIN public.xmail_identity_user_controls c ON c.user_id=u.id
             WHERE ($1::uuid IS NULL OR u.id=$1::uuid) ORDER BY u.created_at DESC,u.id LIMIT 2001`, [id ?? null])
+        return rows.map(row => ({ ...row, createdAt: sqlTimestampDate(row.createdAt), lastLoginAt: nullableSqlTimestampDate(row.lastLoginAt) }))
     }
     async function readUser(tx: Transaction, id: string) {
         const rows = await readUsers(tx, id)

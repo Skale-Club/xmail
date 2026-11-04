@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres'
+import { sqlTimestampDate } from './sql-timestamp'
 import type { Request, Response } from 'express'
 import type { OwnedAdminPrincipal } from './owned-user-admin'
 import { getIdentityRuntime, type IdentityRuntime } from './runtime'
@@ -23,7 +24,7 @@ export async function readOwnedStreamLease(sql: Sql, expected: OwnedAdminPrincip
         : `JOIN public.organizations resource ON resource.id=$5
             WHERE (u.is_admin OR EXISTS(SELECT 1 FROM public.organization_users ou WHERE ou.organization_id=resource.id AND ou.user_id=u.id))`
     signal.throwIfAborted()
-    const pending = sql.unsafe<{ expiresAt: Date }[]>(`SELECT s.expires_at AS "expiresAt"
+    const pending = sql.unsafe<{ expiresAt: Date | string }[]>(`SELECT s.expires_at AS "expiresAt"
         FROM public.xmail_identity_owned_sessions s
         JOIN public.xmail_identity_bindings b ON b.id=s.binding_id
         JOIN public.users u ON u.id=b.user_id
@@ -42,7 +43,8 @@ export async function readOwnedStreamLease(sql: Sql, expected: OwnedAdminPrincip
     try {
         const rows = await pending
         signal.throwIfAborted()
-        const expiresAt = rows.length === 1 && rows[0].expiresAt instanceof Date ? rows[0].expiresAt.getTime() : NaN
+        let expiresAt = NaN
+        try { if (rows.length === 1) expiresAt = sqlTimestampDate(rows[0].expiresAt).getTime() } catch { /* Invalid stored timestamps never authorize a stream. */ }
         return Number.isFinite(expiresAt) && expiresAt > Date.now() ? { expiresAt } : null
     } finally { signal.removeEventListener('abort', cancel) }
 }
