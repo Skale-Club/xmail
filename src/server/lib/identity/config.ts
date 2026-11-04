@@ -5,6 +5,7 @@ import { ownedIdentityEnabled } from './owned-session'
 export interface IdentityConfig {
     projectId: string; projectNumber: string; apiKey: string; authDomain: string; origin: string; secure: boolean
     sessionCookie: string; browserCookie: string; adcMode: string; adcFile?: string
+    adcAudience?: string; adcServiceAccount?: string; adcRoot?: string
 }
 type Env = Record<string, string | undefined>
 
@@ -43,6 +44,8 @@ export function resolveIdentityConfig(env: Env): IdentityConfig | null {
         sessionCookie: dev ? 'xmail_identity_dev' : '__Host-xmail_identity',
         browserCookie: dev ? 'xmail_identity_browser_dev' : '__Host-xmail_identity_browser',
         adcMode: env[`${prefix}ADC_MODE`] || '', adcFile: env[`${prefix}ADC_FILE`],
+        adcAudience: env[`${prefix}ADC_AUDIENCE`], adcServiceAccount: env[`${prefix}ADC_SERVICE_ACCOUNT`],
+        adcRoot: dev ? env[`${prefix}ADC_ROOT`] : undefined,
     }
 }
 

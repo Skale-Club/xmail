@@ -56,6 +56,16 @@ describe('identity pilot isolation and API-key provenance', () => {
     it('fails closed without an explicitly selected keyless credential mechanism', async () => {
         await expect(createKeylessAccessTokenSupplier(resolveIdentityConfig(env)!)).rejects.toThrow('Keyless Google credentials are not configured.')
     })
+    it('selects X509 expectations only from the approved environment prefix, without production DEV fallback', () => {
+        const isolated = resolveIdentityConfig({ ...env, XMAIL_GOOGLE_AUTH_ADC_AUDIENCE: 'production-only',
+            XMAIL_GOOGLE_AUTH_ADC_SERVICE_ACCOUNT: 'production-only', XMAIL_GOOGLE_AUTH_ADC_ROOT: 'production-only' })!
+        expect(isolated.adcAudience).toBeUndefined()
+        expect(isolated.adcServiceAccount).toBeUndefined()
+        expect(isolated.adcRoot).toBeUndefined()
+        const configured = resolveIdentityConfig({ ...env, XMAIL_DEV_GOOGLE_AUTH_ADC_AUDIENCE: 'explicit-dev',
+            XMAIL_DEV_GOOGLE_AUTH_ADC_SERVICE_ACCOUNT: 'explicit-dev-sa', XMAIL_DEV_GOOGLE_AUTH_ADC_ROOT: 'explicit-dev-root' })!
+        expect(configured).toMatchObject({ adcAudience: 'explicit-dev', adcServiceAccount: 'explicit-dev-sa', adcRoot: 'explicit-dev-root' })
+    })
     it('uses only the explicit development Supabase host for uncached online exact-UID proof', async () => {
         const uid = crypto.randomUUID()
         const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ id: uid, app_metadata: {} })))

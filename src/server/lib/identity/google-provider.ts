@@ -111,17 +111,38 @@ export function createGoogleAccountStatusReader(
 ) {
     if (!validProject(projectId)) throw new Error('Invalid Google identity project.')
     return async (identity: Pick<GoogleIdentity, 'projectId' | 'subject'>, signal?: AbortSignal): Promise<GoogleAccountStatus> => {
+        const deadline = identityLookupSignal(signal)
+        let abort: (() => void) | undefined
+        let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+        const interrupted = new Promise<never>((_, reject) => {
+            abort = () => reject(new Error('Google account status is unavailable.'))
+            if (!deadline.aborted) deadline.addEventListener('abort', abort, { once: true })
+        })
         try {
+            deadline.throwIfAborted()
             if (identity.projectId !== projectId || !identity.subject || identity.subject.length > 128) invalidIdentity()
-            const accessToken = await getAccessToken(signal)
+            const accessToken = await Promise.race([getAccessToken(deadline), interrupted])
             if (!accessToken || /[\r\n]/.test(accessToken)) invalidIdentity()
-            const response = await fetcher(`https://identitytoolkit.googleapis.com/v1/projects/${projectId}/accounts:lookup`, {
-                method: 'POST', redirect: 'error', signal: identityLookupSignal(signal),
+            deadline.throwIfAborted()
+            const response = await Promise.race([fetcher(`https://identitytoolkit.googleapis.com/v1/projects/${projectId}/accounts:lookup`, {
+                method: 'POST', redirect: 'error', signal: deadline,
                 headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ localId: [identity.subject] }),
-            })
+            }), interrupted])
             if (!response.ok) invalidIdentity()
-            const body: unknown = await response.json()
+            reader = response.body?.getReader()
+            if (!reader) invalidIdentity()
+            const chunks: Buffer[] = []
+            let length = 0
+            while (!deadline.aborted) {
+                const part = await Promise.race([reader.read(), interrupted])
+                if (part.done) break
+                length += part.value.byteLength
+                if (length > 65_536) invalidIdentity()
+                chunks.push(Buffer.from(part.value))
+            }
+            deadline.throwIfAborted()
+            const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
             if (!record(body) || !Array.isArray(body.users) || body.users.length !== 1) invalidIdentity()
             const account: unknown = body.users[0]
             if (!record(account) || account.localId !== identity.subject || account.tenantId !== undefined
@@ -132,6 +153,11 @@ export function createGoogleAccountStatusReader(
             return { disabled: account.disabled === true, validSince }
         } catch {
             throw new Error('Google account status is unavailable.')
+        } finally {
+            if (abort) deadline.removeEventListener('abort', abort)
+            // A malicious/stalled stream's cancel promise must not extend the
+            // single STS + IAM + lookup/body deadline.
+            void reader?.cancel().catch(() => {})
         }
     }
 }

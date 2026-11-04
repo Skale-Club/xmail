@@ -1,5 +1,3 @@
-import { readFileSync, statSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { resolveDevelopmentServerAuth } from '../../../lib/development-auth'
 import { resolveIdentityConfig, type IdentityConfig } from './config'
@@ -8,6 +6,8 @@ import { createGoogleAccountStatusReader, createGoogleIdentityVerifier, createGo
 import { createOwnedIdentitySessions, ownedIdentityEnabled } from './owned-session'
 import { createPostgresOwnedIdentityStore } from './postgres-store'
 import { createIdentityPilotStore, type IdentityPilotStore } from './pilot-store'
+import { loadValidatedGoogleAdc } from './google-adc-config'
+import { getGoogleX509AccessToken } from './google-x509-access-token'
 
 export interface IdentityRuntime {
     config: IdentityConfig
@@ -34,20 +34,27 @@ async function bounded<T>(run: (signal: AbortSignal) => Promise<T>, caller?: Abo
 /** Only explicitly selected metadata or renewable external-account file ADC. */
 export async function createKeylessAccessTokenSupplier(config: IdentityConfig) {
     if (!['metadata', 'external_account'].includes(config.adcMode)) throw new Error('Keyless Google credentials are not configured.')
+    const validated = config.adcMode === 'external_account' ? loadValidatedGoogleAdc(config) : undefined
+    if (validated?.kind === 'x509') return async (signal?: AbortSignal) => {
+        // Revalidate every read, including renewed files, instead of caching a
+        // private key or allowing SDK ambient certificate-config fallbacks.
+        const fresh = loadValidatedGoogleAdc(config)
+        if (fresh.kind !== 'x509') throw new Error('Keyless Google credentials are not configured.')
+        return getGoogleX509AccessToken(fresh.credential, identityLookupSignal(signal))
+    }
     const options = { scopes: ['https://www.googleapis.com/auth/identitytoolkit'], transporterOptions: { timeout: 8_000, redirect: 'error' as const, retry: false } }
     const { GoogleAuth, Compute } = await import('google-auth-library')
     let client
     if (config.adcMode === 'metadata') client = new Compute(options)
     else {
-        if (!config.adcFile || !isAbsolute(config.adcFile) || statSync(config.adcFile).size > 65_536) throw new Error('Keyless Google credentials are not configured.')
-        const credentials = JSON.parse(readFileSync(config.adcFile, 'utf8')) as Record<string, any>
-        if (credentials.type !== 'external_account' || credentials.private_key || credentials.refresh_token || credentials.client_secret
-            || credentials.token_url !== 'https://sts.googleapis.com/v1/token'
-            || !isAbsolute(credentials.credential_source?.file || '')
-            || credentials.credential_source?.url || credentials.credential_source?.executable) throw new Error('Keyless Google credentials are not configured.')
+        if (validated?.kind !== 'oidc') throw new Error('Keyless Google credentials are not configured.')
+        const credentials = validated.credentials
         client = await new GoogleAuth({ ...options, projectId: config.projectId, credentials }).getClient()
     }
     return async (signal?: AbortSignal) => bounded(async abort => {
+        if (validated?.kind === 'oidc' && JSON.stringify(loadValidatedGoogleAdc(config)) !== JSON.stringify(validated)) {
+            throw new Error('Keyless Google credentials are not configured.')
+        }
         client.transporter.defaults = { ...client.transporter.defaults, ...options.transporterOptions, signal: abort }
         const result = await client.getAccessToken()
         if (!result.token) throw new Error('Keyless Google credentials are unavailable.')

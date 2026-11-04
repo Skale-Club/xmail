@@ -111,4 +111,31 @@ describe('live Google account status', () => {
         expect(() => requireActiveGoogleAccount({ authenticatedAt: now }, { disabled: false, validSince: now + 1 })).toThrow()
         expect(() => requireActiveGoogleAccount({ authenticatedAt: now }, { disabled: false, validSince: now })).not.toThrow()
     })
+    it('shares one deadline across credentials and lookup instead of granting a fresh eight seconds', async () => {
+        const token = vi.fn(async (_signal?: AbortSignal) => 'offline-token')
+        const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ users: [{ localId: 'firebase-user' }] })))
+        await createGoogleAccountStatusReader(project, token, fetcher)({ projectId: project, subject: 'firebase-user' })
+        expect(token.mock.calls[0][0]).toBe(fetcher.mock.calls[0][1]?.signal)
+        expect(fetcher.mock.calls[0][1]?.redirect).toBe('error')
+    })
+    it('does not call lookup after credential acquisition consumes the deadline', async () => {
+        const caller = new AbortController(), fetcher = vi.fn<typeof fetch>()
+        const token = vi.fn(async () => { caller.abort(); return 'offline-token' })
+        await expect(createGoogleAccountStatusReader(project, token, fetcher)({ projectId: project, subject: 'firebase-user' }, caller.signal))
+            .rejects.toThrow('Google account status is unavailable.')
+        expect(fetcher).not.toHaveBeenCalled()
+    })
+    it('bounds oversized and stalled lookup bodies, even if stream cancellation never resolves', async () => {
+        const oversized = createGoogleAccountStatusReader(project, async () => 'offline-token', async () => new Response('x'.repeat(65_537)))
+        await expect(oversized({ projectId: project, subject: 'firebase-user' })).rejects.toThrow('Google account status is unavailable.')
+        const caller = new AbortController()
+        const fetcher = vi.fn<typeof fetch>(async () => new Response(new ReadableStream({
+            pull: () => new Promise(() => {}), cancel: () => new Promise(() => {}),
+        })))
+        const pending = createGoogleAccountStatusReader(project, async () => 'offline-token', fetcher)({ projectId: project, subject: 'firebase-user' }, caller.signal)
+        const assertion = expect(pending).rejects.toThrow('Google account status is unavailable.')
+        await vi.waitFor(() => expect(fetcher).toHaveBeenCalled())
+        caller.abort()
+        await assertion
+    })
 })

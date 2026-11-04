@@ -68,6 +68,8 @@ account management and native-mail credential management remain cutover gates.
 
 Development uses only `XMAIL_DEV_GOOGLE_AUTH_PROJECT_ID`, `PROJECT_NUMBER`,
 `WEB_API_KEY`, `ORIGIN`, `ADC_MODE` and optional `ADC_FILE` under that prefix.
+X.509 additionally requires explicit `ADC_AUDIENCE`, `ADC_SERVICE_ACCOUNT` and,
+for development only, `ADC_ROOT`, with the same environment prefix.
 Its explicit approved SQL/Auth settings are also mandatory. The source production
 Supabase project must be declared or identifiable, and a same-project DEV Auth
 target is rejected. Google project `skaleclub`, number `937861185231`, and configured
@@ -90,6 +92,89 @@ metadata or renewable external-account ADC credential. The adapter rejects servi
 account JSON keys, refresh tokens and executable/URL credential sources. No shared
 service-account grant or trust configuration is modified. Codex OIDC is not renewable
 Hetzner ADC; a deployable keyless credential path is still an operational gate.
+
+## Prepared X.509 runtime credential path — not provisioned
+
+The external-account adapter now accepts Google's X.509 format with exact
+`https://sts.mtls.googleapis.com/v1/token` and
+`urn:ietf:params:oauth:token-type:mtls`. The existing file/OIDC branch still uses
+the normal STS endpoint and a renewable token file. It now also requires
+explicit audience/service-account expectations, the exact project number and
+`hetzner-xmail` pool, a distinct approved OIDC provider and canonical per-app IAM
+impersonation URL. All SDK configuration fields are allowlisted before construction;
+camelCase overrides and arbitrary token/impersonation URLs fail closed. No currently
+active ADC configuration is assumed. URL/executable and mixed certificate sources
+remain denied; known Codex/OpenAI audiences are denied.
+Both branches use the same canonical profile `adc.json` location. OIDC reads only
+`subject-token.jwt`, or `subject-token.json` with an explicit JSON token field,
+under that same production/development root. Its token file must be regular,
+canonical, bounded and protected like a private key; FIFO/device/symlink/out-of-profile
+sources and PEM/service-account JSON key material are refused before SDK construction.
+File/config guards repeat before SDK token reads; changes require rebuilding the
+supplier rather than retaining an old source configuration.
+No ambient connection token, service-account JSON private key, refresh token,
+default gcloud certificate configuration or environment-selected certificate file
+can supply the X.509 branch.
+
+Production fixes the read-only mount at `/run/secrets/xmail-google-identity`.
+The allowed files are `adc.json`, `certificate-config.json`, `client.crt`,
+`client.key` and optional `trust-chain.pem`. The ADC's explicit certificate location
+must point to that exact configuration file; its only workload fields are
+`cert_configs.workload.cert_path` and `key_path`, using those exact file names.
+Files must be regular, canonical, without symlink escape, nonempty and at most
+64 KiB each. POSIX private keys must have no group/other permissions. No key or
+certificate is generated or installed by this code.
+
+The explicit audience must equal
+`//iam.googleapis.com/projects/937861185231/locations/global/workloadIdentityPools/hetzner-xmail/providers/x509`
+for the current production project. The expected service account is
+`xmail-firebase-auth-reader@skaleclub.iam.gserviceaccount.com`; impersonation must
+use its canonical Google IAM endpoint. The project number/ID must also agree with
+the separately approved identity configuration. The leaf certificate must be current,
+not a CA, have explicit clientAuth EKU (`1.3.6.1.5.5.7.3.2`), match the private key
+and have the **single exact SAN**
+`URI:spiffe://skale.club/apps/xmail/production`. CN/wildcard/contact matching is
+not used. GCP trust/mapping must separately bind that exact SAN and a reviewed CA;
+local validation does not create or prove that trust. The complete subject chain
+is limited to five certificates including the leaf. The adapter checks individual
+validity and format; it does not claim local chain-signature/path verification.
+Google STS must validate the chain against the separately configured trust store.
+
+Development accepts an explicitly declared native absolute `ADC_ROOT` ending in
+`xmail-google-identity/development/<DEV_PROJECT_ID>`, including a Windows drive
+path. It has no production/root fallback and refuses UNC, traversal and canonical
+escape. All files, audience project number, service-account project and the sole
+SAN `URI:spiffe://skale.club/apps/xmail/development/<DEV_PROJECT_ID>` must agree
+with the isolated development project. Windows ACL review remains an operator gate:
+POSIX mode bits cannot establish NTFS key permissions. No DEV certificate or Google
+project has been provisioned or accepted by these mocked tests.
+
+The portable `google-x509-access-token.ts` core receives only validated buffers,
+audience, service-account email and certificate-chain subject token. It performs
+the documented mTLS STS exchange and 600-second service-account impersonation with
+`node:https`, verified server TLS and fixed Google endpoints. It follows no
+redirects, uses no shared/proxy agent and bounds each JSON response at64 KiB.
+The same absolute eight-second signal covers STS, IAM and the final exact-UID
+lookup/body read; cancellation destroys the active request and response. There is
+no initial token cache. This avoids the SDK10.9.1 internal mTLS STS transporter,
+which creates a new Gaxios instance without the configured timeout defaults.
+Metadata/file OIDC retain the existing SDK path. Renewed X.509 files are validated
+again on every token request. Tokens, key bytes and provider diagnostics are never
+logged, returned to the browser or written by the adapter.
+
+Sources: [Google's X.509 WIF and plain-mTLS protocol](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-x509-certificates),
+[official Node certificate-source format](https://github.com/googleapis/google-auth-library-nodejs/blob/main/src/auth/identitypoolclient.ts)
+and [IAM generateAccessToken](https://docs.cloud.google.com/iam/docs/reference/credentials/rest/v1/projects.serviceAccounts/generateAccessToken).
+The published10.9.1 package was inspected in memory against the lockfile SHA512;
+no dependency installation or production/provider request was needed.
+
+This is code preparation only. GCP administration/API access, exact CA/SAN trust,
+the per-app least-privilege `firebaseauth.users.get` role, private read-only mounts,
+certificate issuance/renewal/revocation, quota/load behavior and real end-to-end
+provider liveness remain unverified activation gates. No host/GCP mutation, private
+key generation, new cost, shared Codex-service-account grant, flag change or login
+cutover has occurred. The `/config` route still projects only projectId/apiKey/
+authDomain after readiness; it does not expose ADC fields or certificate paths.
 
 ## Validation and activation gates
 
