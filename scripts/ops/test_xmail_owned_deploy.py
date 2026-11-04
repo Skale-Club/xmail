@@ -1,6 +1,7 @@
 """Offline fixtures for the exact deploy heredoc; no Docker/network/dotenv access."""
 import contextlib
 import copy
+import base64
 import datetime as dt
 import hashlib
 import io
@@ -17,9 +18,11 @@ import unittest
 from unittest.mock import patch
 
 WORKFLOW = Path(__file__).resolve().parents[2]/'.github/workflows/build-deploy.yml'
-TEXT = WORKFLOW.read_text().replace('\r\n', '\n')
-START = TEXT.index('            import datetime as dt\n', TEXT.index('# BEGIN XMAIL OWNED POLICY'))
-END = TEXT.index('            XMAIL_OWNED_POLICY_PY', START)
+WORKFLOW_TEXT = WORKFLOW.read_text().replace('\r\n', '\n')
+DEPLOY = WORKFLOW.parents[1]/'scripts/deploy-xmail.sh'
+TEXT = DEPLOY.read_text().replace('\r\n', '\n')
+START = TEXT.index('import datetime as dt\n', TEXT.index('# BEGIN XMAIL OWNED POLICY'))
+END = TEXT.index('XMAIL_OWNED_POLICY_PY', START)
 SOURCE = textwrap.dedent(TEXT[START:END])
 
 
@@ -245,13 +248,28 @@ class PolicyFixture(unittest.TestCase):
 
 
 class SourcePolicy(unittest.TestCase):
-    def test_actual_ssh_script_and_heredocs_have_valid_bash_syntax(self):
-        start = TEXT.index('          script: |\n')+len('          script: |\n')
+    def test_workflow_checks_public_code_hash_before_execution_and_keeps_yaml_input_small(self):
+        start = WORKFLOW_TEXT.index('          script: |\n')+len('          script: |\n')
         lines = []
-        for line in TEXT[start:].splitlines():
+        for line in WORKFLOW_TEXT[start:].splitlines():
             if line.strip() and not line.startswith('            '): break
             lines.append(line[12:] if line.startswith('            ') else '')
-        shell = re.sub(r'\$\{\{[^\n]*?\}\}', 'offline', '\n'.join(lines)+'\n')
+        wrapper = '\n'.join(lines)+'\n'
+        self.assertLess(len(wrapper), 21000)
+        self.assertLess(wrapper.index('[ "$actual" = "$XMAIL_DEPLOY_CODE_SHA256" ]'), wrapper.index('| bash -s'))
+        bash = 'C:/Program Files/Git/bin/bash.exe' if sys.platform == 'win32' else shutil.which('bash')
+        if not bash: self.skipTest('Bash unavailable; Linux CI provides Bash')
+        program = b"printf 'public-code-executed\\n'\n"
+        env = {**os.environ, 'XMAIL_DEPLOY_CODE_B64': base64.b64encode(program).decode(),
+            'XMAIL_DEPLOY_CODE_SHA256': hashlib.sha256(program).hexdigest()}
+        valid = subprocess.run([bash, '-c', wrapper], env=env, text=True, capture_output=True, check=False)
+        self.assertEqual((valid.returncode, valid.stdout.strip()), (0, 'public-code-executed'))
+        env['XMAIL_DEPLOY_CODE_SHA256'] = '0'*64
+        invalid = subprocess.run([bash, '-c', wrapper], env=env, text=True, capture_output=True, check=False)
+        self.assertEqual(invalid.returncode, 2); self.assertEqual(invalid.stdout, '')
+
+    def test_actual_ssh_script_and_heredocs_have_valid_bash_syntax(self):
+        shell = TEXT
         bash = 'C:/Program Files/Git/bin/bash.exe' if sys.platform == 'win32' else shutil.which('bash')
         if not bash: self.skipTest('Bash syntax checker unavailable; Linux CI provides Bash')
         result = subprocess.run([bash, '-n'], input=shell, text=True, capture_output=True, check=False)
@@ -284,12 +302,12 @@ class SourcePolicy(unittest.TestCase):
                 with self.assertRaises(ValueError): ns['secure_read'](target)
 
     def test_owned_paths_use_env_files_not_source_eval_or_legacy_secret_arguments(self):
-        start = TEXT.index('            run_owned_preview() (')
-        body = TEXT[start:TEXT.index('            echo "::group::Deploy"', start)]
+        start = TEXT.index('run_owned_preview() (')
+        body = TEXT[start:TEXT.index('echo "::group::Deploy"', start)]
         self.assertNotIn('source ', body); self.assertNotIn('eval ', body)
         self.assertNotIn('-e DATABASE_URL=', body); self.assertNotIn('-e SMTP_PASS=', body)
         self.assertNotIn('rollback_to_previous', body)
-        preview = body[:body.index('            run_owned_deploy() {')]
+        preview = body[:body.index('run_owned_deploy() {')]
         self.assertIn('--env-file "$OWNED_READER_ENV_FILE"', preview)
         self.assertNotIn('$GOOGLE_RUNTIME_ARGS', preview); self.assertNotIn('$OWNED_BASE_ENV_FILE', preview)
         self.assertNotIn('-p ', preview); self.assertIn('--network "$network_id" --read-only', preview)

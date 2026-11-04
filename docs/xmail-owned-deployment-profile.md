@@ -6,6 +6,12 @@ Production still uses its original runtime. Final freeze/import/control
 acceptance needs a separately reviewed producer of the private receipts below.
 Do not manufacture successful receipts from these examples or from unit tests.
 
+The SSH action receives the public `.github/scripts/deploy-xmail.sh` code as
+base64 and SHA256 derived from the checked-out revision. Its short wrapper
+verifies that hash before execution on stdin; no host script file, secret
+source/eval or large inline workflow string is required. Policy fixtures execute
+the same Python heredoc from that public script.
+
 ## Deployment paths
 
 Without `/opt/xmail/owned-runtime-ops/owned-runtime.env`, the existing legacy

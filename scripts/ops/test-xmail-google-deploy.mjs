@@ -6,10 +6,10 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 
-const workflowPath = new URL('../../.github/workflows/build-deploy.yml', import.meta.url)
+const workflowPath = new URL('../../.github/scripts/deploy-xmail.sh', import.meta.url)
 const workflow = readFileSync(workflowPath, 'utf8').replace(/\r\n/g, '\n')
-const start = workflow.indexOf('            GOOGLE_RUNTIME_PARENT_DIR="/opt"')
-const end = workflow.indexOf('            run_app_container() {', start)
+const start = workflow.indexOf('GOOGLE_RUNTIME_PARENT_DIR="/opt"')
+const end = workflow.indexOf('run_app_container() {', start)
 assert.notEqual(start, -1, 'fixed runtime binding block must exist')
 assert.notEqual(end, -1, 'run_app_container boundary must exist')
 const originalBlock = workflow.slice(start, end)
@@ -19,7 +19,7 @@ function shellForFixture(parentPath) {
   const block = originalBlock
     .replace('GOOGLE_RUNTIME_PARENT_DIR="/opt"', `GOOGLE_RUNTIME_PARENT_DIR="${parentPath}"`)
     .replace('GOOGLE_RUNTIME_ROOT="/opt/xmail"', `GOOGLE_RUNTIME_ROOT="${runtimeRoot}"`)
-    .split('\n').map(line => line.startsWith('            ') ? line.slice(12) : line).join('\n')
+
   return `${block}
 set +e
 prepare_google_runtime_binding
