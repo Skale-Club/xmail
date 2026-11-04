@@ -37,6 +37,7 @@ export async function admitOwnedIdentity(req: Request, res: Response, dependenci
         // Only the server can set this response-local marker. No profile creation or
         // metadata synchronization may be inferred from a provider/contact snapshot.
         res.locals.xmailOwnedIdentity = true
+        res.locals.xmailOwnedPrincipal = principal
         return 'authenticated'
     } catch { res.status(503).json({ error: 'Identity service is unavailable.' }); return 'rejected' }
 }

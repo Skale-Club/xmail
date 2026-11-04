@@ -9,8 +9,13 @@ import { supabaseAdminClient, supabaseAnonClient } from '../lib/supabase'
 import { ensureLocalUser, getAuthenticatedUserFromRequest } from '../lib/user-sync'
 import { invalidateUser } from '../lib/auth-cache'
 import { syncOwnedUserStatus } from '../lib/identity/runtime'
+import { createOwnedUserAdminAdmission } from '../lib/identity/owned-user-admin'
 
 const router = Router()
+router.use(createOwnedUserAdminAdmission({
+    env: () => process.env,
+    store: async () => (await import('../lib/identity/owned-user-admin-runtime')).getOwnedUserAdminStore(),
+}))
 
 function mapAdminUser(user: {
     id: string
