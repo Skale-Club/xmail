@@ -297,7 +297,6 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
             `UPDATE public.xmail_identity_user_controls SET sessions_valid_after=now()-interval '12 hours'`,
             `UPDATE public.xmail_identity_owned_sessions SET expires_at=now()-interval '1 second' WHERE token_hash='${currentHash}'`,
             `UPDATE public.xmail_identity_owned_sessions SET revoked_at=now() WHERE token_hash='${currentHash}'`,
-            `UPDATE public.xmail_identity_owned_sessions SET authenticated_at=0 WHERE token_hash='${currentHash}'`,
             `UPDATE public.xmail_identity_owned_sessions SET authenticated_at=extract(epoch FROM now()+interval '60 seconds')::bigint WHERE token_hash='${currentHash}'`,
         ]) {
             await sql.begin(async tx => {
@@ -306,6 +305,9 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
                 throw new Error('rollback-historical-fixture')
             }).catch(error => { if (error.message !== 'rollback-historical-fixture') throw error })
         }
+        // The original table constraint rejects zero before admission SQL runs.
+        await expect(sql`UPDATE public.xmail_identity_owned_sessions SET authenticated_at=0 WHERE token_hash=${currentHash}`)
+            .rejects.toMatchObject({ code: '23514' })
         expect((await sql.unsafe(query))[0].exists).toBe(true)
     })
 
