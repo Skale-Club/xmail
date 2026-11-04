@@ -46,6 +46,7 @@ jobs:
           bash scripts/ops/prepare-xmail-runtime-roles.sh --plan
           python3 -m py_compile scripts/ops/probe-xmail-staging.py
           python3 scripts/ops/probe-xmail-staging.py --plan
+          node scripts/ops/xmail-offsite-backup.mjs --self-test
 
       - name: Lint (eslint --max-warnings 0)
         run: npm run lint

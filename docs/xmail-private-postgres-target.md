@@ -68,7 +68,20 @@ the candidate remains healthy/private with its persistent volume and no publishe
 port. No application uses the new database yet and no source/app environment was
 changed. Do not reimport into this populated candidate.
 
-`applicationCutover=false` and `offHostBackup=not_verified` remain explicit in
-the receipt. A restricted HTTP-only staging mode, a least-privileged runtime role,
-off-host backup, Auth acceptance and final write-pause/sequence checks remain
-required before cutover. See [the import evidence](xmail-private-postgres-import.md).
+The original receipt preserves `applicationCutover=false` and
+`offHostBackup=not_verified`. Subsequent restricted HTTP staging, role preparation
+and off-host snapshot evidence have separate receipts and runbooks. Runtime role
+activation, Auth acceptance and final write-pause/sequence checks remain required
+before cutover. See [the import evidence](xmail-private-postgres-import.md).
+
+## Encrypted off-host snapshot evidence (2026-11-04 UTC)
+
+The reconciled 23,009,087-byte snapshot now also has an independently verified
+encrypted copy on the existing separate server `188.245.112.3`. CMS
+AuthEnvelopedData/AES-256-GCM authenticated decryption recovered the exact
+original SHA-256 before atomic publication; the private recipient key stays on
+that backup host. Source dump/receipts and application containers stayed intact.
+See [the off-host runbook](xmail-offsite-backup.md) for fixed paths, hashes,
+permissions and independent verification. This proves recovery of the previously
+restored snapshot, not a new PostgreSQL restore, current writer freeze, scheduled
+backup policy, R2 configuration or production cutover.
