@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { browserAuthGeneration, currentBrowserAuthAuthority, legacyBrowserAuthSnapshotCurrent, requireLegacyBrowserAuth, resolveBrowserAuthAuthority, subscribeBrowserAuthBoundary } from '../lib/browser-auth-authority'
-import IdentityPilot from './IdentityPilot'
 import { Mail, Lock, ArrowRight, Eye, EyeOff } from 'lucide-react'
 import { defaultBranding, useBranding } from '../lib/branding'
 import { apiFetch } from '../lib/api-client'
@@ -24,6 +23,7 @@ export default function Login() {
         void resolveBrowserAuthAuthority().then(value => { if (mounted) setAuthority(value) }).catch(() => { if (mounted) setAuthority('unavailable') })
         return () => { mounted = false; unsubscribe() }
     }, [])
+    useEffect(() => { if (authority === 'owned') window.location.replace('/auth/identity') }, [authority])
     const { branding } = useBranding()
     const applicationName =
         branding.applicationName === defaultBranding.applicationName
@@ -91,7 +91,7 @@ export default function Login() {
         }
     }
 
-    if (authority === 'owned') return <IdentityPilot />
+    if (authority === 'owned') return <div role="status">Opening verified sign-in…</div>
     if (authority !== 'legacy') return <div className="flex min-h-[100dvh] items-center justify-center p-6"><p role={authority === 'unavailable' ? 'alert' : 'status'}>{authority === 'unavailable' ? 'Sign-in is unavailable. Reload to try again.' : 'Checking sign-in availability…'}</p></div>
     return (
         <div className="flex min-h-[100dvh] items-center justify-center bg-background p-4 sm:p-6">

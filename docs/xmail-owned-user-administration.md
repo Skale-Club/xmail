@@ -2,8 +2,9 @@
 
 This server-side batch prepares local user administration. It does not activate
 Google login, change application database targets, send mail, or change production
-configuration. Existing Supabase startup dependencies and other legacy Auth
-routes still require separate migration work before a complete provider exit.
+configuration. Server startup/readiness has a separate prepared boundary in
+`xmail-owned-startup-readiness.md`; Storage and complete onboarding/recovery
+still require separate work before a complete provider exit.
 
 `XMAIL_USER_ADMIN_AUTHORITY=owned` selects this branch explicitly and also requires
 `XMAIL_GOOGLE_AUTH_ENABLED=true`. Both are operational cutover decisions; this

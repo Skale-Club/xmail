@@ -52,9 +52,10 @@ account. A newly created local UUID has no hosted proof automatically.
 
 This is preparation for a later controlled cutover. Owned invitation/onboarding,
 reviewed recovery and destructive deletion remain incomplete and explicit `409`
-actions. Existing owned SSE restrictions remain. Supabase server startup/storage
-dependencies and complete production connection budgeting also remain separate
-work; the candidate runtime is still `NOLOGIN`. Do not describe this batch as a
+actions. Existing owned SSE restrictions remain. Server startup/readiness and
+pool budgeting have separate prepared boundaries; the legacy Storage exit and
+complete production admission remain work, and the runtime is still `NOLOGIN`.
+Do not describe this batch as a
 completed provider exit or activate it without those operational gates.
 
 Focused tests use mocked transports/providers only and verify SDK inactivity

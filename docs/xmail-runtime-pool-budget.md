@@ -51,12 +51,8 @@ remain supported under their existing explicit development/production selection.
 
 Remaining concrete gates for an actual provider exit:
 
-- `src/server/lib/supabase.ts` still constructs server SDK clients at import;
-  production-server, legacy route modules and health import it. Browser isolation
-  does not remove this server startup dependency.
-- `src/server/lib/health.ts` still requires the legacy Auth settings probe even
-  under owned browser authority. Selected-provider readiness must replace that
-  dependency without skipping SQL/Google credential checks.
+- Server SDK import and selected-provider readiness have a separate prepared
+  boundary in `xmail-owned-startup-readiness.md`; legacy Storage use still remains.
 - `src/server/lib/object-storage.ts` still chooses Supabase Storage when R2 is
   absent. SMTP/MX, sync and attachment routes use this interface. Existing object
   inventories, private downloads and public branding must be preserved before an
