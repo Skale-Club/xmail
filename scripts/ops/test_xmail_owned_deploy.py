@@ -51,9 +51,11 @@ class PolicyFixture(unittest.TestCase):
             'postgres://xmail_staging_reader:offline-reader@'+self.ns['TARGET']+':5432/xmail',
             'XMAIL_GOOGLE_AUTH_ENABLED': 'false', 'GOOGLE_AUTH_ENABLED': 'false'}
         self.base = {'NODE_ENV': 'production', 'PORT': '9001', 'JWT_SECRET': 'offline-preserved-native-proof'}
-        google_names = 'XMAIL_GOOGLE_AUTH_ENABLED XMAIL_GOOGLE_AUTH_PROJECT_ID XMAIL_GOOGLE_AUTH_PROJECT_NUMBER XMAIL_GOOGLE_AUTH_WEB_API_KEY XMAIL_GOOGLE_AUTH_ADC_FILE XMAIL_GOOGLE_AUTH_ADC_AUDIENCE XMAIL_GOOGLE_AUTH_ADC_SERVICE_ACCOUNT XMAIL_GOOGLE_AUTH_ADC_SUBJECT'.split()
+        google_names = 'XMAIL_GOOGLE_AUTH_ENABLED XMAIL_GOOGLE_AUTH_PROJECT_ID XMAIL_GOOGLE_AUTH_PROJECT_NUMBER XMAIL_GOOGLE_AUTH_WEB_API_KEY XMAIL_GOOGLE_AUTH_ADC_MODE XMAIL_GOOGLE_AUTH_ADC_FILE XMAIL_GOOGLE_AUTH_ADC_AUDIENCE XMAIL_GOOGLE_AUTH_ADC_SERVICE_ACCOUNT XMAIL_GOOGLE_AUTH_ORIGIN'.split()
         self.google = {name: 'offline-fixture' for name in google_names}
         self.google['XMAIL_GOOGLE_AUTH_ENABLED'] = 'true'
+        self.google['XMAIL_GOOGLE_AUTH_ADC_MODE'] = 'external_account'
+        self.google['XMAIL_GOOGLE_AUTH_ORIGIN'] = 'https://mail.skale.club'
         self.files[Path('/opt/xmail/google-identity-ops/google-auth.env')] = self.env(self.google)
         self.old_id, self.pg_id, self.new_id = 'd'*64, 'e'*64, 'f'*64
         self.old_image = 'sha256:'+'b'*64
@@ -186,6 +188,17 @@ class PolicyFixture(unittest.TestCase):
         self.regenerate(); self.admin_accepted = False
         self.assertNotIn('final-import', self.r['proofs'])
         self.assertTrue(self.execute().startswith('promote '))
+
+    def test_google_uses_actual_xmail_mode_and_origin_contract_and_rejects_extras(self):
+        self.assertTrue(self.execute().startswith('promote '))
+        for name, bad in [('XMAIL_GOOGLE_AUTH_ADC_MODE', 'ambient'), ('XMAIL_GOOGLE_AUTH_ORIGIN', 'https://other.invalid'),
+                ('XMAIL_GOOGLE_AUTH_ADC_SUBJECT', 'unsupported')]:
+            previous = self.google.get(name)
+            self.google[name] = bad
+            self.files[Path('/opt/xmail/google-identity-ops/google-auth.env')] = self.env(self.google)
+            with self.assertRaises(ValueError): self.execute()
+            if previous is None: del self.google[name]
+            else: self.google[name] = previous
 
     def test_identity_authority_refuses_missing_current_independently_linked_admin(self):
         self.admin_accepted = False

@@ -464,7 +464,9 @@ def execute(action, root=ROOT, admitted=None):
         google_path = Path('/opt/xmail/google-identity-ops')
         secure_directory(google_path, True)
         google = env_file(secure_read(google_path/'google-auth.env', 16384),
-             set('XMAIL_GOOGLE_AUTH_ENABLED XMAIL_GOOGLE_AUTH_PROJECT_ID XMAIL_GOOGLE_AUTH_PROJECT_NUMBER XMAIL_GOOGLE_AUTH_WEB_API_KEY XMAIL_GOOGLE_AUTH_ADC_FILE XMAIL_GOOGLE_AUTH_ADC_AUDIENCE XMAIL_GOOGLE_AUTH_ADC_SERVICE_ACCOUNT XMAIL_GOOGLE_AUTH_ADC_SUBJECT'.split()))
+             set('XMAIL_GOOGLE_AUTH_ENABLED XMAIL_GOOGLE_AUTH_PROJECT_ID XMAIL_GOOGLE_AUTH_PROJECT_NUMBER XMAIL_GOOGLE_AUTH_WEB_API_KEY XMAIL_GOOGLE_AUTH_ADC_MODE XMAIL_GOOGLE_AUTH_ADC_FILE XMAIL_GOOGLE_AUTH_ADC_AUDIENCE XMAIL_GOOGLE_AUTH_ADC_SERVICE_ACCOUNT XMAIL_GOOGLE_AUTH_ORIGIN'.split()))
+        need(google['XMAIL_GOOGLE_AUTH_ADC_MODE'] == 'external_account'
+             and google['XMAIL_GOOGLE_AUTH_ORIGIN'] == 'https://mail.skale.club')
         expected_google = 'true' if r['authPhase'] == 'identity' else 'false' if r['sourceKind'] == 'supabase' else None
         need(google['XMAIL_GOOGLE_AUTH_ENABLED'] in ['true', 'false']
              and (expected_google is None or google['XMAIL_GOOGLE_AUTH_ENABLED'] == expected_google))
