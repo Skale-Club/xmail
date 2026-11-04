@@ -1,6 +1,7 @@
 import bcrypt from 'bcrypt'
 import postgres from 'postgres'
 import { resolveDatabaseTarget } from '../../../db/database-target'
+import { resolveDatabasePoolBudget } from '../../../db/pool-budget'
 import { encryptSecret } from '../crypto'
 import { createOwnedUserAdminStore } from './owned-user-admin-store'
 
@@ -9,8 +10,10 @@ export async function getOwnedUserAdminStore() {
     if (store) return store
     // Keep sensitive hash/placeholder parameters out of development query logs.
     // The existing explicit target resolver also prevents production fallback in dev.
-    const sql = postgres(resolveDatabaseTarget(process.env).databaseUrl, {
-        max: 2, prepare: false, connect_timeout: 5, idle_timeout: 30,
+    const target = resolveDatabaseTarget(process.env)
+    const budget = resolveDatabasePoolBudget(process.env, target)
+    const sql = postgres(target.databaseUrl, {
+        max: budget.admin, prepare: false, connect_timeout: 5, idle_timeout: 30,
         debug: false, onnotice: () => {},
     })
     store = createOwnedUserAdminStore(sql, {

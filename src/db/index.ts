@@ -2,8 +2,10 @@ import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import * as schema from './schema'
 import { resolveDatabaseTarget } from './database-target'
+import { resolveDatabasePoolBudget } from './pool-budget'
 
 const target = resolveDatabaseTarget(process.env)
+const poolBudget = resolveDatabasePoolBudget(process.env, target)
 const connectionString = target.databaseUrl
 
 // Determine if we're in development
@@ -22,7 +24,7 @@ const isDev = process.env.NODE_ENV === 'development'
 // ~265k reconnects shipped ~3 GB out of Supabase and dominated egress after the
 // IMAP fix below. Lower it via DB_IDLE_TIMEOUT_SECONDS if pooler slots get tight.
 export const queryClient = postgres(connectionString, {
-    max: Number(process.env.DB_POOL_MAX || 20),
+    max: poolBudget.http,
     idle_timeout: Number(process.env.DB_IDLE_TIMEOUT_SECONDS || 300),
     connect_timeout: Number(process.env.DB_CONNECT_TIMEOUT_SECONDS || 30),
     max_lifetime: Number(process.env.DB_MAX_LIFETIME_SECONDS || 60 * 30),
@@ -90,7 +92,7 @@ console.log(
 )
 
 export const jobQueryClient = postgres(jobConnectionString, {
-    max: 12, // see POOL SIZE ARITHMETIC above: 10 measured peak concurrent job bodies + 2 headroom
+    max: poolBudget.jobs, // default12 preserves measured10 jobs plus2 headroom; any reduction requires load review
     idle_timeout: Number(process.env.DB_IDLE_TIMEOUT_SECONDS || 300),
     connect_timeout: Number(process.env.DB_CONNECT_TIMEOUT_SECONDS || 30),
     max_lifetime: Number(process.env.DB_MAX_LIFETIME_SECONDS || 60 * 30),
