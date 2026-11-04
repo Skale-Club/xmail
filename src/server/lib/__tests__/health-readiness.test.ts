@@ -7,17 +7,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const dbHealth = vi.hoisted(() => vi.fn())
 const authHealth = vi.hoisted(() => vi.fn())
 const ownedReady = vi.hoisted(() => vi.fn())
+const storageHealth = vi.hoisted(() => vi.fn())
 
 vi.mock('../../../db', () => ({ checkDatabaseHealth: dbHealth }))
 vi.mock('../supabase', () => ({ checkSupabaseAuthHealth: authHealth }))
 vi.mock('../identity/runtime', () => ({ getIdentityRuntime: async () => ({ assertReady: ownedReady }) }))
+vi.mock('../object-storage', () => ({ checkSelectedStorageHealth: storageHealth }))
 
-import { READINESS_AUTH_TIMEOUT_MS, READINESS_DB_TIMEOUT_MS, runReadinessChecks } from '../health'
+import { READINESS_AUTH_TIMEOUT_MS, READINESS_DB_TIMEOUT_MS, READINESS_STORAGE_TIMEOUT_MS, runReadinessChecks } from '../health'
 
 beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks(); vi.stubEnv('XMAIL_BROWSER_AUTH_AUTHORITY', 'legacy')
     authHealth.mockResolvedValue({ ok: true })
+    storageHealth.mockResolvedValue({ ok: true })
 })
 afterEach(() => {
     vi.useRealTimers()
@@ -73,5 +76,22 @@ describe('runReadinessChecks', () => {
         dbHealth.mockResolvedValue({ ok: true, latencyMs: 3 })
         expect((await runReadinessChecks()).ok).toBe(false)
         expect(dbHealth).toHaveBeenCalledOnce(); expect(ownedReady).not.toHaveBeenCalled(); expect(authHealth).not.toHaveBeenCalled()
+    })
+    it('fails readiness on storage errors with a static diagnostic and still checks SQL/Auth', async () => {
+        dbHealth.mockResolvedValue({ ok: true, latencyMs: 1 })
+        storageHealth.mockRejectedValue(new Error('Authorization: private-storage-proof object-key'))
+        const result = await runReadinessChecks()
+        expect(result.ok).toBe(false)
+        expect(result.services.storage).toEqual({ ok: false, error: 'Selected object storage readiness check failed.' })
+        expect(JSON.stringify(result)).not.toMatch(/private-storage-proof|object-key/)
+        expect(dbHealth).toHaveBeenCalledOnce(); expect(authHealth).toHaveBeenCalledOnce()
+    })
+    it('bounds a noncooperative storage probe and aborts the underlying request signal', async () => {
+        dbHealth.mockResolvedValue({ ok: true, latencyMs: 1 })
+        storageHealth.mockReturnValue(new Promise(() => {}))
+        const pending = runReadinessChecks()
+        await vi.advanceTimersByTimeAsync(READINESS_STORAGE_TIMEOUT_MS + 1)
+        expect((await pending).services.storage.ok).toBe(false)
+        expect(storageHealth.mock.calls[0][0].aborted).toBe(true)
     })
 })
