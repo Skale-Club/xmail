@@ -4,7 +4,7 @@ import { createPrivateKey, X509Certificate } from 'node:crypto'
 import type { IdentityConfig } from './config'
 import type { GoogleX509Credential } from './google-x509-access-token'
 
-const invalid = (): never => { throw new Error('Keyless Google credentials are not configured.') }
+function invalid(): never { throw new Error('Keyless Google credentials are not configured.') }
 const record = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value)
 const only = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).every(key => keys.includes(key))
 
