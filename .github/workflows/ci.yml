@@ -48,6 +48,8 @@ jobs:
           python3 -m py_compile scripts/ops/probe-xmail-staging.py
           python3 scripts/ops/probe-xmail-staging.py --plan
           node scripts/ops/xmail-offsite-backup.mjs --self-test
+          python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_identity_controls.py -v
+          python3 -B scripts/ops/prepare-xmail-identity-controls.py
 
       - name: Lint (eslint --max-warnings 0)
         run: npm run lint
@@ -117,6 +119,11 @@ jobs:
         env:
           XMAIL_IDENTITY_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xmail_identity_test
           XMAIL_IDENTITY_TEST_SENTINEL: xmail-owned-identity-ci
+      - name: Rehearse exact-UUID identity controls import and ban preservation
+        run: node --test scripts/ops/xmail-identity-controls.integration.mjs
+        env:
+          XMAIL_IDENTITY_CONTROL_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xmail_identity_test
+          XMAIL_IDENTITY_CONTROL_TEST_SENTINEL: xmail-identity-controls-ci
       - name: Verify private candidate runtime and staging role privileges
         run: node --test scripts/ops/xmail-runtime-role.integration.mjs
         env:
