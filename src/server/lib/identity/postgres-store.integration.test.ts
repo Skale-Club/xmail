@@ -10,6 +10,17 @@ import { createIdentityPilotStore } from './pilot-store'
 import { createExistingAccountLinker } from './existing-account-link'
 import { createOwnedIdentitySessions, hashOwnedSessionToken, OWNED_SESSION_LIFETIME_MS, type IdentityBinding, type OwnedIdentityStore, type OwnedSession } from './owned-session'
 
+function acceptanceQuery(facts: Record<string, string>): string {
+    const program = String.raw`import json,sys,textwrap
+from pathlib import Path
+s=Path('.github/scripts/deploy-xmail.sh').read_text()
+a=s.index('import datetime as dt\n',s.index('# BEGIN XMAIL OWNED POLICY'));b=s.index('XMAIL_OWNED_POLICY_PY',a)
+n={'__name__':'offline_fixture'};exec(compile(textwrap.dedent(s[a:b]),'policy','exec'),n)
+print(n['admin_acceptance_query'](json.load(sys.stdin)))`
+    return execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-B', '-c', program],
+        { input: JSON.stringify(facts), encoding: 'utf8', timeout: 5000 }).trim()
+}
+
 // This standalone gate never loads dotenv, application DB aliases or the shared
 // migration harness. Only the declared loopback CI service may be destructive.
 const databaseUrl = process.env.XMAIL_IDENTITY_TEST_DATABASE_URL
@@ -233,14 +244,7 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
         await sql`INSERT INTO public.users(id,email) VALUES (${otherUser},${`${randomUUID()}@example.invalid`})`
         const facts = { adminUserId: binding.userId, bindingId: childId, sessionHash: childHash,
             legacyAnchorBindingId: binding.id, legacyAnchorSessionHash: parentHash }
-        const program = String.raw`import json,sys,textwrap
-from pathlib import Path
-s=Path('.github/scripts/deploy-xmail.sh').read_text()
-a=s.index('import datetime as dt\n',s.index('# BEGIN XMAIL OWNED POLICY'));b=s.index('XMAIL_OWNED_POLICY_PY',a)
-n={'__name__':'offline_fixture'};exec(compile(textwrap.dedent(s[a:b]),'policy','exec'),n)
-print(n['admin_acceptance_query'](json.load(sys.stdin)))`
-        const query = execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-B', '-c', program],
-            { input: JSON.stringify(facts), encoding: 'utf8', timeout: 5000 }).trim()
+        const query = acceptanceQuery(facts)
         const admitted = async () => (await sql.unsafe(query))[0].exists
         await sql`UPDATE public.xmail_identity_bindings SET proof_reference=${`legacy-password:${binding.userId}`}, created_at=now()-interval '60 seconds' WHERE id=${binding.id}`
         await sql`INSERT INTO public.xmail_identity_bindings(id,project_id,subject,user_id,proof_reference,created_at)
@@ -273,6 +277,32 @@ print(n['admin_acceptance_query'](json.load(sys.stdin)))`
             }).catch(error => { if (error.message !== 'rollback-negative-fixture') throw error })
         }
         expect(await admitted()).toBe(true)
+    })
+
+    it('keeps the original historical parent window and current cutoff after a fresh phone sign-in', async () => {
+        const child = randomUUID(), parentHash = 'c'.repeat(64), currentHash = 'd'.repeat(64)
+        await sql`UPDATE public.xmail_identity_bindings SET proof_reference=${`legacy-password:${binding.userId}`}, created_at=now()-interval '1 day 60 seconds' WHERE id=${binding.id}`
+        await sql`INSERT INTO public.xmail_identity_bindings(id,project_id,subject,user_id,proof_reference,created_at)
+            VALUES (${child},'skaleclub','historical-phone-fixture',${binding.userId},${`owned-session:${binding.userId}`},now()-interval '1 day 20 seconds')`
+        await sql`INSERT INTO public.xmail_identity_owned_sessions(token_hash,binding_id,authenticated_at,created_at,expires_at,revoked_at) VALUES
+            (${parentHash},${binding.id},extract(epoch FROM now()-interval '1 day 50 seconds')::bigint,now()-interval '1 day 45 seconds',now()-interval '23 hours',now()-interval '1 day 19 seconds'),
+            (${currentHash},${child},extract(epoch FROM now()-interval '2 seconds')::bigint,now()-interval '1 second',now()+interval '1 hour',NULL)`
+        const query = acceptanceQuery({ adminUserId: binding.userId, bindingId: child, sessionHash: currentHash,
+            legacyAnchorBindingId: binding.id, legacyAnchorSessionHash: parentHash })
+        expect((await sql.unsafe(query))[0].exists).toBe(true)
+        for (const invalid of [
+            `UPDATE public.xmail_identity_owned_sessions SET authenticated_at=extract(epoch FROM now()-interval '1 day 400 seconds')::bigint WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET expires_at=now()-interval '1 day 21 seconds' WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET revoked_at=now()-interval '1 day 21 seconds' WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_user_controls SET sessions_valid_after=now()-interval '12 hours'`,
+        ]) {
+            await sql.begin(async tx => {
+                await tx.unsafe(invalid)
+                expect((await tx.unsafe(query))[0].exists).toBe(false)
+                throw new Error('rollback-historical-fixture')
+            }).catch(error => { if (error.message !== 'rollback-historical-fixture') throw error })
+        }
+        expect((await sql.unsafe(query))[0].exists).toBe(true)
     })
 
 })

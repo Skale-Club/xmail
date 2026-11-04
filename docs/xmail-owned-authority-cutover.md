@@ -20,8 +20,8 @@ path matches accounts by an email/phone claim or changes the native password.
 It accepts explicit `--capture` or `--apply`, plus the exact approved current
 application image digest, OCI source SHA, reviewed consumer SHA256 and immutable
 current container ID. These are public pins; credentials never go in arguments.
-It imports the unchanged reviewed pilot helper (`f730…`) and first-cutover
-primitives (`6e9a…`) by their full normalized source SHA256.
+It imports the unchanged reviewed pilot helper (`f730Ã¢â‚¬Â¦`) and first-cutover
+primitives (`6e9aÃ¢â‚¬Â¦`) by their full normalized source SHA256.
 
 Capture reads actual SQL bindings/sessions and fresh Google account status. It
 does not sign in, manufacture a provider token, create sessions or mark a user
@@ -36,8 +36,11 @@ must have exact `owned-session:<same UUID>` provenance. The retained parent
 session must have been unexpired and fresh when that child binding was created,
 then revoked from child creation through 30 seconds afterwards. Current child
 session, both bindings, current controls/cutoff and SQL admin role are checked
-again. Revocation before child creation, missing ancestry or a different
-UUID/project refuses.
+again. The Google ancestor must have been fresh within 300 seconds at the original
+phone binding; its history is not aged out later. Current local cutoffs and live
+Google validSince are still enforced against that original authentication.
+Revocation before child creation, missing ancestry or a different UUID/project
+refuses.
 
 Only the API stores signed-provider-verified sessions. The legacy schema does
 not store a parent token hash or provider kind. Consequently the operator
@@ -59,10 +62,14 @@ current own-SQL UUIDs. It performs online legacy Auth status reads for those
 exact UUIDs while authority is still legacy. The frozen Supabase public business
 tables are never a user inventory and are never imported again.
 
-A fresh private custom backup, previous profiles/receipts and pending rotated
-credentials are durable before stopping the old writer. The personal acceptance
-is repeated after the backup and before stop; the child authentication must be
-at most 90 seconds old at that point. Then clean stop, role NOLOGIN fencing,
+Initial live acceptance requires a phone authentication at most 90 seconds old,
+before the slow review and backup. A fresh private custom backup, previous
+profiles/receipts and pending rotated credentials are durable before stopping
+the old writer.
+The exact same chain, current SQL admission and provider statuses are repeated
+after backup and before stop within the unchanged 300-second session window.
+This avoids spending the short entry margin on the operator itself. Clean stop,
+role NOLOGIN fencing,
 current controls refresh and SCRAM rotation follow the already reviewed pilot
 protocol. Bans and cutoffs only stay or tighten. All 70 business fingerprints,
 UUIDs, binding/challenge digests and session count are reconciled. The native
