@@ -45,6 +45,7 @@ class AuthorityAcceptance(unittest.TestCase):
             [{**self.row,'sessionCreatedAt':(self.now+dt.timedelta(seconds=1)).isoformat()}],
             [{**self.row,'authenticatedAt':True}],
             [{**self.row,'sessionHash':"'; SELECT 1; --"}],
+            [{**self.row,'anchorAuthenticatedAt':int(self.now.timestamp())+1}],
             [self.row,{**self.row,'adminUserId':'44444444-4444-4444-8444-444444444444'}],
             [{**self.row,'pretendFactorConfirmed':True}]]:
             with self.subTest(values=len(values)),self.assertRaises(ValueError):operator.select_acceptance(values,self.now)
@@ -54,6 +55,28 @@ class AuthorityAcceptance(unittest.TestCase):
         with self.assertRaises(ValueError):operator.select_acceptance([older],self.now)
         self.assertEqual(operator.select_acceptance([older],self.now,max_age=300),older)
         with self.assertRaises(ValueError):operator.select_acceptance([{**older,'authenticatedAt':int(self.now.timestamp())-301}],self.now,max_age=300)
+
+    def test_historical_ancestor_does_not_expire_again_after_its_original_binding(self):
+        value={**self.row,'anchorAuthenticatedAt':int(self.now.timestamp())-86400}
+        self.assertEqual(operator.select_acceptance([value],self.now),value)
+        # The SQL consumer verifies its original 300s window and current cutoff;
+        # the provider callback still verifies current disabled/validSince state.
+        denied=lambda _value:(_ for _ in ()).throw(ValueError('revoked'))
+        with self.assertRaises(ValueError):operator.verified_acceptance([value],denied,lambda _:None,now=self.now)
+
+    def test_admission90_and_final300_recheck_same_chain_and_both_live_guards(self):
+        checks={'currentProviderActive':True,'anchorProviderActive':True,'distinctGoogleAndPhone':True}
+        local=[];providers=[]
+        def provider(row):providers.append(row);return checks
+        entry,facts=operator.verified_acceptance([self.row],local.append,provider,now=self.now)
+        later=self.now+dt.timedelta(seconds=100)
+        with self.assertRaises(ValueError):operator.verified_acceptance([self.row],local.append,provider,expected=entry,now=later)
+        result,_=operator.verified_acceptance([self.row],local.append,provider,expected=entry,max_age=operator.FINAL_MAX_AGE_SECONDS,now=later)
+        self.assertEqual(result,entry);self.assertEqual(len(local),2);self.assertEqual(len(providers),2)
+        for key,value in [('sessionHash','c'*64),('subject','other-subject'),('authenticatedAt',self.row['authenticatedAt']-1)]:
+            with self.assertRaises(ValueError):operator.verified_acceptance([{**self.row,key:value}],local.append,provider,expected=entry,max_age=300,now=later)
+        with self.assertRaises(ValueError):operator.verified_acceptance([self.row],local.append,lambda _: {**checks,'anchorProviderActive':False},expected=entry,max_age=300,now=later)
+        with self.assertRaises(ValueError):operator.verified_acceptance([self.row],local.append,provider,expected=entry,max_age=300,now=self.now+dt.timedelta(seconds=301))
 
     def test_receipt_facts_are_only_selected_exact_values_and_checks(self):
         facts=operator.acceptance_facts(self.row)
@@ -86,6 +109,12 @@ globalThis.fetch=async(url,init)=>{
         result=self.provider();self.assertEqual(result.returncode,0,result.stderr.decode())
         self.assertEqual(json.loads(result.stdout),{'currentProviderActive':True,'anchorProviderActive':True,'distinctGoogleAndPhone':True})
         self.assertNotIn(b'offline-',result.stdout);self.assertEqual(result.stderr,b'')
+
+    def test_historical_provider_still_requires_current_validsince_not_after_original_authentication(self):
+        self.row['anchorAuthenticatedAt']=int(self.now.timestamp())-86400
+        self.assertEqual(self.provider().returncode,0)
+        result=self.provider(lambda a:a[self.row['anchorSubject']].update(validSince=str(int(self.now.timestamp())-3600)))
+        self.assertNotEqual(result.returncode,0);self.assertEqual(result.stdout,b'')
 
     def test_provider_refuses_disabled_revoked_wrong_uid_or_ambiguous_capabilities(self):
         changes=[lambda a:a[self.row['subject']].update(disabled=True),
