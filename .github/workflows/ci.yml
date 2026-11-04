@@ -52,6 +52,8 @@ jobs:
           python3 -B -m unittest discover -s scripts/ops -p test_xmail_owned_deploy.py -v
           python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_final_data_cutover.py -v
           python3 -B scripts/ops/prepare-xmail-final-data-cutover.py --plan
+          python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_owned_pilot_rollout.py -v
+          python3 -B scripts/ops/prepare-xmail-owned-pilot-rollout.py --plan
           python3 -B scripts/ops/prepare-xmail-identity-controls.py
 
       - name: Lint (eslint --max-warnings 0)
@@ -137,6 +139,11 @@ jobs:
         env:
           XMAIL_FINAL_DATA_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xmail_identity_test
           XMAIL_FINAL_DATA_TEST_SENTINEL: xmail-final-data-ci
+      - name: Rehearse owned pilot controls and credential rotation (disposable databases; no provider or Docker)
+        run: node --test scripts/ops/xmail-owned-pilot-rollout.integration.mjs
+        env:
+          XMAIL_OWNED_PILOT_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xmail_identity_test
+          XMAIL_OWNED_PILOT_TEST_SENTINEL: xmail-owned-pilot-ci
       - name: Verify private candidate runtime and staging role privileges
         run: node --test scripts/ops/xmail-runtime-role.integration.mjs
         env:
