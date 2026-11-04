@@ -74,6 +74,13 @@ class OwnedPilotPolicy(unittest.TestCase):
         self.assertNotEqual(self.auth_fixture(wrong_id=True).returncode,0)
         self.assertNotEqual(self.auth_fixture({'origin':'https://other.invalid'}).returncode,0)
 
+    def test_supported_opaque_admin_key_still_requires_exact_online_uuid_and_rejects_public_keys(self):
+        suffix=__import__('uuid').uuid4().hex
+        opaque='sb_secret_'+suffix
+        self.assertEqual(self.auth_fixture({'key':opaque}).returncode,0)
+        self.assertNotEqual(self.auth_fixture({'key':opaque},wrong_id=True).returncode,0)
+        self.assertNotEqual(self.auth_fixture({'key':'sb_publishable_'+suffix}).returncode,0)
+
     def test_readback_rejects_ban_removal_cutoff_reset_or_missing_owned_uuid(self):
         prior = {'user_id':self.uid,'disabled_at':None,'sessions_valid_after':'2099-01-01T00:00:00+00:00','review_source':'local-review','reviewed_at':self.now.isoformat()}
         before = {'ids':[self.uid],'controls':[prior]}
