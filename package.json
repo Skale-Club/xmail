@@ -20,6 +20,8 @@
         "db:audit": "tsx scripts/audit-schema-drift.ts",
         "db:dev:plan": "tsx scripts/dev-migrations.ts --plan",
         "db:dev:apply": "tsx scripts/dev-migrations.ts --apply",
+        "db:pull": "tsx scripts/db-pull.ts",
+        "test:dev-db-pull": "vitest run --project server src/server/lib/__tests__/dev-db-pull.test.ts src/server/lib/__tests__/dev-db-pull.integration.test.ts src/server/lib/__tests__/dev-outbound-guard.test.ts src/db/database-target.test.ts",
         "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
     },
     "overrides": {

@@ -116,6 +116,11 @@ npm run db:rls           # Run the RLS migration script
 npm run db:audit         # Audit schema drift between schema.ts and the DB
 ```
 
+**Real data in development:** `npm run db:pull` copies a read-only production snapshot into the
+development Supabase project (secrets and native mailbox passwords are never copied); in development the
+process cannot send or receive real mail (mail servers off, fail-closed network guard, read-only
+attachment storage). See [`docs/dev-database-pull.md`](docs/dev-database-pull.md).
+
 **Development database selection (migration in progress):** `dev:server` forces
 `NODE_ENV=development`. Both Drizzle pools require `XMAIL_DEV_SUPABASE_PROJECT_REF`
 and `XMAIL_DEV_DATABASE_URL`; optional `XMAIL_DEV_DIRECT_URL` must target that same

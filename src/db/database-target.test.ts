@@ -19,6 +19,11 @@ const environment = {
 }
 
 describe('database environment separation', () => {
+    it.each(['zzbudkfkcmqkavgwselc', 'ulzqxfeodxkyawfhjtpm'])('refuses the known production project %s as the development target', productionRef => {
+        const url = `postgresql://postgres.${productionRef}:${secret}@aws-0-us-east-1.pooler.supabase.com:5432/postgres`
+        expect(() => resolveDatabaseTarget({ ...environment, XMAIL_DEV_SUPABASE_PROJECT_REF: productionRef, XMAIL_DEV_DATABASE_URL: url }))
+            .toThrow('known production')
+    })
     it('selects the approved development project for both pools despite production aliases', () => {
         expect(resolveDatabaseTarget(environment)).toEqual({ databaseUrl: securedDev, jobDatabaseUrl: securedDev })
     })
