@@ -8,15 +8,43 @@ name: Host capacity diagnostics
 # names only. Never print environment variables, command lines or client addresses.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      reclaim_swap:
+        description: Move swapped pages back to RAM first (no restart; refuses unless 1 GB of RAM would remain)
+        type: boolean
+        default: false
 
 permissions: {}
 
 jobs:
   read-host-capacity:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
+      - name: Reclaim stale swap
+        if: ${{ inputs.reclaim_swap }}
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: root
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          command_timeout: 4m
+          script: |
+            set -eu
+            available=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)
+            used=$(awk '/^SwapTotal:/{t=$2} /^SwapFree:/{f=$2} END{print int((t-f)/1024)}' /proc/meminfo)
+            echo "before: available ${available} MB, swap used ${used} MB"
+            if [ $((available - used)) -lt 1024 ]; then
+              echo "refused: less than 1 GB of RAM would remain" >&2
+              exit 1
+            fi
+            for device in $(swapon --show=NAME --noheadings); do
+              swapoff "$device"
+              swapon "$device"
+            done
+            echo "swap reclaimed"
+
       - name: Read memory, swap, disk and top consumers
         uses: appleboy/ssh-action@v1.0.0
         with:
