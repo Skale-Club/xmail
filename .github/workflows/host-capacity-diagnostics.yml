@@ -250,6 +250,11 @@ jobs:
               echo "== Since the hardening was applied"
               echo "applied at: $changed, now: $(date '+%F %T')"
               journalctl -u ssh --since "$changed" --no-pager -o cat | awk -v keyfile="$keys" 'BEGIN { while ((getline l < keyfile) > 0) { split(l, p, " "); alias[p[1]] = p[2] } } /^Accepted /{ k = alias[$NF]; print $2, $4, (k == "" ? "other-key" : k) }' | sort | uniq -c
+              echo "last login of each key, and logins per hour today (UTC):"
+              while read -r fp alias_name; do
+                stamps=$(journalctl -u ssh --since '24 hours ago' --no-pager -o short-iso | grep 'Accepted publickey for root' | grep -F "$fp" | cut -c1-19)
+                echo "$alias_name last=$(printf '%s\n' "$stamps" | tail -1) last-hours: $(printf '%s\n' "$stamps" | cut -c12-13 | uniq -c | tail -4 | awk '{printf "%sh=%s ", $2, $1}')"
+              done < "$keys"
               echo "failed since then: $(journalctl -u ssh --since "$changed" --no-pager -o cat | grep -cE '^Invalid user|^Failed password|authenticating user')"
               echo "fail2ban $(fail2ban-client status sshd | grep -E 'Currently banned|Total banned|Total failed' | tr -s '\t ' ' ' | tr -d '|`-' | tr '\n' ';')"
               echo
