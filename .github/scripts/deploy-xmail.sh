@@ -177,7 +177,7 @@ IDENTITY = ['xmail_identity_bindings', 'xmail_identity_browser_challenges', 'xma
 BASE_KEYS = set('NODE_ENV PORT SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY JWT_SECRET ENCRYPTION_KEY OUTLOOK_TOKEN_ENCRYPTION_KEY MAIL_DOMAIN OUTREACH_PROTECTED_DOMAINS OUTREACH_HOME_BASE_ZIP OUTREACH_HOME_RADIUS_MILES MAIL_HOST MAIL_TLS_CERT_PATH MAIL_TLS_KEY_PATH APP_COMPANY_NAME APP_APPLICATION_NAME SMTP_PASS SMTP_FROM FRONTEND_URL SMTP_SUBMISSION_PORT MX_PORT IMAP_PORT ENABLE_MAIL_SERVER XMAIL_SERVICE_KEY XMAIL_SERVICE_USER_ID XMAIL_SERVICE_ORGANIZATION_ID XPHERE_EVENTS_URL XPHERE_EVENTS_API_KEY APOLLO_API_KEY XCRAPER_SERVICE_URL XCRAPER_SERVICE_KEY PROSPECTING_DAILY_BUDGET_USD R2_ACCOUNT_ID R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_PUBLIC_BASE_URL MONITOR_API_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID DB_LIVENESS_INTERVAL_MS DB_LIVENESS_PROBE_TIMEOUT_MS DB_LIVENESS_EXIT_AFTER_MS'.split())
 PROFILE_KEYS = set('DATABASE_URL DIRECT_URL XMAIL_BROWSER_AUTH_AUTHORITY XMAIL_USER_ADMIN_AUTHORITY DB_POOL_MAX DB_JOB_POOL_MAX XMAIL_ADMIN_DB_POOL_MAX XMAIL_DB_ROLE_CONNECTION_LIMIT XMAIL_DB_CONNECTION_RESERVE XMAIL_DB_PROCESS_COUNT XMAIL_OWNED_AUTH_PHASE XMAIL_OWNED_DEPLOY_MODE XMAIL_OWNED_APPROVED_IMAGE_ID XMAIL_OWNED_APPROVED_SOURCE_SHA XMAIL_OWNED_RECEIPT_SHA256'.split())
 READER_KEYS = set('NODE_ENV XMAIL_STAGING_HTTP_ONLY XMAIL_STAGING_ORIGIN XMAIL_STAGING_DATABASE_URL XMAIL_GOOGLE_AUTH_ENABLED GOOGLE_AUTH_ENABLED'.split())
-PROOF_FILES = {'freeze': 'freeze-receipt.json', 'snapshot': 'snapshot-receipt.json', 'final-import': 'final-import-receipt.json', 'controls': 'controls-receipt.json', 'admin-acceptance': 'admin-acceptance-receipt.json'}
+PROOF_FILES = {'freeze': 'freeze-receipt.json', 'snapshot': 'snapshot-receipt.json', 'final-import': 'final-import-receipt.json', 'controls': 'controls-receipt.json', 'admin-acceptance': 'admin-acceptance-receipt.json', 'maintenance': 'maintenance-receipt.json'}
 COMMON = set('version app kind target database role postgresImage applicationImage sourceSha authPhase sourceKind oldContainerId createdAt expiresAt facts'.split())
 
 def need(value):
@@ -309,7 +309,8 @@ def profiles(root=ROOT):
     return p, reader, profile_digest, sha(raw), sha(reader_raw)
 
 def scoped(value, kind, p, old, source, now):
-    need(set(value) == COMMON and type(value['version']) is int and value['version'] == 1
+    maintenance = value.get('version') == 2
+    need((not maintenance or value.get('intent') == 'owned-maintenance') and set(value) == (COMMON | {'intent'} if maintenance else COMMON) and type(value['version']) is int and value['version'] in [1, 2]
          and value['app'] == 'xmail' and value['kind'] == kind and value['target'] == TARGET
          and value['database'] == 'xmail' and value['role'] == 'xmail_runtime' and value['postgresImage'] == PG_IMAGE
          and value['applicationImage'] == p['XMAIL_OWNED_APPROVED_IMAGE_ID']
@@ -326,7 +327,8 @@ def receipt(p, profile_digest, root=ROOT, now=None):
     need(sha(raw) == p['XMAIL_OWNED_RECEIPT_SHA256'])
     r = json_file(raw)
     keys = set('version app target database role postgresImage applicationImage sourceSha authPhase sourceKind oldContainerId oldImageId profileDigest baseEnvironmentSha256 createdAt expiresAt proofs'.split())
-    need(set(r) == keys and type(r['version']) is int and r['version'] == 1 and r['app'] == 'xmail'
+    maintenance = r.get('version') == 2
+    need((not maintenance or r.get('intent') == 'owned-maintenance') and set(r) == (keys | {'intent'} if maintenance else keys) and type(r['version']) is int and r['version'] in [1, 2] and r['app'] == 'xmail'
          and r['target'] == TARGET and r['database'] == 'xmail' and r['role'] == 'xmail_runtime'
          and r['postgresImage'] == PG_IMAGE and r['applicationImage'] == p['XMAIL_OWNED_APPROVED_IMAGE_ID']
          and r['sourceSha'] == p['XMAIL_OWNED_APPROVED_SOURCE_SHA'] and digest(r['oldContainerId'])
@@ -336,7 +338,10 @@ def receipt(p, profile_digest, root=ROOT, now=None):
     captured = live_window(r, now)
     expected_proofs = {'freeze', 'snapshot', 'controls'}
     if r['sourceKind'] == 'supabase': expected_proofs.add('final-import')
-    if r['authPhase'] == 'identity': expected_proofs.add('admin-acceptance')
+    if maintenance:
+        need(r['authPhase'] == 'identity' and r['sourceKind'] == 'owned')
+        expected_proofs.add('maintenance')
+    elif r['authPhase'] == 'identity': expected_proofs.add('admin-acceptance')
     need(isinstance(r['proofs'], dict) and set(r['proofs']) == expected_proofs)
     proofs, times = {}, {}
     for kind, filename in PROOF_FILES.items():
@@ -352,6 +357,7 @@ def receipt(p, profile_digest, root=ROOT, now=None):
     need(times['freeze'] <= times['snapshot'] <= times['controls'] <= captured)
     if 'final-import' in times: need(times['snapshot'] <= times['final-import'] <= times['controls'])
     if 'admin-acceptance' in times: need(times['controls'] <= times['admin-acceptance'] <= captured)
+    if 'maintenance' in times: need(times['controls'] <= times['maintenance'] <= captured)
     freeze_facts = {'allSourceWritersStopped': True, 'oldContainerStopped': True}
     if r['sourceKind'] == 'supabase': freeze_facts['sourceWriteFenceEnforced'] = True
     else: freeze_facts['oldOwnedCredentialsRejected'] = True
@@ -372,6 +378,8 @@ def receipt(p, profile_digest, root=ROOT, now=None):
              and digest(acceptance['sessionHash']) and digest(acceptance['legacyAnchorSessionHash']) and all(acceptance[k] is True for k in
                  ['independentLegacyProof', 'freshGoogleProof', 'ownedSessionAccepted', 'applicationAdminVerified']))
         r['_acceptedAdmin'] = acceptance
+    if maintenance:
+        r['_maintenance'] = verify_maintenance_proof(r, proofs['maintenance'], root)
     base_raw = secure_read(root/'production-base.env', 32768)
     need(sha(base_raw) == r['baseEnvironmentSha256'])
     return r, env_file(base_raw, BASE_KEYS, False)
@@ -388,6 +396,8 @@ def runtime_state(p, r, base, admitted=None):
         need(old_env.get('SUPABASE_URL', '').rstrip('/') == 'https://zzbudkfkcmqkavgwselc.supabase.co')
         source_database_url(old_env.get('DATABASE_URL', ''))
         source_database_url(old_env.get('DIRECT_URL') or old_env.get('DATABASE_URL', ''))
+    if r.get('version') == 2:
+        need(old_env.get('XMAIL_OWNED_AUTH_PHASE') == 'identity' and old_env.get('XMAIL_BROWSER_AUTH_AUTHORITY') == old_env.get('XMAIL_USER_ADMIN_AUTHORITY') == 'owned')
     if p['XMAIL_OWNED_AUTH_PHASE'] == 'data':
         need(old_env.get('XMAIL_BROWSER_AUTH_AUTHORITY', 'legacy') == old_env.get('XMAIL_USER_ADMIN_AUTHORITY', 'legacy') == 'legacy')
     pg = inspect(TARGET)
@@ -466,6 +476,106 @@ def verify_linked_admin(r):
     need(result.strip() == b't')
 
 
+def verify_maintenance_proof(r, facts, root):
+    expected = {'authorityAlreadyOwned', 'currentSqlControlsPreserved', 'fullIdentityStatePreserved', 'providerStatusReviewed',
+        'previewReadyBeforeStop', 'noSourceAuthRequests', 'previousReceiptSha256', 'previousProfileSha256', 'previousAuthoritySha256',
+        'commitBundle', 'commitAckSha256', 'identityStateDigest', 'backupSha256'}
+    need(set(facts) == expected and all(facts[k] is True for k in ['authorityAlreadyOwned','currentSqlControlsPreserved',
+        'fullIdentityStatePreserved','providerStatusReviewed','previewReadyBeforeStop','noSourceAuthRequests']))
+    need(all(digest(facts[k]) for k in ['previousReceiptSha256','previousProfileSha256','previousAuthoritySha256','commitAckSha256','identityStateDigest','backupSha256']))
+    previous_raw = secure_read(root/'maintenance-prior-receipt.json')
+    previous_profile = secure_read(root/'maintenance-prior-profile.env')
+    previous_anchor = secure_read(root/'maintenance-prior-authority.json')
+    need(sha(previous_raw) == facts['previousReceiptSha256'] and sha(previous_profile) == facts['previousProfileSha256']
+        and sha(previous_anchor) == facts['previousAuthoritySha256'])
+    previous = json_file(previous_raw); prior_profile = env_file(previous_profile, PROFILE_KEYS)
+    anchor = json_file(previous_anchor)
+    need(previous['authPhase'] == 'identity' and previous['sourceKind'] == 'owned'
+        and previous['applicationImage'] == r['oldImageId'] and previous['sourceSha'] == prior_profile['XMAIL_OWNED_APPROVED_SOURCE_SHA']
+        and prior_profile['XMAIL_OWNED_AUTH_PHASE'] == 'identity'
+        and prior_profile['XMAIL_BROWSER_AUTH_AUTHORITY'] == prior_profile['XMAIL_USER_ADMIN_AUTHORITY'] == 'owned'
+        and prior_profile['XMAIL_OWNED_RECEIPT_SHA256'] == facts['previousReceiptSha256']
+        and anchor['runtimeId'] == r['oldContainerId'] and anchor['applicationImage'] == r['oldImageId']
+        and anchor['receiptSha256'] == facts['previousReceiptSha256'] and anchor['profileSha256'] == facts['previousProfileSha256'])
+    name = facts['commitBundle']
+    need(isinstance(name, str) and re.fullmatch(r'owned-maintenance-[0-9TZ]{16}-[a-f0-9]{8}', name))
+    bundle = Path('/opt/xmail/backups')/name; secure_directory(bundle, True)
+    ack = secure_read(bundle/'maintenance-commit-acknowledged.json')
+    need(sha(ack) == facts['commitAckSha256'] and json_file(ack) == {'acknowledged': True})
+    before=json_file(secure_read(bundle/'owned-frozen.json',4194304));after=json_file(secure_read(bundle/'owned-after-maintenance.json',4194304))
+    need(all(before[k]==after[k] for k in ['schema','fingerprints','ids','controls','identityDigests','bindingDigest','challengeDigest','sessionCount'])
+        and sha(json.dumps(before['identityDigests'],sort_keys=True,separators=(',',':')).encode())==facts['identityStateDigest']
+        and secure_read(bundle/'owned-before.sha256').decode().strip()==facts['backupSha256'])
+    return facts
+
+
+MAINTENANCE_PROVIDER_JS = r"""
+const fs=require('node:fs'),hard=setTimeout(()=>process.exit(124),9000);hard.unref();
+(async()=>{
+ const x=JSON.parse(fs.readFileSync(0,'utf8'));
+ if(!Array.isArray(x.subjects)||!x.subjects.length||x.subjects.length>100||new Set(x.subjects).size!==x.subjects.length||x.subjects.some(s=>typeof s!=='string'||!s.length||s.length>128))throw Error();
+ if(process.env.NODE_TLS_REJECT_UNAUTHORIZED==='0'||Object.keys(x.env).some(k=>!k.startsWith('XMAIL_GOOGLE_AUTH_')))throw Error();
+ Object.assign(process.env,x.env,{NODE_ENV:'production'});
+ const {resolveIdentityConfig}=require('./dist/server/lib/identity/config.js');
+ const {createKeylessAccessTokenSupplier}=require('./dist/server/lib/identity/runtime.js');
+ const config=resolveIdentityConfig(process.env);if(!config||config.projectId!=='skaleclub'||config.projectNumber!=='937861185231'||config.origin!=='https://mail.skale.club'||config.adcMode!=='external_account')throw Error();
+ const signal=AbortSignal.timeout(8000),supplier=await createKeylessAccessTokenSupplier(config),token=await supplier(signal);
+ const response=await fetch('https://identitytoolkit.googleapis.com/v1/projects/skaleclub/accounts:lookup',{method:'POST',redirect:'error',signal,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({localId:x.subjects})});
+ if(!response.ok||response.redirected||!response.body)throw Error();const reader=response.body.getReader(),chunks=[];let n=0;
+ try{for(;;){const p=await reader.read();if(p.done)break;n+=p.value.byteLength;if(n>131072)throw Error();chunks.push(Buffer.from(p.value))}}finally{await reader.cancel().catch(()=>{});reader.releaseLock()}
+ const body=JSON.parse(Buffer.concat(chunks).toString('utf8')),users=body.users??[];
+ if(!Array.isArray(users)||new Set(users.map(u=>u.localId)).size!==users.length||users.some(u=>!x.subjects.includes(u.localId)))throw Error();
+ const active=users.some(u=>u.tenantId===undefined&&(u.disabled===undefined||u.disabled===false)&&Array.isArray(u.providerUserInfo)
+   &&u.providerUserInfo.some(p=>p&&['phone','google.com'].includes(p.providerId))
+   &&(u.validSince===undefined||typeof u.validSince==='string'&&/^\d+$/.test(u.validSince)&&Number.isSafeInteger(Number(u.validSince))&&Number(u.validSince)<=Date.now()/1000));
+ if(!active)throw Error();
+ process.stdout.write(JSON.stringify({currentProviderAvailable:true,administrativeBindingAvailable:true,noProviderWrites:true}));
+})().then(()=>clearTimeout(hard)).catch(()=>{clearTimeout(hard);process.exitCode=1});
+"""
+
+
+def maintenance_state_sql():
+    # Every OWN SQL UUID has exactly one current control. No remote inventory,
+    # session/factor freshness, contacts, or Source account existence is used.
+    return "SELECT EXISTS(SELECT FROM public.users) AND NOT EXISTS(SELECT FROM public.users u LEFT JOIN public.xmail_identity_user_controls c ON c.user_id=u.id WHERE c.user_id IS NULL OR c.reviewed_at IS NULL OR length(c.review_source)=0) AND NOT EXISTS(SELECT FROM public.xmail_identity_user_controls c LEFT JOIN public.users u ON u.id=c.user_id WHERE u.id IS NULL) AND EXISTS(SELECT FROM public.users u JOIN public.xmail_identity_user_controls c ON c.user_id=u.id JOIN public.xmail_identity_bindings b ON b.user_id=u.id WHERE u.is_admin AND c.disabled_at IS NULL AND c.sessions_valid_after<=transaction_timestamp() AND b.disabled_at IS NULL AND b.project_id='skaleclub')"
+
+
+def verify_maintenance_state(r, google, check_frozen=False):
+    query = "BEGIN READ ONLY; SET LOCAL log_statement='none'; SET LOCAL log_min_error_statement='panic'; SET LOCAL statement_timeout='2s'; " + maintenance_state_sql() + "; ROLLBACK;"
+    need(docker(['exec','-i',TARGET,'psql','-X','-qAt','-v','ON_ERROR_STOP=1','-U','xmail_owner','-d','xmail'],query.encode()).strip() == b't')
+    if check_frozen:
+        fields=[]
+        for table in IDENTITY:
+            fields.extend(["'"+table+"'", "(SELECT encode(sha256(convert_to(coalesce(jsonb_agg(to_jsonb(q) ORDER BY to_jsonb(q)::text COLLATE \"C\")::text,'[]'),'UTF8')),'hex') FROM public."+table+' q)'])
+        query="BEGIN READ ONLY;SET LOCAL log_statement='none';SET LOCAL log_min_error_statement='panic';SET LOCAL statement_timeout='3s';SELECT jsonb_build_object("+','.join(fields)+");ROLLBACK;"
+        current=json.loads(docker(['exec','-i',TARGET,'psql','-X','-qAt','-v','ON_ERROR_STOP=1','-U','xmail_owner','-d','xmail'],query.encode()))
+        need(sha(json.dumps(current,sort_keys=True,separators=(',',':')).encode())==r['_maintenance']['identityStateDigest'])
+    select = "BEGIN READ ONLY; SET LOCAL log_statement='none'; SET LOCAL log_min_error_statement='panic'; SET LOCAL statement_timeout='2s'; SELECT coalesce(jsonb_agg(subject ORDER BY subject),'[]') FROM (SELECT DISTINCT b.subject FROM public.users u JOIN public.xmail_identity_user_controls c ON c.user_id=u.id JOIN public.xmail_identity_bindings b ON b.user_id=u.id WHERE u.is_admin AND c.disabled_at IS NULL AND c.sessions_valid_after<=transaction_timestamp() AND b.disabled_at IS NULL AND b.project_id='skaleclub' LIMIT 101) q; ROLLBACK;"
+    subjects=json.loads(docker(['exec','-i',TARGET,'psql','-X','-qAt','-v','ON_ERROR_STOP=1','-U','xmail_owner','-d','xmail'],select.encode()))
+    need(isinstance(subjects,list) and 0<len(subjects)<=100)
+    result=docker(['run','--rm','--pull=never','-i','--log-driver=none','--network','coolify','--read-only','--memory','128m','--memory-swap','128m','--cpus','0.5','--pids-limit','64','--cap-drop','ALL','--security-opt','no-new-privileges',
+        '--mount','type=bind,src=/opt/xmail/google-identity-runtime,dst=/run/secrets/xmail-google-identity,readonly','--entrypoint','node',r['applicationImage'],'-e',MAINTENANCE_PROVIDER_JS],json.dumps({'subjects':subjects,'env':google}).encode())
+    need(json.loads(result)=={'currentProviderAvailable':True,'administrativeBindingAvailable':True,'noProviderWrites':True})
+
+
+
+def persist_maintenance_readback(r, p, root, live):
+    # This is a durable observation of the actually healthy owned runtime, not a
+    # refreshed old receipt. Its COMMIT proof remains immutable in the bundle.
+    facts = r['_maintenance']
+    value = {'version':1,'app':'xmail','authPhase':'identity','runtimeId':live['Id'],
+        'applicationImage':live['Image'],'sourceSha':p['XMAIL_OWNED_APPROVED_SOURCE_SHA'],
+        'receiptSha256':p['XMAIL_OWNED_RECEIPT_SHA256'],'profileSha256':sha(secure_read(root/'owned-runtime.env')),
+        'commitBundle':facts['commitBundle'],'commitAckFile':'maintenance-commit-acknowledged.json','commitAckSha256':facts['commitAckSha256']}
+    temporary = root/('.owned-authority-readback-'+live['Id'][:16])
+    fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'wb') as handle:handle.write(json.dumps(value,sort_keys=True,separators=(',',':')).encode());handle.flush();os.fsync(handle.fileno())
+    os.replace(temporary,root/'owned-authority-current.json')
+    fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+
+
 def execute(action, root=ROOT, admitted=None):
     p, reader, profile_digest, raw_sha, reader_sha = profiles(root)
     img = inspect(p['XMAIL_OWNED_APPROVED_IMAGE_ID'])
@@ -505,7 +615,8 @@ def execute(action, root=ROOT, admitted=None):
         expected_google = 'true' if r['authPhase'] == 'identity' else 'false' if r['sourceKind'] == 'supabase' else None
         need(google['XMAIL_GOOGLE_AUTH_ENABLED'] in ['true', 'false']
              and (expected_google is None or google['XMAIL_GOOGLE_AUTH_ENABLED'] == expected_google))
-        if r['authPhase'] == 'identity': verify_linked_admin(r)
+        if r.get('version') == 2: verify_maintenance_state(r, google, action != 'readback')
+        elif r['authPhase'] == 'identity': verify_linked_admin(r)
         old_id = r['oldContainerId']
         if action == 'readback':
             need(digest(admitted))
@@ -518,6 +629,7 @@ def execute(action, root=ROOT, admitted=None):
                  and live['HostConfig'].get('PortBindings') == old['HostConfig'].get('PortBindings'))
             mounts = [m for m in live.get('Mounts', []) if m.get('Destination') == '/run/secrets/xmail-google-identity']
             need(len(mounts) == 1 and mounts[0].get('Source') == '/opt/xmail/google-identity-runtime' and mounts[0].get('RW') is False)
+            if r.get('version') == 2: persist_maintenance_readback(r, p, root, live)
     else: need(action == 'inspect')
     need(action in ['inspect', 'assert-promote', 'readback'])
     print(' '.join([p['XMAIL_OWNED_DEPLOY_MODE'], p['XMAIL_OWNED_APPROVED_IMAGE_ID'], p['XMAIL_OWNED_APPROVED_SOURCE_SHA'], raw_sha, reader_sha, old_id]))
@@ -532,12 +644,76 @@ XMAIL_OWNED_POLICY_PY
 
 prepare_owned_runtime_profile() {
   local response
+  prepare_owned_maintenance_pipeline || return 1
   OWNED_MODE="legacy"
   if [ ! -e "$OWNED_RUNTIME_ENV_FILE" ] && [ ! -L "$OWNED_RUNTIME_ENV_FILE" ]; then return 0; fi
   response=$(owned_policy inspect) || return 1
   read -r OWNED_MODE OWNED_IMAGE_ID OWNED_SOURCE_SHA OWNED_PROFILE_SHA OWNED_READER_SHA OWNED_OLD_ID <<< "$response"
   [ "$OWNED_SOURCE_SHA" = "${GITHUB_SOURCE_SHA}" ] || return 1
 }
+
+prepare_owned_maintenance_pipeline() {
+  [ -e "$OWNED_RUNTIME_ENV_FILE" ] || [ -L "$OWNED_RUNTIME_ENV_FILE" ] || return 0
+  local staged phase old_id candidate policy_hash
+  staged=$(python3 - <<'XMAIL_MAINTENANCE_STAGE_PY'
+import base64,gzip,hashlib,io,json,os,pathlib,re,stat,tarfile
+try:
+    root=pathlib.Path('/opt/xmail/owned-runtime-ops')
+    def directory(p):
+        st=p.lstat();assert stat.S_ISDIR(st.st_mode) and st.st_uid==st.st_gid==0 and not st.st_mode&0o022
+    directory(root)
+    p=root/'owned-runtime.env';st=p.lstat();assert stat.S_ISREG(st.st_mode) and st.st_uid==0 and stat.S_IMODE(st.st_mode)==0o600 and st.st_nlink==1
+    lines=p.read_text().splitlines();values=dict(line.split('=',1) for line in lines if line and not line.startswith('#'))
+    if values.get('XMAIL_OWNED_AUTH_PHASE')!='identity':print('skip');raise SystemExit
+    assert values.get('XMAIL_BROWSER_AUTH_AUTHORITY')==values.get('XMAIL_USER_ADMIN_AUTHORITY')=='owned'
+    source=os.environ['GITHUB_SOURCE_SHA'];assert re.fullmatch('[a-f0-9]{40}',source)
+    raw=base64.b64decode(os.environ['XMAIL_MAINTENANCE_CODE_B64'],validate=True)
+    assert len(raw)<=262144 and hashlib.sha256(raw).hexdigest()==os.environ['XMAIL_MAINTENANCE_CODE_SHA256']
+    unpacked=gzip.decompress(raw);assert len(unpacked)<=1048576
+    names={'.github/scripts/deploy-xmail.sh','scripts/ops/prepare-xmail-owned-runtime-maintenance.py','scripts/ops/prepare-xmail-owned-pilot-rollout.py','scripts/ops/prepare-xmail-final-data-cutover.py','scripts/ops/xmail-database-rehearsal.sh'}
+    base=root/'maintenance-code';base.mkdir(mode=0o700,exist_ok=True);directory(base)
+    target=base/source;target.mkdir(mode=0o700,exist_ok=True);directory(target)
+    with tarfile.open(fileobj=io.BytesIO(unpacked),mode='r:') as archive:
+        members=archive.getmembers();assert len(members)==len(names) and {m.name for m in members}==names
+        for m in members:
+            assert m.isfile() and 0<m.size<196608
+            data=archive.extractfile(m).read();dest=target/m.name;dest.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+            assert dest.resolve().is_relative_to(target)
+            directory(dest.parent)
+            if dest.exists():
+                st=dest.lstat();assert stat.S_ISREG(st.st_mode) and st.st_uid==0 and st.st_nlink==1 and stat.S_IMODE(st.st_mode)==0o600 and dest.read_bytes()==data
+            else:
+                with os.fdopen(os.open(dest,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600),'wb') as f:f.write(data);f.flush();os.fsync(f.fileno())
+    deploy=(target/'.github/scripts/deploy-xmail.sh').read_bytes();assert hashlib.sha256(deploy).hexdigest()==os.environ['XMAIL_DEPLOY_CODE_SHA256']
+    import subprocess
+    ids=subprocess.check_output(['docker','ps','--no-trunc','-q','--filter','name=^/xmail$'],stderr=subprocess.DEVNULL,timeout=8).decode().split();assert len(ids)==1 and re.fullmatch('[a-f0-9]{64}',ids[0])
+    image=json.loads(subprocess.check_output(['docker','image','inspect',os.environ['IMAGE_NAME']+':latest'],stderr=subprocess.DEVNULL,timeout=8))[0]
+    assert image['Config']['Labels']['org.opencontainers.image.revision']==source and re.fullmatch('sha256:[a-f0-9]{64}',image['Id'])
+    print('identity',ids[0],image['Id'],hashlib.sha256(deploy).hexdigest(),str(target))
+except Exception:
+    print('Owned maintenance staging refused; details suppressed.',file=__import__('sys').stderr);raise SystemExit(1)
+XMAIL_MAINTENANCE_STAGE_PY
+  ) || return 1
+  [ "$staged" != skip ] || return 0
+  read -r phase old_id candidate policy_hash staged <<< "$staged"
+  [ "$phase" = identity ] || return 1
+  [ "$(stat -c '%u:%g:%a:%h:%s' -- "${OWNED_RUNTIME_OPS_DIR}/deploy.lock")" = '0:0:600:1:0' ] || return 1
+  exec 9>"${OWNED_RUNTIME_OPS_DIR}/deploy.lock" || return 1
+  flock -n 9 || return 1
+  OWNED_LOCK_ALREADY_HELD=true
+  # Reuse DR31's existing source lease so a daily restore cannot begin in the
+  # publication gap. No backup config/key/schedule is changed here.
+  if [ -e /opt/xmail/owned-backup-ops/backup.lock ] || [ -L /opt/xmail/owned-backup-ops/backup.lock ]; then
+    [ -f /opt/xmail/owned-backup-ops/backup.lock ] && [ ! -L /opt/xmail/owned-backup-ops/backup.lock ] \
+      && [ "$(stat -c '%u:%g:%a:%h:%s' -- /opt/xmail/owned-backup-ops/backup.lock)" = '0:0:600:1:0' ] || return 1
+    exec 8>/opt/xmail/owned-backup-ops/backup.lock || return 1
+    flock -n 8 || return 1
+  fi
+  python3 -B "$staged/scripts/ops/prepare-xmail-owned-runtime-maintenance.py" --apply --parent-lock \
+    --approved-image-id "$candidate" --approved-source-sha "$GITHUB_SOURCE_SHA" \
+    --policy-sha256 "$policy_hash" --old-container-id "$old_id" || return 1
+}
+
 # END XMAIL OWNED POLICY
 
 
@@ -798,8 +974,10 @@ run_owned_deploy() {
       && [ "$(stat -c '%u:%g:%a:%h:%s' -- "$lock_file")" = '0:0:600:1:0' ] || return 1
   fi
   umask 077
-  exec 9>"$lock_file" || return 1
-  flock -n 9 || return 1
+  if [ "${OWNED_LOCK_ALREADY_HELD:-false}" != true ]; then
+    exec 9>"$lock_file" || return 1
+    flock -n 9 || return 1
+  fi
   before="$OWNED_MODE $OWNED_IMAGE_ID $OWNED_SOURCE_SHA $OWNED_PROFILE_SHA $OWNED_READER_SHA $OWNED_OLD_ID"
   run_owned_preview || return 1
   response=$(owned_policy inspect) || return 1
