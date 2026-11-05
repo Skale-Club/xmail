@@ -18,6 +18,10 @@ on:
         description: Also print a read-only SSH audit (settings and counts, no addresses or keys)
         type: boolean
         default: false
+      remove_root_keys:
+        description: Space-separated labels of root authorized keys to remove (refused for any key that logged in during the retained logs)
+        type: string
+        default: ''
       harden_ssh:
         description: Disable SSH password login and install fail2ban (undoes the sshd change by itself if a new key login fails)
         type: boolean
@@ -118,6 +122,35 @@ jobs:
             echo "fail2ban: $(systemctl is-active fail2ban)"
             fail2ban-client status sshd | grep -E 'Currently (failed|banned)|Total (failed|banned)'
             echo "ignored regular sources: $(printf '%s' "$regular" | wc -w)"
+
+      - name: Remove unused root keys
+        if: ${{ inputs.remove_root_keys != '' }}
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          REMOVE_LABELS: ${{ inputs.remove_root_keys }}
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: root
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          envs: REMOVE_LABELS
+          command_timeout: 1m
+          script: |
+            set -eu
+            file=/root/.ssh/authorized_keys
+            history=$(mktemp); keep=$(mktemp); trap 'rm -f "$history" "$keep"' EXIT
+            { journalctl -u ssh --no-pager -o cat; zcat -f /var/log/auth.log*; } 2>/dev/null | grep '^Accepted\|sshd.*Accepted' > "$history" || true
+            for label in $REMOVE_LABELS; do
+              case "$label" in *[!A-Za-z0-9._-]*) echo "refused: bad label" >&2; exit 1 ;; esac
+              matches=$(awk -v l="$label" '$NF == l' "$file" | wc -l)
+              if [ "$matches" != "1" ]; then echo "refused: $label matches $matches keys" >&2; exit 1; fi
+              fp=$(awk -v l="$label" '$NF == l' "$file" | ssh-keygen -lf - | awk '{print $2}')
+              if grep -qF "$fp" "$history"; then echo "refused: $label has logged in, it is still in use" >&2; exit 1; fi
+            done
+            cp -p "$file" "$file.bak-$(date +%Y%m%d%H%M%S)"
+            awk -v labels=" $REMOVE_LABELS " '{ if (index(labels, " " $NF " ") == 0) print }' "$file" > "$keep"
+            cat "$keep" > "$file"
+            echo "removed: $REMOVE_LABELS"
+            echo "root keys left: $(grep -cvE '^\s*(#|$)' "$file")"
 
       - name: Read memory, swap, disk and top consumers
         uses: appleboy/ssh-action@v1.0.0
