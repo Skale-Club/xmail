@@ -180,6 +180,10 @@ READER_KEYS = set('NODE_ENV XMAIL_STAGING_HTTP_ONLY XMAIL_STAGING_ORIGIN XMAIL_S
 PROOF_FILES = {'freeze': 'freeze-receipt.json', 'snapshot': 'snapshot-receipt.json', 'final-import': 'final-import-receipt.json', 'controls': 'controls-receipt.json', 'admin-acceptance': 'admin-acceptance-receipt.json', 'maintenance': 'maintenance-receipt.json'}
 COMMON = set('version app kind target database role postgresImage applicationImage sourceSha authPhase sourceKind oldContainerId createdAt expiresAt facts'.split())
 
+STEP = ['start']
+
+def mark(name): STEP[0] = name
+
 def need(value):
     if not value: raise ValueError('Owned deployment policy refused')
 
@@ -577,8 +581,8 @@ def persist_maintenance_readback(r, p, root, live):
 
 
 def execute(action, root=ROOT, admitted=None):
-    p, reader, profile_digest, raw_sha, reader_sha = profiles(root)
-    img = inspect(p['XMAIL_OWNED_APPROVED_IMAGE_ID'])
+    mark('profile'); p, reader, profile_digest, raw_sha, reader_sha = profiles(root)
+    mark('approved-image'); img = inspect(p['XMAIL_OWNED_APPROVED_IMAGE_ID'])
     need(img['Id'] == p['XMAIL_OWNED_APPROVED_IMAGE_ID']
          and (img['Config'].get('Labels') or {}).get('org.opencontainers.image.revision') == p['XMAIL_OWNED_APPROVED_SOURCE_SHA'])
     if action == 'preview-readback':
@@ -604,8 +608,8 @@ def execute(action, root=ROOT, admitted=None):
         return
     old_id = '-'
     if p['XMAIL_OWNED_DEPLOY_MODE'] == 'promote':
-        r, base = receipt(p, profile_digest, root)
-        old = runtime_state(p, r, base, admitted)
+        mark('receipt'); r, base = receipt(p, profile_digest, root)
+        mark('runtime-state'); old = runtime_state(p, r, base, admitted)
         google_path = Path('/opt/xmail/google-identity-ops')
         secure_directory(google_path, True)
         google = env_file(secure_read(google_path/'google-auth.env', 16384),
@@ -615,11 +619,12 @@ def execute(action, root=ROOT, admitted=None):
         expected_google = 'true' if r['authPhase'] == 'identity' else 'false' if r['sourceKind'] == 'supabase' else None
         need(google['XMAIL_GOOGLE_AUTH_ENABLED'] in ['true', 'false']
              and (expected_google is None or google['XMAIL_GOOGLE_AUTH_ENABLED'] == expected_google))
+        mark('maintenance-state')
         if r.get('version') == 2: verify_maintenance_state(r, google, action != 'readback')
         elif r['authPhase'] == 'identity': verify_linked_admin(r)
         old_id = r['oldContainerId']
         if action == 'readback':
-            need(digest(admitted))
+            mark('readback'); need(digest(admitted))
             live = inspect(admitted)
             env = container_env(live)
             need(live['Name'] == '/xmail' and live['Image'] == r['applicationImage'] and live['State']['Running'] is True
@@ -637,7 +642,7 @@ def execute(action, root=ROOT, admitted=None):
 if __name__ == '__main__':
     try: execute(sys.argv[1], admitted=sys.argv[2] if len(sys.argv) == 3 else None)
     except Exception:
-        print('Owned deployment policy refused; private diagnostics suppressed.', file=sys.stderr)
+        print('Owned deployment policy refused at step '+STEP[0]+'; private values suppressed.', file=sys.stderr)
         sys.exit(1)
 XMAIL_OWNED_POLICY_PY
 }

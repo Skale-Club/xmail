@@ -452,4 +452,77 @@ class InterruptedRecovery(unittest.TestCase):
         # The pinned five-file bundle is unchanged: recovery lives inside the existing maintenance operator.
         self.assertEqual(stage.count('prepare-xmail-owned-runtime-maintenance.py'), 3)
 
+    def published_state(self):
+        """Run the real publish() the recovery uses, then describe the healthy runtime the consumer would leave behind."""
+        ops = Path(tempfile.mkdtemp(dir=self.tmp))
+        class M(Sim):
+            OPS = ops
+        m = M(ops, self.old_id, self.previous, 'login'); m.OPS = ops
+        policy = {'PROOF_FILES': {'freeze': 'freeze-receipt.json', 'snapshot': 'snapshot-receipt.json', 'controls': 'controls-receipt.json', 'maintenance': 'maintenance-receipt.json'},
+            'secure_read': lambda path, maximum=65536: path.read_bytes(), 'secure_directory': lambda path, private=False: path.is_dir() or (_ for _ in ()).throw(ValueError('dir')),
+            'json_file': self.policy['json_file'], 'profiles': lambda root: (None, None, 'p'*64), 'execute': lambda action: None}
+        now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        image = 'sha256:'+'a'*64
+        (self.bundle/'maintenance-commit-acknowledged.json').write_bytes(Sim.encoded({'acknowledged': True}))
+        (self.bundle/'maintenance-profile-ready.json').write_bytes(Sim.encoded({'ownedMaintenanceReady': True}))
+        profile = {**self.pending, 'XMAIL_OWNED_APPROVED_IMAGE_ID': image, 'XMAIL_OWNED_APPROVED_SOURCE_SHA': 'c'*40, 'XMAIL_OWNED_RECEIPT_SHA256': '0'*64}
+        REAL_PUBLISH(m, policy, self.bundle, {'Id': self.old_id, 'Image': 'sha256:'+'b'*64}, image, 'c'*40, b'{"r":1}', b'PRIOR\n', b'{"a":1}', b'BASE=1\n',
+            {'identityDigests': {'t': '1'*64}}, now, now+dt.timedelta(minutes=15), profile, dict(self.pending_reader), '8'*64)
+        (ops/'maintenance-attempt.json').write_bytes(Sim.encoded(self.attempt))
+        live_profile = self.policy['env_file']((ops/'owned-runtime.env').read_bytes(), self.policy['PROFILE_KEYS'])
+        running = {'Id': 'c'*64, 'Image': image}
+        return m, policy, live_profile, running, ops
+
+    # Recovery republished and the consumer persisted nothing usable (or the anchor drifted): a later normal run must re-anchor, not refuse.
+    def test_normal_run_after_recovery_rebuilds_a_stale_anchor_from_the_healthy_runtime(self):
+        m, policy, profile, running, ops = self.published_state()
+        (ops/'owned-authority-current.json').write_bytes(Sim.encoded({'commitBundle': ANCHOR_BUNDLE, 'runtimeId': 'stale'}))
+        before = (ops/'owned-runtime.env').read_bytes()
+        with patch.object(operator, 'authority_anchor', return_value=b'verified') as checked, contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(operator.reanchor(m, policy, running, profile), b'verified')
+        anchor = json.loads((ops/'owned-authority-current.json').read_bytes())
+        self.assertEqual(set(anchor), {'version', 'app', 'authPhase', 'runtimeId', 'applicationImage', 'sourceSha', 'receiptSha256', 'profileSha256', 'commitBundle', 'commitAckFile', 'commitAckSha256'})
+        self.assertEqual((anchor['runtimeId'], anchor['commitBundle']), (running['Id'], ATTEMPT_BUNDLE))
+        self.assertEqual(anchor['profileSha256'], hashlib.sha256(before).hexdigest()); self.assertEqual(anchor['receiptSha256'], profile['XMAIL_OWNED_RECEIPT_SHA256'])
+        self.assertEqual((ops/'owned-runtime.env').read_bytes(), before)  # profile and receipt are untouched
+        self.assertEqual(checked.call_count, 1)
+        self.assertEqual(json.loads(out.getvalue()), {'maintenanceStep': 'authority-reanchored', 'action': 'rebuilt-from-healthy-runtime'})
+
+    def test_reanchor_refuses_without_touching_the_anchor_when_any_real_state_disagrees(self):
+        cases = {
+            'reanchor-receipt-mismatch': lambda m, ops, running: running.update(Image='sha256:'+'9'*64),
+            'reanchor-bundle-mismatch': lambda m, ops, running: (self.bundle/'maintenance-commit-acknowledged.json').write_bytes(Sim.encoded({'acknowledged': True, 'x': 1})) or None,
+            'reanchor-not-ready': lambda m, ops, running: (self.bundle/'maintenance-profile-ready.json').write_bytes(b'{}'),
+            'reanchor-no-attempt': lambda m, ops, running: (ops/'maintenance-attempt.json').unlink(),
+        }
+        for check, damage in cases.items():
+            with self.subTest(check):
+                m, policy, profile, running, ops = self.published_state()
+                (ops/'owned-authority-current.json').write_bytes(b'STALE')
+                damage(m, ops, running)
+                with patch.object(operator, 'authority_anchor') as checked, self.assertRaises((operator.Refused, ValueError)) as raised:
+                    operator.reanchor(m, policy, running, profile)
+                if isinstance(raised.exception, operator.Refused) and check != 'reanchor-bundle-mismatch': self.assertEqual(raised.exception.check, check)
+                self.assertEqual((ops/'owned-authority-current.json').read_bytes(), b'STALE'); checked.assert_not_called()
+                self.bundle.joinpath('maintenance-commit-acknowledged.json').write_bytes(Sim.encoded({'acknowledged': True}))
+                self.bundle.joinpath('maintenance-profile-ready.json').write_bytes(Sim.encoded({'ownedMaintenanceReady': True}))
+
+    def test_every_normal_run_step_is_labelled_and_the_stop_comes_after_all_checks(self):
+        source = PATH.read_text(); body = source[source.index('def run('):source.index('def main(')]
+        labels = __import__('re').findall(r"at\('([a-z-]+)'\)", body)
+        for step in ['host-capacity', 'current-runtime', 'authority-anchor', 'candidate-image', 'other-writers', 'preview', 'before-stop', 'stop-old', 'commit', 'publish']:
+            self.assertIn(step, labels)
+        self.assertLess(body.index("at('authority-anchor')"), body.index("at('stop-old')"))
+        self.assertIn('reanchor(m, policy, old, profile)', body)
+        self.assertNotIn('docker', source[source.index('def reanchor('):source.index('def run(')])
+        self.assertIn("RECOVERY['phase'] = 'normal-run'", body)
+        tail = source[source.index("if __name__ == '__main__':"):]
+        self.assertNotIn("if RECOVERY['active']", tail)
+
+    def test_policy_refusal_names_the_step_without_values(self):
+        self.assertIn("'Owned deployment policy refused at step '+STEP[0]+'; private values suppressed.'", TEXT)
+        for step in ['profile', 'approved-image', 'receipt', 'runtime-state', 'maintenance-state', 'readback']:
+            self.assertIn("mark('"+step+"')", TEXT)
+
+
 if __name__=='__main__':unittest.main()

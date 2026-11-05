@@ -131,6 +131,14 @@ example `{"recoveryPhase":"commit-attempted","action":"refused","check":"credent
 No value, password or URL is ever printed, and nothing is restored from or
 imported into the former Supabase database.
 
+Every refusal of the normal run now prints a fixed step label on stderr
+(`{"recoveryPhase":"normal-run","action":"refused","check":"<step>"}`), and the
+consumer policy prints `refused at step <name>`; none include values. If the
+authority anchor is stale while the runtime is healthy and its profile, receipt,
+maintenance proof and acknowledged bundle all agree, the next run rebuilds the
+anchor from that real state before deciding anything and never stops the app
+until every check has passed.
+
 The frozen custom dump is private root-0600 and is retained with its SHA256;
 DR31 independently encrypts, transfers and rehearses the current authoritative
 database. Maintenance does not change storage buckets, ACLs, SMTP/IMAP native
