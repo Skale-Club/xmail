@@ -77,7 +77,7 @@ jobs:
             systemd-run --quiet --unit=ssh-hardening-rollback --on-active=300 /bin/sh -c "rm -f $conf; systemctl reload-or-restart ssh"
             systemctl reload-or-restart ssh
             settings=$(sshd -T)
-            if ! printf '%s\n' "$settings" | grep -qx 'passwordauthentication no' || ! printf '%s\n' "$settings" | grep -qx 'permitrootlogin prohibit-password'; then
+            if ! printf '%s\n' "$settings" | grep -qx 'passwordauthentication no' || ! printf '%s\n' "$settings" | grep -qxE 'permitrootlogin (prohibit-password|without-password)'; then
               rollback; echo "refused: settings did not take effect" >&2; exit 1
             fi
             echo "sshd settings applied, rollback armed for 5 minutes"
