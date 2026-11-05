@@ -206,8 +206,30 @@ function createSupabaseStorage(): ObjectStorage {
     }
 }
 
+/**
+ * Development shares attachment objects with the copied production rows
+ * (`npm run db:pull` copies metadata only), so objects are read-only there: a dev
+ * upload or delete must never touch an object a real mailbox points at.
+ */
+export function readOnlyObjectStorage(inner: ObjectStorage): ObjectStorage {
+    const refuse = (): never => {
+        throw new Error('Object storage is read-only in development.')
+    }
+    return {
+        upload: async () => refuse(),
+        remove: async () => refuse(),
+        download: (bucket, path) => inner.download(bucket, path),
+        createSignedUrl: (bucket, path, seconds) => inner.createSignedUrl(bucket, path, seconds),
+    }
+}
+
 /** Existing backend selection is preserved only for explicit/default legacy authority. */
 export function createObjectStorage(): ObjectStorage {
+    const storage = selectObjectStorage()
+    return process.env.NODE_ENV === 'development' ? readOnlyObjectStorage(storage) : storage
+}
+
+function selectObjectStorage(): ObjectStorage {
     if (browserAuthAuthority(process.env) === 'owned') {
         ownedR2Configuration(process.env)
         return createR2Storage()

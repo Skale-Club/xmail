@@ -98,6 +98,9 @@ jobs:
       - name: Development isolation and identity policy tests (no database or Docker)
         run: npx vitest run --project server src/db/database-target.test.ts src/db/pool-budget.test.ts src/lib/development-auth.test.ts src/server/lib/__tests__/development-supabase.test.ts src/server/lib/__tests__/health-readiness.test.ts src/server/lib/__tests__/object-storage.test.ts src/server/lib/__tests__/owned-object-storage.test.ts src/server/lib/__tests__/native-identity-controls.test.ts src/server/lib/__tests__/crypto.test.ts src/server/lib/__tests__/remote-db-guard.test.ts src/server/jobs/__tests__/development-scheduler.test.ts src/server/lib/__tests__/api-auth-public-routes.test.ts src/server/lib/__tests__/api-auth-disabled-user.test.ts src/server/lib/identity/google-provider.test.ts src/server/lib/identity/google-adc-config.test.ts src/server/lib/identity/google-x509-access-token.test.ts src/server/lib/identity/owned-session.test.ts src/server/lib/identity/sql-timestamp.test.ts src/server/lib/identity/pilot-config.test.ts src/server/lib/identity/legacy-account-proof.test.ts src/server/lib/identity/existing-account-link.test.ts src/server/lib/identity/user-sync.test.ts src/server/lib/identity/owned-user-admin.test.ts src/server/lib/identity/owned-user-admin-runtime.test.ts src/server/lib/identity/browser-auth-authority.test.ts src/server/lib/identity/owned-stream.test.ts src/server/lib/identity/owned-stream-http.test.ts src/server/lib/identity/owned-stream-access.test.ts src/server/lib/mailbox-events.test.ts src/server/lib/inbox-events.test.ts src/server/routes/identity.test.ts --maxWorkers 1 --testTimeout 15000
 
+      - name: Dev database pull policy and outbound guard (no database, SSH or mail server)
+        run: npx vitest run --project server src/server/lib/__tests__/dev-db-pull.test.ts src/server/lib/__tests__/dev-outbound-guard.test.ts src/db/database-target.test.ts
+
       - name: Firebase document headers (local HTTP; no provider requests)
         run: npx vitest run --project server src/server/lib/identity/browser-headers.test.ts --maxWorkers 1
 
@@ -131,6 +134,37 @@ jobs:
             dist/server/runtime-entry.js
             dist/server/staging-config.js
             dist/server/staging-http.js
+
+  dev-db-pull:
+    name: Dev database pull rehearsal (disposable PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: xmail_pull_test
+          # Disposable runner database, reachable only over runner loopback.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['127.0.0.1:5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d xmail_pull_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Rehearse db:pull between two throwaway databases (no production, Supabase or SSH)
+        run: npx vitest run --project server src/server/lib/__tests__/dev-db-pull.integration.test.ts --maxWorkers 1
+        env:
+          XMAIL_PULL_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/xmail_pull_test
+          XMAIL_PULL_TEST_SENTINEL: xmail-dev-db-pull-ci
+          # A missing database must fail the run here, never skip the tests.
+          XMAIL_REQUIRE_PG: '1'
 
   identity-store:
     name: Owned identity PostgreSQL foundation and HTTP pilot store

@@ -1,3 +1,5 @@
+import { findProductionProjectRef } from './production-project-refs'
+
 type DatabaseEnvironment = Record<string, string | undefined>
 
 function developmentProject(url: string, projectRef: string): string {
@@ -11,6 +13,9 @@ function developmentProject(url: string, projectRef: string): string {
         decodeURIComponent(parsed.password)
     } catch {
         throw new Error('Invalid XMAIL_DEV database URL (value omitted)')
+    }
+    if (findProductionProjectRef(projectRef) || findProductionProjectRef(url)) {
+        throw new Error('The development project is a known production or retired production project')
     }
     const direct = parsed.hostname === `db.${projectRef}.supabase.co` && username === 'postgres'
     const pooler = parsed.hostname.endsWith('.pooler.supabase.com')
