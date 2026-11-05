@@ -1,19 +1,32 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Phone, ArrowRight, LogOut } from 'lucide-react'
+import { ArrowRight, LogOut } from 'lucide-react'
 import { AppLogo } from '../components/AppLogo'
+import { CountryPhoneField } from '../components/auth/CountryPhoneField'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Label } from '../components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { loadFirebaseIdentityConfig, ownedIdentityAction, ownedIdentityActive, probeOwnedIdentitySession, leaveOwnedIdentity, storedLegacyFirstLinkToken, linkExistingIdentityAccount, type OwnedIdentityUser } from '../lib/owned-identity'
 import { currentBrowserAuthAuthority, legacyBrowserAuthConfirmed, resolveBrowserAuthAuthority } from '../lib/browser-auth-authority'
+import { DEFAULT_PHONE_COUNTRY, phoneToE164, type PhoneValue } from '../lib/phone-input'
+
+function GoogleMark() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true" className="mr-2 h-[18px] w-[18px]">
+            <path fill="#4285F4" d="M23.52 12.27c0-.85-.08-1.67-.22-2.45H12v4.64h6.46a5.52 5.52 0 0 1-2.4 3.62v3h3.88c2.27-2.09 3.58-5.17 3.58-8.81Z" />
+            <path fill="#34A853" d="M12 24c3.24 0 5.96-1.07 7.94-2.9l-3.88-3.02c-1.07.72-2.45 1.15-4.06 1.15-3.13 0-5.78-2.11-6.72-4.95H1.27v3.11A12 12 0 0 0 12 24Z" />
+            <path fill="#FBBC05" d="M5.28 14.28a7.2 7.2 0 0 1 0-4.56V6.61H1.27a12 12 0 0 0 0 10.78l4.01-3.11Z" />
+            <path fill="#EA4335" d="M12 4.77c1.76 0 3.34.61 4.59 1.8l3.44-3.44C17.95 1.19 15.24 0 12 0A12 12 0 0 0 1.27 6.61l4.01 3.11C6.22 6.88 8.87 4.77 12 4.77Z" />
+        </svg>
+    )
+}
 
 export default function IdentityPilot() {
     const [available, setAvailable] = useState(false)
     const [loading, setLoading] = useState(true)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState('')
-    const [phone, setPhone] = useState('')
+    const [phone, setPhone] = useState<PhoneValue>({ country: DEFAULT_PHONE_COUNTRY, text: '' })
     const [code, setCode] = useState('')
     const [awaitingCode, setAwaitingCode] = useState(false)
     const [user, setUser] = useState<OwnedIdentityUser | null>(null)
@@ -71,10 +84,11 @@ export default function IdentityPilot() {
                 await finish(await pending.current.confirm(code, config))
                 return
             }
-            if (!/^\+[1-9]\d{7,14}$/.test(phone) || !captcha.current) throw new Error('Use an international number beginning with + and the country code.')
+            const number = phoneToE164(phone)
+            if (!number || !captcha.current) throw new Error('Enter a valid phone number for the selected country.')
             const { beginPhoneIdentity } = await import('../lib/firebase-identity')
             pending.current?.dispose()
-            pending.current = await beginPhoneIdentity(config, phone, captcha.current)
+            pending.current = await beginPhoneIdentity(config, number, captcha.current)
             setAwaitingCode(true)
         })
     }
@@ -82,13 +96,14 @@ export default function IdentityPilot() {
         if (passwordLinking && (!existingEmail.trim() || !existingPassword)) throw new Error('Enter your previous account email and password first.')
     }
     return (
-        <main className="flex min-h-[100dvh] items-center justify-center bg-background px-4 py-10">
-            <Card className="w-full max-w-md border-border/60 shadow-lg-soft">
-                <CardHeader className="space-y-3 px-6 pb-5 pt-8">
+        <main className="relative isolate flex min-h-[100dvh] items-center justify-center bg-background px-4 py-10">
+            <div aria-hidden="true" className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-secondary via-background to-background" />
+            <Card className="w-full max-w-[26rem] border-border/60 shadow-lg-soft">
+                <CardHeader className="items-center space-y-3 px-6 pb-5 pt-8 text-center">
                     <AppLogo className="h-12 w-12" alt="Xmail" />
-                    <div className="space-y-2">
-                        <CardTitle className="text-2xl tracking-tight">{passwordLinking ? 'Link your existing Xmail account' : linking ? 'Link your verified sign-in' : 'Your mail. Your number.'}</CardTitle>
-                        <CardDescription>{passwordLinking ? 'Prove your previous account, then confirm a phone number or Google account. Your mail password stays unchanged.' : linking ? 'Confirm a phone number or Google account for the Xmail account you already signed in to.' : 'Use a verified phone number to sign in to your existing Xmail account.'}</CardDescription>
+                    <div className="space-y-1.5">
+                        <CardTitle className="text-2xl tracking-tight">{passwordLinking ? 'Link your existing Xmail account' : linking ? 'Link your verified sign-in' : 'Sign in to Xmail'}</CardTitle>
+                        <CardDescription>{passwordLinking ? 'Prove your previous account, then confirm a phone number or Google account. Your mail password stays unchanged.' : linking ? 'Confirm a phone number or Google account for the Xmail account you already signed in to.' : 'Use your verified phone number or Google account.'}</CardDescription>
                     </div>
                 </CardHeader>
                 <CardContent className="space-y-5 px-6 pb-8">
@@ -108,15 +123,14 @@ export default function IdentityPilot() {
                         <form onSubmit={submitPhone} className="space-y-4">
                             <div className="space-y-2">
                                 <Label htmlFor="identity-phone">Phone number</Label>
-                                <Input id="identity-phone" type="tel" autoComplete="tel" placeholder="+1 202 555 0123" value={phone}
-                                    onChange={event => setPhone(event.target.value.replace(/[\s()-]/g, ''))} disabled={busy || awaitingCode} required className="h-11" />
-                                <p className="text-xs text-muted-foreground">Include the country code. Standard SMS rates may apply.</p>
+                                <CountryPhoneField id="identity-phone" value={phone} onChange={setPhone} disabled={busy || awaitingCode} />
+                                <p className="text-xs text-muted-foreground">Standard SMS rates may apply.</p>
                             </div>
-                            <div ref={captcha} data-testid="identity-captcha" />
+                            <div ref={captcha} data-testid="identity-captcha" className="empty:hidden" />
                             {awaitingCode ? <div className="space-y-2"><Label htmlFor="identity-code">Verification code</Label>
                                 <Input id="identity-code" inputMode="numeric" autoComplete="one-time-code" value={code} maxLength={8}
                                     onChange={event => setCode(event.target.value)} required disabled={busy} className="h-11 tracking-[0.3em]" /></div> : null}
-                            <Button type="submit" disabled={busy} className="h-11 w-full"><Phone className="mr-2 h-4 w-4" />{busy ? 'Please wait…' : awaitingCode ? 'Verify and continue' : 'Send verification code'}</Button>
+                            <Button type="submit" disabled={busy || (!awaitingCode && !phone.text.trim())} className="h-11 w-full">{busy ? 'Please wait…' : awaitingCode ? 'Verify and continue' : <>Send code<ArrowRight className="ml-2 h-4 w-4" /></>}</Button>
                             {awaitingCode ? <Button type="button" variant="ghost" className="w-full" disabled={busy} onClick={() => {
                                 pending.current?.dispose(); pending.current = undefined; setAwaitingCode(false); setCode(''); setError('')
                             }}>Use another number or request a new code</Button> : null}
@@ -127,9 +141,14 @@ export default function IdentityPilot() {
                             const config = await loadFirebaseIdentityConfig()
                             const { googleIdentityToken } = await import('../lib/firebase-identity')
                             await finish(await googleIdentityToken(config))
-                        })}>Continue with Google<ArrowRight className="ml-2 h-4 w-4" /></Button>
-                        <p className="text-xs leading-relaxed text-muted-foreground">{passwordLinking ? 'Confirm the previous password and your verified sign-in to link this account. If you cannot prove ownership, contact support for reviewed recovery.' : 'Existing accounts need to be linked first. Use your previous account password if your old sign-in has expired, or contact support for reviewed recovery.'}</p>
-                        {!passwordLinking ? <a className="block text-center text-sm underline underline-offset-4" href="/auth/identity?action=existing-account-link">Link an existing account</a> : null}
+                        })}><GoogleMark />Continue with Google</Button>
+                        {passwordLinking
+                            ? <p className="text-center text-xs leading-relaxed text-muted-foreground">Confirm the previous password and your verified sign-in to link this account. If you cannot prove ownership, contact support for reviewed recovery.</p>
+                            : <div className="space-y-1.5 text-center text-xs leading-relaxed text-muted-foreground">
+                                <p>Already have an account? It needs to be linked once.</p>
+                                <a className="block text-sm font-medium text-foreground underline underline-offset-4" href="/auth/identity?action=existing-account-link">Link an existing account</a>
+                                <p>Lost access? Contact support for reviewed recovery.</p>
+                            </div>}
                     </> : null}
                     {available && user && !linking ? <div className="space-y-3">
                         <p className="text-sm">Signed in as <span className="font-medium">{user.email}</span></p>

@@ -1,0 +1,40 @@
+import type { ComponentType, SVGProps } from 'react'
+import type { CountryCode } from 'libphonenumber-js/min'
+import {
+    IconAalandIslands, IconAfghanistan, IconAlbania, IconAlgeria, IconAndorra, IconAngola, IconAnguilla, IconAntiguaBarbuda, IconArgentina, IconArmenia, IconAruba, IconAustralia, IconAustria, IconAzerbaijan,
+    IconBahamas, IconBahrain, IconBangladesh, IconBarbados, IconBelarus, IconBelgium, IconBelize, IconBenin, IconBermuda, IconBhutan, IconBolivia, IconBosniaHerzegovina, IconBotswana, IconBrazil, IconBritishVirginIslands, IconBrunei, IconBulgaria, IconBurkinaFaso, IconBurundi,
+    IconCambodia, IconCameroon, IconCanada, IconCapeVerde, IconCaymanIslands, IconCentralAfricanRepublic, IconChad, IconChile, IconChina, IconColombia, IconComoros, IconCookIslands, IconCostaRica, IconCroatia, IconCuba, IconCuracao, IconCyprus, IconCzechia,
+    IconDemocraticRepublicCongo, IconDenmark, IconDjibouti, IconDominica, IconDominicanRepublic, IconEastTimor, IconEcuador, IconEgypt, IconElSalvador, IconEquatorialGuinea, IconEritrea, IconEstonia, IconEswatini, IconEthiopia,
+    IconFalklandIslands, IconFaroeIslands, IconFiji, IconFinland, IconFrance, IconFrenchGuiana, IconFrenchPolynesia, IconGabon, IconGambia, IconGeorgia, IconGermany, IconGhana, IconGibraltar, IconGreece, IconGreenland, IconGrenada, IconGuadeloupe, IconGuatemala, IconGuernsey, IconGuinea, IconGuineaBissau, IconGuyana,
+    IconHaiti, IconHonduras, IconHongKong, IconHungary, IconIceland, IconIndia, IconIndonesia, IconIran, IconIraq, IconIreland, IconIsleOfMan, IconIsrael, IconItaly, IconIvoryCoast, IconJamaica, IconJapan, IconJersey, IconJordan,
+    IconKazakhstan, IconKenya, IconKiribati, IconKosovo, IconKuwait, IconKyrgyzstan, IconLaos, IconLatvia, IconLebanon, IconLesotho, IconLiberia, IconLibya, IconLiechtenstein, IconLithuania, IconLuxembourg,
+    IconMacau, IconMadagascar, IconMalawi, IconMalaysia, IconMaldives, IconMali, IconMalta, IconMarshallIslands, IconMartinique, IconMauritania, IconMauritius, IconMexico, IconMicronesia, IconMoldova, IconMonaco, IconMongolia, IconMontenegro, IconMorocco, IconMozanbique, IconMyanmar,
+    IconNamibia, IconNauru, IconNepal, IconNetherlands, IconNewCaledonia, IconNewZealand, IconNicaragua, IconNiger, IconNigeria, IconNiue, IconNorthKorea, IconNorthMacedonia, IconNorway, IconOman,
+    IconPakistan, IconPalau, IconPalestine, IconPanama, IconPapuaNewGuinea, IconParaguay, IconPeru, IconPhilippines, IconPoland, IconPortugal, IconPuertoRico, IconQatar, IconRepublicCongo, IconRomania, IconRussia, IconRwanda,
+    IconSaintKittsNevis, IconSaintLucia, IconSaintVincentGrenadines, IconSamoa, IconSanMarino, IconSaoTomePrincipe, IconSaudiArabia, IconSenegal, IconSerbia, IconSeychelles, IconSierraLeone, IconSingapore, IconSintMaarten, IconSlovakia, IconSlovenia, IconSolomonIslands, IconSomalia, IconSouthAfrica, IconSouthKorea, IconSouthSudan, IconSpain, IconSriLanka, IconSudan, IconSuriname, IconSweden, IconSwitzerland, IconSyria,
+    IconTaiwan, IconTajikistan, IconTanzania, IconThailand, IconTogo, IconTonga, IconTrinidadTobago, IconTunisia, IconTurkey, IconTurkmenistan, IconTurksAndCaicosIslands, IconTuvalu,
+    IconUganda, IconUkraine, IconUnitedArabEmirates, IconUnitedKingdom, IconUnitedStates, IconUnitedStatesVirginIslands, IconUruguay, IconUzbekistan, IconVanuatu, IconVaticanCity, IconVenezuela, IconVietnam, IconWesternSahara, IconYemen, IconZambia, IconZimbabwe,
+} from 'nucleo-flags'
+
+export type FlagIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
+
+/**
+ * All the flags together are about 140 KB gzipped, so this module is only ever imported
+ * dynamically: the sign-in screen paints first and the flags arrive right after.
+ * A country missing here (Guam, Reunion...) can still be chosen; it shows a neutral icon.
+ */
+export const COUNTRY_FLAGS: Partial<Record<CountryCode, FlagIcon>> = {
+    AD: IconAndorra, AE: IconUnitedArabEmirates, AF: IconAfghanistan, AG: IconAntiguaBarbuda, AI: IconAnguilla, AL: IconAlbania, AM: IconArmenia, AO: IconAngola, AR: IconArgentina, AT: IconAustria, AU: IconAustralia, AW: IconAruba, AX: IconAalandIslands, AZ: IconAzerbaijan,
+    BA: IconBosniaHerzegovina, BB: IconBarbados, BD: IconBangladesh, BE: IconBelgium, BF: IconBurkinaFaso, BG: IconBulgaria, BH: IconBahrain, BI: IconBurundi, BJ: IconBenin, BM: IconBermuda, BN: IconBrunei, BO: IconBolivia, BR: IconBrazil, BS: IconBahamas, BT: IconBhutan, BW: IconBotswana, BY: IconBelarus, BZ: IconBelize,
+    CA: IconCanada, CD: IconDemocraticRepublicCongo, CF: IconCentralAfricanRepublic, CG: IconRepublicCongo, CH: IconSwitzerland, CI: IconIvoryCoast, CK: IconCookIslands, CL: IconChile, CM: IconCameroon, CN: IconChina, CO: IconColombia, CR: IconCostaRica, CU: IconCuba, CV: IconCapeVerde, CW: IconCuracao, CY: IconCyprus, CZ: IconCzechia,
+    DE: IconGermany, DJ: IconDjibouti, DK: IconDenmark, DM: IconDominica, DO: IconDominicanRepublic, DZ: IconAlgeria, EC: IconEcuador, EE: IconEstonia, EG: IconEgypt, EH: IconWesternSahara, ER: IconEritrea, ES: IconSpain, ET: IconEthiopia,
+    FI: IconFinland, FJ: IconFiji, FK: IconFalklandIslands, FM: IconMicronesia, FO: IconFaroeIslands, FR: IconFrance, GA: IconGabon, GB: IconUnitedKingdom, GD: IconGrenada, GE: IconGeorgia, GF: IconFrenchGuiana, GG: IconGuernsey, GH: IconGhana, GI: IconGibraltar, GL: IconGreenland, GM: IconGambia, GN: IconGuinea, GP: IconGuadeloupe, GQ: IconEquatorialGuinea, GR: IconGreece, GT: IconGuatemala, GW: IconGuineaBissau, GY: IconGuyana,
+    HK: IconHongKong, HN: IconHonduras, HR: IconCroatia, HT: IconHaiti, HU: IconHungary, ID: IconIndonesia, IE: IconIreland, IL: IconIsrael, IM: IconIsleOfMan, IN: IconIndia, IQ: IconIraq, IR: IconIran, IS: IconIceland, IT: IconItaly, JE: IconJersey, JM: IconJamaica, JO: IconJordan, JP: IconJapan,
+    KE: IconKenya, KG: IconKyrgyzstan, KH: IconCambodia, KI: IconKiribati, KM: IconComoros, KN: IconSaintKittsNevis, KP: IconNorthKorea, KR: IconSouthKorea, KW: IconKuwait, KY: IconCaymanIslands, KZ: IconKazakhstan, LA: IconLaos, LB: IconLebanon, LC: IconSaintLucia, LI: IconLiechtenstein, LK: IconSriLanka, LR: IconLiberia, LS: IconLesotho, LT: IconLithuania, LU: IconLuxembourg, LV: IconLatvia, LY: IconLibya,
+    MA: IconMorocco, MC: IconMonaco, MD: IconMoldova, ME: IconMontenegro, MG: IconMadagascar, MH: IconMarshallIslands, MK: IconNorthMacedonia, ML: IconMali, MM: IconMyanmar, MN: IconMongolia, MO: IconMacau, MQ: IconMartinique, MR: IconMauritania, MT: IconMalta, MU: IconMauritius, MV: IconMaldives, MW: IconMalawi, MX: IconMexico, MY: IconMalaysia, MZ: IconMozanbique,
+    NA: IconNamibia, NC: IconNewCaledonia, NE: IconNiger, NG: IconNigeria, NI: IconNicaragua, NL: IconNetherlands, NO: IconNorway, NP: IconNepal, NR: IconNauru, NU: IconNiue, NZ: IconNewZealand, OM: IconOman,
+    PA: IconPanama, PE: IconPeru, PF: IconFrenchPolynesia, PG: IconPapuaNewGuinea, PH: IconPhilippines, PK: IconPakistan, PL: IconPoland, PR: IconPuertoRico, PS: IconPalestine, PT: IconPortugal, PW: IconPalau, PY: IconParaguay, QA: IconQatar, RO: IconRomania, RS: IconSerbia, RU: IconRussia, RW: IconRwanda,
+    SA: IconSaudiArabia, SB: IconSolomonIslands, SC: IconSeychelles, SD: IconSudan, SE: IconSweden, SG: IconSingapore, SI: IconSlovenia, SK: IconSlovakia, SL: IconSierraLeone, SM: IconSanMarino, SN: IconSenegal, SO: IconSomalia, SR: IconSuriname, SS: IconSouthSudan, ST: IconSaoTomePrincipe, SV: IconElSalvador, SX: IconSintMaarten, SY: IconSyria, SZ: IconEswatini,
+    TC: IconTurksAndCaicosIslands, TD: IconChad, TG: IconTogo, TH: IconThailand, TJ: IconTajikistan, TL: IconEastTimor, TM: IconTurkmenistan, TN: IconTunisia, TO: IconTonga, TR: IconTurkey, TT: IconTrinidadTobago, TV: IconTuvalu, TW: IconTaiwan, TZ: IconTanzania,
+    UA: IconUkraine, UG: IconUganda, US: IconUnitedStates, UY: IconUruguay, UZ: IconUzbekistan, VA: IconVaticanCity, VC: IconSaintVincentGrenadines, VE: IconVenezuela, VG: IconBritishVirginIslands, VI: IconUnitedStatesVirginIslands, VN: IconVietnam, VU: IconVanuatu, WS: IconSamoa, XK: IconKosovo, YE: IconYemen, ZA: IconSouthAfrica, ZM: IconZambia, ZW: IconZimbabwe,
+}

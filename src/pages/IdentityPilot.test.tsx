@@ -15,6 +15,9 @@ vi.mock('../lib/firebase-identity', () => ({ googleIdentityToken: mocks.google, 
 vi.mock('../lib/browser-auth-authority', () => ({ currentBrowserAuthAuthority: () => 'legacy', resolveBrowserAuthAuthority: async () => 'legacy', legacyBrowserAuthConfirmed: () => false }))
 
 beforeEach(() => {
+    // jsdom has neither of these and the searchable country list (cmdk) needs both.
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+    Element.prototype.scrollIntoView = () => undefined
     vi.clearAllMocks()
     window.history.replaceState(null, '', '/auth/identity')
     mocks.config.mockResolvedValue({ projectId: 'offline-dev', apiKey: 'offline-public-key', authDomain: 'offline-dev.firebaseapp.com' })
@@ -29,7 +32,7 @@ beforeEach(() => {
 it('shows phone first, then Google, only after server configuration proof succeeds', async () => {
     render(<IdentityPilot />)
     expect(await screen.findByLabelText('Phone number')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Send verification code' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send code' })).toBeVisible()
     expect(screen.getByRole('button', { name: /Continue with Google/ })).toBeVisible()
     expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument()
     expect(mocks.phone).not.toHaveBeenCalled()
@@ -58,12 +61,36 @@ it('revalidates the kill switch before Google, submits the fresh token once and 
 it('requests SMS, asks for the code, then revalidates before confirmation', async () => {
     render(<IdentityPilot />)
     await userEvent.type(await screen.findByLabelText('Phone number'), '+12025550123')
-    await userEvent.click(screen.getByRole('button', { name: 'Send verification code' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Send code' }))
     await userEvent.type(await screen.findByLabelText('Verification code'), '123456')
+    expect(mocks.phone).toHaveBeenCalledWith(expect.anything(), '+12025550123', expect.anything())
     await userEvent.click(screen.getByRole('button', { name: 'Verify and continue' }))
     await waitFor(() => expect(mocks.action).toHaveBeenCalledWith('session', 'offline-phone-token', undefined))
     expect(mocks.config).toHaveBeenCalledTimes(3)
     expect(mocks.confirm).toHaveBeenCalledWith('123456', expect.objectContaining({ projectId: 'offline-dev' }))
+})
+
+it('sends the number built from the chosen country and a national number', async () => {
+    render(<IdentityPilot />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Country: United States, +1' }))
+    await userEvent.type(screen.getByPlaceholderText('Search country or code'), 'brazil')
+    await userEvent.click(await screen.findByRole('option', { name: /Brazil/ }))
+    expect(screen.getByRole('button', { name: 'Country: Brazil, +55' })).toBeVisible()
+    await waitFor(() => expect(screen.getByLabelText('Phone number')).toHaveFocus())
+    await userEvent.type(screen.getByLabelText('Phone number'), '11987654321')
+    expect(screen.getByLabelText('Phone number')).toHaveValue('(11) 98765-4321')
+    await userEvent.click(screen.getByRole('button', { name: 'Send code' }))
+    await waitFor(() => expect(mocks.phone).toHaveBeenCalledWith(expect.anything(), '+5511987654321', expect.anything()))
+})
+
+it('keeps sending disabled while empty and refuses an incomplete number without calling the provider', async () => {
+    render(<IdentityPilot />)
+    const send = await screen.findByRole('button', { name: 'Send code' })
+    expect(send).toBeDisabled()
+    await userEvent.type(screen.getByLabelText('Phone number'), '508555')
+    await userEvent.click(send)
+    expect(await screen.findByRole('alert')).toHaveTextContent('valid phone number')
+    expect(mocks.phone).not.toHaveBeenCalled()
 })
 
 it('blocks a provider action when configuration is withdrawn after the page loads', async () => {
