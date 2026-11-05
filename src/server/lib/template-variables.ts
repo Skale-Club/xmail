@@ -551,7 +551,7 @@ export function previewTemplate(template: string): string {
         title: 'Product Manager',
         website: 'https://acme.com',
         linkedinUrl: 'https://linkedin.com/in/johndoe',
-        phone: '+1 (555) 123-4567',
+        phone: '+1 (000) 000-0000',
         location: 'San Francisco, CA',
         customFields: {},
     }
