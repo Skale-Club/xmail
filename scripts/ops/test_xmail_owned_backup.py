@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import runpy
 from pathlib import Path
 import stat
 import sys
@@ -55,6 +56,14 @@ class OwnedBackupGuards(unittest.TestCase):
                     json.dumps({'ownedBackupFailed':True,'location':[dict(row,line=True)]}),
                     json.dumps({'ownedBackupFailed':True,'location':[row]*9})]:
             self.assertEqual(backup.receiver_failure(raw).location,[])
+
+    def test_actual_cli_failure_coordinates_survive_the_receiver_parser(self):
+        with patch.object(sys,'platform','win32'),patch.object(sys,'argv',['backup','--receive']),contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit) as stopped:runpy.run_path(str(backup.__file__),run_name='__main__')
+        self.assertEqual(stopped.exception.code,1)
+        value=json.loads(errors.getvalue())
+        self.assertTrue(any(row['function']=='<module>' for row in value['location']))
+        self.assertEqual(backup.receiver_failure(errors.getvalue()).location,value['location'])
 
     def libraries(self):
         # Windows lacks resource; importing declarations must not invoke it.

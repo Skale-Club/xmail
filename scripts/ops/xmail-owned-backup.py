@@ -52,7 +52,7 @@ def receiver_failure(raw):
         for row in rows:
             need(set(row)=={'component','function','line'}
                 and row['component'] in ['xmail-owned-backup.py','prepare-xmail-final-data-cutover.py','reviewed-offsite-primitives']
-                and isinstance(row['function'],str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',row['function'])
+                and isinstance(row['function'],str) and (row['function']=='<module>' or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',row['function']))
                 and type(row['line']) is int and 0<row['line']<100000)
         return ReceiverFailure(rows)
     except Exception:
