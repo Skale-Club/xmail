@@ -42,6 +42,21 @@ hash-pinned helpers. The remote script verifies the bundle checksum, exact file
 allowlist, main source SHA and actual OCI revision; it stages root-only files
 without sourcing any environment file. Legacy/data-phase behavior is preserved.
 
+The five public files travel in one compressed bundle. The bootstrap extracts
+the deploy script from that same bundle only after checking both archive and
+script SHA256; it never forwards a second raw deploy-code base64 variable.
+The previous duplicated public payload was160812bytes before private configuration,
+exceeding Linux's single exec argument limit when drone-ssh concatenates exports
+and script. CI reproduces that E2BIG failure using public bytes only, then proves
+the single-bundle export command executes safely with apostrophes, dollar signs,
+backticks and newlines preserved as literal configuration.
+
+Before the SSH action connects, a step using the exact same YAML-aliased
+environment measures the real quoted command length without printing values.
+It refuses a command that cannot fit the Linux exec argument budget. This
+preflight does not contact or mutate a host; the existing producer/consumer
+receipts and all application/database guards remain unchanged.
+
 For an identity-phase owned profile, the workflow holds the existing deploy
 lease throughout producer and consumer. If the DR31 backup lease exists it also
 holds that lease, preserving backup configuration/schedules while preventing a
