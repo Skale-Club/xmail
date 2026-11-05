@@ -84,6 +84,13 @@ Kai is a second agent with limited Xmail access (exactly `campaigns:copy`, enfor
    **Scraping never waits on verification credit:** prospects keep arriving and queue unverified
    until the next top-up. Before 2026-10-17 the tick was never scheduled, so nothing was verified
    between a manual batch on 2026-10-08 and that date.
+   **Website screenshots are temporary.** The analyzer's desktop and mobile screenshots
+   (`website_analyses.screenshot_desktop_url`, `screenshot_mobile_url`) are removed one day after
+   the analysis by Xphere's `/api/cron/storage-retention` job, and both columns are then null, so
+   `/api/v1/accounts` returns null screenshot URLs from that day on. The analysis itself is kept:
+   services, raw evidence and outreach insights stay, and outreach is unaffected because Xmail's
+   insights read them. The job runs in simulation mode until `STORAGE_RETENTION_SCREENSHOTS_ENABLED=true`
+   is set in Xphere.
 5. **Import to Xmail.** Prospects with a verified email become Xmail leads, carrying their custom
    fields (`has_owned_website`, `web_presence_type`, `booking_platform`, `source_run_id`, insights).
    Xmail refuses platform emails again on import.
