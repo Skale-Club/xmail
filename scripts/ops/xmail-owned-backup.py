@@ -28,6 +28,8 @@ OPS=Path('/opt/xmail/owned-backup-ops')
 ARCHIVES=Path('/opt/xmail/offsite-backups/owned-v1')
 RECIPIENT=Path('/opt/xmail/offsite-backups/v1/recipient')
 MAX=256*1024*1024;KEEP=7
+RESTORE_DATA_BYTES=512*1024*1024
+RESTORE_MEMORY_MIB=768
 IDENTITY={'xmail_identity_bindings','xmail_identity_owned_sessions','xmail_identity_user_controls','xmail_identity_browser_challenges'}
 
 
@@ -153,8 +155,8 @@ def retention(c,root):
 
 def restore_arguments(name,operation):
     return ['docker','run','-d','--pull=never','--name',name,'--label','com.skale.xmail-dr='+operation,'--network','none',
-        '--read-only','--tmpfs','/var/lib/postgresql/data:rw,size=268435456','--tmpfs','/var/run/postgresql:rw,size=8388608',
-        '--tmpfs','/tmp:rw,size=16777216','--memory','384m','--memory-swap','384m','--cpus','0.5','--pids-limit','96',
+        '--read-only','--tmpfs','/var/lib/postgresql/data:rw,size='+str(RESTORE_DATA_BYTES),'--tmpfs','/var/run/postgresql:rw,size=8388608',
+        '--tmpfs','/tmp:rw,size=16777216','--memory',str(RESTORE_MEMORY_MIB)+'m','--memory-swap',str(RESTORE_MEMORY_MIB)+'m','--cpus','0.5','--pids-limit','96',
         '--log-driver','none','--security-opt','no-new-privileges','--env','POSTGRES_HOST_AUTH_METHOD=trust',PG_IMAGE,
         '-c','shared_buffers=32MB','-c','work_mem=2MB','-c','max_connections=5']
 
@@ -174,7 +176,7 @@ def restored_manifest(m,name,query):
 def restore(m,c,stage,expected,operation):
     need(shutil.disk_usage('/opt').free>=1024**3)
     mem={k:int(v.split()[0]) for k,v in (line.split(':',1) for line in open('/proc/meminfo'))}
-    need(mem['MemAvailable']>=1536*1024)
+    need(mem['MemAvailable']>=2*1024*1024)
     image=m.inspect(PG_IMAGE);need(image['Id']==PG_IMAGE and set(image['Config'].get('Volumes') or {})=={'/var/lib/postgresql/data'})
     name='xmail-dr-'+operation
     need(not m.call(['docker','ps','-aq','--filter','name=^/'+name+'$']).strip())
@@ -190,7 +192,9 @@ def restore(m,c,stage,expected,operation):
         need(state['Image']==PG_IMAGE and state['NetworkSettings'].get('Networks')=={'none':state['NetworkSettings']['Networks'].get('none')}
             and not any((state['NetworkSettings'].get('Ports') or {}).values())
             and not any(x.get('Type') in ['volume','bind'] for x in state.get('Mounts',[]))
-            and state['HostConfig']['Tmpfs'].get('/var/lib/postgresql/data')=='rw,size=268435456')
+            and state['HostConfig']['Tmpfs'].get('/var/lib/postgresql/data')=='rw,size='+str(RESTORE_DATA_BYTES)
+            and state['HostConfig']['Memory']==state['HostConfig']['MemorySwap']==RESTORE_MEMORY_MIB*1024*1024
+            and state['HostConfig']['NanoCpus']==500000000 and state['HostConfig']['PidsLimit']==96)
         roles=expected['policyRoles']
         sql=''.join('CREATE ROLE "'+r+'" NOLOGIN;' for r in roles)+'CREATE DATABASE xmail_dr;'
         m.call(['docker','exec','-i',name,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres','-d','postgres'],sql.encode())

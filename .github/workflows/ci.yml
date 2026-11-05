@@ -27,6 +27,10 @@ jobs:
         run: python3 -B scripts/ops/rehearse-xmail-owned-backup-locks.py
         env:
           XMAIL_OWNED_BACKUP_REHEARSAL: disposable-lock-budget
+      - name: Reproduce PGDATA53100 and verify measured temporary capacity fix
+        run: python3 -B scripts/ops/rehearse-xmail-owned-backup-locks.py
+        env:
+          XMAIL_OWNED_BACKUP_REHEARSAL: disposable-data-capacity
 
   lint-and-typecheck:
     name: Lint + tsc + build
