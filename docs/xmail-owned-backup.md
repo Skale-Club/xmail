@@ -104,3 +104,27 @@ must additionally prove current source/image health before and after, matching
 decrypted bytes, isolated restore equivalence, temporary-container removal,
 offsite/local verified receipts and an enabled/active daily timer. Do not infer
 those facts from offline tests alone.
+# Restore diagnostics and production-width rehearsal
+
+The disposable restore retains its original 384 MiB memory/swap, 0.5 CPU,
+five connections, network-none operation and exact tmpfs data directory.
+Production PostgreSQL settings and the temporary process's default lock budget
+are unchanged. An initial CI hypothesis test restored a synthetic 74-table,
+309-index and two-sequence snapshot successfully under both 64 and 256 lock
+budgets. That result does not establish shared-lock exhaustion as the cause of
+the real receiver's manifest-readback error; the proposed lock change was removed.
+
+Only the failing manifest psql call requests `VERBOSITY=sqlstate`. A failed
+query can add the optional `sqlState` field, exactly five uppercase letters or
+digits, to the existing public component/function/line diagnostic. Raw stderr,
+SQL, values, exception messages and stdout rows are never forwarded. The SSH
+receiver validates the field strictly before propagating it. An unknown or
+malformed transport error produces only the existing code coordinates.
+
+The CI-only `rehearse-xmail-owned-backup-locks.py` keeps the production-width
+regression: it invokes actual `restore()` on disposable synthetic data, requires
+complete manifest equivalence under the original64 budget, and compares256 as a
+fixture-only measurement. Its containers expose no ports, use no persistent
+volumes or external network, and are removed after each attempt. Output contains
+aggregate counts, booleans and parsed SQLSTATE only. Live diagnosis and any
+subsequent correction remain subject to the actual observed error code.

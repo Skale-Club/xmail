@@ -32,8 +32,21 @@ IDENTITY={'xmail_identity_bindings','xmail_identity_owned_sessions','xmail_ident
 
 
 class ReceiverFailure(Exception):
-    def __init__(self, location):
+    def __init__(self, location, sqlState=None):
         self.location=location
+        self.sqlState=sqlState
+
+
+class RestoreQueryFailure(Exception):
+    def __init__(self, sqlState):
+        self.sqlState=sqlState
+
+
+def failure_payload(error):
+    value={'ownedBackupFailed':True,'location':error.location if isinstance(error,ReceiverFailure) else failure_location(error)}
+    if isinstance(error,(ReceiverFailure,RestoreQueryFailure)) and isinstance(error.sqlState,str) and re.fullmatch(r'[0-9A-Z]{5}',error.sqlState):
+        value['sqlState']=error.sqlState
+    return value
 
 
 def failure_location(error):
@@ -47,14 +60,15 @@ def failure_location(error):
 def receiver_failure(raw):
     try:
         value=json.loads(raw)
-        need(set(value)=={'ownedBackupFailed','location'} and value['ownedBackupFailed'] is True)
+        need(set(value) in [{'ownedBackupFailed','location'},{'ownedBackupFailed','location','sqlState'}] and value['ownedBackupFailed'] is True)
+        code=value.get('sqlState');need('sqlState' not in value or isinstance(code,str) and re.fullmatch(r'[0-9A-Z]{5}',code))
         rows=value['location'];need(isinstance(rows,list) and len(rows)<=8)
         for row in rows:
             need(set(row)=={'component','function','line'}
                 and row['component'] in ['xmail-owned-backup.py','prepare-xmail-final-data-cutover.py','reviewed-offsite-primitives']
                 and isinstance(row['function'],str) and (row['function']=='<module>' or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',row['function']))
                 and type(row['line']) is int and 0<row['line']<100000)
-        return ReceiverFailure(rows)
+        return ReceiverFailure(rows,code)
     except Exception:
         return ReceiverFailure([])
 
@@ -137,6 +151,26 @@ def retention(c,root):
     return min(len(candidates),KEEP)
 
 
+def restore_arguments(name,operation):
+    return ['docker','run','-d','--pull=never','--name',name,'--label','com.skale.xmail-dr='+operation,'--network','none',
+        '--read-only','--tmpfs','/var/lib/postgresql/data:rw,size=268435456','--tmpfs','/var/run/postgresql:rw,size=8388608',
+        '--tmpfs','/tmp:rw,size=16777216','--memory','384m','--memory-swap','384m','--cpus','0.5','--pids-limit','96',
+        '--log-driver','none','--security-opt','no-new-privileges','--env','POSTGRES_HOST_AUTH_METHOD=trust',PG_IMAGE,
+        '-c','shared_buffers=32MB','-c','work_mem=2MB','-c','max_connections=5']
+
+
+def restored_manifest(m,name,query):
+    # SQLSTATE verbosity suppresses PostgreSQL messages, detail, context and SQL.
+    # Never forward raw stderr, even if psql or the transport fails differently.
+    result=subprocess.run(['docker','exec','-i',name,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-v','VERBOSITY=sqlstate','-U','postgres','-d','xmail_dr'],
+        input=query.encode(),capture_output=True,timeout=75)
+    if result.returncode:
+        codes=re.findall(rb'(?:ERROR|FATAL):\s+([0-9A-Z]{5})(?:\r?\n|$)',result.stderr[:65536])
+        raise RestoreQueryFailure(codes[-1].decode() if codes else None)
+    need(len(result.stdout)<=4*1024*1024)
+    return m.json_result(result.stdout)
+
+
 def restore(m,c,stage,expected,operation):
     need(shutil.disk_usage('/opt').free>=1024**3)
     mem={k:int(v.split()[0]) for k,v in (line.split(':',1) for line in open('/proc/meminfo'))}
@@ -146,11 +180,7 @@ def restore(m,c,stage,expected,operation):
     need(not m.call(['docker','ps','-aq','--filter','name=^/'+name+'$']).strip())
     started=False
     try:
-        m.call(['docker','run','-d','--pull=never','--name',name,'--label','com.skale.xmail-dr='+operation,'--network','none',
-            '--read-only','--tmpfs','/var/lib/postgresql/data:rw,size=268435456','--tmpfs','/var/run/postgresql:rw,size=8388608',
-            '--tmpfs','/tmp:rw,size=16777216','--memory','384m','--memory-swap','384m','--cpus','0.5','--pids-limit','96',
-            '--log-driver','none','--security-opt','no-new-privileges','--env','POSTGRES_HOST_AUTH_METHOD=trust',PG_IMAGE,
-            '-c','shared_buffers=32MB','-c','work_mem=2MB','-c','max_connections=5'],timeout=15);started=True
+        m.call(restore_arguments(name,operation),timeout=15);started=True
         for _ in range(60):
             ready=subprocess.run(['docker','exec',name,'pg_isready','-h','127.0.0.1','-U','postgres'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=3)
             if ready.returncode==0:break
@@ -168,7 +198,7 @@ def restore(m,c,stage,expected,operation):
             p=subprocess.run(['docker','exec','-i',name,'pg_restore','-U','postgres','-d','xmail_dr','--exit-on-error','--single-transaction','--no-owner','--no-acl'],stdin=data,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=180)
         need(p.returncode==0)
         query="BEGIN READ ONLY; SET LOCAL statement_timeout='60s'; SET LOCAL timezone='UTC'; SET LOCAL datestyle='ISO,YMD'; SET LOCAL extra_float_digits=3; SET LOCAL bytea_output='hex'; SET LOCAL search_path=public,pg_catalog; "+manifest_sql(m)+';ROLLBACK;'
-        actual=m.json_result(m.call(['docker','exec','-i',name,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres','-d','xmail_dr'],query.encode(),timeout=75))
+        actual=restored_manifest(m,name,query)
         validate_manifest(actual);need(actual==expected)
     finally:
         if started:
@@ -333,4 +363,4 @@ def main():
 if __name__=='__main__':
     try:main()
     except Exception as error:
-        print(json.dumps({'ownedBackupFailed':True,'location':error.location if isinstance(error,ReceiverFailure) else failure_location(error)}),file=sys.stderr);sys.exit(1)
+        print(json.dumps(failure_payload(error)),file=sys.stderr);sys.exit(1)
