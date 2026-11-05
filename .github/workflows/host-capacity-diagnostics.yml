@@ -245,6 +245,15 @@ jobs:
             echo "startups dropped: $(grep -cE 'MaxStartups|drop connection' "$log")"
             echo "distinct failing sources: $(grep -E '^(Invalid user|Failed password)' "$log" | grep -oE 'from [0-9a-f:.]+' | sort -u | wc -l)"
             echo
+            if [ -e /etc/ssh/sshd_config.d/00-hardening.conf ]; then
+              changed=$(stat -c %y /etc/ssh/sshd_config.d/00-hardening.conf | cut -c1-19)
+              echo "== Since the hardening was applied"
+              echo "applied at: $changed, now: $(date '+%F %T')"
+              journalctl -u ssh --since "$changed" --no-pager -o cat | awk -v keyfile="$keys" 'BEGIN { while ((getline l < keyfile) > 0) { split(l, p, " "); alias[p[1]] = p[2] } } /^Accepted /{ k = alias[$NF]; print $2, $4, (k == "" ? "other-key" : k) }' | sort | uniq -c
+              echo "failed since then: $(journalctl -u ssh --since "$changed" --no-pager -o cat | grep -cE '^Invalid user|^Failed password|authenticating user')"
+              echo "fail2ban $(fail2ban-client status sshd | grep -E 'Currently banned|Total banned|Total failed' | tr -s '\t ' ' ' | tr -d '|`-' | tr '\n' ';')"
+              echo
+            fi
             echo "== Firewall and blockers"
             echo "ufw: $(ufw status 2>/dev/null | head -1)"
             echo "fail2ban installed: $(command -v fail2ban-client >/dev/null && echo yes || echo no)"
