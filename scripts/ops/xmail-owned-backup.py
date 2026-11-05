@@ -28,6 +28,7 @@ OPS=Path('/opt/xmail/owned-backup-ops')
 ARCHIVES=Path('/opt/xmail/offsite-backups/owned-v1')
 RECIPIENT=Path('/opt/xmail/offsite-backups/v1/recipient')
 MAX=256*1024*1024;KEEP=7
+RESTORE_LOCKS=256
 IDENTITY={'xmail_identity_bindings','xmail_identity_owned_sessions','xmail_identity_user_controls','xmail_identity_browser_challenges'}
 
 
@@ -137,6 +138,14 @@ def retention(c,root):
     return min(len(candidates),KEEP)
 
 
+def restore_arguments(name,operation):
+    return ['docker','run','-d','--pull=never','--name',name,'--label','com.skale.xmail-dr='+operation,'--network','none',
+        '--read-only','--tmpfs','/var/lib/postgresql/data:rw,size=268435456','--tmpfs','/var/run/postgresql:rw,size=8388608',
+        '--tmpfs','/tmp:rw,size=16777216','--memory','384m','--memory-swap','384m','--cpus','0.5','--pids-limit','96',
+        '--log-driver','none','--security-opt','no-new-privileges','--env','POSTGRES_HOST_AUTH_METHOD=trust',PG_IMAGE,
+        '-c','shared_buffers=32MB','-c','work_mem=2MB','-c','max_connections=5','-c','max_locks_per_transaction='+str(RESTORE_LOCKS)]
+
+
 def restore(m,c,stage,expected,operation):
     need(shutil.disk_usage('/opt').free>=1024**3)
     mem={k:int(v.split()[0]) for k,v in (line.split(':',1) for line in open('/proc/meminfo'))}
@@ -146,11 +155,7 @@ def restore(m,c,stage,expected,operation):
     need(not m.call(['docker','ps','-aq','--filter','name=^/'+name+'$']).strip())
     started=False
     try:
-        m.call(['docker','run','-d','--pull=never','--name',name,'--label','com.skale.xmail-dr='+operation,'--network','none',
-            '--read-only','--tmpfs','/var/lib/postgresql/data:rw,size=268435456','--tmpfs','/var/run/postgresql:rw,size=8388608',
-            '--tmpfs','/tmp:rw,size=16777216','--memory','384m','--memory-swap','384m','--cpus','0.5','--pids-limit','96',
-            '--log-driver','none','--security-opt','no-new-privileges','--env','POSTGRES_HOST_AUTH_METHOD=trust',PG_IMAGE,
-            '-c','shared_buffers=32MB','-c','work_mem=2MB','-c','max_connections=5'],timeout=15);started=True
+        m.call(restore_arguments(name,operation),timeout=15);started=True
         for _ in range(60):
             ready=subprocess.run(['docker','exec',name,'pg_isready','-h','127.0.0.1','-U','postgres'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=3)
             if ready.returncode==0:break

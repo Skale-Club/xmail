@@ -87,6 +87,18 @@ class OwnedBackupGuards(unittest.TestCase):
         for change in [{'ledger':{'count':79,'sha256':'c'*64}},{'policyRoles':['unreviewed_role']},{'fingerprints':{}}]:
             with self.assertRaises(ValueError):backup.validate_manifest({**values,**change})
 
+    def test_isolated_restore_lock_budget_keeps_existing_resource_and_network_limits(self):
+        args=backup.restore_arguments('offline-container','offline-operation')
+        for value in ['max_locks_per_transaction=256','max_connections=5','shared_buffers=32MB','work_mem=2MB']:
+            self.assertIn(value,args)
+        self.assertEqual(args[args.index('--memory')+1],'384m')
+        self.assertEqual(args[args.index('--memory-swap')+1],'384m')
+        self.assertEqual(args[args.index('--cpus')+1],'0.5')
+        self.assertEqual(args[args.index('--network')+1],'none')
+        self.assertIn('/var/lib/postgresql/data:rw,size=268435456',args)
+        self.assertIn('--read-only',args)
+        self.assertNotIn('--volume',args);self.assertNotIn('--mount',args);self.assertNotIn('-p',args)
+
     def test_packet_refuses_wrong_app_path_hash_limits_replay_and_nonboolean_numeric_types(self):
         now=dt.datetime.now(dt.timezone.utc)
         value={'version':2,'app':'xmail','operation':'owned-20261104T200000Z-'+'a'*16,'archiveSha256':'a'*64,'archiveBytes':1024,

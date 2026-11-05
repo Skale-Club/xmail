@@ -104,3 +104,19 @@ must additionally prove current source/image health before and after, matching
 decrypted bytes, isolated restore equivalence, temporary-container removal,
 offsite/local verified receipts and an enabled/active daily timer. Do not infer
 those facts from offline tests alone.
+# Isolated restore lock budget
+
+The disposable restore keeps its existing 384 MiB memory/swap, 0.5 CPU,
+five-connection limit, network-none operation and exact tmpfs data directory.
+Only that temporary PostgreSQL process receives
+`max_locks_per_transaction=256`; production PostgreSQL settings are unchanged.
+
+The CI-only `rehearse-xmail-owned-backup-locks.py` creates synthetic 74-table,
+309-index and two-sequence data, then invokes the actual backup `restore()`
+protocol twice with old 64 and proposed 256 lock budgets. It requires the old
+manifest check to fail with SQLSTATE 53200 and the new restore to match the full
+manifest. A different failure or a successful old check fails this hypothesis
+instead of claiming the live problem is fixed. Output contains aggregate counts,
+booleans and parsed SQLSTATE only. No raw PostgreSQL diagnostics, rows or dump
+contents are emitted. Both rehearsal containers have no ports, persistent
+volumes or external network, and are removed after the test.
