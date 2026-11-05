@@ -106,6 +106,11 @@ def main():
                 compare=result['comparison'];check(backup.valid_comparison(compare))
                 check(compare['schemaTableDifferenceCount']==index and compare['fingerprintHashDifferenceCount']==1-index and compare['fingerprintCountDifferenceCount']==0)
                 check(all(compare[k] is True for k in ['schemaTableNamesEqual','schemaFunctionsEqual','schemaTypesEqual','ledgerEqual','policyRolesEqual']))
+                if index==0:check(compare['tableDifferences']==[])
+                else:
+                    row=compare['tableDifferences'][0]
+                    check(row['table']=='business_000' and row['columnsEqual'] is False)
+                    check(all(value is True for key,value in row.items() if key not in ['table','columnsEqual']))
         else:
             check(results[0]['restoreEquivalent'] is (not pressure) and results[0]['sqlstate']==('53100' if pressure else None))
             check(results[1]['restoreEquivalent'] is True and results[1]['sqlstate'] is None)

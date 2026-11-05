@@ -161,8 +161,10 @@ After the SQL query and74-table/80-ledger validation succeed, exact manifest
 inequality still refuses publication. The failure payload can include only a
 strictly validated `comparison` object: five booleans for table-name equality,
 functions, enum types, ledger and policy roles, and three bounded counts for
-table-schema, row-count and row-hash differences. No table names, SQL,
-definitions, account identifiers, row values or content hashes are forwarded.
+table-schema, row-count and row-hash differences. Private component hashes in
+the snapshot additionally let a mismatch identify the technical table name and
+booleans for columns, constraints, indexes, policies, triggers and RLS flags.
+No SQL, definitions, account identifiers, row values or content hashes are forwarded.
 Existing code coordinates and optional SQLSTATE remain compatible.
 
 CI runs actual restores and deliberately changes one restored synthetic row,

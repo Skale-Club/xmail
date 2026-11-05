@@ -53,19 +53,29 @@ class RestoreManifestMismatch(Exception):
 def valid_comparison(value):
     booleans={'schemaTableNamesEqual','schemaFunctionsEqual','schemaTypesEqual','ledgerEqual','policyRolesEqual'}
     counts={'schemaTableDifferenceCount','fingerprintCountDifferenceCount','fingerprintHashDifferenceCount'}
-    return isinstance(value,dict) and set(value)==booleans|counts and all(type(value[k]) is bool for k in booleans) and all(type(value[k]) is int and 0<=value[k]<=256 for k in counts)
+    if not (isinstance(value,dict) and set(value) in [booleans|counts,booleans|counts|{'tableDifferences'}]
+        and all(type(value[k]) is bool for k in booleans) and all(type(value[k]) is int and 0<=value[k]<=256 for k in counts)):return False
+    parts=value.get('tableDifferences',[])
+    fields={'columnsEqual','constraintsEqual','indexesEqual','policiesEqual','triggersEqual','rlsEqual','forceRlsEqual'}
+    return isinstance(parts,list) and len(parts)<=min(74,value['schemaTableDifferenceCount']) and all(isinstance(row,dict) and set(row)==fields|{'table'}
+        and isinstance(row['table'],str) and re.fullmatch(r'[a-z_][a-z0-9_]{0,62}',row['table']) and all(type(row[k]) is bool for k in fields) for row in parts)
 
 
 def manifest_comparison(expected,actual):
     before,after=expected['schema'],actual['schema']
     names=set(before['tables'])|set(after['tables'])
     fingerprints=set(expected['fingerprints'])|set(actual['fingerprints'])
-    return {'schemaTableNamesEqual':set(before['tables'])==set(after['tables']),
+    result={'schemaTableNamesEqual':set(before['tables'])==set(after['tables']),
         'schemaTableDifferenceCount':sum(before['tables'].get(k)!=after['tables'].get(k) for k in names),
         'schemaFunctionsEqual':before.get('functions')==after.get('functions'),'schemaTypesEqual':before.get('types')==after.get('types'),
         'fingerprintCountDifferenceCount':sum(expected['fingerprints'].get(k,{}).get('count')!=actual['fingerprints'].get(k,{}).get('count') for k in fingerprints),
         'fingerprintHashDifferenceCount':sum(expected['fingerprints'].get(k,{}).get('sha256')!=actual['fingerprints'].get(k,{}).get('sha256') for k in fingerprints),
         'ledgerEqual':expected['ledger']==actual['ledger'],'policyRolesEqual':expected['policyRoles']==actual['policyRoles']}
+    if 'tableParts' in before and 'tableParts' in after:
+        fields=['columnsEqual','constraintsEqual','indexesEqual','policiesEqual','triggersEqual','rlsEqual','forceRlsEqual']
+        result['tableDifferences']=[{'table':name,**{field:before['tableParts'][name][index]==after['tableParts'][name][index] for index,field in enumerate(fields)}}
+            for name in sorted(set(before['tables'])&set(after['tables'])) if before['tables'][name]!=after['tables'][name]]
+    return result
 
 
 def failure_payload(error):
@@ -134,6 +144,12 @@ def manifest_sql(m):
     schema=m.business_schema_sql();fingerprints=m.fingerprints_sql()
     need(schema.count(excluded)==fingerprints.count(excluded)==1)
     schema=schema.replace(excluded,'');fingerprints=fingerprints.replace(excluded,'')
+    # Private hashes of each existing signature component distinguish restored
+    # DDL differences. Raw definitions stay inside this read-only SQL query.
+    parts=["encode(sha256(convert_to((signature->'"+key+"')::text,'UTF8')),'hex')" for key in ['columns','constraints','indexes','policies','triggers']]
+    parts.extend(["signature->'rls'","signature->'force'"])
+    marker="      'functions',(";need(schema.count(marker)==1)
+    schema=schema.replace(marker,"      'tableParts',(SELECT jsonb_object_agg(relname,jsonb_build_array("+','.join(parts)+")) FROM signatures),\n"+marker)
     return "SELECT jsonb_build_object('schema',(SELECT schema FROM ("+schema+") q),'fingerprints',("+fingerprints+")," \
         "'ledger',(SELECT jsonb_build_object('count',count(*),'sha256',encode(sha256(convert_to(jsonb_agg(to_jsonb(t) ORDER BY version)::text,'UTF8')),'hex')) FROM supabase_migrations.schema_migrations t)," \
         "'policyRoles',(SELECT coalesce(jsonb_agg(DISTINCT r.rolname ORDER BY r.rolname),'[]') FROM pg_policy p JOIN pg_class t ON t.oid=p.polrelid JOIN pg_namespace n ON n.oid=t.relnamespace CROSS JOIN LATERAL unnest(p.polroles) v JOIN pg_roles r ON r.oid=v WHERE n.nspname='public'))"
@@ -145,6 +161,10 @@ def validate_manifest(value):
         and IDENTITY<=set(value['schema']['tables']) and value['ledger']['count']==80 and re.fullmatch(r'[a-f0-9]{64}',value['ledger']['sha256']))
     need(set(value['policyRoles'])<=set(['anon','authenticated','service_role','xmail_owner','xmail_runtime','xmail_staging_reader']))
     need(all(type(x['count']) is int and x['count']>=0 and re.fullmatch(r'[a-f0-9]{64}',x['sha256']) for x in value['fingerprints'].values()))
+    parts=value['schema'].get('tableParts')
+    if parts is not None:
+        need(isinstance(parts,dict) and set(parts)==set(value['schema']['tables']) and all(isinstance(row,list) and len(row)==7
+            and all(isinstance(x,str) and re.fullmatch(r'[a-f0-9]{64}',x) for x in row[:5]) and all(type(x) is bool for x in row[5:]) for row in parts.values()))
 
 
 def packet(value):
