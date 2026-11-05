@@ -19,8 +19,9 @@ def check(ok):
 def main():
     mode=os.environ.get('XMAIL_OWNED_BACKUP_REHEARSAL')
     check(sys.platform.startswith('linux') and os.environ.get('CI')=='true'
-        and mode in ['disposable-lock-budget','disposable-data-capacity'])
+        and mode in ['disposable-lock-budget','disposable-data-capacity','disposable-manifest-drift'])
     pressure=mode=='disposable-data-capacity'
+    drift=mode=='disposable-manifest-drift'
     path=Path(__file__).with_name('xmail-owned-backup.py')
     spec=importlib.util.spec_from_file_location('backup_fixture',path)
     backup=importlib.util.module_from_spec(spec);spec.loader.exec_module(backup)
@@ -69,6 +70,7 @@ def main():
             original_arguments=backup.restore_arguments
             original_manifest=backup.restored_manifest
             reserve_kib=[None]
+            drift_kind=[None]
             def pressure_manifest(module,name,query):
                 # Fixture-only reserved bytes model the measured near-full
                 # PGDATA. Identical reserve is used under256 and512 MiB; the
@@ -79,19 +81,34 @@ def main():
                 m.call(['docker','exec',name,'dd','if=/dev/zero','of=/var/lib/postgresql/data/xmail-fixture-capacity','bs=1024','count='+str(reserve_kib[0])],timeout=30)
                 return original_manifest(module,name,query)
             if pressure: backup.restored_manifest=pressure_manifest
+            def drift_manifest(module,name,query):
+                sql="UPDATE public.business_000 SET payload='fixture-row-drift' WHERE id=1" if drift_kind[0]==0 else "ALTER TABLE public.business_000 ALTER COLUMN payload SET DEFAULT 'fixture-schema-drift'"
+                m.call(['docker','exec','-i',name,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres','-d','xmail_dr'],sql.encode())
+                return original_manifest(module,name,query)
+            if drift: backup.restored_manifest=drift_manifest
             settings=[(64,256,384),(64,512,768)] if pressure else [(64,512,768),(256,512,768)]
-            for locks,data_mib,memory_mib in settings:
+            for index,(locks,data_mib,memory_mib) in enumerate(settings):
                 backup.RESTORE_DATA_BYTES=data_mib*1024*1024;backup.RESTORE_MEMORY_MIB=memory_mib
                 backup.restore_arguments=lambda name,op:original_arguments(name,op)+['-c','max_locks_per_transaction='+str(locks)]
                 last_state[0]=None
-                passed=False
+                passed=False;comparison=None;drift_kind[0]=index
                 try: backup.restore(m,c,stage,expected,operation);passed=True
                 except backup.RestoreQueryFailure as error:last_state[0]=error.sqlState
+                except backup.RestoreManifestMismatch as error:comparison=error.comparison
                 except Exception: pass
-                results.append({'lockBudget':locks,'dataMiB':data_mib,'memoryMiB':memory_mib,'restoreEquivalent':passed,'sqlstate':last_state[0]})
-        print(json.dumps({'tables':74,'indexes':309,'sequences':2,'actualRestoreProtocol':True,'dataPressure':pressure,'results':results}))
-        check(results[0]['restoreEquivalent'] is (not pressure) and results[0]['sqlstate']==('53100' if pressure else None))
-        check(results[1]['restoreEquivalent'] is True and results[1]['sqlstate'] is None)
+                result={'lockBudget':locks,'dataMiB':data_mib,'memoryMiB':memory_mib,'restoreEquivalent':passed,'sqlstate':last_state[0]}
+                if comparison is not None:result['comparison']=comparison
+                results.append(result)
+        print(json.dumps({'tables':74,'indexes':309,'sequences':2,'actualRestoreProtocol':True,'dataPressure':pressure,'manifestDrift':drift,'results':results}))
+        if drift:
+            for index,result in enumerate(results):
+                check(result['restoreEquivalent'] is False and result['sqlstate'] is None)
+                compare=result['comparison'];check(backup.valid_comparison(compare))
+                check(compare['schemaTableDifferenceCount']==index and compare['fingerprintHashDifferenceCount']==1-index and compare['fingerprintCountDifferenceCount']==0)
+                check(all(compare[k] is True for k in ['schemaTableNamesEqual','schemaFunctionsEqual','schemaTypesEqual','ledgerEqual','policyRolesEqual']))
+        else:
+            check(results[0]['restoreEquivalent'] is (not pressure) and results[0]['sqlstate']==('53100' if pressure else None))
+            check(results[1]['restoreEquivalent'] is True and results[1]['sqlstate'] is None)
     finally:
         if started:
             state=m.inspect(source);check((state['Config'].get('Labels') or {}).get('com.skale.xmail-dr')==operation)
