@@ -78,6 +78,7 @@ jobs:
           python3 -B scripts/ops/install-xmail-owned-backup.py
           python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_identity_controls.py -v
           python3 -B -m unittest discover -s scripts/ops -p test_xmail_owned_deploy.py -v
+          python3 -B -m unittest discover -s scripts/ops -p test_xmail_ssh_payload.py -v
           python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_final_data_cutover.py -v
           python3 -B scripts/ops/prepare-xmail-final-data-cutover.py --plan
           python3 -B -m unittest discover -s scripts/ops -p test_prepare_xmail_owned_pilot_rollout.py -v
