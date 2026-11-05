@@ -1,0 +1,60 @@
+name: Host capacity diagnostics
+
+# Read-only look at the production host, for when a deploy is refused at the
+# `host-capacity` step (capacity() in scripts/ops/prepare-xmail-final-data-cutover.py)
+# and SSH from a workstation is not available. Manual trigger only.
+#
+# This repository is public, so these logs are public: print numbers and process
+# names only. Never print environment variables, command lines or client addresses.
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  read-host-capacity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read memory, swap, disk and top consumers
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: root
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          command_timeout: 3m
+          script: |
+            set -u
+            echo "== Deploy gate, same limits as capacity()"
+            awk '/^MemAvailable:/{a=$2} /^SwapTotal:/{t=$2} /^SwapFree:/{f=$2} END{
+              printf "MemAvailable %d MB (needs >= 768): %s\n", a/1024, (a>=786432?"ok":"FAIL");
+              printf "Swap used %d MB of %d MB (needs <= 512): %s\n", (t-f)/1024, t/1024, (t-f<=524288?"ok":"FAIL")
+            }' /proc/meminfo
+            for path in /opt /tmp; do
+              free_gb=$(df -BG --output=avail "$path" | tail -1 | tr -dc 0-9)
+              echo "$path free ${free_gb} GB (needs >= 3)"
+            done
+            echo "/tmp filesystem: $(stat -f -c %T /tmp)"
+            echo
+            echo "== Memory"
+            uptime
+            free -m
+            echo
+            echo "== Containers by memory"
+            docker stats --no-stream --format '{{.MemUsage}} {{.Name}}' | sort -hr | head -15
+            echo
+            echo "== Processes by resident memory (kB)"
+            ps -eo rss,comm --sort=-rss | head -12
+            echo
+            echo "== Processes by swap (kB)"
+            for f in /proc/[0-9]*; do
+              s=$(awk '/^VmSwap/{print $2}' "$f/status" 2>/dev/null)
+              if [ -n "${s:-}" ] && [ "$s" -gt 20000 ]; then echo "$s $(cat "$f/comm" 2>/dev/null)"; fi
+            done | sort -rn | head -12
+            echo
+            echo "== SSH pressure, last 2 hours (counts only)"
+            echo "beyond MaxStartups: $(journalctl -u ssh --since '2 hours ago' --no-pager 2>/dev/null | grep -c 'beyond MaxStartups')"
+            echo "sessions accepted: $(journalctl -u ssh --since '2 hours ago' --no-pager 2>/dev/null | grep -c 'Accepted ')"
+            echo "failed attempts: $(journalctl -u ssh --since '2 hours ago' --no-pager 2>/dev/null | grep -cE 'Failed password|Invalid user|Connection closed by authenticating')"
+            echo "fail2ban: $(systemctl is-active fail2ban 2>/dev/null)"
