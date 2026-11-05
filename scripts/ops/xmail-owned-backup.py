@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import traceback
 
 SOURCE='49.13.197.250';TARGET='188.245.112.3'
 PG='e12scyfsrp822dag7m9wwd4x'
@@ -28,6 +29,34 @@ ARCHIVES=Path('/opt/xmail/offsite-backups/owned-v1')
 RECIPIENT=Path('/opt/xmail/offsite-backups/v1/recipient')
 MAX=256*1024*1024;KEEP=7
 IDENTITY={'xmail_identity_bindings','xmail_identity_owned_sessions','xmail_identity_user_controls','xmail_identity_browser_challenges'}
+
+
+class ReceiverFailure(Exception):
+    def __init__(self, location):
+        self.location=location
+
+
+def failure_location(error):
+    # Public code coordinates only. Never return exception messages, source
+    # lines, SQL, subprocess arguments, environment, keys or customer values.
+    names={'xmail-owned-backup.py','prepare-xmail-final-data-cutover.py','reviewed-offsite-primitives'}
+    return [{'component':Path(f.filename).name,'function':f.name,'line':f.lineno}
+        for f in traceback.extract_tb(error.__traceback__)[-8:] if Path(f.filename).name in names]
+
+
+def receiver_failure(raw):
+    try:
+        value=json.loads(raw)
+        need(set(value)=={'ownedBackupFailed','location'} and value['ownedBackupFailed'] is True)
+        rows=value['location'];need(isinstance(rows,list) and len(rows)<=8)
+        for row in rows:
+            need(set(row)=={'component','function','line'}
+                and row['component'] in ['xmail-owned-backup.py','prepare-xmail-final-data-cutover.py','reviewed-offsite-primitives']
+                and isinstance(row['function'],str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',row['function'])
+                and type(row['line']) is int and 0<row['line']<100000)
+        return ReceiverFailure(rows)
+    except Exception:
+        return ReceiverFailure([])
 
 
 def need(value):
@@ -254,11 +283,13 @@ def backup(m,c):
             '-o','UserKnownHostsFile='+str(OPS/'known_hosts'),'-o','ForwardAgent=no','-o','ConnectTimeout=10','-o','ServerAliveInterval=15',
             '-o','ServerAliveCountMax=2','root@'+TARGET,'xmail-owned-backup']
         with encrypted.open('rb') as data:
-            p=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+            p=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             try:
                 p.stdin.write(m.encoded(value)+b'\n');shutil.copyfileobj(data,p.stdin,65536);p.stdin.close()
                 import select
-                need(select.select([p.stdout],[],[],240)[0]);raw=p.stdout.read(65537);need(len(raw)<=65536 and p.wait(timeout=10)==0)
+                need(select.select([p.stdout],[],[],240)[0]);raw=p.stdout.read(65537);need(len(raw)<=65536)
+                status=p.wait(timeout=10)
+                if status!=0:raise receiver_failure(p.stderr.read(4097))
                 proof=json.loads(raw)
             finally:
                 if p.poll() is None:p.kill();p.wait(timeout=5)
@@ -301,5 +332,5 @@ def main():
 
 if __name__=='__main__':
     try:main()
-    except Exception:
-        print('Owned backup failed/refused; raw diagnostics suppressed. Existing app, source fence and published backups preserved.',file=sys.stderr);sys.exit(1)
+    except Exception as error:
+        print(json.dumps({'ownedBackupFailed':True,'location':error.location if isinstance(error,ReceiverFailure) else failure_location(error)}),file=sys.stderr);sys.exit(1)
