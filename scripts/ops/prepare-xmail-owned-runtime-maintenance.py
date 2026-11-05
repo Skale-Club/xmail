@@ -13,6 +13,7 @@ import secrets
 import stat
 import sys
 import time
+from urllib.parse import unquote, urlsplit
 
 PILOT_SHA = 'f7305667a88d79150ad6df8f0a9cd4c21977d407f62f23952fd7958e52a1cee7'
 GOOGLE_KEYS = set('XMAIL_GOOGLE_AUTH_ENABLED XMAIL_GOOGLE_AUTH_PROJECT_ID XMAIL_GOOGLE_AUTH_PROJECT_NUMBER XMAIL_GOOGLE_AUTH_WEB_API_KEY XMAIL_GOOGLE_AUTH_ADC_MODE XMAIL_GOOGLE_AUTH_ADC_FILE XMAIL_GOOGLE_AUTH_ADC_AUDIENCE XMAIL_GOOGLE_AUTH_ADC_SERVICE_ACCOUNT XMAIL_GOOGLE_AUTH_ORIGIN'.split())
@@ -179,16 +180,341 @@ def probe_credentials(m, pilot, image, url):
     return m.json_result(m.call(['docker', 'run', '--rm', '--pull=never', '-i', '--log-driver=none', '--network', 'coolify', '--read-only', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.5', '--pids-limit', '64', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--entrypoint', 'node', image, '-e', pilot.AUTH_PROBE_JS], m.encoded({'url': url}), timeout=12))
 
 
+BACKUPS = Path('/opt/xmail/backups')
+RESTORED_OLD_EXIT = 10
+ACCEPTED = {'allowed': True, 'passwordRejected': False}
+REJECTED = {'allowed': False, 'passwordRejected': True}
+MAINTENANCE_BUNDLE = r'owned-maintenance-[0-9TZ]{16}-[a-f0-9]{8}'
+UNSAFE_MARKERS = ['fence-attempt.json', 'maintenance-commit-attempt.json', 'maintenance-commit-acknowledged.json', 'maintenance-profile-ready.json']
+CHANGING_PROFILE_KEYS = {'DATABASE_URL', 'DIRECT_URL', 'XMAIL_OWNED_APPROVED_IMAGE_ID', 'XMAIL_OWNED_APPROVED_SOURCE_SHA', 'XMAIL_OWNED_RECEIPT_SHA256'}
+STALE_LABELS = ['com.skale.xmail.maintenance', 'com.skale.xmail.runtime=isolated-preview']
+ROLE_STATE_SQL = "SELECT string_agg(rolname||'='||rolcanlogin::text, ',' ORDER BY rolname) FROM pg_roles WHERE rolname IN ('xmail_runtime','xmail_staging_reader')"
+RECOVERY = {'active': False, 'phase': 'not-detected', 'step': 'start'}
+
+
+class Refused(ValueError):
+    """Recovery refusal carrying only a fixed, non-private verification label."""
+    def __init__(self, check):
+        super().__init__('Owned maintenance recovery refused'); self.check = check
+
+
+def need(value, check):
+    if not value: raise Refused(check)
+
+
+def at(step):
+    RECOVERY['step'] = step
+
+
+def emit(phase, action, **extra):
+    RECOVERY['phase'] = phase
+    print(json.dumps({'recoveryPhase': phase, 'action': action, **extra}, separators=(',', ':')), flush=True)
+
+
+def deploy_lock(m, args, policy):
+    import fcntl
+    fd = os.dup(9) if args.parent_lock else os.open(m.OPS/'deploy.lock', os.O_WRONLY | os.O_NOFOLLOW)
+    info = os.fstat(fd); require(info.st_uid == info.st_gid == 0 and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1 and info.st_size == 0)
+    expected = (m.OPS/'deploy.lock').lstat(); require((info.st_dev, info.st_ino) == (expected.st_dev, expected.st_ino))
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return fd
+
+
+def check_candidate_image(m, image_id, source_sha):
+    next_image = m.inspect(image_id)
+    require(next_image['Id'] == image_id and (next_image['Config'].get('Labels') or {}).get('org.opencontainers.image.revision') == source_sha)
+    contract = "const fs=require('node:fs');const {browserAuthAuthority}=require('./dist/server/lib/identity/browser-auth-authority.js');if(process.getuid()!==0||process.getgid()!==0||!['dist/server/index.js','dist/server/staging-http.js','dist/server/lib/identity/runtime.js'].every(p=>fs.statSync(p).isFile())||browserAuthAuthority({XMAIL_BROWSER_AUTH_AUTHORITY:'owned',XMAIL_USER_ADMIN_AUTHORITY:'owned',XMAIL_GOOGLE_AUTH_ENABLED:'true'})!=='owned')process.exit(1);"
+    m.call(['docker', 'run', '--rm', '--pull=never', '--network', 'none', '--log-driver=none', '--read-only', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.25', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--entrypoint', 'node', image_id, '-e', contract], timeout=8)
+
+
+def retry_is_safe(policy, previous):
+    # An abandoned attempt that never stopped-and-fenced the roles changed nothing
+    # durable except the preview reader credential, so a fresh attempt may proceed.
+    name = previous.get('commitBundle')
+    if not (isinstance(name, str) and re.fullmatch(MAINTENANCE_BUNDLE, name)): return False
+    bundle = BACKUPS/name
+    try: policy['secure_directory'](bundle, True)
+    except Exception: return False
+    return not any((bundle/marker).exists() or (bundle/marker).is_symlink() for marker in UNSAFE_MARKERS)
+
+
+def publish(m, policy, bundle, old, image_id, source_sha, prior_raw, prior_profile_raw, anchor, base_raw,
+            frozen, frozen_at, expiry, next_profile, next_reader, backup_sha):
+    # Shared by the normal run and by interrupted-deploy recovery. Every call
+    # writes brand new receipts inside a fresh window; no old receipt is extended.
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0); require(now < expiry)
+    stamp = lambda value: value.strftime('%Y-%m-%dT%H:%M:%SZ')
+    common = {'version': 2, 'intent': 'owned-maintenance', 'app': 'xmail', 'target': m.TARGET, 'database': 'xmail', 'role': 'xmail_runtime',
+        'postgresImage': m.PG_IMAGE, 'applicationImage': image_id, 'sourceSha': source_sha, 'authPhase': 'identity',
+        'sourceKind': 'owned', 'oldContainerId': old['Id'], 'createdAt': stamp(now), 'expiresAt': stamp(expiry)}
+    maintenance = {'authorityAlreadyOwned': True, 'currentSqlControlsPreserved': True, 'fullIdentityStatePreserved': True,
+        'providerStatusReviewed': True, 'previewReadyBeforeStop': True, 'noSourceAuthRequests': True,
+        'previousReceiptSha256': m.sha(prior_raw), 'previousProfileSha256': m.sha(prior_profile_raw),
+        'previousAuthoritySha256': m.sha(anchor), 'commitBundle': bundle.name,
+        'commitAckSha256': m.sha(policy['secure_read'](bundle/'maintenance-commit-acknowledged.json')),
+        'identityStateDigest': m.sha(m.encoded(frozen['identityDigests'])), 'backupSha256': backup_sha}
+    facts = {'freeze': {'allSourceWritersStopped': True, 'oldContainerStopped': True, 'oldOwnedCredentialsRejected': True},
+        'snapshot': {'sourceReadOnlySnapshotComplete': True, 'snapshotDigest': m.sha(m.encoded(frozen)), 'businessTables': 70},
+        'controls': {'snapshotReceiptSha256': '', 'exactUuidControlsReviewed': True, 'disabledStatePreserved': True,
+            'noContactAutoLinks': True, 'runtimeGrantsReviewed': True}, 'maintenance': maintenance}
+    pointers = {}
+    for kind in ['freeze', 'snapshot', 'controls', 'maintenance']:
+        if kind == 'controls': facts[kind]['snapshotReceiptSha256'] = pointers['snapshot']['sha256']
+        raw = m.encoded({**common, 'kind': kind, 'facts': facts[kind], 'createdAt': stamp(frozen_at if kind == 'freeze' else now)})
+        name = policy['PROOF_FILES'][kind]; m.durable_file(m.OPS/name, raw, replace=True); pointers[kind] = {'file': name, 'sha256': m.sha(raw)}
+    for name, raw in [('maintenance-prior-receipt.json', prior_raw), ('maintenance-prior-profile.env', prior_profile_raw),
+        ('maintenance-prior-authority.json', anchor)]: m.durable_file(m.OPS/name, raw, replace=True)
+    for path, value in [(m.OPS/'owned-runtime.env', next_profile), (m.OPS/'reader.env', next_reader)]: m.durable_file(path, m.env_bytes(value), replace=True)
+    _, _, profile_digest, *_ = policy['profiles'](m.OPS)
+    receipt = {**common, 'oldImageId': old['Image'], 'profileDigest': profile_digest, 'baseEnvironmentSha256': m.sha(base_raw), 'proofs': pointers}
+    raw = m.encoded(receipt); m.durable_file(m.OPS/'cutover-receipt.json', raw, replace=True)
+    next_profile['XMAIL_OWNED_RECEIPT_SHA256'] = m.sha(raw); m.durable_file(m.OPS/'owned-runtime.env', m.env_bytes(next_profile), replace=True)
+    with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink): policy['execute']('inspect')
+
+
+def optional(policy, path, maximum=65536):
+    try: path.lstat()
+    except FileNotFoundError: return None
+    try: return policy['secure_read'](path, maximum)
+    except Exception: raise Refused('marker-unsafe')
+
+
+def sql_sessions_quiet(m):
+    for _ in range(15):
+        if m.read_only("SELECT count(*) FROM pg_stat_activity WHERE datname='xmail' AND pid<>pg_backend_pid()").strip() == b'0': return
+        time.sleep(2)
+    raise Refused('sql-sessions-linger')
+
+
+def role_state(m):
+    out = m.read_only(ROLE_STATE_SQL).decode().strip()
+    if out == 'xmail_runtime=true,xmail_staging_reader=true': return 'login'
+    if out == 'xmail_runtime=false,xmail_staging_reader=false': return 'fenced'
+    raise Refused('roles-unexpected-state')
+
+
+def unfence_sql(m, pilot):
+    # Exact inverse of pilot.role_fence_sql: that statement only turns LOGIN off,
+    # so this only turns it back on, from the fully fenced state and nothing else.
+    sql = "BEGIN; SET LOCAL log_statement='none'; SET LOCAL log_min_error_statement='panic'; SET LOCAL statement_timeout='10s'; SET LOCAL lock_timeout='2s'; "
+    sql += pilot.owned_guard_sql(m, True)
+    return sql+"ALTER ROLE xmail_runtime LOGIN; ALTER ROLE xmail_staging_reader LOGIN; COMMIT;\n\\echo OWNED_ROLES_UNFENCED\n"
+
+
+def reader_refresh_sql(m, password, expiry):
+    require(re.fullmatch(r'[0-9T:+.\-]+', expiry) and isinstance(password, str) and password)
+    return ("BEGIN; SET LOCAL log_statement='none'; SET LOCAL log_min_error_statement='panic'; SET LOCAL statement_timeout='5s'; "
+        "ALTER ROLE xmail_staging_reader LOGIN PASSWORD '"+m.postgres_scram(password)+"' VALID UNTIL '"+expiry+"'; COMMIT;\n\\echo OWNED_READER_REFRESHED\n")
+
+
+def credential_state(m, pilot, image, old_url, new_url):
+    old = probe_credentials(m, pilot, image, old_url); new = probe_credentials(m, pilot, image, new_url)
+    if old == ACCEPTED and new == REJECTED: return 'old'
+    if old == REJECTED and new == ACCEPTED: return 'new'
+    raise Refused('credentials-ambiguous')
+
+
+def cleanup_stale(m):
+    # A cancelled deploy can leave its isolated preview (same image as the
+    # candidate, hence counted as a writer) and its internal network behind.
+    target = m.inspect(m.TARGET)['Id']
+    for label in STALE_LABELS:
+        for cid in m.call(['docker', 'ps', '-aq', '--no-trunc', '--filter', 'label='+label]).decode().split():
+            need(re.fullmatch(r'[a-f0-9]{64}', cid), 'stale-container-id')
+            need(m.inspect(cid)['Name'].startswith(('/xmail-maintenance-preview-', '/xmail-owned-preview')), 'stale-container-unknown')
+            m.call(['docker', 'rm', '-f', cid])
+        for nid in m.call(['docker', 'network', 'ls', '-q', '--no-trunc', '--filter', 'label='+label]).decode().split():
+            net = json.loads(m.call(['docker', 'network', 'inspect', nid]))[0]
+            need(net.get('Internal') is True and net['Name'].startswith(('xmail-maintenance-preview-', 'xmail-owned-preview')), 'stale-network-unknown')
+            if target in (net.get('Containers') or {}): m.call(['docker', 'network', 'disconnect', '-f', nid, m.TARGET])
+            m.call(['docker', 'network', 'rm', nid])
+
+
+def stale_runtime_names(m, old_id, remove):
+    for cid in m.call(['docker', 'ps', '-aq', '--no-trunc', '--filter', 'name=^/xmail$']).decode().split():
+        if cid == old_id: continue
+        live = m.inspect(cid)
+        need(remove and live['Name'] == '/xmail' and live['State']['Running'] is False
+            and (live['Config'].get('Labels') or {}).get('com.skale.xmail.runtime') == 'owned-full', 'duplicate-xmail')
+        m.call(['docker', 'rm', cid])
+
+
+def check_old(m, policy, old_id, previous, committed_possible):
+    old = m.inspect(old_id); env = policy['container_env'](old)
+    names = ['/xmail'] + (['/xmail-frozen-'+old_id[:12]] if committed_possible else [])
+    need(old['Id'] == old_id and old['Name'] in names and old['State']['Running'] is False
+        and (old['Config'].get('Labels') or {}).get('com.skale.xmail.runtime') == 'owned-full'
+        and old['Image'] == previous['XMAIL_OWNED_APPROVED_IMAGE_ID'] and all(env.get(k) == v for k, v in previous.items()), 'old-container')
+    return old
+
+
+def start_old(m, policy, old, image_id):
+    m.ensure_no_other_writers(policy, old, image_id)
+    m.call(['docker', 'update', '--restart=unless-stopped', old['Id']])
+    m.call(['docker', 'start', old['Id']], timeout=30)
+    ready = "fetch('http://127.0.0.1:9001/health/ready',{signal:AbortSignal.timeout(8000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    for _ in range(60):
+        time.sleep(3)
+        live = m.inspect(old['Id'])
+        need(live['State']['Running'] is True, 'old-restart-exited')
+        try: m.call(['docker', 'exec', old['Id'], 'node', '-e', ready], timeout=15)
+        except Exception: continue
+        if live['State'].get('Health', {}).get('Status') == 'healthy': return
+    raise Refused('old-restart-unhealthy')
+
+
+def restore_old(m, pilot, policy, args, ctx):
+    phase, bundle, old, previous, roles = ctx['phase'], ctx['bundle'], ctx['old'], ctx['previous'], ctx['roles']
+    need(old['Name'] == '/xmail', 'old-container-renamed')
+    at('unfence')
+    if roles == 'fenced':
+        need(m.psql(unfence_sql(m, pilot)) == b'OWNED_ROLES_UNFENCED\n', 'unfence-failed')
+    at('unfenced-guard'); m.read_only(pilot.owned_guard_sql(m))
+    at('state-preserved')
+    frozen_raw = optional(policy, bundle/'owned-frozen.json', 4194304)
+    if frozen_raw is not None:
+        frozen = policy['json_file'](frozen_raw); validate_snapshot(frozen, pilot)
+        current = m.json_result(m.read_only(snapshot_sql(m, pilot))); validate_snapshot(current, pilot)
+        need(preserved(frozen, current), 'state-diverged')
+    at('old-password')
+    need(probe_credentials(m, pilot, args.approved_image_id, previous['DATABASE_URL']) == ACCEPTED, 'old-password-rejected')
+    at('stale-runtime'); stale_runtime_names(m, old['Id'], False)
+    action = ('unfence-' if roles == 'fenced' else '')+'start-old'
+    emit(phase, action)
+    at('start-old'); start_old(m, policy, old, args.approved_image_id)
+    at('restored-verify')
+    live, _env, profile, *_ = current_owned(m, policy, old['Id'])
+    anchor = policy['json_file'](authority_anchor(m, policy, live, profile))
+    # The abandoned bundle never published: point the attempt journal back at the
+    # still-authoritative anchor so a later deploy is not refused as "previous
+    # attempt unresolved". The abandoned bundle stays on disk, untouched.
+    m.durable_file(ctx['attempt_file'], m.encoded({'commitBundle': anchor['commitBundle'], 'oldContainerId': old['Id'], 'automaticRetryAllowed': False, 'recovered': bundle.name}), replace=True)
+    m.durable_file(bundle/'recovery-restored-old.json', m.encoded({'phase': phase, 'action': action}), replace=True)
+    emit(phase, 'old-runtime-restored')
+    return {'ownedRecovered': True, 'oldRuntimeRestored': True, 'phase': phase, 'applicationStarted': True, 'sourceAuthRequests': False}
+
+
+def republish(m, pilot, policy, args, ctx):
+    phase, bundle, old, previous = ctx['phase'], ctx['bundle'], ctx['old'], ctx['previous']
+    emit(phase, 'republish-receipts-continue-deploy')
+    at('committed-load')
+    frozen = policy['json_file'](policy['secure_read'](bundle/'owned-frozen.json', 4194304)); validate_snapshot(frozen, pilot)
+    pending = policy['env_file'](policy['secure_read'](bundle/'pending-profile.env', 16384), policy['PROFILE_KEYS'])
+    pending_reader = policy['env_file'](policy['secure_read'](bundle/'pending-reader.env', 16384), policy['READER_KEYS'])
+    prior_raw = policy['secure_read'](bundle/'previous-receipt.json'); anchor_raw = policy['secure_read'](bundle/'previous-authority.json')
+    prior_profile_raw = policy['secure_read'](bundle/'previous-profile.env', 16384)
+    backup_sha = policy['secure_read'](bundle/'owned-before.sha256').decode().strip()
+    need(re.fullmatch(r'[a-f0-9]{64}', backup_sha) and optional(policy, bundle/'preview-ready.json') is not None, 'bundle-incomplete')
+    for key in ['DATABASE_URL', 'DIRECT_URL']: policy['database_url'](pending[key], 'xmail_runtime')
+    policy['database_url'](pending_reader['XMAIL_STAGING_DATABASE_URL'], 'xmail_staging_reader')
+    need(pending['DATABASE_URL'] == pending['DIRECT_URL'] and all(pending[k] == v for k, v in previous.items() if k not in CHANGING_PROFILE_KEYS), 'pending-profile-mismatch')
+    old_env = policy['container_env'](old)
+    base_raw = policy['secure_read'](m.OPS/'production-base.env', 32768); base = policy['env_file'](base_raw, policy['BASE_KEYS'], False)
+    google_file = Path('/opt/xmail/google-identity-ops/google-auth.env'); policy['secure_directory'](google_file.parent, True)
+    google = policy['env_file'](policy['secure_read'](google_file, 16384), GOOGLE_KEYS)
+    need({k: v for k, v in old_env.items() if k in policy['BASE_KEYS']} == base and all(old_env.get(k) == v for k, v in google.items())
+        and google['XMAIL_GOOGLE_AUTH_ENABLED'] == 'true' and google['XMAIL_GOOGLE_AUTH_ADC_MODE'] == 'external_account'
+        and google['XMAIL_GOOGLE_AUTH_ORIGIN'] == 'https://mail.skale.club', 'environment-changed')
+    at('committed-snapshot')
+    m.read_only(pilot.owned_guard_sql(m))
+    after = m.json_result(m.read_only(snapshot_sql(m, pilot))); validate_snapshot(after, pilot)
+    need(preserved(frozen, after), 'committed-state-diverged')
+    ack_path, after_path = bundle/'maintenance-commit-acknowledged.json', bundle/'owned-after-maintenance.json'
+    ack = optional(policy, ack_path)
+    if ack is None: m.durable_file(ack_path, m.encoded({'acknowledged': True}))
+    else: need(policy['json_file'](ack) == {'acknowledged': True}, 'ack-invalid')
+    written = optional(policy, after_path, 4194304)
+    if written is None: m.durable_file(after_path, m.encoded(after))
+    else:
+        written = policy['json_file'](written); validate_snapshot(written, pilot); need(preserved(frozen, written), 'after-snapshot-invalid')
+    at('reader-refresh')
+    frozen_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0); expiry = frozen_at+dt.timedelta(minutes=15)
+    reader_password = unquote(urlsplit(pending_reader['XMAIL_STAGING_DATABASE_URL']).password or '')
+    need(m.psql(reader_refresh_sql(m, reader_password, expiry.isoformat())) == b'OWNED_READER_REFRESHED\n', 'reader-refresh-failed')
+    at('committed-probes')
+    need(probe_credentials(m, pilot, args.approved_image_id, previous['DATABASE_URL']) == REJECTED, 'old-password-accepted')
+    need(probe_credentials(m, pilot, args.approved_image_id, pending['DATABASE_URL']) == ACCEPTED, 'new-password-rejected')
+    need(probe_credentials(m, pilot, args.approved_image_id, pending_reader['XMAIL_STAGING_DATABASE_URL']) == ACCEPTED, 'reader-password-rejected')
+    at('candidate-image'); check_candidate_image(m, args.approved_image_id, args.approved_source_sha)
+    at('maintenance-state'); policy['verify_maintenance_state']({'applicationImage': args.approved_image_id}, google)
+    at('stale-runtime'); stale_runtime_names(m, old['Id'], True)
+    # The credentials are bound to the database, not to an image: publish the
+    # profile for the image this deploy was asked to run (previewed by the consumer).
+    next_profile = {**pending, 'XMAIL_OWNED_APPROVED_IMAGE_ID': args.approved_image_id, 'XMAIL_OWNED_APPROVED_SOURCE_SHA': args.approved_source_sha,
+        'XMAIL_OWNED_RECEIPT_SHA256': '0'*64}
+    at('publish')
+    publish(m, policy, bundle, old, args.approved_image_id, args.approved_source_sha, prior_raw, prior_profile_raw, anchor_raw, base_raw,
+        frozen, frozen_at, expiry, next_profile, pending_reader, backup_sha)
+    m.durable_file(bundle/'maintenance-profile-ready.json', m.encoded({'ownedMaintenanceReady': True, 'businessFingerprintsPreserved': 70, 'allIdentityTablesPreserved': True, 'sourceAuthRequests': False}), replace=True)
+    emit(phase, 'receipts-republished')
+    return {'ownedMaintenanceReady': True, 'recovered': True, 'oldRuntimeRestored': False, 'applicationStarted': False, 'sourceAuthRequests': False}
+
+
+def recover_locked(m, pilot, policy, args):
+    at('no-running-xmail')
+    need(not m.call(['docker', 'ps', '-q', '--no-trunc', '--filter', 'name=^/xmail$']).decode().split(), 'xmail-running')
+    at('attempt')
+    attempt_file = m.OPS/'maintenance-attempt.json'
+    raw = optional(policy, attempt_file); need(raw is not None, 'no-attempt')
+    attempt = policy['json_file'](raw)
+    need(set(attempt) - {'recovered'} == {'commitBundle', 'oldContainerId', 'automaticRetryAllowed'} and attempt['automaticRetryAllowed'] is False
+        and re.fullmatch(MAINTENANCE_BUNDLE, str(attempt['commitBundle'])) and re.fullmatch(r'[a-f0-9]{64}', str(attempt['oldContainerId'])), 'attempt-invalid')
+    bundle = BACKUPS/attempt['commitBundle']; policy['secure_directory'](bundle, True)
+    anchor = policy['json_file'](policy['secure_read'](m.OPS/'owned-authority-current.json'))
+    need(anchor.get('commitBundle') != attempt['commitBundle'], 'already-published')
+    marks = {name: optional(policy, bundle/name, 4194304) is not None for name in UNSAFE_MARKERS}
+    committed_possible = marks['maintenance-commit-attempt.json'] or marks['maintenance-commit-acknowledged.json'] or marks['maintenance-profile-ready.json']
+    phase = ('profile-ready' if marks['maintenance-profile-ready.json'] else 'commit-acknowledged' if marks['maintenance-commit-acknowledged.json']
+        else 'commit-attempted' if marks['maintenance-commit-attempt.json'] else 'fenced-no-commit' if marks['fence-attempt.json'] else 'stopped-no-fence')
+    RECOVERY['phase'] = phase
+    at('previous-profile')
+    prior = optional(policy, bundle/'previous-profile.env', 16384)
+    if prior is None:
+        # Written before any stop/fence/commit marker, so the live profile is still the previous one.
+        need(not marks['fence-attempt.json'] and not committed_possible, 'previous-profile-missing')
+        prior = policy['secure_read'](m.OPS/'owned-runtime.env', 16384)
+    previous = policy['env_file'](prior, policy['PROFILE_KEYS'])
+    need(previous['XMAIL_OWNED_AUTH_PHASE'] == 'identity' and previous['XMAIL_BROWSER_AUTH_AUTHORITY'] == previous['XMAIL_USER_ADMIN_AUTHORITY'] == 'owned', 'previous-profile-invalid')
+    policy['database_url'](previous['DATABASE_URL'], 'xmail_runtime')
+    at('old-container'); old = check_old(m, policy, attempt['oldContainerId'], previous, committed_possible)
+    at('stale-cleanup'); cleanup_stale(m)
+    at('other-writers'); m.ensure_no_other_writers(policy, old, args.approved_image_id)
+    at('sql-sessions'); sql_sessions_quiet(m)
+    at('role-state'); roles = role_state(m)
+    committed = False
+    if committed_possible and roles == 'login':
+        # The rotation is one transaction ending with LOGIN: with LOGIN back on
+        # the roles prove nothing, so the SCRAM passwords decide who is right.
+        at('credential-probes')
+        pending = policy['env_file'](policy['secure_read'](bundle/'pending-profile.env', 16384), policy['PROFILE_KEYS'])
+        committed = credential_state(m, pilot, args.approved_image_id, previous['DATABASE_URL'], pending['DATABASE_URL']) == 'new'
+    need(committed or not (marks['maintenance-commit-acknowledged.json'] or marks['maintenance-profile-ready.json']), 'acknowledged-without-new-credentials')
+    ctx = {'phase': phase, 'bundle': bundle, 'old': old, 'previous': previous, 'roles': roles, 'attempt_file': attempt_file}
+    if committed:
+        phase = ctx['phase'] = ctx['phase'] if ctx['phase'] in ('commit-acknowledged', 'profile-ready') else 'committed-unacknowledged'
+        return republish(m, pilot, policy, args, ctx)
+    return restore_old(m, pilot, policy, args, ctx)
+
+
+def recover(args):
+    RECOVERY['active'] = True; at('preconditions')
+    require(sys.platform.startswith('linux') and os.geteuid() == 0 and args.parent_lock and not args.old_container_id
+        and re.fullmatch(r'sha256:[a-f0-9]{64}', args.approved_image_id or '') and re.fullmatch(r'[a-f0-9]{40}', args.approved_source_sha or '')
+        and re.fullmatch(r'[a-f0-9]{64}', args.policy_sha256 or '') and os.environ.get('GITHUB_SOURCE_SHA') == args.approved_source_sha)
+    at('libraries'); pilot, m = libraries(); policy, _ = m.load_public_sources(Path(__file__).parent, args.policy_sha256)
+    at('ops-directory'); policy['secure_directory'](m.OPS, True)
+    at('deploy-lock'); fd = deploy_lock(m, args, policy)
+    try: return recover_locked(m, pilot, policy, args)
+    finally: os.close(fd)
+
+
 def run(args):
     import fcntl
     require(sys.platform.startswith('linux') and os.geteuid() == 0
         and re.fullmatch(r'[a-f0-9]{64}', args.old_container_id or '') and re.fullmatch(r'[a-f0-9]{64}', args.policy_sha256 or ''))
     pilot, m = libraries(); policy, _ = m.load_public_sources(Path(__file__).parent, args.policy_sha256)
     m.capacity(); policy['secure_directory'](m.OPS, True)
-    fd = os.dup(9) if args.parent_lock else os.open(m.OPS/'deploy.lock', os.O_WRONLY | os.O_NOFOLLOW)
-    info = os.fstat(fd); require(info.st_uid == info.st_gid == 0 and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1 and info.st_size == 0)
-    expected = (m.OPS/'deploy.lock').lstat(); require((info.st_dev, info.st_ino) == (expected.st_dev, expected.st_ino))
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    fd = deploy_lock(m, args, policy)
     try:
         old, old_env, profile, reader, base_raw, google_raw, google, prior_raw = current_owned(m, policy, args.old_container_id)
         anchor = authority_anchor(m, policy, old, profile, args.prior_authority_bundle)
@@ -200,10 +526,7 @@ def run(args):
             return {'ownedAuthorityAnchorCaptured': True, 'applicationUnchanged': True, 'sourceAuthRequests': False}
         require(args.apply and re.fullmatch(r'sha256:[a-f0-9]{64}', args.approved_image_id or '')
             and re.fullmatch(r'[a-f0-9]{40}', args.approved_source_sha or '') and os.environ.get('GITHUB_SOURCE_SHA') == args.approved_source_sha)
-        next_image = m.inspect(args.approved_image_id)
-        require(next_image['Id'] == args.approved_image_id and (next_image['Config'].get('Labels') or {}).get('org.opencontainers.image.revision') == args.approved_source_sha)
-        contract = "const fs=require('node:fs');const {browserAuthAuthority}=require('./dist/server/lib/identity/browser-auth-authority.js');if(process.getuid()!==0||process.getgid()!==0||!['dist/server/index.js','dist/server/staging-http.js','dist/server/lib/identity/runtime.js'].every(p=>fs.statSync(p).isFile())||browserAuthAuthority({XMAIL_BROWSER_AUTH_AUTHORITY:'owned',XMAIL_USER_ADMIN_AUTHORITY:'owned',XMAIL_GOOGLE_AUTH_ENABLED:'true'})!=='owned')process.exit(1);"
-        m.call(['docker', 'run', '--rm', '--pull=never', '--network', 'none', '--log-driver=none', '--read-only', '--memory', '128m', '--memory-swap', '128m', '--cpus', '0.25', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--entrypoint', 'node', args.approved_image_id, '-e', contract], timeout=8)
+        check_candidate_image(m, args.approved_image_id, args.approved_source_sha)
         m.ensure_no_other_writers(policy, old, args.approved_image_id)
         bad_url = 'postgres://xmail_runtime:'+secrets.token_urlsafe(48)+'@'+m.TARGET+':5432/xmail'
         require(probe_credentials(m, pilot, args.approved_image_id, bad_url) == {'allowed': False, 'passwordRejected': True})
@@ -213,7 +536,7 @@ def run(args):
         attempt_file = m.OPS/'maintenance-attempt.json'
         if attempt_file.exists():
             previous = policy['json_file'](policy['secure_read'](attempt_file))
-            require(policy['json_file'](anchor)['commitBundle'] == previous['commitBundle'])
+            require(policy['json_file'](anchor)['commitBundle'] == previous['commitBundle'] or retry_is_safe(policy, previous))
         m.durable_file(attempt_file, m.encoded({'commitBundle': bundle.name, 'oldContainerId': old['Id'], 'automaticRetryAllowed': False}), replace=attempt_file.exists())
         for name, raw in [('previous-profile.env', policy['secure_read'](m.OPS/'owned-runtime.env')), ('previous-reader.env', policy['secure_read'](m.OPS/'reader.env')),
             ('previous-receipt.json', prior_raw), ('previous-authority.json', anchor), ('production-base.env', base_raw), ('google.env', google_raw), ('before-manifest.json', m.encoded(before))]:
@@ -256,34 +579,9 @@ def run(args):
         require(probe_credentials(m, pilot, args.approved_image_id, next_profile['DATABASE_URL']) == {'allowed': True, 'passwordRejected': False})
         require(probe_credentials(m, pilot, args.approved_image_id, next_reader['XMAIL_STAGING_DATABASE_URL']) == {'allowed': True, 'passwordRejected': False})
         policy['verify_maintenance_state']({'applicationImage': args.approved_image_id}, google)
-        now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0); require(now < expiry)
-        stamp = lambda value: value.strftime('%Y-%m-%dT%H:%M:%SZ')
-        common = {'version': 2, 'intent': 'owned-maintenance', 'app': 'xmail', 'target': m.TARGET, 'database': 'xmail', 'role': 'xmail_runtime',
-            'postgresImage': m.PG_IMAGE, 'applicationImage': args.approved_image_id, 'sourceSha': args.approved_source_sha, 'authPhase': 'identity',
-            'sourceKind': 'owned', 'oldContainerId': old['Id'], 'createdAt': stamp(now), 'expiresAt': stamp(expiry)}
-        maintenance = {'authorityAlreadyOwned': True, 'currentSqlControlsPreserved': True, 'fullIdentityStatePreserved': True,
-            'providerStatusReviewed': True, 'previewReadyBeforeStop': True, 'noSourceAuthRequests': True,
-            'previousReceiptSha256': m.sha(prior_raw), 'previousProfileSha256': m.sha(policy['secure_read'](m.OPS/'owned-runtime.env')),
-            'previousAuthoritySha256': m.sha(anchor), 'commitBundle': bundle.name,
-            'commitAckSha256': m.sha(policy['secure_read'](bundle/'maintenance-commit-acknowledged.json')),
-            'identityStateDigest': m.sha(m.encoded(frozen['identityDigests'])), 'backupSha256': backup_sha}
-        facts = {'freeze': {'allSourceWritersStopped': True, 'oldContainerStopped': True, 'oldOwnedCredentialsRejected': True},
-            'snapshot': {'sourceReadOnlySnapshotComplete': True, 'snapshotDigest': m.sha(m.encoded(frozen)), 'businessTables': 70},
-            'controls': {'snapshotReceiptSha256': '', 'exactUuidControlsReviewed': True, 'disabledStatePreserved': True,
-                'noContactAutoLinks': True, 'runtimeGrantsReviewed': True}, 'maintenance': maintenance}
-        pointers = {}
-        for kind in ['freeze', 'snapshot', 'controls', 'maintenance']:
-            if kind == 'controls': facts[kind]['snapshotReceiptSha256'] = pointers['snapshot']['sha256']
-            raw = m.encoded({**common, 'kind': kind, 'facts': facts[kind], 'createdAt': stamp(frozen_at if kind == 'freeze' else now)})
-            name = policy['PROOF_FILES'][kind]; m.durable_file(m.OPS/name, raw, replace=True); pointers[kind] = {'file': name, 'sha256': m.sha(raw)}
-        for name, raw in [('maintenance-prior-receipt.json', prior_raw), ('maintenance-prior-profile.env', policy['secure_read'](m.OPS/'owned-runtime.env')),
-            ('maintenance-prior-authority.json', anchor)]: m.durable_file(m.OPS/name, raw, replace=True)
-        for path, value in [(m.OPS/'owned-runtime.env', next_profile), (m.OPS/'reader.env', next_reader)]: m.durable_file(path, m.env_bytes(value), replace=True)
-        _, _, profile_digest, *_ = policy['profiles'](m.OPS)
-        receipt = {**common, 'oldImageId': old['Image'], 'profileDigest': profile_digest, 'baseEnvironmentSha256': m.sha(base_raw), 'proofs': pointers}
-        raw = m.encoded(receipt); m.durable_file(m.OPS/'cutover-receipt.json', raw, replace=True)
-        next_profile['XMAIL_OWNED_RECEIPT_SHA256'] = m.sha(raw); m.durable_file(m.OPS/'owned-runtime.env', m.env_bytes(next_profile), replace=True)
-        with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink): policy['execute']('inspect')
+        previous_profile_raw = policy['secure_read'](bundle/'previous-profile.env')
+        publish(m, policy, bundle, old, args.approved_image_id, args.approved_source_sha, prior_raw, previous_profile_raw, anchor, base_raw,
+            frozen, frozen_at, expiry, next_profile, next_reader, backup_sha)
         m.durable_file(bundle/'maintenance-profile-ready.json', m.encoded({'ownedMaintenanceReady': True, 'businessFingerprintsPreserved': 70, 'allIdentityTablesPreserved': True, 'sourceAuthRequests': False}))
         return {'ownedMaintenanceReady': True, 'previewReadyBeforeStop': True, 'businessFingerprintsPreserved': 70,
             'allIdentityTablesPreserved': True, 'sourceAuthRequests': False, 'personalFactorRequired': False, 'applicationStarted': False}
@@ -294,9 +592,14 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(); group.add_argument('--plan', action='store_true'); group.add_argument('--capture-authority', action='store_true'); group.add_argument('--apply', action='store_true')
+    group.add_argument('--recover-interrupted', action='store_true')
     parser.add_argument('--parent-lock', action='store_true')
     for key in ['approved-image-id', 'approved-source-sha', 'policy-sha256', 'old-container-id', 'prior-authority-bundle']: parser.add_argument('--'+key)
     args = parser.parse_args()
+    if args.recover_interrupted:
+        result = recover(args); print(json.dumps(result))
+        if result.get('oldRuntimeRestored') is True: sys.exit(RESTORED_OLD_EXIT)
+        return
     if not args.apply and not args.capture_authority:
         print('PLAN ONLY: owned maintenance; no Source Auth, factors, files, Docker, SQL, flags or application changes.'); return
     print(json.dumps(run(args)))
@@ -304,5 +607,9 @@ def main():
 
 if __name__ == '__main__':
     try: main()
-    except Exception:
+    except Exception as error:
+        if RECOVERY['active']:
+            # Fixed labels only: the failed verification and detected phase, never values.
+            check = error.check if isinstance(error, Refused) else RECOVERY['step']
+            print(json.dumps({'recoveryPhase': RECOVERY['phase'], 'action': 'refused', 'check': check}, separators=(',', ':')), file=sys.stderr)
         print('Owned maintenance refused/uncertain; private diagnostics suppressed. No automatic restart, retry or import.', file=sys.stderr); sys.exit(1)
