@@ -105,6 +105,28 @@ class OwnedBackupGuards(unittest.TestCase):
             changed=deepcopy(before);changed['schema'][field]='different'
             self.assertFalse(backup.manifest_comparison(before,changed)['schema'+field.title()+'Equal'])
 
+    def test_table_signature_diagnostic_exposes_only_technical_name_and_component_booleans(self):
+        from copy import deepcopy
+        before={'schema':{'tables':{'users':'a'*64},'functions':'b'*64,'types':[],
+            'tableParts':{'users':['c'*64]*5+[True,False]}},'fingerprints':{'users':{'count':8,'sha256':'d'*64}},'ledger':{},'policyRoles':[]}
+        after=deepcopy(before);after['schema']['tables']['users']='e'*64;after['schema']['tableParts']['users'][2]='f'*64
+        compare=backup.manifest_comparison(before,after)
+        self.assertTrue(backup.valid_comparison(compare));self.assertEqual(compare['schemaTableDifferenceCount'],1)
+        row=compare['tableDifferences'][0];self.assertEqual(row['table'],'users');self.assertIs(row['indexesEqual'],False)
+        self.assertTrue(all(value is True for name,value in row.items() if name not in ['table','indexesEqual']))
+        payload=backup.failure_payload(backup.RestoreManifestMismatch(compare));public=json.dumps(payload)
+        self.assertNotIn('c'*64,public);self.assertNotIn('f'*64,public)
+        self.assertEqual(backup.receiver_failure(public).comparison,compare)
+        compare['tableDifferences'][0]['definition']='must-not-forward'
+        self.assertIsNone(backup.receiver_failure(json.dumps({'ownedBackupFailed':True,'location':[],'comparison':compare})).comparison)
+
+    def test_constraint_signature_uses_pg_deparser_without_removing_checks_or_flags(self):
+        m,_=self.libraries();sql=backup.manifest_sql(m)
+        self.assertIn('pg_get_constraintdef(c.oid,true)',sql)
+        self.assertNotIn('pg_get_constraintdef(c.oid)',sql)
+        self.assertIn('c.conname,c.contype,pg_get_constraintdef(c.oid,true),c.convalidated',sql)
+        self.assertNotIn('regexp_replace',sql)
+
     def test_isolated_restore_keeps_existing_resource_and_network_limits(self):
         args=backup.restore_arguments('offline-container','offline-operation')
         for value in ['max_connections=5','shared_buffers=32MB','work_mem=2MB']:

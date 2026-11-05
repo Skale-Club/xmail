@@ -161,8 +161,10 @@ After the SQL query and74-table/80-ledger validation succeed, exact manifest
 inequality still refuses publication. The failure payload can include only a
 strictly validated `comparison` object: five booleans for table-name equality,
 functions, enum types, ledger and policy roles, and three bounded counts for
-table-schema, row-count and row-hash differences. No table names, SQL,
-definitions, account identifiers, row values or content hashes are forwarded.
+table-schema, row-count and row-hash differences. Private component hashes in
+the snapshot additionally let a mismatch identify the technical table name and
+booleans for columns, constraints, indexes, policies, triggers and RLS flags.
+No SQL, definitions, account identifiers, row values or content hashes are forwarded.
 Existing code coordinates and optional SQLSTATE remain compatible.
 
 CI runs actual restores and deliberately changes one restored synthetic row,
@@ -172,3 +174,21 @@ one row-hash mismatch from one table-schema mismatch. This diagnostic does not
 normalize away a difference, change restoration ownership, rewrite fingerprints
 or claim a real manifest mismatch is harmless. Actual component evidence is
 required before any targeted semantic correction.
+
+### CHECK expression dump/restore representation
+
+The real component diagnostic isolated only
+`xmail_identity_bindings_subject_check`. Its creation uses `BETWEEN 1 AND 128`
+combined with the trim predicate. PostgreSQL initially stores the expanded
+range as a nested AND; pg_dump serializes the comparisons, and reparsing can
+flatten that associative grouping. A real CI restore of migration079 reproduced
+the exact single-table/constraints-only mismatch with every row hash unchanged.
+
+Backup signatures therefore use PostgreSQL's own precedence-aware
+`pg_get_constraintdef(oid,true)` on both source and restored snapshots. It
+preserves the predicates, bounds, names, types and validation flags while
+omitting redundant grouping. This is not textual parenthesis stripping or an
+ignored constraint. CI requires the original raw form to reproduce the mismatch,
+the deparser form to match completely, and a changed bound128→127 to remain a
+hard constraints mismatch. The database constraints and business rows themselves
+are never rewritten by this correction.
