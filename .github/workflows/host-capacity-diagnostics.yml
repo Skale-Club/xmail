@@ -18,6 +18,10 @@ on:
         description: Also print a read-only SSH audit (settings and counts, no addresses or keys)
         type: boolean
         default: false
+      harden_ssh:
+        description: Disable SSH password login and install fail2ban (undoes the sshd change by itself if a new key login fails)
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -48,6 +52,72 @@ jobs:
               swapon "$device"
             done
             echo "swap reclaimed"
+
+      - name: Disable SSH password login, with automatic rollback
+        if: ${{ inputs.harden_ssh }}
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: root
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          command_timeout: 2m
+          script: |
+            set -eu
+            conf=/etc/ssh/sshd_config.d/00-hardening.conf
+            used=$( { journalctl -u ssh --no-pager -o cat; zcat -f /var/log/auth.log*; } 2>/dev/null | grep -c 'Accepted password' || true)
+            echo "password logins in retained logs: $used"
+            if [ "$used" != "0" ]; then echo "refused: something logs in with a password" >&2; exit 1; fi
+            rollback() { rm -f "$conf"; systemctl reload-or-restart ssh; }
+            # sshd keeps the first value it reads and this file sorts before 50-cloud-init.conf.
+            printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin prohibit-password' 'LoginGraceTime 30' 'MaxStartups 30:30:100' 'PerSourceMaxStartups 10' > "$conf"
+            chmod 644 "$conf"
+            if ! sshd -t; then rm -f "$conf"; echo "refused: invalid sshd configuration" >&2; exit 1; fi
+            # If the next step cannot log in with a key, this puts the old settings back.
+            systemctl stop ssh-hardening-rollback.timer 2>/dev/null || true
+            systemd-run --quiet --unit=ssh-hardening-rollback --on-active=300 /bin/sh -c "rm -f $conf; systemctl reload-or-restart ssh"
+            systemctl reload-or-restart ssh
+            settings=$(sshd -T)
+            if ! printf '%s\n' "$settings" | grep -qx 'passwordauthentication no' || ! printf '%s\n' "$settings" | grep -qx 'permitrootlogin prohibit-password'; then
+              rollback; echo "refused: settings did not take effect" >&2; exit 1
+            fi
+            echo "sshd settings applied, rollback armed for 5 minutes"
+
+      - name: Prove a new key login works and keep the change
+        if: ${{ inputs.harden_ssh }}
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: root
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          command_timeout: 1m
+          script: |
+            set -eu
+            systemctl stop ssh-hardening-rollback.timer
+            echo "new key login worked, rollback cancelled"
+            sshd -T | grep -E '^(passwordauthentication|permitrootlogin|logingracetime|maxstartups|persourcemaxstartups) '
+
+      - name: Install fail2ban for SSH
+        if: ${{ inputs.harden_ssh }}
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: root
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            set -eu
+            export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends fail2ban python3-systemd > /dev/null
+            # Regular key users are never banned; their addresses stay on this host only.
+            regular=$(journalctl -u ssh --since '24 hours ago' --no-pager -o cat | awk '/^Accepted publickey/{n[$6]++} END{for (ip in n) if (n[ip] >= 50) printf "%s ", ip}')
+            printf '%s\n' '[sshd]' 'enabled = true' 'backend = systemd' 'maxretry = 5' 'findtime = 10m' 'bantime = 1h' "ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 $regular" > /etc/fail2ban/jail.d/sshd-hardening.local
+            systemctl enable --quiet fail2ban
+            systemctl restart fail2ban
+            for _ in 1 2 3 4 5 6; do fail2ban-client status sshd > /dev/null 2>&1 && break; sleep 2; done
+            echo "fail2ban: $(systemctl is-active fail2ban)"
+            fail2ban-client status sshd | grep -E 'Currently (failed|banned)|Total (failed|banned)'
+            echo "ignored regular sources: $(printf '%s' "$regular" | wc -w)"
 
       - name: Read memory, swap, disk and top consumers
         uses: appleboy/ssh-action@v1.0.0
