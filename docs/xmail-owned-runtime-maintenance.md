@@ -97,6 +97,40 @@ ambiguous COMMIT, keep the old writer stopped and reconcile actual SQL/role/file
 state before continuing. Never restart an old writer, reimport Source tables,
 extend a receipt TTL or manufacture a fresh authentication timestamp.
 
+## Automatic recovery of an interrupted deploy
+
+A cancelled or crashed maintenance can leave the old runtime stopped, so every
+later deploy would refuse. When the deploy script finds no running `/xmail`, an
+owned identity profile, and a private `maintenance-attempt.json`, it holds the
+same deploy lease and runs the operator with `--recover-interrupted`. The phase
+comes only from durable markers in the attempt bundle plus real Docker/SQL state:
+
+| Phase (log `recoveryPhase`) | Evidence | Action |
+| --- | --- | --- |
+| `stopped-no-fence` | no `fence-attempt.json` | restore restart policy, `docker start` the old container by ID, wait for `/health/ready` |
+| `fenced-no-commit` | fence marker, no COMMIT marker | revert the fence (the exact inverse of `role_fence_sql`, only `LOGIN`), confirm the old password, start the old container |
+| `commit-attempted` | COMMIT marker | roles `NOLOGIN` or old password accepted and new rejected: not committed, same as above. New accepted and old rejected: committed, republish |
+| `commit-acknowledged` / `profile-ready` | acknowledgment or ready marker | must be committed (new password accepted); otherwise refuse. Republish |
+
+Republishing never extends a receipt. It re-verifies that the frozen identity and
+seventy business hashes are unchanged, refreshes only the existing reader
+credential window, rewrites all four proofs and the receipt with a brand new
+15-minute window through the same `publish()` the normal run uses, and then the
+normal consumer starts one runtime. A stopped half-started `/xmail` from a failed
+consumer, and leftover preview containers/networks from the cancelled run, are
+removed first by label; any unknown object refuses.
+
+When the old runtime is restored the script exits with status 10; the deploy
+finishes green with a warning and the image update waits for the next deploy.
+`maintenance-attempt.json` is pointed back at the still authoritative anchor, so
+the next deploy is not blocked. A fresh attempt is also allowed when an
+abandoned attempt never reached the fence. Ambiguity (both or neither password
+accepted, mixed role state, lingering SQL sessions, diverged data, a published
+bundle) refuses with a fixed `check` label and the detected phase on stderr, for
+example `{"recoveryPhase":"commit-attempted","action":"refused","check":"credentials-ambiguous"}`.
+No value, password or URL is ever printed, and nothing is restored from or
+imported into the former Supabase database.
+
 The frozen custom dump is private root-0600 and is retained with its SHA256;
 DR31 independently encrypts, transfers and rehearses the current authoritative
 database. Maintenance does not change storage buckets, ACLs, SMTP/IMAP native

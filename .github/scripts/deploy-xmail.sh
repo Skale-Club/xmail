@@ -646,6 +646,7 @@ prepare_owned_runtime_profile() {
   local response
   prepare_owned_maintenance_pipeline || return 1
   OWNED_MODE="legacy"
+  if [ "${OWNED_RECOVERED_ONLY:-false}" = true ]; then OWNED_MODE="recovered"; return 0; fi
   if [ ! -e "$OWNED_RUNTIME_ENV_FILE" ] && [ ! -L "$OWNED_RUNTIME_ENV_FILE" ]; then return 0; fi
   response=$(owned_policy inspect) || return 1
   read -r OWNED_MODE OWNED_IMAGE_ID OWNED_SOURCE_SHA OWNED_PROFILE_SHA OWNED_READER_SHA OWNED_OLD_ID <<< "$response"
@@ -657,20 +658,25 @@ prepare_owned_maintenance_pipeline() {
   local staged phase old_id candidate policy_hash
   staged=$(python3 - <<'XMAIL_MAINTENANCE_STAGE_PY'
 import base64,gzip,hashlib,io,json,os,pathlib,re,stat,tarfile
+step='ops-directory'
 try:
     root=pathlib.Path('/opt/xmail/owned-runtime-ops')
     def directory(p):
         st=p.lstat();assert stat.S_ISDIR(st.st_mode) and st.st_uid==st.st_gid==0 and not st.st_mode&0o022
     directory(root)
+    step='profile-file'
     p=root/'owned-runtime.env';st=p.lstat();assert stat.S_ISREG(st.st_mode) and st.st_uid==0 and stat.S_IMODE(st.st_mode)==0o600 and st.st_nlink==1
     lines=p.read_text().splitlines();values=dict(line.split('=',1) for line in lines if line and not line.startswith('#'))
     if values.get('XMAIL_OWNED_AUTH_PHASE')!='identity':print('skip');raise SystemExit
     assert values.get('XMAIL_BROWSER_AUTH_AUTHORITY')==values.get('XMAIL_USER_ADMIN_AUTHORITY')=='owned'
+    step='source-sha'
     source=os.environ['GITHUB_SOURCE_SHA'];assert re.fullmatch('[a-f0-9]{40}',source)
+    step='bundle-checksum'
     raw=base64.b64decode(os.environ['XMAIL_MAINTENANCE_CODE_B64'],validate=True)
     assert len(raw)<=262144 and hashlib.sha256(raw).hexdigest()==os.environ['XMAIL_MAINTENANCE_CODE_SHA256']
     unpacked=gzip.decompress(raw);assert len(unpacked)<=1048576
     names={'.github/scripts/deploy-xmail.sh','scripts/ops/prepare-xmail-owned-runtime-maintenance.py','scripts/ops/prepare-xmail-owned-pilot-rollout.py','scripts/ops/prepare-xmail-final-data-cutover.py','scripts/ops/xmail-database-rehearsal.sh'}
+    step='bundle-extract'
     base=root/'maintenance-code';base.mkdir(mode=0o700,exist_ok=True);directory(base)
     target=base/source;target.mkdir(mode=0o700,exist_ok=True);directory(target)
     with tarfile.open(fileobj=io.BytesIO(unpacked),mode='r:') as archive:
@@ -684,19 +690,22 @@ try:
                 st=dest.lstat();assert stat.S_ISREG(st.st_mode) and st.st_uid==0 and st.st_nlink==1 and stat.S_IMODE(st.st_mode)==0o600 and dest.read_bytes()==data
             else:
                 with os.fdopen(os.open(dest,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600),'wb') as f:f.write(data);f.flush();os.fsync(f.fileno())
+    step='deploy-code-hash'
     deploy=(target/'.github/scripts/deploy-xmail.sh').read_bytes();assert hashlib.sha256(deploy).hexdigest()==os.environ['XMAIL_DEPLOY_CODE_SHA256']
+    step='running-container'
     import subprocess
-    ids=subprocess.check_output(['docker','ps','--no-trunc','-q','--filter','name=^/xmail$'],stderr=subprocess.DEVNULL,timeout=8).decode().split();assert len(ids)==1 and re.fullmatch('[a-f0-9]{64}',ids[0])
+    ids=subprocess.check_output(['docker','ps','--no-trunc','-q','--filter','name=^/xmail$'],stderr=subprocess.DEVNULL,timeout=8).decode().split();assert len(ids)<=1 and all(re.fullmatch('[a-f0-9]{64}',i) for i in ids)
+    step='candidate-image'
     image=json.loads(subprocess.check_output(['docker','image','inspect',os.environ['IMAGE_NAME']+':latest'],stderr=subprocess.DEVNULL,timeout=8))[0]
     assert image['Config']['Labels']['org.opencontainers.image.revision']==source and re.fullmatch('sha256:[a-f0-9]{64}',image['Id'])
-    print('identity',ids[0],image['Id'],hashlib.sha256(deploy).hexdigest(),str(target))
+    print('identity' if ids else 'recover',ids[0] if ids else '-',image['Id'],hashlib.sha256(deploy).hexdigest(),str(target))
 except Exception:
-    print('Owned maintenance staging refused; details suppressed.',file=__import__('sys').stderr);raise SystemExit(1)
+    print('Owned maintenance staging refused at step '+step+'; values suppressed.',file=__import__('sys').stderr);raise SystemExit(1)
 XMAIL_MAINTENANCE_STAGE_PY
   ) || return 1
   [ "$staged" != skip ] || return 0
   read -r phase old_id candidate policy_hash staged <<< "$staged"
-  [ "$phase" = identity ] || return 1
+  case "$phase" in identity|recover) ;; *) return 1 ;; esac
   [ "$(stat -c '%u:%g:%a:%h:%s' -- "${OWNED_RUNTIME_OPS_DIR}/deploy.lock")" = '0:0:600:1:0' ] || return 1
   exec 9>"${OWNED_RUNTIME_OPS_DIR}/deploy.lock" || return 1
   flock -n 9 || return 1
@@ -708,6 +717,21 @@ XMAIL_MAINTENANCE_STAGE_PY
       && [ "$(stat -c '%u:%g:%a:%h:%s' -- /opt/xmail/owned-backup-ops/backup.lock)" = '0:0:600:1:0' ] || return 1
     exec 8>/opt/xmail/owned-backup-ops/backup.lock || return 1
     flock -n 8 || return 1
+  fi
+  if [ "$phase" = recover ]; then
+    # No full runtime is serving: a previous maintenance was interrupted. The
+    # operator decides the phase from durable markers and real SQL/Docker state.
+    local status=0
+    python3 -B "$staged/scripts/ops/prepare-xmail-owned-runtime-maintenance.py" --recover-interrupted --parent-lock \
+      --approved-image-id "$candidate" --approved-source-sha "$GITHUB_SOURCE_SHA" \
+      --policy-sha256 "$policy_hash" || status=$?
+    if [ "$status" -eq 10 ]; then
+      OWNED_RECOVERED_ONLY=true
+      echo '::warning::Interrupted maintenance recovered by restoring the previous owned runtime; the image update is left for the next deploy.' >&2
+      return 0
+    fi
+    [ "$status" -eq 0 ] || return 1
+    return 0
   fi
   python3 -B "$staged/scripts/ops/prepare-xmail-owned-runtime-maintenance.py" --apply --parent-lock \
     --approved-image-id "$candidate" --approved-source-sha "$GITHUB_SOURCE_SHA" \
@@ -1025,6 +1049,11 @@ run_owned_deploy() {
 
 echo "::group::Deploy"
 prepare_owned_runtime_profile || exit 1
+if [ "$OWNED_MODE" = recovered ]; then
+  echo '{"ownedRecovered":true,"previousRuntimeRestored":true,"imageUpdateDeferred":true}'
+  echo "::endgroup::"
+  exit 0
+fi
 if [ "$OWNED_MODE" != legacy ]; then
   run_owned_deploy
   exit $?
