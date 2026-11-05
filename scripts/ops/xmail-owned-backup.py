@@ -34,9 +34,10 @@ IDENTITY={'xmail_identity_bindings','xmail_identity_owned_sessions','xmail_ident
 
 
 class ReceiverFailure(Exception):
-    def __init__(self, location, sqlState=None):
+    def __init__(self, location, sqlState=None, comparison=None):
         self.location=location
         self.sqlState=sqlState
+        self.comparison=comparison
 
 
 class RestoreQueryFailure(Exception):
@@ -44,10 +45,35 @@ class RestoreQueryFailure(Exception):
         self.sqlState=sqlState
 
 
+class RestoreManifestMismatch(Exception):
+    def __init__(self, comparison):
+        self.comparison=comparison
+
+
+def valid_comparison(value):
+    booleans={'schemaTableNamesEqual','schemaFunctionsEqual','schemaTypesEqual','ledgerEqual','policyRolesEqual'}
+    counts={'schemaTableDifferenceCount','fingerprintCountDifferenceCount','fingerprintHashDifferenceCount'}
+    return isinstance(value,dict) and set(value)==booleans|counts and all(type(value[k]) is bool for k in booleans) and all(type(value[k]) is int and 0<=value[k]<=256 for k in counts)
+
+
+def manifest_comparison(expected,actual):
+    before,after=expected['schema'],actual['schema']
+    names=set(before['tables'])|set(after['tables'])
+    fingerprints=set(expected['fingerprints'])|set(actual['fingerprints'])
+    return {'schemaTableNamesEqual':set(before['tables'])==set(after['tables']),
+        'schemaTableDifferenceCount':sum(before['tables'].get(k)!=after['tables'].get(k) for k in names),
+        'schemaFunctionsEqual':before.get('functions')==after.get('functions'),'schemaTypesEqual':before.get('types')==after.get('types'),
+        'fingerprintCountDifferenceCount':sum(expected['fingerprints'].get(k,{}).get('count')!=actual['fingerprints'].get(k,{}).get('count') for k in fingerprints),
+        'fingerprintHashDifferenceCount':sum(expected['fingerprints'].get(k,{}).get('sha256')!=actual['fingerprints'].get(k,{}).get('sha256') for k in fingerprints),
+        'ledgerEqual':expected['ledger']==actual['ledger'],'policyRolesEqual':expected['policyRoles']==actual['policyRoles']}
+
+
 def failure_payload(error):
     value={'ownedBackupFailed':True,'location':error.location if isinstance(error,ReceiverFailure) else failure_location(error)}
     if isinstance(error,(ReceiverFailure,RestoreQueryFailure)) and isinstance(error.sqlState,str) and re.fullmatch(r'[0-9A-Z]{5}',error.sqlState):
         value['sqlState']=error.sqlState
+    if isinstance(error,(ReceiverFailure,RestoreManifestMismatch)) and valid_comparison(error.comparison):
+        value['comparison']=error.comparison
     return value
 
 
@@ -62,15 +88,16 @@ def failure_location(error):
 def receiver_failure(raw):
     try:
         value=json.loads(raw)
-        need(set(value) in [{'ownedBackupFailed','location'},{'ownedBackupFailed','location','sqlState'}] and value['ownedBackupFailed'] is True)
+        need({'ownedBackupFailed','location'}<=set(value)<={'ownedBackupFailed','location','sqlState','comparison'} and value['ownedBackupFailed'] is True)
         code=value.get('sqlState');need('sqlState' not in value or isinstance(code,str) and re.fullmatch(r'[0-9A-Z]{5}',code))
+        comparison=value.get('comparison');need('comparison' not in value or valid_comparison(comparison))
         rows=value['location'];need(isinstance(rows,list) and len(rows)<=8)
         for row in rows:
             need(set(row)=={'component','function','line'}
                 and row['component'] in ['xmail-owned-backup.py','prepare-xmail-final-data-cutover.py','reviewed-offsite-primitives']
                 and isinstance(row['function'],str) and (row['function']=='<module>' or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}',row['function']))
                 and type(row['line']) is int and 0<row['line']<100000)
-        return ReceiverFailure(rows,code)
+        return ReceiverFailure(rows,code,comparison)
     except Exception:
         return ReceiverFailure([])
 
@@ -203,7 +230,8 @@ def restore(m,c,stage,expected,operation):
         need(p.returncode==0)
         query="BEGIN READ ONLY; SET LOCAL statement_timeout='60s'; SET LOCAL timezone='UTC'; SET LOCAL datestyle='ISO,YMD'; SET LOCAL extra_float_digits=3; SET LOCAL bytea_output='hex'; SET LOCAL search_path=public,pg_catalog; "+manifest_sql(m)+';ROLLBACK;'
         actual=restored_manifest(m,name,query)
-        validate_manifest(actual);need(actual==expected)
+        validate_manifest(actual)
+        if actual!=expected:raise RestoreManifestMismatch(manifest_comparison(expected,actual))
     finally:
         if started:
             state=m.inspect(name);need((state['Config'].get('Labels') or {}).get('com.skale.xmail-dr')==operation and state['Image']==PG_IMAGE)

@@ -87,6 +87,24 @@ class OwnedBackupGuards(unittest.TestCase):
         for change in [{'ledger':{'count':79,'sha256':'c'*64}},{'policyRoles':['unreviewed_role']},{'fingerprints':{}}]:
             with self.assertRaises(ValueError):backup.validate_manifest({**values,**change})
 
+    def test_manifest_mismatch_reports_only_bounded_component_counts_and_booleans(self):
+        from copy import deepcopy
+        private='private-table-or-credential-sentinel'
+        before={'schema':{'tables':{private:'a'*64},'functions':'b'*64,'types':[]},
+            'fingerprints':{private:{'count':2,'sha256':'c'*64}},'ledger':{'count':80,'sha256':'d'*64},'policyRoles':[]}
+        after=deepcopy(before);after['fingerprints'][private]['sha256']='e'*64
+        comparison=backup.manifest_comparison(before,after)
+        self.assertTrue(backup.valid_comparison(comparison));self.assertEqual(comparison['fingerprintHashDifferenceCount'],1)
+        self.assertEqual(comparison['fingerprintCountDifferenceCount'],0);self.assertEqual(comparison['schemaTableDifferenceCount'],0)
+        payload=backup.failure_payload(backup.RestoreManifestMismatch(comparison))
+        self.assertNotIn(private,json.dumps(payload));self.assertNotIn('c'*64,json.dumps(payload))
+        self.assertEqual(backup.receiver_failure(json.dumps(payload)).comparison,comparison)
+        for bad in [{**comparison,'sql':'private'},{**comparison,'schemaTableDifferenceCount':True},{**comparison,'fingerprintHashDifferenceCount':257}]:
+            self.assertIsNone(backup.receiver_failure(json.dumps({'ownedBackupFailed':True,'location':[],'comparison':bad})).comparison)
+        for field in ['functions','types']:
+            changed=deepcopy(before);changed['schema'][field]='different'
+            self.assertFalse(backup.manifest_comparison(before,changed)['schema'+field.title()+'Equal'])
+
     def test_isolated_restore_keeps_existing_resource_and_network_limits(self):
         args=backup.restore_arguments('offline-container','offline-operation')
         for value in ['max_connections=5','shared_buffers=32MB','work_mem=2MB']:

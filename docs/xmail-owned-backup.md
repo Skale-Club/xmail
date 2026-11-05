@@ -154,3 +154,21 @@ before readback and the query must return53100. Under512MiB/768MiB, the identica
 dump, rows and reserved bytes must produce complete manifest equality. The
 reserve file exists only in disposable CI tmpfs and is removed with the exact
 container; no real data or host filesystem is filled by this rehearsal.
+
+## Safe manifest mismatch classification
+
+After the SQL query and74-table/80-ledger validation succeed, exact manifest
+inequality still refuses publication. The failure payload can include only a
+strictly validated `comparison` object: five booleans for table-name equality,
+functions, enum types, ledger and policy roles, and three bounded counts for
+table-schema, row-count and row-hash differences. No table names, SQL,
+definitions, account identifiers, row values or content hashes are forwarded.
+Existing code coordinates and optional SQLSTATE remain compatible.
+
+CI runs actual restores and deliberately changes one restored synthetic row,
+then separately changes one restored column default without changing its rows.
+Both copies must fail exact equivalence; the classification must distinguish
+one row-hash mismatch from one table-schema mismatch. This diagnostic does not
+normalize away a difference, change restoration ownership, rewrite fingerprints
+or claim a real manifest mismatch is harmless. Actual component evidence is
+required before any targeted semantic correction.
