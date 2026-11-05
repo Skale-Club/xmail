@@ -19,9 +19,10 @@ def check(ok):
 def main():
     mode=os.environ.get('XMAIL_OWNED_BACKUP_REHEARSAL')
     check(sys.platform.startswith('linux') and os.environ.get('CI')=='true'
-        and mode in ['disposable-lock-budget','disposable-data-capacity','disposable-manifest-drift'])
+        and mode in ['disposable-lock-budget','disposable-data-capacity','disposable-manifest-drift','disposable-check-roundtrip'])
     pressure=mode=='disposable-data-capacity'
     drift=mode=='disposable-manifest-drift'
+    check_roundtrip=mode=='disposable-check-roundtrip'
     path=Path(__file__).with_name('xmail-owned-backup.py')
     spec=importlib.util.spec_from_file_location('backup_fixture',path)
     backup=importlib.util.module_from_spec(spec);spec.loader.exec_module(backup)
@@ -52,12 +53,24 @@ def main():
         tables=sorted(backup.IDENTITY)+['business_'+str(i).zfill(3) for i in range(70)]
         sql="CREATE SCHEMA supabase_migrations;CREATE TABLE supabase_migrations.schema_migrations(version text);INSERT INTO supabase_migrations.schema_migrations SELECT lpad(n::text,3,'0') FROM generate_series(1,80)n;"
         for name in tables: sql+='CREATE TABLE '+name+"(id int PRIMARY KEY,payload text);INSERT INTO "+name+" VALUES(1,'disposable-row');"
+        if check_roundtrip:
+            foundation=(Path(__file__).resolve().parents[2]/'supabase/migrations/079_owned_identity_foundation.sql').read_text()
+            start=foundation.index('CREATE TABLE IF NOT EXISTS public.xmail_identity_bindings (')
+            exact=foundation[start:foundation.index('\n);',start)+3]
+            sql+="DROP TABLE public.xmail_identity_bindings;DROP TABLE public.business_069;CREATE TABLE public.users(id uuid PRIMARY KEY,payload text);INSERT INTO public.users VALUES('11111111-1111-4111-8111-111111111111','disposable-row');"+exact
+            sql+="ALTER TABLE public.xmail_identity_bindings ADD COLUMN payload text DEFAULT 'disposable-row';INSERT INTO public.xmail_identity_bindings(project_id,subject,user_id,proof_reference) VALUES('skaleclub','disposable-subject','11111111-1111-4111-8111-111111111111','disposable-proof');"
+            tables[tables.index('business_069')]='users'
         if pressure: sql+="INSERT INTO business_000 SELECT n,'disposable-row' FROM generate_series(2,100000)n;"
         for n in range(235): sql+='CREATE INDEX fixture_idx_'+str(n)+' ON '+tables[n%74]+'(payload);'
         sql+='CREATE SEQUENCE fixture_sequence_one;CREATE SEQUENCE fixture_sequence_two;'
         m.call(['docker','exec','-i',source,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres'],sql.encode(),timeout=45)
         query="BEGIN READ ONLY;SET LOCAL timezone='UTC';SET LOCAL datestyle='ISO,YMD';SET LOCAL extra_float_digits=3;SET LOCAL bytea_output='hex';SET LOCAL search_path=public,pg_catalog;"+backup.manifest_sql(m)+';ROLLBACK;'
         expected=m.json_result(m.call(['docker','exec','-i',source,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres'],query.encode(),timeout=75));backup.validate_manifest(expected)
+        original_sql=backup.manifest_sql
+        pretty_sql=lambda module:original_sql(module).replace('pg_get_constraintdef(c.oid)','pg_get_constraintdef(c.oid,true)')
+        pretty_expected=None
+        if check_roundtrip:
+            pretty_expected=m.json_result(m.call(['docker','exec','-i',source,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres'],query.replace(original_sql(m),pretty_sql(m)).encode(),timeout=75));backup.validate_manifest(pretty_expected)
         counts=m.call(['docker','exec',source,'psql','-XwqAt','-U','postgres','-c',"SELECT (SELECT count(*) FROM pg_tables WHERE schemaname='public')||','||(SELECT count(*) FROM pg_indexes WHERE schemaname='public')||','||(SELECT count(*) FROM pg_sequences WHERE schemaname='public')"]).strip()
         check(counts==b'74,309,2')
         with tempfile.TemporaryDirectory(prefix='xmail-dr-locks-') as temporary:
@@ -86,21 +99,35 @@ def main():
                 m.call(['docker','exec','-i',name,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres','-d','xmail_dr'],sql.encode())
                 return original_manifest(module,name,query)
             if drift: backup.restored_manifest=drift_manifest
+            def check_manifest(module,name,query):
+                if drift_kind[0]==2:
+                    sql="ALTER TABLE public.xmail_identity_bindings DROP CONSTRAINT xmail_identity_bindings_subject_check;ALTER TABLE public.xmail_identity_bindings ADD CONSTRAINT xmail_identity_bindings_subject_check CHECK(length(subject) BETWEEN 1 AND 127 AND subject=btrim(subject))"
+                    m.call(['docker','exec','-i',name,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres','-d','xmail_dr'],sql.encode())
+                return original_manifest(module,name,query)
+            if check_roundtrip:backup.restored_manifest=check_manifest
             settings=[(64,256,384),(64,512,768)] if pressure else [(64,512,768),(256,512,768)]
+            if check_roundtrip:settings=[(64,512,768)]*3
             for index,(locks,data_mib,memory_mib) in enumerate(settings):
                 backup.RESTORE_DATA_BYTES=data_mib*1024*1024;backup.RESTORE_MEMORY_MIB=memory_mib
                 backup.restore_arguments=lambda name,op:original_arguments(name,op)+['-c','max_locks_per_transaction='+str(locks)]
                 last_state[0]=None
                 passed=False;comparison=None;drift_kind[0]=index
-                try: backup.restore(m,c,stage,expected,operation);passed=True
+                if check_roundtrip:backup.manifest_sql=original_sql if index==0 else pretty_sql
+                try: backup.restore(m,c,stage,pretty_expected if check_roundtrip and index>0 else expected,operation);passed=True
                 except backup.RestoreQueryFailure as error:last_state[0]=error.sqlState
                 except backup.RestoreManifestMismatch as error:comparison=error.comparison
                 except Exception: pass
                 result={'lockBudget':locks,'dataMiB':data_mib,'memoryMiB':memory_mib,'restoreEquivalent':passed,'sqlstate':last_state[0]}
                 if comparison is not None:result['comparison']=comparison
                 results.append(result)
-        print(json.dumps({'tables':74,'indexes':309,'sequences':2,'actualRestoreProtocol':True,'dataPressure':pressure,'manifestDrift':drift,'results':results}))
-        if drift:
+        print(json.dumps({'tables':74,'indexes':309,'sequences':2,'actualRestoreProtocol':True,'dataPressure':pressure,'manifestDrift':drift,'checkRoundtrip':check_roundtrip,'results':results}))
+        if check_roundtrip:
+            check([r['restoreEquivalent'] for r in results]==[False,True,False])
+            for index in [0,2]:
+                compare=results[index]['comparison'];check(compare['schemaTableDifferenceCount']==1 and compare['fingerprintCountDifferenceCount']==compare['fingerprintHashDifferenceCount']==0)
+                row=compare['tableDifferences'][0];check(row['table']=='xmail_identity_bindings' and row['constraintsEqual'] is False)
+                check(all(value is True for key,value in row.items() if key not in ['table','constraintsEqual']))
+        elif drift:
             for index,result in enumerate(results):
                 check(result['restoreEquivalent'] is False and result['sqlstate'] is None)
                 compare=result['comparison'];check(backup.valid_comparison(compare))
