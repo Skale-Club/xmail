@@ -104,3 +104,53 @@ must additionally prove current source/image health before and after, matching
 decrypted bytes, isolated restore equivalence, temporary-container removal,
 offsite/local verified receipts and an enabled/active daily timer. Do not infer
 those facts from offline tests alone.
+# Restore diagnostics and production-width rehearsal
+
+The initial diagnostic restore used384 MiB memory/swap,0.5CPU, five connections,
+network-none and its exact tmpfs data directory. Production PostgreSQL settings
+and the temporary process's default lock budget remain unchanged. An initial CI
+hypothesis test restored a synthetic74-table,
+309-index and two-sequence snapshot successfully under both 64 and 256 lock
+budgets. That result does not establish shared-lock exhaustion as the cause of
+the real receiver's manifest-readback error; the proposed lock change was removed.
+
+Only the failing manifest psql call requests `VERBOSITY=sqlstate`. A failed
+query can add the optional `sqlState` field, exactly five uppercase letters or
+digits, to the existing public component/function/line diagnostic. Raw stderr,
+SQL, values, exception messages and stdout rows are never forwarded. The SSH
+receiver validates the field strictly before propagating it. An unknown or
+malformed transport error produces only the existing code coordinates.
+
+The CI-only `rehearse-xmail-owned-backup-locks.py` keeps the production-width
+regression: it invokes actual `restore()` on disposable synthetic data, requires
+complete manifest equivalence under the original64 budget, and compares256 as a
+fixture-only measurement. Its containers expose no ports, use no persistent
+volumes or external network, and are removed after each attempt. Output contains
+aggregate counts, booleans and parsed SQLSTATE only. Live diagnosis and any
+subsequent correction remain subject to the actual observed error code.
+
+## Measured PGDATA capacity correction
+
+The real receiver returned SQLSTATE53100 during the preservation manifest query.
+Root sampled the disposable process27 times: its262144KiB PGDATA reached258388KiB
+used with3756KiB free; `/tmp` used0 of16384KiB and `/dev/shm` used1228 of65536KiB.
+The cgroup memory peak was350400512bytes, about334MiB of384MiB. This identifies
+PGDATA pressure rather than shared-memory exhaustion or a lock-slot error.
+
+Only the disposable restore now receives512MiB PGDATA tmpfs and768MiB memory/swap.
+The latter accounts for tmpfs pages plus PostgreSQL working memory. CPU remains
+0.5, connection limit5, shared_buffers32MiB, work_mem2MiB and PIDs96. `/tmp`,
+socket tmpfs, default `/dev/shm`, network-none, read-only root filesystem,
+no persistent mounts and cleanup remain unchanged. Admission requires at least
+2GiB host MemAvailable before any container access, and actual Docker resource
+limits are checked after startup. No production database or application limit,
+paid resource, schedule or provider setting changes.
+
+The CI data-pressure mode uses the actual restore protocol and the same full
+74-table/80-ledger manifest. It adds100000 synthetic rows to create a sort spill
+and reserves an identical fixture-only file in PGDATA across both capacity
+settings. Under the old256MiB data/384MiB RAM budget, only about1MiB remains free
+before readback and the query must return53100. Under512MiB/768MiB, the identical
+dump, rows and reserved bytes must produce complete manifest equality. The
+reserve file exists only in disposable CI tmpfs and is removed with the exact
+container; no real data or host filesystem is filled by this rehearsal.

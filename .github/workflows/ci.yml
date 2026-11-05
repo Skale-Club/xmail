@@ -15,6 +15,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  backup-restore-lock-budget:
+    name: Disposable owned backup restore lock budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull the existing pinned PostgreSQL image for isolated rehearsal
+        run: docker pull postgres@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+      - name: Reproduce old SQLSTATE and verify actual bounded restore protocol
+        run: python3 -B scripts/ops/rehearse-xmail-owned-backup-locks.py
+        env:
+          XMAIL_OWNED_BACKUP_REHEARSAL: disposable-lock-budget
+      - name: Reproduce PGDATA53100 and verify measured temporary capacity fix
+        run: python3 -B scripts/ops/rehearse-xmail-owned-backup-locks.py
+        env:
+          XMAIL_OWNED_BACKUP_REHEARSAL: disposable-data-capacity
+
   lint-and-typecheck:
     name: Lint + tsc + build
     runs-on: ubuntu-latest
