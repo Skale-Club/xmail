@@ -113,8 +113,38 @@ jobs:
               n=$((n + 1))
               fp=$(printf '%s\n' "$line" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')
               echo "$fp key#$n" >> "$keys"
+              comment=$(printf '%s\n' "$line" | ssh-keygen -lf - 2>/dev/null | cut -d' ' -f3-)
+              case "$comment" in *@*.*) comment="(email)" ;; esac
+              options=no
+              case "$line" in ssh-*|ecdsa-*|sk-*) ;; *) options=yes ;; esac
+              echo "key#$n type=$(printf '%s\n' "$line" | ssh-keygen -lf - 2>/dev/null | awk '{print $NF}') comment=[$comment] options=$options"
             done < /root/.ssh/authorized_keys
             echo "total: $n"
+            echo
+            echo "== Sources of each root key, 24 hours (numbers stand in for addresses)"
+            xmartmenu_ip=$(awk '/^Accepted publickey for xmartmenu-pg-ssh /{print $6; exit}' "$log")
+            while read -r fp alias_name; do
+              s=0
+              for ip in $(awk -v fp="$fp" '/^Accepted publickey for root /{ if ($NF == fp) print $6 }' "$log" | sort -u); do
+                s=$((s + 1))
+                ptr=$(getent hosts "$ip" | awk '{print $2}' | awk -F. 'NF>=2{print $(NF-1)"."$NF}')
+                same=no; [ "$ip" = "$xmartmenu_ip" ] && same=yes
+                c=$(awk -v fp="$fp" -v ip="$ip" '/^Accepted publickey for root /{ if ($NF == fp && $6 == ip) n++ } END{print n+0}' "$log")
+                echo "$alias_name source#$s logins=$c reverse-dns-domain=${ptr:-none} same-as-xmartmenu-source=$same"
+              done
+            done < "$keys"
+            echo
+            echo "== What SSH sessions are running now (process names)"
+            for pid in $(pgrep -x sshd; pgrep -f '^sshd:' ); do ps -o comm= --ppid "$pid" 2>/dev/null; done | sort | uniq -c | sort -rn | head -12
+            echo
+            echo "== Password logins in all retained logs"
+            echo "journal starts: $(journalctl -u ssh --no-pager -o short-iso 2>/dev/null | sed -n 2p | cut -c1-10)"
+            echo "journal accepted password: $(journalctl -u ssh --no-pager -o cat 2>/dev/null | grep -c '^Accepted password')"
+            echo "auth logs present: $(ls /var/log/auth.log* 2>/dev/null | wc -l), oldest: $(ls -tr /var/log/auth.log* 2>/dev/null | head -1 | xargs -r stat -c %y 2>/dev/null | cut -c1-10)"
+            echo "auth logs accepted password: $(zcat -f /var/log/auth.log* 2>/dev/null | grep -c 'Accepted password')"
+            echo
+            echo "== sshd config files that set these options (file: setting)"
+            grep -HiE '^\s*(PasswordAuthentication|PermitRootLogin|KbdInteractiveAuthentication|Include|Match)\b' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/* 2>/dev/null
             echo
             echo "== Accepted logins, 24 hours: method, user, key, source class, count, distinct sources"
             self=$(hostname -I)
