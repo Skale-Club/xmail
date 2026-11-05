@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import runpy
 from pathlib import Path
 import stat
 import sys
@@ -34,6 +35,35 @@ class OwnedBackupGuards(unittest.TestCase):
         for m in [backup,installer]:
             with patch('sys.argv',['offline']),patch.object(m,'run' if m is installer else 'libraries',side_effect=AssertionError('No I/O')),contextlib.redirect_stdout(io.StringIO()) as out:m.main()
             self.assertIn('PLAN ONLY',out.getvalue())
+
+    def test_failure_coordinates_never_include_exception_or_frame_values(self):
+        private_value='customer-and-credential-sentinel'
+        try:backup.need(False)
+        except Exception as error:
+            error.args=(private_value,)
+            rows=backup.failure_location(error)
+        self.assertTrue(rows)
+        self.assertEqual(set(rows[0]),{'component','function','line'})
+        self.assertNotIn(private_value,json.dumps(rows))
+        self.assertTrue(all(row['component']=='xmail-owned-backup.py' for row in rows))
+
+    def test_receiver_diagnostics_accept_only_bounded_public_code_coordinates(self):
+        row={'component':'xmail-owned-backup.py','function':'restore','line':140}
+        valid=json.dumps({'ownedBackupFailed':True,'location':[row]})
+        self.assertEqual(backup.receiver_failure(valid).location,[row])
+        for raw in ['raw credential sentinel',json.dumps({'ownedBackupFailed':True,'location':[dict(row,message='private')]}),
+                    json.dumps({'ownedBackupFailed':True,'location':[dict(row,component='/private/key')]}),
+                    json.dumps({'ownedBackupFailed':True,'location':[dict(row,line=True)]}),
+                    json.dumps({'ownedBackupFailed':True,'location':[row]*9})]:
+            self.assertEqual(backup.receiver_failure(raw).location,[])
+
+    def test_actual_cli_failure_coordinates_survive_the_receiver_parser(self):
+        with patch.object(sys,'platform','win32'),patch.object(sys,'argv',['backup','--receive']),contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit) as stopped:runpy.run_path(str(backup.__file__),run_name='__main__')
+        self.assertEqual(stopped.exception.code,1)
+        value=json.loads(errors.getvalue())
+        self.assertTrue(any(row['function']=='<module>' for row in value['location']))
+        self.assertEqual(backup.receiver_failure(errors.getvalue()).location,value['location'])
 
     def libraries(self):
         # Windows lacks resource; importing declarations must not invoke it.
