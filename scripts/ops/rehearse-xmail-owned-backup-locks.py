@@ -63,14 +63,17 @@ def main():
                 dump.chmod(0o600)
                 r=subprocess.run(['docker','exec',source,'pg_dump','-U','postgres','--format=custom','--no-owner','--no-acl','postgres'],stdout=out,stderr=subprocess.DEVNULL,timeout=60)
                 check(r.returncode==0)
+            original_arguments=backup.restore_arguments
             for locks in [64,256]:
-                backup.RESTORE_LOCKS=locks;last_state[0]=None
+                backup.restore_arguments=lambda name,op:original_arguments(name,op)+['-c','max_locks_per_transaction='+str(locks)]
+                last_state[0]=None
                 passed=False
                 try: backup.restore(m,c,stage,expected,operation);passed=True
+                except backup.RestoreQueryFailure as error:last_state[0]=error.sqlState
                 except Exception: pass
                 results.append({'lockBudget':locks,'restoreEquivalent':passed,'sqlstate':last_state[0]})
         print(json.dumps({'tables':74,'indexes':309,'sequences':2,'actualRestoreProtocol':True,'results':results}))
-        check(results[0]=={'lockBudget':64,'restoreEquivalent':False,'sqlstate':'53200'})
+        check(results[0]=={'lockBudget':64,'restoreEquivalent':True,'sqlstate':None})
         check(results[1]=={'lockBudget':256,'restoreEquivalent':True,'sqlstate':None})
     finally:
         if started:

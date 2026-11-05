@@ -87,10 +87,11 @@ class OwnedBackupGuards(unittest.TestCase):
         for change in [{'ledger':{'count':79,'sha256':'c'*64}},{'policyRoles':['unreviewed_role']},{'fingerprints':{}}]:
             with self.assertRaises(ValueError):backup.validate_manifest({**values,**change})
 
-    def test_isolated_restore_lock_budget_keeps_existing_resource_and_network_limits(self):
+    def test_isolated_restore_keeps_existing_resource_and_network_limits(self):
         args=backup.restore_arguments('offline-container','offline-operation')
-        for value in ['max_locks_per_transaction=256','max_connections=5','shared_buffers=32MB','work_mem=2MB']:
+        for value in ['max_connections=5','shared_buffers=32MB','work_mem=2MB']:
             self.assertIn(value,args)
+        self.assertFalse(any('max_locks_per_transaction' in value for value in args))
         self.assertEqual(args[args.index('--memory')+1],'384m')
         self.assertEqual(args[args.index('--memory-swap')+1],'384m')
         self.assertEqual(args[args.index('--cpus')+1],'0.5')
@@ -98,6 +99,24 @@ class OwnedBackupGuards(unittest.TestCase):
         self.assertIn('/var/lib/postgresql/data:rw,size=268435456',args)
         self.assertIn('--read-only',args)
         self.assertNotIn('--volume',args);self.assertNotIn('--mount',args);self.assertNotIn('-p',args)
+
+    def test_restore_query_reports_only_valid_sqlstate_and_propagates_it(self):
+        fake=SimpleNamespace(json_result=lambda value:json.loads(value))
+        for stderr,expected in [(b'ERROR:  42501\n','42501'),(b'FATAL:  53200\n','53200'),
+            (b'password credential-sentinel\n',None),(b'ERROR:  NOT_A_CODE\n',None)]:
+            result=SimpleNamespace(returncode=1,stdout=b'private-row-sentinel',stderr=stderr)
+            with patch.object(backup.subprocess,'run',return_value=result) as run:
+                with self.assertRaises(backup.RestoreQueryFailure) as stopped:backup.restored_manifest(fake,'fixture','private-query-sentinel')
+            args=run.call_args.args[0];self.assertIn('VERBOSITY=sqlstate',args)
+            self.assertNotIn('private-query-sentinel',' '.join(args))
+            payload=backup.failure_payload(stopped.exception)
+            self.assertEqual(payload.get('sqlState'),expected)
+            public=json.dumps(payload);self.assertNotIn('sentinel',public)
+            forwarded=backup.receiver_failure(public)
+            self.assertEqual(forwarded.sqlState,expected)
+        for code in ['secret-value','53200\nprivate',True,None,12345]:
+            self.assertEqual(backup.receiver_failure(json.dumps({'ownedBackupFailed':True,'location':[],'sqlState':code})).location,[])
+            self.assertIsNone(backup.receiver_failure(json.dumps({'ownedBackupFailed':True,'location':[],'sqlState':code})).sqlState)
 
     def test_packet_refuses_wrong_app_path_hash_limits_replay_and_nonboolean_numeric_types(self):
         now=dt.datetime.now(dt.timezone.utc)
@@ -188,6 +207,9 @@ class OwnedBackupGuards(unittest.TestCase):
             if payload and payload.startswith(b'BEGIN READ ONLY'):return json.dumps(expected).encode()
             return b''
         def run(args,**_kwargs):
+            if 'psql' in args:
+                self.assertTrue(state['finalServer']);self.assertIn('VERBOSITY=sqlstate',args)
+                return SimpleNamespace(returncode=0,stdout=json.dumps(expected).encode(),stderr=b'')
             if 'pg_isready' in args:
                 if '-h' in args and args[args.index('-h')+1]=='127.0.0.1':
                     state['tcpAttempts']+=1;state['finalServer']=state['tcpAttempts']>1
