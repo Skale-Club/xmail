@@ -29,7 +29,7 @@ import { closeDatabaseConnection, db } from '../db'
 import { users } from '../db/schema'
 import authRoutes from './routes/auth'
 import { createIdentityRouter } from './routes/identity'
-import { identityBrowserSources } from './lib/identity/config'
+import { identityBrowserSources, identityBrowserDocumentHeaders } from './lib/identity/config'
 import userRoutes from './routes/users'
 import organizationRoutes from './routes/organizations'
 import domainRoutes from './routes/domains'
@@ -89,7 +89,7 @@ app.use(helmet({
     },
 }))
 app.use((req, res, next) => {
-    if (identitySources && req.path === '/auth/identity') res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    res.set(identityBrowserDocumentHeaders(req.path, Boolean(identitySources)))
     next()
 })
 app.use(cors({

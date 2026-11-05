@@ -1,17 +1,18 @@
 import type { Sql } from 'postgres'
 import type { IdentityBinding, OwnedIdentityStore, UserIdentityControl } from './owned-session'
+import { nullableSqlTimestampDate, sqlTimestampDate, sqlTimestampParameter } from './sql-timestamp'
 
 type AdmissionRow = {
     bindingId: string; userId: string; projectId: string; subject: string
-    bindingDisabledAt: Date | null; userDisabledAt: Date | null; sessionsValidAfter: Date
+    bindingDisabledAt: Date | string | null; userDisabledAt: Date | string | null; sessionsValidAfter: Date | string
 }
 type SessionRow = AdmissionRow & {
-    tokenHash: string; authenticatedAt: string; createdAt: Date; expiresAt: Date; revokedAt: Date | null
+    tokenHash: string; authenticatedAt: string; createdAt: Date | string; expiresAt: Date | string; revokedAt: Date | string | null
 }
 function admission(row: AdmissionRow): { binding: IdentityBinding; control: UserIdentityControl } {
     return {
-        binding: { id: row.bindingId, userId: row.userId, projectId: row.projectId, subject: row.subject, disabledAt: row.bindingDisabledAt },
-        control: { disabledAt: row.userDisabledAt, sessionsValidAfter: row.sessionsValidAfter },
+        binding: { id: row.bindingId, userId: row.userId, projectId: row.projectId, subject: row.subject, disabledAt: nullableSqlTimestampDate(row.bindingDisabledAt) },
+        control: { disabledAt: nullableSqlTimestampDate(row.userDisabledAt), sessionsValidAfter: sqlTimestampDate(row.sessionsValidAfter) },
     }
 }
 
@@ -56,7 +57,7 @@ export function createPostgresOwnedIdentityStore(sql: Sql): OwnedIdentityStore {
                         (token_hash, binding_id, authenticated_at, created_at, expires_at, revoked_at)
                     VALUES ($1, $2, $3, $4, $5, $6)
                     ON CONFLICT (token_hash) DO NOTHING RETURNING token_hash
-                `, [session.tokenHash, session.bindingId, session.authenticatedAt, session.createdAt, session.expiresAt, session.revokedAt])
+                `, [session.tokenHash, session.bindingId, session.authenticatedAt, sqlTimestampParameter(session.createdAt), sqlTimestampParameter(session.expiresAt), session.revokedAt === null ? null : sqlTimestampParameter(session.revokedAt)])
                 return inserted.length === 1
             })
         },
@@ -76,12 +77,12 @@ export function createPostgresOwnedIdentityStore(sql: Sql): OwnedIdentityStore {
             const row = rows[0]
             return row ? { ...admission(row), session: {
                 tokenHash: row.tokenHash, bindingId: row.bindingId, authenticatedAt: Number(row.authenticatedAt),
-                createdAt: row.createdAt, expiresAt: row.expiresAt, revokedAt: row.revokedAt,
+                createdAt: sqlTimestampDate(row.createdAt), expiresAt: sqlTimestampDate(row.expiresAt), revokedAt: nullableSqlTimestampDate(row.revokedAt),
             } } : null
         },
         async revokeSession(tokenHash, now) {
             await sql`
-                UPDATE public.xmail_identity_owned_sessions SET revoked_at = coalesce(revoked_at, ${now})
+                UPDATE public.xmail_identity_owned_sessions SET revoked_at = coalesce(revoked_at, ${sqlTimestampParameter(now)})
                 WHERE token_hash = ${tokenHash}
             `
         },
@@ -90,11 +91,11 @@ export function createPostgresOwnedIdentityStore(sql: Sql): OwnedIdentityStore {
                 await tx.unsafe(`
                     UPDATE public.xmail_identity_user_controls
                     SET sessions_valid_after = greatest(sessions_valid_after, $1::timestamptz) WHERE user_id = $2
-                `, [now, userId])
+                `, [sqlTimestampParameter(now), userId])
                 await tx.unsafe(`
                     UPDATE public.xmail_identity_owned_sessions s SET revoked_at = coalesce(s.revoked_at, $1::timestamptz)
                     FROM public.xmail_identity_bindings b WHERE s.binding_id = b.id AND b.user_id = $2
-                `, [now, userId])
+                `, [sqlTimestampParameter(now), userId])
             })
         },
     }

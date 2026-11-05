@@ -4,10 +4,22 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import postgres, { type Sql } from 'postgres'
+import { drizzle } from 'drizzle-orm/postgres-js'
 import { createPostgresOwnedIdentityStore } from './postgres-store'
 import { createIdentityPilotStore } from './pilot-store'
 import { createExistingAccountLinker } from './existing-account-link'
 import { createOwnedIdentitySessions, hashOwnedSessionToken, OWNED_SESSION_LIFETIME_MS, type IdentityBinding, type OwnedIdentityStore, type OwnedSession } from './owned-session'
+
+function acceptanceQuery(facts: Record<string, string>): string {
+    const program = String.raw`import json,sys,textwrap
+from pathlib import Path
+s=Path('.github/scripts/deploy-xmail.sh').read_text()
+a=s.index('import datetime as dt\n',s.index('# BEGIN XMAIL OWNED POLICY'));b=s.index('XMAIL_OWNED_POLICY_PY',a)
+n={'__name__':'offline_fixture'};exec(compile(textwrap.dedent(s[a:b]),'policy','exec'),n)
+print(n['admin_acceptance_query'](json.load(sys.stdin)))`
+    return execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-B', '-c', program],
+        { input: JSON.stringify(facts), encoding: 'utf8', timeout: 5000 }).trim()
+}
 
 // This standalone gate never loads dotenv, application DB aliases or the shared
 // migration harness. Only the declared loopback CI service may be destructive.
@@ -36,6 +48,8 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
 
     beforeAll(async () => {
         sql = postgres(databaseUrl!, { max: 4, prepare: false, onnotice: () => {} })
+        // Production initializes Drizzle on this SAME raw client before identity stores.
+        drizzle(sql)
         await sql`CREATE TABLE public.users (id uuid PRIMARY KEY, email text NOT NULL UNIQUE, password_hash text, is_admin boolean NOT NULL DEFAULT false,
             first_name text, last_name text, email_verified boolean NOT NULL DEFAULT false)`
         await sql.unsafe(`DO $$ BEGIN
@@ -63,9 +77,9 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
             authenticatedAt: authTime, createdAt: new Date(now), expiresAt: new Date(now + OWNED_SESSION_LIFETIME_MS), revokedAt: null,
         }
     }
-    function sessions() {
+    function sessions(offset = 0) {
         return createOwnedIdentitySessions({
-            enabled: () => true, store, clock: () => now,
+            enabled: () => true, store, clock: () => now + offset,
             verifyIdentity: async () => ({ projectId: binding.projectId, subject: binding.subject, provider: 'phone', providerSubject: '+12025550123', authenticatedAt: authTime }),
             readProviderStatus: async () => ({ disabled: false, validSince: 0 }),
         })
@@ -132,6 +146,25 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
         invalid.expiresAt = new Date(now + OWNED_SESSION_LIFETIME_MS + 1)
         await expect(store.insertSessionIfActive(invalid, binding)).rejects.toMatchObject({ code: '23514' })
         expect(await store.insertSessionIfActive(session(), { ...binding, userId: randomUUID() })).toBe(false)
+    })
+    it('normalizes shared Drizzle string timestamps and refuses an expired real stored session', async () => {
+        const [wire] = await sql`SELECT ${new Date(now).toISOString()}::timestamptz AS value`
+        expect(typeof wire.value).toBe('string')
+        const admission = await store.findBinding(binding.projectId, binding.subject)
+        expect(admission?.control.sessionsValidAfter).toBeInstanceOf(Date)
+        expect(admission?.control.disabledAt).toBeNull()
+        const engine = sessions(), issued = await engine.issue('offline-verified-token')
+        const stored = await store.findSession(hashOwnedSessionToken(issued.token))
+        expect(stored?.session.createdAt).toBeInstanceOf(Date)
+        expect(stored?.session.expiresAt).toEqual(issued.expiresAt)
+        expect(stored?.session.revokedAt).toBeNull()
+        expect(await sessions(OWNED_SESSION_LIFETIME_MS + 1).authenticate(issued.token)).toBeNull()
+        const pilot = createIdentityPilotStore(sql)
+        const challenge = { challengeHash: hashOwnedSessionToken(randomUUID()), browserHash: hashOwnedSessionToken(randomUUID()), origin: 'https://offline.example.invalid', operation: 'link' }
+        await pilot.createChallenge({ ...challenge, expiresAt: new Date(now + 1000) }, new Date(now))
+        expect(await pilot.consumeChallenge(challenge, new Date(now + 1001))).toBe(false)
+        await pilot.createChallenge({ ...challenge, challengeHash: hashOwnedSessionToken(randomUUID()), expiresAt: new Date(now + 10000) }, new Date(now + 1001))
+        expect((await sql`SELECT count(*)::int AS n FROM public.xmail_identity_browser_challenges`)[0].n).toBe(1)
     })
     it('atomically consumes a browser/origin/operation-bound challenge once', async () => {
         const pilot = createIdentityPilotStore(sql)
@@ -211,14 +244,7 @@ describe.skipIf(!databaseUrl)('owned identity PostgreSQL foundation (disposable 
         await sql`INSERT INTO public.users(id,email) VALUES (${otherUser},${`${randomUUID()}@example.invalid`})`
         const facts = { adminUserId: binding.userId, bindingId: childId, sessionHash: childHash,
             legacyAnchorBindingId: binding.id, legacyAnchorSessionHash: parentHash }
-        const program = String.raw`import json,sys,textwrap
-from pathlib import Path
-s=Path('.github/scripts/deploy-xmail.sh').read_text()
-a=s.index('import datetime as dt\n',s.index('# BEGIN XMAIL OWNED POLICY'));b=s.index('XMAIL_OWNED_POLICY_PY',a)
-n={'__name__':'offline_fixture'};exec(compile(textwrap.dedent(s[a:b]),'policy','exec'),n)
-print(n['admin_acceptance_query'](json.load(sys.stdin)))`
-        const query = execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-B', '-c', program],
-            { input: JSON.stringify(facts), encoding: 'utf8', timeout: 5000 }).trim()
+        const query = acceptanceQuery(facts)
         const admitted = async () => (await sql.unsafe(query))[0].exists
         await sql`UPDATE public.xmail_identity_bindings SET proof_reference=${`legacy-password:${binding.userId}`}, created_at=now()-interval '60 seconds' WHERE id=${binding.id}`
         await sql`INSERT INTO public.xmail_identity_bindings(id,project_id,subject,user_id,proof_reference,created_at)
@@ -251,6 +277,38 @@ print(n['admin_acceptance_query'](json.load(sys.stdin)))`
             }).catch(error => { if (error.message !== 'rollback-negative-fixture') throw error })
         }
         expect(await admitted()).toBe(true)
+    })
+
+    it('keeps original ownership freshness and current controls while reusing an active two-hour-old phone session', async () => {
+        const child = randomUUID(), parentHash = 'c'.repeat(64), currentHash = 'd'.repeat(64)
+        await sql`UPDATE public.xmail_identity_bindings SET proof_reference=${`legacy-password:${binding.userId}`}, created_at=now()-interval '1 day 60 seconds' WHERE id=${binding.id}`
+        await sql`INSERT INTO public.xmail_identity_bindings(id,project_id,subject,user_id,proof_reference,created_at)
+            VALUES (${child},'skaleclub','historical-phone-fixture',${binding.userId},${`owned-session:${binding.userId}`},now()-interval '1 day 20 seconds')`
+        await sql`INSERT INTO public.xmail_identity_owned_sessions(token_hash,binding_id,authenticated_at,created_at,expires_at,revoked_at) VALUES
+            (${parentHash},${binding.id},extract(epoch FROM now()-interval '1 day 50 seconds')::bigint,now()-interval '1 day 45 seconds',now()-interval '23 hours',now()-interval '1 day 19 seconds'),
+            (${currentHash},${child},extract(epoch FROM now()-interval '2 hours')::bigint,now()-interval '119 minutes',now()+interval '1 hour',NULL)`
+        const query = acceptanceQuery({ adminUserId: binding.userId, bindingId: child, sessionHash: currentHash,
+            legacyAnchorBindingId: binding.id, legacyAnchorSessionHash: parentHash })
+        expect((await sql.unsafe(query))[0].exists).toBe(true)
+        for (const invalid of [
+            `UPDATE public.xmail_identity_owned_sessions SET authenticated_at=extract(epoch FROM now()-interval '1 day 400 seconds')::bigint WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET expires_at=now()-interval '1 day 21 seconds' WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET revoked_at=now()-interval '1 day 21 seconds' WHERE token_hash='${parentHash}'`,
+            `UPDATE public.xmail_identity_user_controls SET sessions_valid_after=now()-interval '12 hours'`,
+            `UPDATE public.xmail_identity_owned_sessions SET expires_at=now()-interval '1 second' WHERE token_hash='${currentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET revoked_at=now() WHERE token_hash='${currentHash}'`,
+            `UPDATE public.xmail_identity_owned_sessions SET authenticated_at=extract(epoch FROM now()+interval '60 seconds')::bigint WHERE token_hash='${currentHash}'`,
+        ]) {
+            await sql.begin(async tx => {
+                await tx.unsafe(invalid)
+                expect((await tx.unsafe(query))[0].exists).toBe(false)
+                throw new Error('rollback-historical-fixture')
+            }).catch(error => { if (error.message !== 'rollback-historical-fixture') throw error })
+        }
+        // The original table constraint rejects zero before admission SQL runs.
+        await expect(sql`UPDATE public.xmail_identity_owned_sessions SET authenticated_at=0 WHERE token_hash=${currentHash}`)
+            .rejects.toMatchObject({ code: '23514' })
+        expect((await sql.unsafe(query))[0].exists).toBe(true)
     })
 
 })

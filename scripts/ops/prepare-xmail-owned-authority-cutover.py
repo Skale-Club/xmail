@@ -63,7 +63,7 @@ def libraries():
     return pilot,pilot.library()
 
 
-def select_acceptance(rows, now=None, max_age=90):
+def select_acceptance(rows, now=None):
     """Only real queried API rows; refuse missing factors, ambiguous ancestry or users."""
     now = now or dt.datetime.now(dt.timezone.utc)
     require(isinstance(rows,list) and 0 < len(rows) < 101)
@@ -74,23 +74,35 @@ def select_acceptance(rows, now=None, max_age=90):
             require(isinstance(row[k],str) and re.fullmatch(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}',row[k]))
         for k in ['sessionHash','legacyAnchorSessionHash']:require(isinstance(row[k],str) and re.fullmatch(r'[a-f0-9]{64}',row[k]))
         require(all(isinstance(row[k],str) and 0 < len(row[k]) <= 128 for k in ['subject','anchorSubject']))
-        require(type(row['authenticatedAt']) is int and 0 <= now.timestamp()-row['authenticatedAt'] <= 300)
-        require(type(row['anchorAuthenticatedAt']) is int and 0 <= now.timestamp()-row['anchorAuthenticatedAt'] <= 600)
+        require(type(row['authenticatedAt']) is int and 0 < row['authenticatedAt'] <= now.timestamp())
+        # Historical ownership is fresh AT the original phone binding (SQL).
+        # Current local cutoffs and Google validSince still apply to that proof.
+        require(type(row['anchorAuthenticatedAt']) is int and 0 < row['anchorAuthenticatedAt'] <= now.timestamp())
         moment = dt.datetime.fromisoformat(row['sessionCreatedAt'].replace('Z','+00:00'))
-        require(moment.tzinfo is not None and 0 <= (now-moment).total_seconds() <= 300)
+        require(moment.tzinfo is not None and 0 <= (now-moment).total_seconds())
     require(len({r['adminUserId'] for r in rows}) == 1)
     eligible = [r for r in rows if r['bindingId'] != r['legacyAnchorBindingId'] and r['subject'] != r['anchorSubject'] and r['sessionHash'] != r['legacyAnchorSessionHash']]
     require(eligible)
     eligible.sort(key=lambda r:(r['sessionCreatedAt'],r['sessionHash']),reverse=True)
     current = eligible[0]
     require(sum(r['sessionHash'] == current['sessionHash'] for r in eligible) == 1)
-    # Leave time for the bounded fence/refresh/promotion. No TTL extension.
-    require(now.timestamp()-current['authenticatedAt'] <= max_age)
+    # Publication is authorized by the operator. SQL proves the ORIGINAL
+    # session is still live; it never extends its expiry or original link proof.
     return current
 
 
 def acceptance_facts(row):
     return {**{k:row[k] for k in FACT_KEYS},**{k:True for k in CHECK_KEYS}}
+
+
+def verified_acceptance(rows, verify_local, verify_provider, expected=None, now=None):
+    row=select_acceptance(rows,now=now)
+    if expected is not None:
+        require(all(row[k]==expected[k] for k in FACT_KEYS+['subject','anchorSubject','authenticatedAt','anchorAuthenticatedAt']))
+    facts=acceptance_facts(row)
+    verify_local(facts)
+    require(verify_provider(row)=={'currentProviderActive':True,'anchorProviderActive':True,'distinctGoogleAndPhone':True})
+    return row,facts
 
 
 def run(args):
@@ -136,12 +148,10 @@ def run(args):
             and len(mounts)==1 and mounts[0].get('Type')=='volume' and mounts[0].get('Name')=='postgres-data-'+m.TARGET and mounts[0].get('RW') is True
             and not any((pg['NetworkSettings'].get('Ports') or {}).values()) and pg['HostConfig']['Memory']==pg['HostConfig']['MemorySwap']==536870912 and pg['HostConfig']['NanoCpus']==750000000)
         m.read_only(pilot.owned_guard_sql(m));m.ensure_no_other_writers(policy,old,args.approved_image_id)
-        def capture(expected=None,max_age=90):
-            row=select_acceptance(m.json_result(m.read_only(policy['admin_acceptance_candidates_sql']())),max_age=max_age)
-            if expected is not None:require(all(row[k]==expected[k] for k in FACT_KEYS+['subject','anchorSubject','authenticatedAt','anchorAuthenticatedAt']))
-            facts=acceptance_facts(row);policy['verify_linked_admin']({'_acceptedAdmin':facts})
-            require(node(PROVIDER_REVIEW_JS,{**row,'env':google},'provider',True)=={'currentProviderActive':True,'anchorProviderActive':True,'distinctGoogleAndPhone':True})
-            return row,facts
+        def capture(expected=None):
+            return verified_acceptance(m.json_result(m.read_only(policy['admin_acceptance_candidates_sql']())),
+                lambda facts:policy['verify_linked_admin']({'_acceptedAdmin':facts}),
+                lambda row:node(PROVIDER_REVIEW_JS,{**row,'env':google},'provider',True),expected)
         row,facts=capture()
         if args.capture:
             # Private facts derived from SQL/provider, never public/raw output.
@@ -169,7 +179,7 @@ def run(args):
             'XMAIL_BROWSER_AUTH_AUTHORITY':'owned','XMAIL_USER_ADMIN_AUTHORITY':'owned','XMAIL_OWNED_RECEIPT_SHA256':'0'*64}
         next_reader={**reader,'XMAIL_STAGING_DATABASE_URL':'postgres://xmail_staging_reader:'+reader_password+'@'+m.TARGET+':5432/xmail'}
         for name,value in [('pending-profile.env',next_profile),('pending-reader.env',next_reader)]:m.durable_file(bundle/name,m.env_bytes(value))
-        row,facts=capture(row) # Every slow preflight/backup precedes the final live proof.
+        row,facts=capture(row) # Same original live session, current local/provider controls after backup.
         m.durable_file(bundle/'admin-before-stop.json',m.encoded(facts))
         m.call(['docker','update','--restart=no',old['Id']]);m.call(['docker','stop','--time=20',old['Id']],timeout=30)
         stopped=m.inspect(old['Id']);require(not stopped['State']['Running'] and stopped['State'].get('Pid',0)==0 and stopped['State'].get('ExitCode')==0 and stopped['State'].get('OOMKilled') is False)
@@ -193,7 +203,7 @@ def run(args):
         require(node(pilot.AUTH_PROBE_JS,{'url':profile['DATABASE_URL']},'deny-old')=={'allowed':False,'passwordRejected':True})
         require(node(pilot.AUTH_PROBE_JS,{'url':next_profile['DATABASE_URL']},'allow-new')=={'allowed':True,'passwordRejected':False})
         require(node(pilot.AUTH_PROBE_JS,{'url':next_reader['XMAIL_STAGING_DATABASE_URL']},'allow-reader')=={'allowed':True,'passwordRejected':False})
-        row,facts=capture(row,max_age=300)
+        row,facts=capture(row)
         now=dt.datetime.now(dt.timezone.utc).replace(microsecond=0);require(now<expiry)
         stamp=lambda x:x.strftime('%Y-%m-%dT%H:%M:%SZ')
         common={'version':1,'app':'xmail','target':m.TARGET,'database':'xmail','role':'xmail_runtime','postgresImage':m.PG_IMAGE,
