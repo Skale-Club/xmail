@@ -92,13 +92,18 @@ class OwnedBackupGuards(unittest.TestCase):
         for value in ['max_connections=5','shared_buffers=32MB','work_mem=2MB']:
             self.assertIn(value,args)
         self.assertFalse(any('max_locks_per_transaction' in value for value in args))
-        self.assertEqual(args[args.index('--memory')+1],'384m')
-        self.assertEqual(args[args.index('--memory-swap')+1],'384m')
+        self.assertEqual(args[args.index('--memory')+1],'768m')
+        self.assertEqual(args[args.index('--memory-swap')+1],'768m')
         self.assertEqual(args[args.index('--cpus')+1],'0.5')
         self.assertEqual(args[args.index('--network')+1],'none')
-        self.assertIn('/var/lib/postgresql/data:rw,size=268435456',args)
+        self.assertIn('/var/lib/postgresql/data:rw,size=536870912',args)
         self.assertIn('--read-only',args)
         self.assertNotIn('--volume',args);self.assertNotIn('--mount',args);self.assertNotIn('-p',args)
+
+    def test_restore_refuses_less_than_two_gib_available_before_any_container_access(self):
+        fake=SimpleNamespace(inspect=lambda *_:self.fail('No container access before memory admission'))
+        with patch.object(backup.shutil,'disk_usage',return_value=SimpleNamespace(free=2*1024**3)),patch('builtins.open',return_value=io.StringIO('MemAvailable: 2097151 kB\n')):
+            with self.assertRaises(ValueError):backup.restore(fake,{},Path('/unused'),{},'offline')
 
     def test_restore_query_reports_only_valid_sqlstate_and_propagates_it(self):
         fake=SimpleNamespace(json_result=lambda value:json.loads(value))
@@ -196,7 +201,8 @@ class OwnedBackupGuards(unittest.TestCase):
         calls=[];state={'tcpAttempts':0,'finalServer':False,'removed':False}
         container={'Image':backup.PG_IMAGE,'Config':{'Labels':{'com.skale.xmail-dr':operation}},
             'NetworkSettings':{'Networks':{'none':{}},'Ports':{}},'Mounts':[],
-            'HostConfig':{'Tmpfs':{'/var/lib/postgresql/data':'rw,size=268435456'}}}
+            'HostConfig':{'Tmpfs':{'/var/lib/postgresql/data':'rw,size=536870912'},'Memory':768*1024*1024,
+                'MemorySwap':768*1024*1024,'NanoCpus':500000000,'PidsLimit':96}}
         def inspect(identifier):
             return {'Id':backup.PG_IMAGE,'Config':{'Volumes':{'/var/lib/postgresql/data':{}}}} if identifier==backup.PG_IMAGE else container
         def call(args,payload=None,timeout=None):
@@ -230,7 +236,7 @@ class OwnedBackupGuards(unittest.TestCase):
                 backup.restore(m,{},stage,expected,operation)
         self.assertEqual(state['tcpAttempts'],2);self.assertTrue(state['removed'])
         create=next(x for x in calls if x[:2]==['docker','run'])
-        self.assertIn('/var/lib/postgresql/data:rw,size=268435456',create)
+        self.assertIn('/var/lib/postgresql/data:rw,size=536870912',create)
         self.assertNotIn('/var/lib/postgresql:rw,size=268435456',create)
 
 
