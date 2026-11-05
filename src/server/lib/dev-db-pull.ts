@@ -317,13 +317,14 @@ export async function pullDatabase(options: PullOptions): Promise<PullResult> {
             }).join(', ')
             const overriding = destColumns.some(c => c.identity_generation === 'ALWAYS') ? 'OVERRIDING SYSTEM VALUE ' : ''
             // row_to_json(...)::text keeps bigint/numeric/array/jsonb values byte-exact; the
-            // destination type system does the parsing (json_populate_recordset).
+            // destination type system does the parsing (json_populate_recordset). The payload goes in as
+            // text ($1::text::json): postgres.js would otherwise JSON-encode a string bound to a json parameter.
             const { rows } = await prod.query<{ j: string }>(`select row_to_json(t)::text as j from ${q(table)} t`)
             const size = selfReferencing.has(table) ? Math.max(rows.length, 1) : CHUNK // self FKs need one statement
             for (let i = 0; i < rows.length; i += size) {
                 const payload = `[${rows.slice(i, i + size).map(r => r.j).join(',')}]`
                 await dest.query(
-                    `INSERT INTO ${q(table)} (${names}) ${overriding}SELECT ${selects} FROM json_populate_recordset(null::${q(table)}, $1::json)`,
+                    `INSERT INTO ${q(table)} (${names}) ${overriding}SELECT ${selects} FROM json_populate_recordset(null::${q(table)}, $1::text::json)`,
                     [payload],
                 )
             }
