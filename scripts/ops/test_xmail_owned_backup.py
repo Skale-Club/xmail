@@ -120,6 +120,13 @@ class OwnedBackupGuards(unittest.TestCase):
         compare['tableDifferences'][0]['definition']='must-not-forward'
         self.assertIsNone(backup.receiver_failure(json.dumps({'ownedBackupFailed':True,'location':[],'comparison':compare})).comparison)
 
+    def test_constraint_signature_uses_pg_deparser_without_removing_checks_or_flags(self):
+        m,_=self.libraries();sql=backup.manifest_sql(m)
+        self.assertIn('pg_get_constraintdef(c.oid,true)',sql)
+        self.assertNotIn('pg_get_constraintdef(c.oid)',sql)
+        self.assertIn('c.conname,c.contype,pg_get_constraintdef(c.oid,true),c.convalidated',sql)
+        self.assertNotIn('regexp_replace',sql)
+
     def test_isolated_restore_keeps_existing_resource_and_network_limits(self):
         args=backup.restore_arguments('offline-container','offline-operation')
         for value in ['max_connections=5','shared_buffers=32MB','work_mem=2MB']:

@@ -144,6 +144,11 @@ def manifest_sql(m):
     schema=m.business_schema_sql();fingerprints=m.fingerprints_sql()
     need(schema.count(excluded)==fingerprints.count(excluded)==1)
     schema=schema.replace(excluded,'');fingerprints=fingerprints.replace(excluded,'')
+    # pg_dump expands BETWEEN into comparisons; reparsing flattens associative
+    # AND groups. PostgreSQL's precedence-aware deparser removes only redundant
+    # grouping while preserving each predicate, bound and constraint flag.
+    constraint='pg_get_constraintdef(c.oid)';need(schema.count(constraint)==1)
+    schema=schema.replace(constraint,'pg_get_constraintdef(c.oid,true)')
     # Private hashes of each existing signature component distinguish restored
     # DDL differences. Raw definitions stay inside this read-only SQL query.
     parts=["encode(sha256(convert_to((signature->'"+key+"')::text,'UTF8')),'hex')" for key in ['columns','constraints','indexes','policies','triggers']]

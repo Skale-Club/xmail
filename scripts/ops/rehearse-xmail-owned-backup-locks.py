@@ -65,12 +65,14 @@ def main():
         sql+='CREATE SEQUENCE fixture_sequence_one;CREATE SEQUENCE fixture_sequence_two;'
         m.call(['docker','exec','-i',source,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres'],sql.encode(),timeout=45)
         query="BEGIN READ ONLY;SET LOCAL timezone='UTC';SET LOCAL datestyle='ISO,YMD';SET LOCAL extra_float_digits=3;SET LOCAL bytea_output='hex';SET LOCAL search_path=public,pg_catalog;"+backup.manifest_sql(m)+';ROLLBACK;'
+        if check_roundtrip:query=query.replace('pg_get_constraintdef(c.oid,true)','pg_get_constraintdef(c.oid)')
         expected=m.json_result(m.call(['docker','exec','-i',source,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres'],query.encode(),timeout=75));backup.validate_manifest(expected)
         original_sql=backup.manifest_sql
-        pretty_sql=lambda module:original_sql(module).replace('pg_get_constraintdef(c.oid)','pg_get_constraintdef(c.oid,true)')
+        raw_sql=lambda module:original_sql(module).replace('pg_get_constraintdef(c.oid,true)','pg_get_constraintdef(c.oid)')
+        pretty_sql=lambda module:original_sql(module)
         pretty_expected=None
         if check_roundtrip:
-            pretty_expected=m.json_result(m.call(['docker','exec','-i',source,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres'],query.replace(original_sql(m),pretty_sql(m)).encode(),timeout=75));backup.validate_manifest(pretty_expected)
+            pretty_expected=m.json_result(m.call(['docker','exec','-i',source,'psql','-XwqAt','-v','ON_ERROR_STOP=1','-U','postgres'],query.replace(raw_sql(m),pretty_sql(m)).encode(),timeout=75));backup.validate_manifest(pretty_expected)
         counts=m.call(['docker','exec',source,'psql','-XwqAt','-U','postgres','-c',"SELECT (SELECT count(*) FROM pg_tables WHERE schemaname='public')||','||(SELECT count(*) FROM pg_indexes WHERE schemaname='public')||','||(SELECT count(*) FROM pg_sequences WHERE schemaname='public')"]).strip()
         check(counts==b'74,309,2')
         with tempfile.TemporaryDirectory(prefix='xmail-dr-locks-') as temporary:
@@ -112,7 +114,7 @@ def main():
                 backup.restore_arguments=lambda name,op:original_arguments(name,op)+['-c','max_locks_per_transaction='+str(locks)]
                 last_state[0]=None
                 passed=False;comparison=None;drift_kind[0]=index
-                if check_roundtrip:backup.manifest_sql=original_sql if index==0 else pretty_sql
+                if check_roundtrip:backup.manifest_sql=raw_sql if index==0 else pretty_sql
                 try: backup.restore(m,c,stage,pretty_expected if check_roundtrip and index>0 else expected,operation);passed=True
                 except backup.RestoreQueryFailure as error:last_state[0]=error.sqlState
                 except backup.RestoreManifestMismatch as error:comparison=error.comparison

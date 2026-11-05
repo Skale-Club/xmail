@@ -174,3 +174,21 @@ one row-hash mismatch from one table-schema mismatch. This diagnostic does not
 normalize away a difference, change restoration ownership, rewrite fingerprints
 or claim a real manifest mismatch is harmless. Actual component evidence is
 required before any targeted semantic correction.
+
+### CHECK expression dump/restore representation
+
+The real component diagnostic isolated only
+`xmail_identity_bindings_subject_check`. Its creation uses `BETWEEN 1 AND 128`
+combined with the trim predicate. PostgreSQL initially stores the expanded
+range as a nested AND; pg_dump serializes the comparisons, and reparsing can
+flatten that associative grouping. A real CI restore of migration079 reproduced
+the exact single-table/constraints-only mismatch with every row hash unchanged.
+
+Backup signatures therefore use PostgreSQL's own precedence-aware
+`pg_get_constraintdef(oid,true)` on both source and restored snapshots. It
+preserves the predicates, bounds, names, types and validation flags while
+omitting redundant grouping. This is not textual parenthesis stripping or an
+ignored constraint. CI requires the original raw form to reproduce the mismatch,
+the deparser form to match completely, and a changed bound128→127 to remain a
+hard constraints mismatch. The database constraints and business rows themselves
+are never rewritten by this correction.
