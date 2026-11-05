@@ -50,9 +50,17 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import base64, hashlib
           from pathlib import Path
+          import gzip, io, tarfile
           raw = Path('.github/scripts/deploy-xmail.sh').read_bytes()
           print('deploy_code_b64='+base64.b64encode(raw).decode())
           print('deploy_code_sha256='+hashlib.sha256(raw).hexdigest())
+          bundle=io.BytesIO()
+          with tarfile.open(fileobj=bundle,mode='w') as archive:
+              for name in ['.github/scripts/deploy-xmail.sh','scripts/ops/prepare-xmail-owned-runtime-maintenance.py','scripts/ops/prepare-xmail-owned-pilot-rollout.py','scripts/ops/prepare-xmail-final-data-cutover.py','scripts/ops/xmail-database-rehearsal.sh']:
+                  data=Path(name).read_bytes();info=tarfile.TarInfo(name);info.size=len(data);info.mode=0o600;archive.addfile(info,io.BytesIO(data))
+          payload=gzip.compress(bundle.getvalue(),mtime=0)
+          print('maintenance_code_b64='+base64.b64encode(payload).decode())
+          print('maintenance_code_sha256='+hashlib.sha256(payload).hexdigest())
           PY
 
       - name: Set up Docker Buildx
@@ -94,6 +102,8 @@ jobs:
         env:
           XMAIL_DEPLOY_CODE_B64: ${{ steps.meta.outputs.deploy_code_b64 }}
           XMAIL_DEPLOY_CODE_SHA256: ${{ steps.meta.outputs.deploy_code_sha256 }}
+          XMAIL_MAINTENANCE_CODE_B64: ${{ steps.meta.outputs.maintenance_code_b64 }}
+          XMAIL_MAINTENANCE_CODE_SHA256: ${{ steps.meta.outputs.maintenance_code_sha256 }}
           GITHUB_SOURCE_SHA: ${{ github.sha }}
           DEPLOY_VERSION: ${{ steps.meta.outputs.version }}
           DEPLOYED_AT: ${{ steps.meta.outputs.deployed_at }}
@@ -140,7 +150,7 @@ jobs:
           # Single line, no spaces after commas — appleboy/ssh-action splits this on ","
           # without trimming, and a stray space would turn " SUPABASE_URL" into a lookup
           # for an env var that doesn't exist under that name.
-          envs: XMAIL_DEPLOY_CODE_B64,XMAIL_DEPLOY_CODE_SHA256,GITHUB_SOURCE_SHA,DEPLOY_VERSION,DEPLOYED_AT,GHCR_AUTH_TOKEN,GHCR_ACTOR,DB_LIVENESS_INTERVAL_MS,DB_LIVENESS_PROBE_TIMEOUT_MS,DB_LIVENESS_EXIT_AFTER_MS,IMAGE_NAME,HEALTH_CHECK_RETRIES,HEALTH_CHECK_INTERVAL,SUPABASE_URL,SUPABASE_ANON_KEY,SUPABASE_SERVICE_ROLE_KEY,DATABASE_URL,DIRECT_URL,JWT_SECRET,ENCRYPTION_KEY,OUTLOOK_TOKEN_ENCRYPTION_KEY,MAIL_DOMAIN,APP_COMPANY_NAME,APP_APPLICATION_NAME,SMTP_PASS,SMTP_FROM,FRONTEND_URL,XMAIL_SERVICE_KEY,XMAIL_SERVICE_USER_ID,XMAIL_SERVICE_ORGANIZATION_ID,XPHERE_EVENTS_URL,XPHERE_EVENTS_API_KEY,APOLLO_API_KEY,XCRAPER_SERVICE_URL,XCRAPER_SERVICE_KEY,PROSPECTING_DAILY_BUDGET_USD,R2_ACCOUNT_ID,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_PUBLIC_BASE_URL,MONITOR_API_TOKEN,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: XMAIL_DEPLOY_CODE_B64,XMAIL_DEPLOY_CODE_SHA256,XMAIL_MAINTENANCE_CODE_B64,XMAIL_MAINTENANCE_CODE_SHA256,GITHUB_SOURCE_SHA,DEPLOY_VERSION,DEPLOYED_AT,GHCR_AUTH_TOKEN,GHCR_ACTOR,DB_LIVENESS_INTERVAL_MS,DB_LIVENESS_PROBE_TIMEOUT_MS,DB_LIVENESS_EXIT_AFTER_MS,IMAGE_NAME,HEALTH_CHECK_RETRIES,HEALTH_CHECK_INTERVAL,SUPABASE_URL,SUPABASE_ANON_KEY,SUPABASE_SERVICE_ROLE_KEY,DATABASE_URL,DIRECT_URL,JWT_SECRET,ENCRYPTION_KEY,OUTLOOK_TOKEN_ENCRYPTION_KEY,MAIL_DOMAIN,APP_COMPANY_NAME,APP_APPLICATION_NAME,SMTP_PASS,SMTP_FROM,FRONTEND_URL,XMAIL_SERVICE_KEY,XMAIL_SERVICE_USER_ID,XMAIL_SERVICE_ORGANIZATION_ID,XPHERE_EVENTS_URL,XPHERE_EVENTS_API_KEY,APOLLO_API_KEY,XCRAPER_SERVICE_URL,XCRAPER_SERVICE_KEY,PROSPECTING_DAILY_BUDGET_USD,R2_ACCOUNT_ID,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_PUBLIC_BASE_URL,MONITOR_API_TOKEN,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             set -euo pipefail
             actual=$(printf '%s' "$XMAIL_DEPLOY_CODE_B64" | base64 --decode | sha256sum | awk '{print $1}')

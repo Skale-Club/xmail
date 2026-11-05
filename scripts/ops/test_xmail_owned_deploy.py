@@ -132,6 +132,7 @@ class PolicyFixture(unittest.TestCase):
         self.proofs = {}
         pointers = {}
         for kind, filename in self.ns['PROOF_FILES'].items():
+            if kind == 'maintenance': continue
             if kind == 'final-import' and self.source_kind != 'supabase': continue
             if kind == 'admin-acceptance' and self.p['XMAIL_OWNED_AUTH_PHASE'] != 'identity': continue
             if kind in ['final-import', 'controls']: self.facts[kind]['snapshotReceiptSha256'] = pointers['snapshot']['sha256']
