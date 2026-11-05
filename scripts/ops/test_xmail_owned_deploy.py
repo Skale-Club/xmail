@@ -2,6 +2,8 @@
 import contextlib
 import copy
 import base64
+import gzip
+import tarfile
 import datetime as dt
 import hashlib
 import io
@@ -312,12 +314,21 @@ class SourcePolicy(unittest.TestCase):
             lines.append(line[12:] if line.startswith('            ') else '')
         wrapper = '\n'.join(lines)+'\n'
         self.assertLess(len(wrapper), 21000)
-        self.assertLess(wrapper.index('[ "$actual" = "$XMAIL_DEPLOY_CODE_SHA256" ]'), wrapper.index('| bash -s'))
+        self.assertLess(wrapper.index("assert hashlib.sha256(data)"), wrapper.index("sys.stdout.buffer.write(data)"))
         bash = 'C:/Program Files/Git/bin/bash.exe' if sys.platform == 'win32' else shutil.which('bash')
         if not bash: self.skipTest('Bash unavailable; Linux CI provides Bash')
         program = b"printf 'public-code-executed\\n'\n"
-        env = {**os.environ, 'XMAIL_DEPLOY_CODE_B64': base64.b64encode(program).decode(),
+        bundle=io.BytesIO()
+        names=['.github/scripts/deploy-xmail.sh','scripts/ops/prepare-xmail-owned-runtime-maintenance.py','scripts/ops/prepare-xmail-owned-pilot-rollout.py','scripts/ops/prepare-xmail-final-data-cutover.py','scripts/ops/xmail-database-rehearsal.sh']
+        with tarfile.open(fileobj=bundle,mode='w') as archive:
+            for name in names:
+                data=program if name.endswith('deploy-xmail.sh') else b'# offline fixture\n'
+                info=tarfile.TarInfo(name);info.size=len(data);archive.addfile(info,io.BytesIO(data))
+        payload=gzip.compress(bundle.getvalue(),mtime=0)
+        env = {**os.environ, 'XMAIL_MAINTENANCE_CODE_B64': base64.b64encode(payload).decode(),
+            'XMAIL_MAINTENANCE_CODE_SHA256': hashlib.sha256(payload).hexdigest(),
             'XMAIL_DEPLOY_CODE_SHA256': hashlib.sha256(program).hexdigest()}
+        if sys.platform=='win32':wrapper=wrapper.replace('python3 -I - <<','python -I - <<')
         valid = subprocess.run([bash, '-c', wrapper], env=env, text=True, capture_output=True, check=False)
         self.assertEqual((valid.returncode, valid.stdout.strip()), (0, 'public-code-executed'))
         env['XMAIL_DEPLOY_CODE_SHA256'] = '0'*64

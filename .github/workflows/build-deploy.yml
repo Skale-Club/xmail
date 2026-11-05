@@ -52,7 +52,6 @@ jobs:
           from pathlib import Path
           import gzip, io, tarfile
           raw = Path('.github/scripts/deploy-xmail.sh').read_bytes()
-          print('deploy_code_b64='+base64.b64encode(raw).decode())
           print('deploy_code_sha256='+hashlib.sha256(raw).hexdigest())
           bundle=io.BytesIO()
           with tarfile.open(fileobj=bundle,mode='w') as archive:
@@ -89,8 +88,7 @@ jobs:
             VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}
             VITE_APP_NAME=Xmail
 
-      - name: Deploy to Hetzner
-        uses: appleboy/ssh-action@v1.0.0
+      - name: Bound SSH payload before connecting
         # Every secret run_app_container() needs on the remote host is declared here and
         # forwarded by name via `envs:`, instead of being interpolated as `${{ secrets.X }}`
         # straight into the script body below. A raw `${{ }}` interpolation is a textual
@@ -99,8 +97,7 @@ jobs:
         # Telegram notification step below already avoids for commit messages). Referencing
         # `$X` inside the script instead lets bash's own quoting handle arbitrary secret
         # content safely.
-        env:
-          XMAIL_DEPLOY_CODE_B64: ${{ steps.meta.outputs.deploy_code_b64 }}
+        env: &xmail_deploy_environment
           XMAIL_DEPLOY_CODE_SHA256: ${{ steps.meta.outputs.deploy_code_sha256 }}
           XMAIL_MAINTENANCE_CODE_B64: ${{ steps.meta.outputs.maintenance_code_b64 }}
           XMAIL_MAINTENANCE_CODE_SHA256: ${{ steps.meta.outputs.maintenance_code_sha256 }}
@@ -142,6 +139,11 @@ jobs:
           MONITOR_API_TOKEN: ${{ secrets.MONITOR_API_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 -B scripts/ops/check-xmail-ssh-payload.py
+
+      - name: Deploy to Hetzner
+        uses: appleboy/ssh-action@v1.0.0
+        env: *xmail_deploy_environment
         with:
           host: ${{ secrets.HETZNER_HOST }}
           username: root
@@ -150,12 +152,26 @@ jobs:
           # Single line, no spaces after commas — appleboy/ssh-action splits this on ","
           # without trimming, and a stray space would turn " SUPABASE_URL" into a lookup
           # for an env var that doesn't exist under that name.
-          envs: XMAIL_DEPLOY_CODE_B64,XMAIL_DEPLOY_CODE_SHA256,XMAIL_MAINTENANCE_CODE_B64,XMAIL_MAINTENANCE_CODE_SHA256,GITHUB_SOURCE_SHA,DEPLOY_VERSION,DEPLOYED_AT,GHCR_AUTH_TOKEN,GHCR_ACTOR,DB_LIVENESS_INTERVAL_MS,DB_LIVENESS_PROBE_TIMEOUT_MS,DB_LIVENESS_EXIT_AFTER_MS,IMAGE_NAME,HEALTH_CHECK_RETRIES,HEALTH_CHECK_INTERVAL,SUPABASE_URL,SUPABASE_ANON_KEY,SUPABASE_SERVICE_ROLE_KEY,DATABASE_URL,DIRECT_URL,JWT_SECRET,ENCRYPTION_KEY,OUTLOOK_TOKEN_ENCRYPTION_KEY,MAIL_DOMAIN,APP_COMPANY_NAME,APP_APPLICATION_NAME,SMTP_PASS,SMTP_FROM,FRONTEND_URL,XMAIL_SERVICE_KEY,XMAIL_SERVICE_USER_ID,XMAIL_SERVICE_ORGANIZATION_ID,XPHERE_EVENTS_URL,XPHERE_EVENTS_API_KEY,APOLLO_API_KEY,XCRAPER_SERVICE_URL,XCRAPER_SERVICE_KEY,PROSPECTING_DAILY_BUDGET_USD,R2_ACCOUNT_ID,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_PUBLIC_BASE_URL,MONITOR_API_TOKEN,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: XMAIL_DEPLOY_CODE_SHA256,XMAIL_MAINTENANCE_CODE_B64,XMAIL_MAINTENANCE_CODE_SHA256,GITHUB_SOURCE_SHA,DEPLOY_VERSION,DEPLOYED_AT,GHCR_AUTH_TOKEN,GHCR_ACTOR,DB_LIVENESS_INTERVAL_MS,DB_LIVENESS_PROBE_TIMEOUT_MS,DB_LIVENESS_EXIT_AFTER_MS,IMAGE_NAME,HEALTH_CHECK_RETRIES,HEALTH_CHECK_INTERVAL,SUPABASE_URL,SUPABASE_ANON_KEY,SUPABASE_SERVICE_ROLE_KEY,DATABASE_URL,DIRECT_URL,JWT_SECRET,ENCRYPTION_KEY,OUTLOOK_TOKEN_ENCRYPTION_KEY,MAIL_DOMAIN,APP_COMPANY_NAME,APP_APPLICATION_NAME,SMTP_PASS,SMTP_FROM,FRONTEND_URL,XMAIL_SERVICE_KEY,XMAIL_SERVICE_USER_ID,XMAIL_SERVICE_ORGANIZATION_ID,XPHERE_EVENTS_URL,XPHERE_EVENTS_API_KEY,APOLLO_API_KEY,XCRAPER_SERVICE_URL,XCRAPER_SERVICE_KEY,PROSPECTING_DAILY_BUDGET_USD,R2_ACCOUNT_ID,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY,R2_PUBLIC_BASE_URL,MONITOR_API_TOKEN,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             set -euo pipefail
-            actual=$(printf '%s' "$XMAIL_DEPLOY_CODE_B64" | base64 --decode | sha256sum | awk '{print $1}')
-            [ "$actual" = "$XMAIL_DEPLOY_CODE_SHA256" ] || exit 2
-            printf '%s' "$XMAIL_DEPLOY_CODE_B64" | base64 --decode | bash -s
+            python3 -I - <<'XMAIL_DEPLOY_BOOTSTRAP_PY' | bash -s
+            import base64,gzip,hashlib,io,os,sys,tarfile
+            try:
+                raw=base64.b64decode(os.environ['XMAIL_MAINTENANCE_CODE_B64'],validate=True)
+                assert len(raw)<=262144 and hashlib.sha256(raw).hexdigest()==os.environ['XMAIL_MAINTENANCE_CODE_SHA256']
+                unpacked=gzip.decompress(raw);assert len(unpacked)<=1048576
+                names={'.github/scripts/deploy-xmail.sh','scripts/ops/prepare-xmail-owned-runtime-maintenance.py','scripts/ops/prepare-xmail-owned-pilot-rollout.py','scripts/ops/prepare-xmail-final-data-cutover.py','scripts/ops/xmail-database-rehearsal.sh'}
+                with tarfile.open(fileobj=io.BytesIO(unpacked),mode='r:') as archive:
+                    members=archive.getmembers()
+                    assert len(members)==len(names) and {m.name for m in members}==names
+                    assert all(m.isfile() and 0<m.size<196608 for m in members)
+                    data=archive.extractfile('.github/scripts/deploy-xmail.sh').read()
+                assert hashlib.sha256(data).hexdigest()==os.environ['XMAIL_DEPLOY_CODE_SHA256']
+                sys.stdout.buffer.write(data)
+            except Exception:
+                print('Pinned deployment bundle refused; details suppressed.',file=sys.stderr);raise SystemExit(2)
+            XMAIL_DEPLOY_BOOTSTRAP_PY
       # ── Deploy notification ────────────────────────────────────────────────
       # A failed deploy leaves production running the PREVIOUS image (the
       # rollout above rolls back), so nothing is broken and nothing external
