@@ -22,6 +22,33 @@ This app's history (what it does, how each part was built, decisions and release
 Journal records are in English. No secrets.
 <!-- /journal-protocol -->
 
+<!-- model-routing:v1 -->
+## Model routing (token economy) — mandatory, every task
+
+The model the owner chose for this session is the **orchestrator**. It plans the work, splits it into pieces, picks the right model for each piece, and **audits and validates** every result. It does not have to execute everything itself: execution goes to faster, cheaper models whenever they can do the piece well. Without routing, tokens drain fast.
+
+**Delegation ladder** (delegate one or two tiers down, never up):
+
+| Session model (orchestrator) | Delegates execution to |
+|---|---|
+| Claude Fable | Opus (hard sub-problems), Sonnet (standard implementation, analysis, writing) |
+| Claude Opus | Sonnet (implementation, analysis, writing), Haiku (bulk reads, search, mechanical edits, data entry) |
+| Claude Sonnet | Haiku (bulk reads, search, mechanical edits), when it pays off |
+| Claude Haiku | does the work itself |
+| Codex / ChatGPT top model | the same idea with the smaller models available there (a mini model for bulk and mechanical work) |
+
+**Rules**
+1. **Routing plan first.** Before a multi-step task, list the pieces and give each one a tier. A trivial task (a handful of tool calls, or a lookup whose target is known) is done directly: an extra agent would cost more than it saves.
+2. **Delegate:** bulk file reading and search, codebase mapping, mechanical multi-file edits, data entry (Notion rows, seed data), log and test-output triage, first drafts.
+3. **Keep on the orchestrator:** decisions and trade-offs, architecture, anything touching production, credentials, money or customer data, security review, and the **final verification** of every delegated result.
+4. **Self-contained briefs:** goal, files, constraints, what done looks like, output format. Ask for a concise report, never raw dumps.
+5. **Audit before accepting:** read the diff, re-run the tests, spot-check the data. A subagent's report is a claim, not proof.
+6. **Parallel when independent:** independent pieces run at the same time; dependent pieces run in order.
+7. **Record it:** the journal entry says which models did what (Agent / Model fields).
+
+How (Claude Code): the Agent tool with `model: "opus" | "sonnet" | "haiku"`; read-only searches can use the Explore agent type. Skill: `model-routing`. Notion: Projects → Templates → AI Model Routing Protocol.
+<!-- /model-routing -->
+
 **The agent instructions for this repo live in [`CLAUDE.md`](CLAUDE.md). Read that file.**
 
 This file used to be a full copy of `CLAUDE.md`. The copy drifted — it advertised
