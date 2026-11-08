@@ -72,6 +72,16 @@ It prints `MACHINE=… MODE=light|normal|critical` with free RAM.
 **Normal mode** (desktop): routing rules still apply; parallel agents and full test runs are fine.
 <!-- /machine-awareness -->
 
+<!-- delivery-time:v1 -->
+## Delivery estimate and no silent stalls (owner rule 2026-11-07, from Brasil Showdown)
+
+1. **Estimate every task.** For any task longer than a quick answer, say in the first message the expected delivery as a **clock time plus duration** (owner's local time, e.g. "pronto por volta das 19:40, ~25 min"). Long commands (build, release, full tests, migration, seed, deploy, bulk Notion work) get their own clock time when they start. Estimates may miss; giving one is mandatory 100% of the time.
+2. **Update when it slips.** If a step runs past its estimate, say so right away with the new time and the reason. Never let an estimate silently expire.
+3. **Time-box every step; never sit idle.** If a step takes **2× its estimate**, or a command or subagent shows **no progress for 10 minutes**, stop waiting and re-check: is the process alive, what do the logs say, is it waiting for input, is the machine out of memory (`machine-check.ps1`)? Then retry, change approach, or tell the owner. Do not poll in a tight loop either: wait with a timeout, then check.
+4. **Budget subagents.** Every delegated brief carries a time budget; a subagent past its budget is checked, not waited on.
+5. **Close the loop.** At the end, one line: estimated vs actual. Record measured durations of recurring steps in the repository's docs (e.g. "lab rebuild about 2-3 min") so the next estimate is better.
+<!-- /delivery-time -->
+
 ## Project Overview
 
 Xmail is a multi-tenant email server management platform inspired by Postal. It provides organization-based access control, domain verification, message tracking, email routing, webhooks, and analytics.
