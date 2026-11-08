@@ -49,6 +49,29 @@ The model the owner chose for this session is the **orchestrator**. It plans the
 How (Claude Code): the Agent tool with `model: "opus" | "sonnet" | "haiku"`; read-only searches can use the Explore agent type. Skill: `model-routing`. Notion: Projects → Templates → AI Model Routing Protocol.
 <!-- /model-routing -->
 
+<!-- machine-awareness:v1 -->
+## Machine awareness — check the computer before heavy work
+
+The owner works on two very different computers, often on several projects at once:
+- **Surface Pro 7+** (`VANILDO-TABLET`): 8 GB RAM, i5 4 cores. Usually has about 1 GB free. **Always light mode.**
+- **Home desktop** (high-end): normal mode.
+
+**At the start of a session, and before any heavy step**, run:
+`powershell -NoProfile -File "$HOME\.claude\bin\machine-check.ps1"` (Codex: `$HOME\.codex\bin\machine-check.ps1`).
+It prints `MACHINE=… MODE=light|normal|critical` with free RAM.
+
+**Light mode** (Surface, any computer with 16 GB or less, or under 2 GB free):
+1. No parallel fan-out: at most **one** subagent at a time; do small things directly.
+2. No dev servers, full builds, full test suites, Docker, Playwright/Chrome automation or `npm install` unless the owner asks. Run only the targeted test for what changed. Never two heavy Node processes at once; stop any server you started.
+3. No extra git worktrees with `node_modules`; reuse the checkout or a junction, and remove temporary worktrees right after.
+4. Keep tool output small (`head`, `--stat`, filters); never dump big files or logs.
+5. Heavy jobs (full test runs, builds, large data loads) go to the server or wait for the desktop: say so and record a task instead of running them here.
+
+**Critical** (under 1 GB free): stop before the heavy step and tell the owner what is using memory; continue only with light commands.
+
+**Normal mode** (desktop): routing rules still apply; parallel agents and full test runs are fine.
+<!-- /machine-awareness -->
+
 **The agent instructions for this repo live in [`CLAUDE.md`](CLAUDE.md). Read that file.**
 
 This file used to be a full copy of `CLAUDE.md`. The copy drifted — it advertised
