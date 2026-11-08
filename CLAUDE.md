@@ -22,67 +22,14 @@ This app's history (what it does, how each part was built, decisions and release
 Journal records are in English. No secrets.
 <!-- /journal-protocol -->
 
-<!-- model-routing:v1 -->
-## Model routing (token economy) — mandatory, every task
+<!-- universal-rules:v1 -->
+## Universal rules (read first)
 
-The model the owner chose for this session is the **orchestrator**. It plans the work, splits it into pieces, picks the right model for each piece, and **audits and validates** every result. It does not have to execute everything itself: execution goes to faster, cheaper models whenever they can do the piece well. Without routing, tokens drain fast.
-
-**Delegation ladder** (delegate one or two tiers down, never up):
-
-| Session model (orchestrator) | Delegates execution to |
-|---|---|
-| Claude Fable | Opus (hard sub-problems), Sonnet (standard implementation, analysis, writing) |
-| Claude Opus | Sonnet (implementation, analysis, writing), Haiku (bulk reads, search, mechanical edits, data entry) |
-| Claude Sonnet | Haiku (bulk reads, search, mechanical edits), when it pays off |
-| Claude Haiku | does the work itself |
-| Codex / ChatGPT top model | the same idea with the smaller models available there (a mini model for bulk and mechanical work) |
-
-**Rules**
-1. **Routing plan first.** Before a multi-step task, list the pieces and give each one a tier. A trivial task (a handful of tool calls, or a lookup whose target is known) is done directly: an extra agent would cost more than it saves.
-2. **Delegate:** bulk file reading and search, codebase mapping, mechanical multi-file edits, data entry (Notion rows, seed data), log and test-output triage, first drafts.
-3. **Keep on the orchestrator:** decisions and trade-offs, architecture, anything touching production, credentials, money or customer data, security review, and the **final verification** of every delegated result.
-4. **Self-contained briefs:** goal, files, constraints, what done looks like, output format. Ask for a concise report, never raw dumps.
-5. **Audit before accepting:** read the diff, re-run the tests, spot-check the data. A subagent's report is a claim, not proof.
-6. **Parallel when independent:** independent pieces run at the same time; dependent pieces run in order.
-7. **Record it:** the journal entry says which models did what (Agent / Model fields).
-
-How (Claude Code): the Agent tool with `model: "opus" | "sonnet" | "haiku"`; read-only searches can use the Explore agent type. Skill: `model-routing`. Notion: Projects → Templates → AI Model Routing Protocol.
-<!-- /model-routing -->
-
-<!-- machine-awareness:v1 -->
-## Machine awareness — check the computer before heavy work
-
-The owner works on two very different computers, often on several projects at once:
-- **Surface Pro 7+** (`VANILDO-TABLET`): 8 GB RAM, i5 4 cores. Usually has about 1 GB free. **Always light mode.**
-- **Home desktop** (high-end): normal mode.
-
-**At the start of a session, and before any heavy step**, run:
-`powershell -NoProfile -File "$HOME\.claude\bin\machine-check.ps1"` (Codex: `$HOME\.codex\bin\machine-check.ps1`).
-It prints `MACHINE=… MODE=light|normal|critical` with free RAM.
-
-**Light mode** (Surface, any computer with 16 GB or less, or under 2 GB free):
-1. No parallel fan-out: at most **one** subagent at a time; do small things directly.
-2. No dev servers, full builds, full test suites, Docker, Playwright/Chrome automation or `npm install` unless the owner asks. Run only the targeted test for what changed. Never two heavy Node processes at once; stop any server you started.
-3. No extra git worktrees with `node_modules`; reuse the checkout or a junction, and remove temporary worktrees right after.
-4. Keep tool output small (`head`, `--stat`, filters); never dump big files or logs.
-5. Heavy jobs (full test runs, builds, large data loads) go to the server or wait for the desktop: say so and record a task instead of running them here.
-
-**Critical** (under 1 GB free): stop before the heavy step and tell the owner what is using memory; continue only with light commands.
-
-**Normal mode** (desktop): routing rules still apply; parallel agents and full test runs are fine.
-<!-- /machine-awareness -->
-
-<!-- delivery-time:v1 -->
-## Delivery estimate and no silent stalls (owner rule 2026-11-07, from Brasil Showdown)
-
-**Keep it light (owner, 2026-11-07):** these rules exist to help, never to block. An estimate is one short line, not a ceremony; a check is a quick look, not a report; skip what does not apply to a small task; never stop work or ask permission just to satisfy a rule. If following a rule would create bureaucracy, use judgment and keep going.
-
-1. **Estimate every task.** For any task longer than a quick answer, say in the first message the expected delivery as a **clock time plus duration** (owner's local time, e.g. "pronto por volta das 19:40, ~25 min"). Long commands (build, release, full tests, migration, seed, deploy, bulk Notion work) get their own clock time when they start. Estimates may miss; giving one is mandatory 100% of the time.
-2. **Update when it slips.** If a step runs past its estimate, say so right away with the new time and the reason. Never let an estimate silently expire.
-3. **Time-box every step; never sit idle.** If a step takes **2× its estimate**, or a command or subagent shows **no progress for 10 minutes**, stop waiting and re-check: is the process alive, what do the logs say, is it waiting for input, is the machine out of memory (`machine-check.ps1`)? Then retry, change approach, or tell the owner. Do not poll in a tight loop either: wait with a timeout, then check.
-4. **Budget subagents.** Every delegated brief carries a time budget; a subagent past its budget is checked, not waited on.
-5. **Close the loop.** At the end, one line: estimated vs actual. Record measured durations of recurring steps in the repository's docs (e.g. "lab rebuild about 2-3 min") so the next estimate is better.
-<!-- /delivery-time -->
+Before working, read the owner's universal agent rules: `$HOME/Dev/skaleclub-apps/agents/RULES.md`
+(GitHub: https://github.com/Skale-Club/skaleclub-apps/blob/main/agents/RULES.md).
+They cover model routing (the session model plans and validates, cheaper models execute), machine awareness (Surface = light mode, `machine-check.ps1`), delivery estimates with no silent stalls, and the database, login, git and language decisions. Keep it light: they help, never block.
+This file adds only what is specific to this repository.
+<!-- /universal-rules -->
 
 ## Project Overview
 
