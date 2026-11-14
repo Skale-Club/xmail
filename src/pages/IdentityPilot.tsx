@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowRight, LogOut } from 'lucide-react'
 import { AppLogo } from '../components/AppLogo'
 import { CountryPhoneField } from '../components/auth/CountryPhoneField'
+import { VerificationCodeField } from '../components/auth/VerificationCodeField'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { Label } from '../components/ui/label'
@@ -9,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { loadFirebaseIdentityConfig, ownedIdentityAction, ownedIdentityActive, probeOwnedIdentitySession, leaveOwnedIdentity, storedLegacyFirstLinkToken, linkExistingIdentityAccount, type OwnedIdentityUser } from '../lib/owned-identity'
 import { currentBrowserAuthAuthority, legacyBrowserAuthConfirmed, resolveBrowserAuthAuthority } from '../lib/browser-auth-authority'
 import { DEFAULT_PHONE_COUNTRY, phoneToE164, type PhoneValue } from '../lib/phone-input'
+import { holdAppUpdates } from '../lib/app-update'
 
 function GoogleMark() {
     return (
@@ -29,22 +31,33 @@ export default function IdentityPilot() {
     const [phone, setPhone] = useState<PhoneValue>({ country: DEFAULT_PHONE_COUNTRY, text: '' })
     const [code, setCode] = useState('')
     const [awaitingCode, setAwaitingCode] = useState(false)
+    const [sentTo, setSentTo] = useState('')
     const [user, setUser] = useState<OwnedIdentityUser | null>(null)
     const [existingEmail, setExistingEmail] = useState('')
     const [existingPassword, setExistingPassword] = useState('')
     const captcha = useRef<HTMLDivElement>(null)
+    const submitting = useRef(false)
+    const lifecycle = useRef(0)
     const pending = useRef<Awaited<ReturnType<typeof import('../lib/firebase-identity').beginPhoneIdentity>>>()
     const action = new URLSearchParams(window.location.search).get('action')
     const passwordLinking = action === 'existing-account-link'
     const linking = action === 'link' || passwordLinking
 
+    useEffect(() => holdAppUpdates(), [])
+
     useEffect(() => {
+        const generation = ++lifecycle.current
         let mounted = true
         void Promise.all([loadFirebaseIdentityConfig(), probeOwnedIdentitySession()]).then(([, session]) => {
             if (mounted) { setAvailable(true); setUser(session.user || null) }
         }).catch(() => { if (mounted) setError('Verified sign-in is not available yet. Contact support for reviewed recovery.') })
             .finally(() => { if (mounted) setLoading(false) })
-        return () => { mounted = false; pending.current?.dispose() }
+        return () => {
+            mounted = false
+            if (lifecycle.current === generation) lifecycle.current++
+            pending.current?.dispose()
+            pending.current = undefined
+        }
     }, [])
 
     async function finish(token: string) {
@@ -52,6 +65,7 @@ export default function IdentityPilot() {
             try {
                 await linkExistingIdentityAccount(token, existingEmail.trim(), existingPassword)
                 await ownedIdentityAction('session', token)
+                await requireSavedSession()
                 window.location.href = '/mail/inbox'
                 return
             } finally { setExistingPassword('') }
@@ -67,28 +81,50 @@ export default function IdentityPilot() {
             if (!legacyToken) throw new Error('Use Link an existing account to prove ownership with your previous password.')
         }
         await ownedIdentityAction(linking ? 'link' : 'session', token, legacyToken)
+        await requireSavedSession()
         window.location.href = '/mail/inbox'
     }
+    async function requireSavedSession() {
+        const session = await probeOwnedIdentitySession()
+        if (session.kind !== 'active' || !session.user) {
+            throw new Error('Your sign-in session could not be confirmed. Check your connection and allow cookies for Xmail, then try again.')
+        }
+    }
     async function perform(action: () => Promise<void>) {
+        if (submitting.current) return
+        submitting.current = true
+        const generation = lifecycle.current
         setBusy(true); setError('')
-        try { await action() } catch (failure) { setError(failure instanceof Error ? failure.message : 'Sign-in could not be confirmed.') }
-        finally { setBusy(false) }
+        try { await action() } catch (failure) {
+            if (lifecycle.current === generation) setError(failure instanceof Error ? failure.message : 'Sign-in could not be confirmed.')
+        } finally {
+            submitting.current = false
+            if (lifecycle.current === generation) setBusy(false)
+        }
     }
     function submitPhone(event: FormEvent) {
         event.preventDefault()
+        const generation = lifecycle.current
         void perform(async () => {
             requireExistingCredentials()
             const config = await loadFirebaseIdentityConfig() // Recheck the server kill switch and API-key provenance before every provider action.
+            if (lifecycle.current !== generation) return
             if (awaitingCode) {
                 if (!pending.current) throw new Error('Request a new verification code.')
-                await finish(await pending.current.confirm(code, config))
+                if (!/^\d{6}$/.test(code)) throw new Error('Enter the six-digit verification code.')
+                const token = await pending.current.confirm(code, config)
+                if (lifecycle.current === generation) await finish(token)
                 return
             }
             const number = phoneToE164(phone)
             if (!number || !captcha.current) throw new Error('Enter a valid phone number for the selected country.')
             const { beginPhoneIdentity } = await import('../lib/firebase-identity')
+            if (lifecycle.current !== generation) return
             pending.current?.dispose()
-            pending.current = await beginPhoneIdentity(config, number, captcha.current)
+            const confirmation = await beginPhoneIdentity(config, number, captcha.current)
+            if (lifecycle.current !== generation) { confirmation.dispose(); return }
+            pending.current = confirmation
+            setSentTo(number)
             setAwaitingCode(true)
         })
     }
@@ -127,35 +163,34 @@ export default function IdentityPilot() {
                                 <p className="text-xs text-muted-foreground">Standard SMS rates may apply.</p>
                             </div>
                             <div ref={captcha} data-testid="identity-captcha" className="empty:hidden" />
-                            {awaitingCode ? <div className="space-y-2"><Label htmlFor="identity-code">Verification code</Label>
-                                <Input id="identity-code" inputMode="numeric" autoComplete="one-time-code" value={code} maxLength={8}
-                                    onChange={event => setCode(event.target.value)} required disabled={busy} className="h-11 tracking-[0.3em]" /></div> : null}
-                            <Button type="submit" disabled={busy || (!awaitingCode && !phone.text.trim())} className="h-11 w-full">{busy ? 'Please wait…' : awaitingCode ? 'Verify and continue' : <>Send code<ArrowRight className="ml-2 h-4 w-4" /></>}</Button>
+                            {awaitingCode ? <div className="space-y-3">
+                                <p className="text-sm text-muted-foreground">Enter the six-digit code sent to <span className="font-medium text-foreground">{sentTo}</span>.</p>
+                                <VerificationCodeField value={code} onChange={setCode} disabled={busy} />
+                            </div> : null}
+                            <Button type="submit" disabled={busy || (awaitingCode ? code.length !== 6 : !phone.text.trim())} className="h-11 w-full">{busy ? 'Please wait…' : awaitingCode ? 'Verify and continue' : <>Send code<ArrowRight className="ml-2 h-4 w-4" /></>}</Button>
                             {awaitingCode ? <Button type="button" variant="ghost" className="w-full" disabled={busy} onClick={() => {
-                                pending.current?.dispose(); pending.current = undefined; setAwaitingCode(false); setCode(''); setError('')
+                                pending.current?.dispose(); pending.current = undefined; setAwaitingCode(false); setCode(''); setSentTo(''); setError('')
                             }}>Use another number or request a new code</Button> : null}
                         </form>
                         <div className="flex items-center gap-3 text-xs text-muted-foreground"><span className="h-px flex-1 bg-border" />or<span className="h-px flex-1 bg-border" /></div>
                         <Button variant="outline" className="h-11 w-full" disabled={busy || awaitingCode} onClick={() => void perform(async () => {
+                            const generation = lifecycle.current
                             requireExistingCredentials()
                             const config = await loadFirebaseIdentityConfig()
+                            if (lifecycle.current !== generation) return
                             const { googleIdentityToken } = await import('../lib/firebase-identity')
-                            await finish(await googleIdentityToken(config))
+                            if (lifecycle.current !== generation) return
+                            const token = await googleIdentityToken(config)
+                            if (lifecycle.current === generation) await finish(token)
                         })}><GoogleMark />Continue with Google</Button>
-                        {passwordLinking
-                            ? <p className="text-center text-xs leading-relaxed text-muted-foreground">Confirm the previous password and your verified sign-in to link this account. If you cannot prove ownership, contact support for reviewed recovery.</p>
-                            : <div className="space-y-1.5 text-center text-xs leading-relaxed text-muted-foreground">
-                                <p>Already have an account? It needs to be linked once.</p>
-                                <a className="block text-sm font-medium text-foreground underline underline-offset-4" href="/auth/identity?action=existing-account-link">Link an existing account</a>
-                                <p>Lost access? Contact support for reviewed recovery.</p>
-                            </div>}
+                        {passwordLinking ? <p className="text-center text-xs leading-relaxed text-muted-foreground">Confirm the previous password and your verified sign-in to link this account. If you cannot prove ownership, contact support for reviewed recovery.</p> : null}
                     </> : null}
                     {available && user && !linking ? <div className="space-y-3">
                         <p className="text-sm">Signed in as <span className="font-medium">{user.email}</span></p>
                         <Button className="w-full" onClick={() => { window.location.href = user.isAdmin ? '/admin' : '/mail/inbox' }}>Open Xmail<ArrowRight className="ml-2 h-4 w-4" /></Button>
                         <Button variant="outline" className="w-full" disabled={busy} onClick={() => void perform(async () => { await ownedIdentityAction('revoke-all'); window.location.reload() })}>Sign out all verified sessions</Button>
                     </div> : null}
-                    {ownedIdentityActive() ? <Button variant="ghost" className="w-full" disabled={busy} onClick={() => void perform(async () => {
+                    {user && ownedIdentityActive() ? <Button variant="ghost" className="w-full" disabled={busy} onClick={() => void perform(async () => {
                         await ownedIdentityAction('logout'); window.location.href = '/auth/identity'
                     })}><LogOut className="mr-2 h-4 w-4" />Sign out</Button> : null}
                     {currentBrowserAuthAuthority() === 'legacy' ? <button className="w-full text-center text-sm text-muted-foreground underline underline-offset-4" disabled={busy} onClick={() => {

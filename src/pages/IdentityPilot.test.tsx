@@ -1,16 +1,17 @@
 import { beforeEach, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import IdentityPilot from './IdentityPilot'
 
 const mocks = vi.hoisted(() => ({
-    config: vi.fn(), probe: vi.fn(), action: vi.fn(), google: vi.fn(), phone: vi.fn(), confirm: vi.fn(), dispose: vi.fn(), linkExisting: vi.fn(), storedLegacy: vi.fn(),
+    config: vi.fn(), probe: vi.fn(), action: vi.fn(), google: vi.fn(), phone: vi.fn(), confirm: vi.fn(), dispose: vi.fn(), linkExisting: vi.fn(), storedLegacy: vi.fn(), hold: vi.fn(), release: vi.fn(),
 }))
 vi.mock('../components/AppLogo', () => ({ AppLogo: () => <span>Xmail</span> }))
 vi.mock('../lib/owned-identity', () => ({
     loadFirebaseIdentityConfig: mocks.config, probeOwnedIdentitySession: mocks.probe, ownedIdentityAction: mocks.action,
-    ownedIdentityActive: () => false, leaveOwnedIdentity: vi.fn(), linkExistingIdentityAccount: mocks.linkExisting, storedLegacyFirstLinkToken: mocks.storedLegacy,
+    ownedIdentityActive: () => true, leaveOwnedIdentity: vi.fn(), linkExistingIdentityAccount: mocks.linkExisting, storedLegacyFirstLinkToken: mocks.storedLegacy,
 }))
+vi.mock('../lib/app-update', () => ({ holdAppUpdates: mocks.hold }))
 vi.mock('../lib/firebase-identity', () => ({ googleIdentityToken: mocks.google, beginPhoneIdentity: mocks.phone }))
 vi.mock('../lib/browser-auth-authority', () => ({ currentBrowserAuthAuthority: () => 'legacy', resolveBrowserAuthAuthority: async () => 'legacy', legacyBrowserAuthConfirmed: () => false }))
 
@@ -19,6 +20,7 @@ beforeEach(() => {
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
     Element.prototype.scrollIntoView = () => undefined
     vi.clearAllMocks()
+    mocks.hold.mockReturnValue(mocks.release)
     window.history.replaceState(null, '', '/auth/identity')
     mocks.config.mockResolvedValue({ projectId: 'offline-dev', apiKey: 'offline-public-key', authDomain: 'offline-dev.firebaseapp.com' })
     mocks.probe.mockResolvedValue({ kind: 'none' })
@@ -35,6 +37,7 @@ it('shows phone first, then Google, only after server configuration proof succee
     expect(screen.getByRole('button', { name: 'Send code' })).toBeVisible()
     expect(screen.getByRole('button', { name: /Continue with Google/ })).toBeVisible()
     expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
     expect(mocks.phone).not.toHaveBeenCalled()
     expect(mocks.google).not.toHaveBeenCalled()
 })
@@ -62,7 +65,9 @@ it('requests SMS, asks for the code, then revalidates before confirmation', asyn
     render(<IdentityPilot />)
     await userEvent.type(await screen.findByLabelText('Phone number'), '+12025550123')
     await userEvent.click(screen.getByRole('button', { name: 'Send code' }))
-    await userEvent.type(await screen.findByLabelText('Verification code'), '123456')
+    await userEvent.type(await screen.findByLabelText('Digit 1 of 6'), '123456')
+    expect(screen.getByRole('group', { name: 'Verification code' })).toBeVisible()
+    expect(screen.getByText(/Enter the six-digit code sent to/)).toHaveTextContent('+12025550123')
     expect(mocks.phone).toHaveBeenCalledWith(expect.anything(), '+12025550123', expect.anything())
     await userEvent.click(screen.getByRole('button', { name: 'Verify and continue' }))
     await waitFor(() => expect(mocks.action).toHaveBeenCalledWith('session', 'offline-phone-token', undefined))
@@ -102,9 +107,103 @@ it('blocks a provider action when configuration is withdrawn after the page load
     expect(mocks.google).not.toHaveBeenCalled()
 })
 
-it('offers an explicit previous-account path without a generic legacy login fallback', async () => {
+it('keeps account linking and recovery details off the ordinary login page', async () => {
     render(<IdentityPilot />)
-    expect(await screen.findByRole('link', { name: 'Link an existing account' })).toHaveAttribute('href', '/auth/identity?action=existing-account-link')
+    await screen.findByLabelText('Phone number')
+    expect(screen.queryByRole('link', { name: 'Link an existing account' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/needs to be linked once|Lost access/)).not.toBeInTheDocument()
+})
+
+it('shows a session error instead of navigating back into a login loop after Google', async () => {
+    mocks.action.mockResolvedValueOnce(undefined)
+    render(<IdentityPilot />)
+    await userEvent.click(await screen.findByRole('button', { name: /Continue with Google/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('sign-in session could not be confirmed')
+    expect(mocks.probe).toHaveBeenCalledTimes(2)
+    expect(window.location.pathname).toBe('/auth/identity')
+    expect(screen.getByRole('button', { name: /Continue with Google/ })).toBeEnabled()
+})
+
+it('holds app updates for the whole login page and releases them on unmount', async () => {
+    const view = render(<IdentityPilot />)
+    await screen.findByLabelText('Phone number')
+    expect(mocks.hold).toHaveBeenCalledTimes(1)
+    expect(mocks.release).not.toHaveBeenCalled()
+    view.unmount()
+    expect(mocks.release).toHaveBeenCalledTimes(1)
+})
+
+it('ignores same-tick duplicate SMS form submissions', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    render(<IdentityPilot />)
+    await userEvent.type(await screen.findByLabelText('Phone number'), '2025550123')
+    mocks.config.mockImplementationOnce(async () => { await gate; return { projectId: 'offline-dev' } })
+    const form = screen.getByRole('button', { name: 'Send code' }).closest('form')!
+    act(() => { fireEvent.submit(form); fireEvent.submit(form) })
+    expect(mocks.config).toHaveBeenCalledTimes(2)
+    await act(async () => release())
+    await screen.findByLabelText('Digit 1 of 6')
+    expect(mocks.phone).toHaveBeenCalledTimes(1)
+})
+
+it('disposes a challenge returned after the page unmounts', async () => {
+    let release!: (value: { confirm: typeof mocks.confirm; dispose: typeof mocks.dispose }) => void
+    mocks.phone.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    const view = render(<IdentityPilot />)
+    await userEvent.type(await screen.findByLabelText('Phone number'), '2025550123')
+    await userEvent.click(screen.getByRole('button', { name: 'Send code' }))
+    await waitFor(() => expect(mocks.phone).toHaveBeenCalledTimes(1))
+    view.unmount()
+    await act(async () => release({ confirm: mocks.confirm, dispose: mocks.dispose }))
+    expect(mocks.dispose).toHaveBeenCalledTimes(1)
+    expect(mocks.confirm).not.toHaveBeenCalled()
+})
+
+it('keeps the SMS challenge, number and code after an invalid code and permits correction', async () => {
+    mocks.confirm.mockRejectedValueOnce(new Error('Invalid verification code.'))
+    render(<IdentityPilot />)
+    await userEvent.type(await screen.findByLabelText('Phone number'), '2025550123')
+    await userEvent.click(screen.getByRole('button', { name: 'Send code' }))
+    await userEvent.type(await screen.findByLabelText('Digit 1 of 6'), '123456')
+    await userEvent.click(screen.getByRole('button', { name: 'Verify and continue' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Invalid verification code')
+    expect(screen.getByLabelText('Phone number')).toHaveValue('(202) 555-0123')
+    expect(screen.getByLabelText('Digit 6 of 6')).toHaveValue('6')
+    expect(mocks.dispose).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByLabelText('Digit 6 of 6'))
+    await userEvent.keyboard('7')
+    await userEvent.click(screen.getByRole('button', { name: 'Verify and continue' }))
+    await waitFor(() => expect(mocks.confirm).toHaveBeenLastCalledWith('123457', expect.anything()))
+    expect(mocks.phone).toHaveBeenCalledTimes(1)
+})
+
+it('retains a confirmed challenge for retry after a server error and rejects duplicate confirmation', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    mocks.action.mockImplementationOnce(async () => { await gate; throw new Error('Temporary server issue.') })
+    const view = render(<IdentityPilot />)
+    await userEvent.type(await screen.findByLabelText('Phone number'), '2025550123')
+    await userEvent.click(screen.getByRole('button', { name: 'Send code' }))
+    await userEvent.type(await screen.findByLabelText('Digit 1 of 6'), '123456')
+    const form = screen.getByRole('button', { name: 'Verify and continue' }).closest('form')!
+    act(() => { fireEvent.submit(form); fireEvent.submit(form) })
+    await waitFor(() => expect(mocks.action).toHaveBeenCalledTimes(1))
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    await act(async () => release())
+    expect(await screen.findByRole('alert')).toHaveTextContent('Temporary server issue')
+    expect(screen.getByLabelText('Digit 1 of 6')).toHaveValue('1')
+    expect(screen.getByLabelText('Digit 6 of 6')).toHaveValue('6')
+    expect(mocks.dispose).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Verify and continue' }))
+    await waitFor(() => expect(mocks.action).toHaveBeenCalledTimes(2))
+    expect(mocks.phone).toHaveBeenCalledTimes(1)
+    await userEvent.click(screen.getByRole('button', { name: 'Use another number or request a new code' }))
+    expect(mocks.dispose).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('group', { name: 'Verification code' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Phone number')).toHaveValue('(202) 555-0123')
+    view.unmount()
+    expect(mocks.dispose).toHaveBeenCalledTimes(1)
 })
 
 it('links an expired old account using previous credentials plus fresh Google, then attempts only owned login', async () => {
