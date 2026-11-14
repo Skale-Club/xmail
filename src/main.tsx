@@ -6,6 +6,7 @@ import { Toaster } from './components/ui/toaster'
 import { ThemeProvider } from './components/theme-provider'
 import { AuthProvider, useAuth } from './hooks/useAuth'
 import { ownedIdentityActive } from './lib/owned-identity'
+import { requestAppReload } from './lib/app-update'
 import { MultiSessionProvider } from './hooks/useMultiSession'
 import { MailboxProvider } from './hooks/useMailbox'
 import { useCompose } from './hooks/useCompose'
@@ -40,7 +41,7 @@ window.addEventListener('unhandledrejection', (event) => {
     const message = reason instanceof Error ? reason.message : String(reason ?? '')
     if (!CHUNK_LOAD_RE.test(message)) return
 
-    console.warn('[GSD] Stale chunk detected — clearing SW cache and reloading', message)
+    console.warn('[GSD] Stale chunk detected — scheduling app recovery', message)
     event.preventDefault()
 
     const doReset = async () => {
@@ -54,18 +55,16 @@ window.addEventListener('unhandledrejection', (event) => {
                 await Promise.all(keys.map((k) => caches.delete(k)))
             }
         } catch { /* best-effort */ }
-        window.location.reload()
     }
 
-    void doReset()
+    requestAppReload(doReset)
 })
 
-// When a new SW takes over (controllerchange), reload immediately so the tab
-// starts using the new index.html with updated chunk hashes.
+// Refresh for a new build after any active sign-in flow has finished.
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('controllerchange', () => {
-        console.info('[GSD] New service worker active — reloading for fresh build')
-        window.location.reload()
+        console.info('[GSD] New service worker active — scheduling fresh build')
+        requestAppReload()
     })
 }
 

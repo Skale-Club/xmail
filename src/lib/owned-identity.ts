@@ -55,7 +55,7 @@ export async function ownedIdentityAction(action: 'session' | 'link' | 'logout' 
     })
     if (!response.ok) throw new Error(action === 'link'
         ? 'Account ownership could not be confirmed. Contact support for reviewed recovery.'
-        : 'Sign-in could not be confirmed. Existing accounts need to be linked first.')
+        : 'Sign-in could not be confirmed. Please try again.')
     preferOwnedIdentity()
     probe = undefined
 }

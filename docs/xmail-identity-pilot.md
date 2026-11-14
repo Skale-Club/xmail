@@ -52,13 +52,42 @@ errors omit credentials/provider response details. Local SQL uses existing pool 
 
 The phone-first UI offers Google as an alternative. Firebase uses `initializeAuth`
 with **inMemoryPersistence** and popup flow only. Provider tokens are sent to the
-server once, then discarded and the Firebase user signed out. There is no persistent
+server and the Firebase user is signed out. A successful SMS proof stays only in
+the pending in-memory confirmation so a temporary Xmail failure can be retried
+without consuming the same code again; disposal removes that proof. There is no persistent
 Firebase session, redirect flow or emulator. The browser rechecks `/config` before
 Google, SMS request and SMS confirmation; changed configuration cannot confirm an
 old SMS challenge. Only a non-secret preference boolean is kept in sessionStorage.
 Owned mode does not restore saved legacy multi-account tokens after a denial; an
 explicit return to current login first clears the owned cookie. Legacy mode retains
 its existing multi-account/bearer behavior.
+
+### Login interaction fixes (2026-11-13)
+
+The normal login page shows phone and Google sign-in without the migration/recovery
+footer. Explicit account-link URLs retain their independent ownership proof. Sign
+out requires an actual session user rather than the owned-authority preference.
+SMS entry uses six individual numeric boxes with paste, mobile code autofill and
+keyboard navigation. The destination number and entered code survive temporary
+errors. A synchronous submission lock prevents overlapping SMS requests.
+Before navigating to the inbox, sign-in reads the owned session back. A failed
+cookie/session readback stays on the login screen with an actionable error rather
+than silently redirecting through the protected route back to login.
+
+Phone verification uses a single invisible `RecaptchaVerifier`, cleared immediately
+after SMS dispatch. The provider may still require an interactive challenge; the app
+does not bypass that verification. Incorrect codes can be corrected without a new
+SMS. See [Firebase phone authentication](https://firebase.google.com/docs/auth/web/phone-auth).
+
+Automatic service-worker/chunk-recovery reloads are deferred throughout sign-in,
+including before the lazy login page mounts, so a deployment or focus-triggered
+worker update cannot discard the pending SMS or Google popup state. Successful
+sign-in still navigates normally and loads the current app. Manual refresh remains
+a new authentication attempt: no OTP or provider credential is persisted to storage.
+
+Read-only production checks found the reported Google and phone provider subjects
+already bound and enabled for the same existing Xmail UUID. No account relinking,
+production data changes or real provider sign-in was performed by these fixes.
 
 Owned SSE is denied until each long-lived stream can recheck revocation during
 delivery. Refresh/read operations remain available. Supabase-dependent administrative
