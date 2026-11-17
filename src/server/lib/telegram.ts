@@ -28,6 +28,7 @@ import { db } from '../../db'
 import { systemIntegrations } from '../../db/schema'
 import { decryptSecret } from './crypto'
 import { withTimeout } from './with-timeout'
+import { formatOpsMessage } from './ops-message'
 
 const INTEGRATIONS_ID = 'default'
 
@@ -191,6 +192,15 @@ async function getBaseConfig(): Promise<BaseTelegramConfig | null> {
 }
 
 async function getConfig(channel: TelegramChannel = 'ops'): Promise<TelegramConfig | null> {
+    // Operations may share a central bot without taking over the panel bot's
+    // outreach approval webhook. A partial override fails closed: never send
+    // operations to the previous destination while migration is incomplete.
+    if (channel === 'ops' && (process.env.OPS_TELEGRAM_BOT_TOKEN || process.env.OPS_TELEGRAM_CHAT_ID)) {
+        const token = process.env.OPS_TELEGRAM_BOT_TOKEN?.trim()
+        const chatId = process.env.OPS_TELEGRAM_CHAT_ID?.trim()
+        if (!token || !chatId) return null
+        return { token, chatId, opsChatId: chatId, threadId: process.env.OPS_TELEGRAM_THREAD_ID?.trim() || undefined, source: 'env', channel }
+    }
     const base = await getBaseConfig()
     if (!base) return null
     const common = { token: base.token, source: base.source, opsChatId: base.opsChatId, outreachChatId: base.outreachChatId }
@@ -269,7 +279,7 @@ export async function sendTelegram(title: string, body = '', channel: TelegramCh
         const config = await getConfig(channel)
         if (!config) return { ok: false, reason: 'unconfigured' }
 
-        let text = body ? `${title}\n\n${body}` : title
+        let text = channel === 'ops' ? formatOpsMessage(title, body) : body ? `${title}\n\n${body}` : title
         if (text.length > MAX_TEXT_LENGTH) {
             text = `${text.slice(0, MAX_TEXT_LENGTH - 20)}\n\n[truncated]`
         }
@@ -340,7 +350,7 @@ export async function callTelegramApi<T = unknown>(
     payload: Record<string, unknown>,
 ): Promise<{ ok: true; result: T } | { ok: false; detail: string }> {
     try {
-        const config = await getConfig()
+        const config = await getConfig('outreach')
         if (!config) return { ok: false, detail: 'unconfigured' }
         const abort = new AbortController()
         const timer = setTimeout(() => abort.abort(), 20_000)

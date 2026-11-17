@@ -81,6 +81,8 @@ jobs:
           MONITOR_API_TOKEN: ${{ secrets.MONITOR_API_TOKEN }}
           FALLBACK_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           FALLBACK_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPS_TELEGRAM_BOT_TOKEN: ${{ secrets.OPS_TELEGRAM_BOT_TOKEN }}
+          OPS_TELEGRAM_CHAT_ID: ${{ secrets.OPS_TELEGRAM_CHAT_ID }}
         run: bash scripts/resolve-alert-credentials.sh
 
       - name: Probe HTTP and mail ports
@@ -152,8 +154,8 @@ jobs:
           FAILED_CHECKS: ${{ steps.probe.outputs.failed_checks }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          bash scripts/telegram-notify.sh "🚨 <b>Xmail is DOWN</b>" \
-            "Failing: ${FAILED_CHECKS:-unknown}\n\nChecked from GitHub Actions, outside the server — so this alert survives the app, the container and the host being gone.\n\n${RUN_URL}"
+          bash scripts/telegram-notify.sh "🔴 Crítico | <b>Xmail — Serviço indisponível</b>" \
+            "Falhas: ${FAILED_CHECKS:-desconhecidas}\n\nVerificação externa pelo GitHub Actions.\n\nExecução: ${RUN_URL}"
 
       # Recovery closes the loop, so an open `outage` issue always means "down
       # right now" rather than decaying into a stale one nobody trusts.
@@ -180,5 +182,5 @@ jobs:
           APP_URL: ${{ vars.APP_URL || 'https://mail.skale.club' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          bash scripts/telegram-notify.sh "✅ <b>Xmail is back UP</b>" \
-            "${APP_URL} and the mail ports are answering again.\n\n${RUN_URL}"
+          bash scripts/telegram-notify.sh "🟢 Resolvido | <b>Xmail — Serviço recuperado</b>" \
+            "Site: ${APP_URL}\n\nAplicação e portas de e-mail respondem novamente.\n\nExecução: ${RUN_URL}"

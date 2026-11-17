@@ -4,13 +4,66 @@ O Xmail reporta a um chat do Telegram aquilo que exige uma decisão humana: a
 aplicação cair, o deploy falhar, a fila parar de escoar, o processo crashar, e
 erros a subirem acima do normal.
 
-Bot: **@xmailoppsbot** ("Xmail | Opps"). É um bot dedicado a este projeto — não
-partilha token com nenhum outro.
+## Shared operations destination and message contract
 
-Há **dois canais** no mesmo bot (desde a migration `075`): o chat de **operação**
-(servidor, deploy, erros, vigilância, uptime) e um chat de **outreach** (respostas
-de prospects e cartões de aprovação). Enquanto o chat de outreach não estiver
-configurado, tudo continua a chegar ao chat de operação. Ver "Dois canais" abaixo.
+The send-only operations channel uses **@skaleclubbot → Xmail | Ops** through
+the dedicated repository secrets. The external resolver prioritizes this pair
+over the panel and historical cache; an incomplete pair fails closed instead
+of reviving the old destination. The app receives the same pair from root-owned,
+mode-0600 `/etc/xmail-ops.env`, loaded into legacy and owned full-runtime
+deployment paths. This file allows only the dedicated operations keys and stays
+separate from immutable database/identity maintenance profiles. Preview readers
+do not receive it.
+
+The existing panel bot remains responsible for outreach cards, approval ownership,
+callback authentication and webhook registration. These paths explicitly resolve
+the outreach configuration; Xmail must never register the shared operations bot's
+existing Xphere webhook. Changing the operations group does not change the
+approval owner. Keep the panel token until its non-operations uses are reviewed.
+
+Xmail runs on a separate host from the main Skale Club apps. Its existing
+in-process disk/memory/mail/queue/database checks remain active; the main host's
+shared watchdog does not imply coverage of this host. External uptime remains
+independent of the mail process.
+
+Operations may use the shared Skale bot through `OPS_TELEGRAM_BOT_TOKEN`,
+`OPS_TELEGRAM_CHAT_ID` and optional `OPS_TELEGRAM_THREAD_ID`. The panel bot and
+its outreach/approval messages remain separate. Never point the shared bot's
+webhook at the Xmail outreach approval endpoint.
+
+The central pure formatter (`src/server/lib/ops-message.ts`) runs only for
+`sendTelegram(..., 'ops')`. Outreach messages and approval cards retain their
+original content, HTML and buttons. Prefixes identify the app and severity:
+
+| Prefix | Meaning |
+| --- | --- |
+| 🔴 Crítico | Failure, unavailable service or critical silence rule |
+| 🟠 Atenção | Warning, degraded capacity, stalled queue or cancellation |
+| 🔵 Informação | Publication start or progress |
+| 🟢 Resolvido | Observed recovery or verified deployment |
+
+Titles and static fact labels use Portuguese. Diagnostics, exception text,
+IDs, timings and outreach silence findings retain their original values.
+HTML already escaped by app callers is preserved. The Actions sender escapes
+plain fact bodies and keeps the existing UTF-8 file transport and best-effort
+exit status. Dedupe, cooldowns, probes and recovery transitions are unchanged.
+
+Sender inventory:
+
+- `install-alerting.ts`: crashes and unhandled rejections.
+- `production-server.ts`: mail server startup failures.
+- `db-liveness.ts`: unreachable database, restart progress and recovery.
+- `error-spike-alert.ts`: error bursts through `alertOps`.
+- `jobs/alertWatchdog.ts`: queue, memory, disk and outreach silence conditions.
+- `ops-alert.ts`: state transition suppression and recovery suffixes.
+- `build-deploy.yml` and `uptime.yml`: external alerts through the shell sender.
+- `reply-alerts`, `agent-campaign-enroll` and `telegram-approvals`: outreach;
+  excluded from operations formatting and shared-bot ownership.
+
+An early publication notice uses only the explicit shared operations secrets.
+The final outcome retains the credential resolver and its existing fallbacks.
+Cancellation is a warning; failures do not claim that a previous image is
+healthy. The existing deployment trigger and health checks remain unchanged.
 
 ---
 
@@ -24,7 +77,7 @@ caminho que chegava ao Telegram era o botão "Test" do painel. O endpoint
 respondia `503` porque `MONITOR_API_TOKEN` não estava definido em lado nenhum.
 
 O que foi construído é o **consumidor que faltava**, não um segundo sistema. O
-painel continua a ser o único sítio onde se editam as credenciais.
+painel continua a gerir o bot de outreach; as operações podem usar o override `OPS_TELEGRAM_*` descrito acima.
 
 ---
 

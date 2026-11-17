@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 permissions:
   contents: read
@@ -109,6 +109,11 @@ jobs:
 
       - name: HTTP staging bootstrap policy (mocked SQL; no mail/jobs/external services)
         run: npx vitest run --project server src/server/staging-http.test.ts --maxWorkers 1
+
+      - name: Operations routing, formatting and approval isolation (offline)
+        run: |
+          npx vitest run --project server src/server/lib/__tests__/telegram.test.ts src/server/lib/__tests__/telegram-approvals.test.ts src/server/lib/__tests__/ops-message.test.ts src/server/lib/__tests__/ops-alert.test.ts --maxWorkers 1
+          python3 -B -m unittest discover -s scripts/ops -p test_telegram_ops_contract.py
 
       - name: Type-check server (tsconfig.server.json)
         run: npx tsc --noEmit -p tsconfig.server.json

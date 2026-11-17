@@ -437,7 +437,7 @@ export async function handleTelegramUpdate(
     secretHeader: string | undefined,
     deps: TelegramApprovalDeps = defaultDeps,
 ): Promise<number> {
-    const config = await deps.config('ops')
+    const config = await deps.config('outreach')
     if (!config) return 404
     const expected = telegramWebhookSecret(config.token)
     const provided = secretHeader ?? ''
@@ -526,7 +526,7 @@ export async function ensureTelegramWebhook(): Promise<void> {
     if (process.env.NODE_ENV !== 'production') return
     const base = (process.env.BASE_URL || process.env.FRONTEND_URL || '').replace(/\/$/, '')
     if (!base.startsWith('https://')) return
-    const config = await getTelegramConfig()
+    const config = await getTelegramConfig('outreach')
     if (!config) return
     const result = await callTelegramApi('setWebhook', {
         url: `${base}${telegramWebhookPath()}`,

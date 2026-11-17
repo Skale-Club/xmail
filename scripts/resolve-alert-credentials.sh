@@ -38,6 +38,26 @@ token=""
 chat_id=""
 source_used="none"
 
+# A dedicated operations pair takes precedence over the outreach/admin panel
+# and its historical cache. Partial configuration must not revive the old route.
+if [ -n "${OPS_TELEGRAM_BOT_TOKEN:-}" ] || [ -n "${OPS_TELEGRAM_CHAT_ID:-}" ]; then
+  if [ -z "${OPS_TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${OPS_TELEGRAM_CHAT_ID:-}" ]; then
+    echo '::warning::Dedicated operations Telegram configuration is incomplete; alerts skipped.'
+    echo 'TELEGRAM_BOT_TOKEN=' >> "${GITHUB_ENV:-/dev/null}"
+    echo 'TELEGRAM_CHAT_ID=' >> "${GITHUB_ENV:-/dev/null}"
+    echo 'creds_source=incomplete-ops' >> "${GITHUB_OUTPUT:-/dev/null}"
+    exit 0
+  fi
+  echo "::add-mask::${OPS_TELEGRAM_BOT_TOKEN}"
+  {
+    echo "TELEGRAM_BOT_TOKEN=${OPS_TELEGRAM_BOT_TOKEN}"
+    echo "TELEGRAM_CHAT_ID=${OPS_TELEGRAM_CHAT_ID}"
+    echo "TELEGRAM_THREAD_ID=${OPS_TELEGRAM_THREAD_ID:-}"
+  } >> "${GITHUB_ENV:-/dev/null}"
+  echo 'creds_source=ops-secrets' >> "${GITHUB_OUTPUT:-/dev/null}"
+  exit 0
+fi
+
 # ── 1. the live panel ────────────────────────────────────────────────────────
 if [ -n "${APP_URL}" ] && [ -n "${MONITOR_API_TOKEN}" ]; then
   # --max-time keeps a hung app from stalling the probe; a non-2xx or a

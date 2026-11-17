@@ -9,7 +9,7 @@
 # down. Anything routed through this script runs on GitHub's infrastructure
 # instead, so it survives the container, the host, and Hetzner.
 #
-#   bash scripts/telegram-notify.sh "<b>Title</b>" "Body, \n for newlines"
+#   bash scripts/telegram-notify.sh "🔵 Informação | <b>Xmail — Publicação iniciada</b>" "Commit: abc1234\n\nExecução: URL"
 #
 # Reads TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from the environment. The calling
 # workflow resolves those from the ADMIN PANEL via /api/admin/integrations/
@@ -53,7 +53,10 @@ fi
 # suffix keeps concurrent runs from colliding.
 body_file="./.tg-notify-$$.txt"
 trap 'rm -f "${body_file}"' EXIT
-printf '%b' "${TITLE}\n\n${BODY}" > "${body_file}"
+# All callers provide plain facts; only the trusted title carries HTML.
+# Commit subjects, actors and probe output must never become Telegram markup.
+esc_body=$(printf '%b' "${BODY}" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')
+printf '%s\n\n%s' "${TITLE}" "${esc_body}" > "${body_file}"
 
 thread_arg=()
 [ -n "${TELEGRAM_THREAD_ID:-}" ] && thread_arg=(-d "message_thread_id=${TELEGRAM_THREAD_ID}")

@@ -42,6 +42,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Notify publication started
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.OPS_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.OPS_TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID: ${{ vars.OPS_TELEGRAM_THREAD_ID }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          bash scripts/telegram-notify.sh "🔵 Informação | <b>Xmail — Publicação iniciada</b>" \
+            "Commit: ${COMMIT_SHA:0:7}\n\nBuild e publicação em andamento.\n\nExecução: $RUN_URL"
+
       - name: Get deploy metadata
         id: meta
         run: |
@@ -173,10 +185,8 @@ jobs:
                 print('Pinned deployment bundle refused; details suppressed.',file=sys.stderr);raise SystemExit(2)
             XMAIL_DEPLOY_BOOTSTRAP_PY
       # ── Deploy notification ────────────────────────────────────────────────
-      # A failed deploy leaves production running the PREVIOUS image (the
-      # rollout above rolls back), so nothing is broken and nothing external
-      # notices — the uptime probe stays green. Without this, a failed deploy
-      # is a red run in a list nobody reads, and the fix silently never ships.
+      # A failed deployment may leave either image serving. The notification
+      # reports an unverified outcome; only a passing health check proves recovery.
       #
       # Credentials come from the admin panel, cached the same way the uptime
       # probe caches them: on a FAILED deploy the app may be unreachable, so a
@@ -198,6 +208,8 @@ jobs:
           MONITOR_API_TOKEN: ${{ secrets.MONITOR_API_TOKEN }}
           FALLBACK_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           FALLBACK_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPS_TELEGRAM_BOT_TOKEN: ${{ secrets.OPS_TELEGRAM_BOT_TOKEN }}
+          OPS_TELEGRAM_CHAT_ID: ${{ secrets.OPS_TELEGRAM_CHAT_ID }}
         run: bash scripts/resolve-alert-credentials.sh
 
       # Commit metadata is passed through the ENVIRONMENT, never interpolated
@@ -217,11 +229,14 @@ jobs:
           # First line only: a long body would push the useful part of the
           # alert past Telegram's fold.
           subject=$(printf '%s' "${COMMIT_MSG:-}" | head -n1)
-          details="<code>${COMMIT_SHA:0:7}</code> by ${ACTOR:-unknown}\n${subject}\n\n${RUN_URL}"
+          details="Commit: ${COMMIT_SHA:0:7}\nAutor: ${ACTOR:-desconhecido}\n${subject}\n\nExecução: ${RUN_URL}"
 
           if [ "${JOB_STATUS}" = "success" ]; then
-            bash scripts/telegram-notify.sh "🚀 <b>Xmail deploy OK</b>" "${details}"
+            bash scripts/telegram-notify.sh "🟢 Resolvido | <b>Xmail — Deploy verificado</b>" "${details}\n\nSaúde da nova versão verificada."
+          elif [ "${JOB_STATUS}" = "cancelled" ]; then
+            bash scripts/telegram-notify.sh "🟠 Atenção | <b>Xmail — Publicação cancelada</b>" \
+              "${details}\n\nEstado da produção não verificado."
           else
-            bash scripts/telegram-notify.sh "🚨 <b>Xmail deploy FAILED</b>" \
-              "${details}\n\nProduction is still running the previous image."
+            bash scripts/telegram-notify.sh "🔴 Crítico | <b>Xmail — Build ou deploy falhou</b>" \
+              "${details}\n\nPublicação não concluída. Estado da produção não verificado; consulte a etapa que falhou."
           fi

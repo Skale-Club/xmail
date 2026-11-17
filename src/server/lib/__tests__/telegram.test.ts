@@ -11,11 +11,12 @@
  * The database and crypto layers are mocked so the panel row can be varied
  * without a live Postgres.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     __resetTelegramConfigCache,
     escapeHtml,
     getTelegramConfig,
+    callTelegramApi,
     isTelegramConfigured,
     sendTelegram,
     setTelegramOutreachChat,
@@ -78,6 +79,41 @@ function mockFetchOnce(body: unknown): void {
     })))
 }
 
+describe('dedicated operations destination', () => {
+    beforeEach(() => {
+        __resetTelegramConfigCache()
+        state.panelThrows = false
+        state.outreachColumnsMissing = false
+        panelConfigured()
+        vi.stubEnv('OPS_TELEGRAM_BOT_TOKEN', '456:central')
+        vi.stubEnv('OPS_TELEGRAM_CHAT_ID', '-1004421256889')
+        vi.stubEnv('OPS_TELEGRAM_THREAD_ID', '')
+    })
+    afterEach(() => vi.unstubAllEnvs())
+
+    it('routes ops independently and preserves the panel bot and approval owner', async () => {
+        expect(await getTelegramConfig('ops')).toMatchObject({ token: '456:central', chatId: '-1004421256889', source: 'env' })
+        expect(await getTelegramConfig('outreach')).toMatchObject({ token: 'TOKEN123', opsChatId: '8664810189', source: 'panel' })
+    })
+
+    it('can resolve ops while the database is unavailable', async () => {
+        state.panelThrows = true
+        expect((await getTelegramConfig('ops'))?.token).toBe('456:central')
+    })
+
+    it('fails closed on an incomplete override instead of using the old panel destination', async () => {
+        vi.stubEnv('OPS_TELEGRAM_CHAT_ID', '')
+        expect(await getTelegramConfig('ops')).toBeNull()
+        expect((await getTelegramConfig('outreach'))?.token).toBe('TOKEN123')
+    })
+
+    it('keeps approval Bot API calls and webhook registration on the original bot', async () => {
+        mockFetchOnce({ ok: true, result: true })
+        await callTelegramApi('setWebhook', { url: 'https://offline.invalid/hook' })
+        expect(vi.mocked(fetch).mock.calls[0][0]).toBe('https://api.telegram.org/botTOKEN123/setWebhook')
+    })
+})
+
 describe('escapeHtml', () => {
     it('neutralises the characters that would break HTML parse mode', () => {
         expect(escapeHtml('<script> & "x"')).toBe('&lt;script&gt; &amp; &quot;x&quot;')
@@ -95,6 +131,9 @@ describe('sendTelegram', () => {
         state.panelThrows = false
         delete process.env.TELEGRAM_BOT_TOKEN
         delete process.env.TELEGRAM_CHAT_ID
+        delete process.env.OPS_TELEGRAM_BOT_TOKEN
+        delete process.env.OPS_TELEGRAM_CHAT_ID
+        delete process.env.OPS_TELEGRAM_THREAD_ID
         vi.unstubAllGlobals()
     })
 
@@ -205,7 +244,7 @@ describe('telegram channels', () => {
         state.panelRow = { telegramBotToken: 'enc:TOKEN123', telegramChatId: '8664810189', telegramOutreachChatId: '-1001', telegramEnabled: true }
         const sent = captureSends()
         await sendTelegram('Title', 'Body')
-        expect(sent).toEqual([{ chat_id: '8664810189', text: 'Title\n\nBody', parse_mode: 'HTML', disable_web_page_preview: true }])
+        expect(sent).toEqual([{ chat_id: '8664810189', text: '🔵 Informação | <b>Xmail — Title</b>\n\nBody', parse_mode: 'HTML', disable_web_page_preview: true }])
     })
 
     it('sends outreach to the ops chat while no outreach chat is configured', async () => {

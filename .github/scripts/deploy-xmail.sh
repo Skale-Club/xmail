@@ -147,6 +147,24 @@ prepare_google_runtime_binding() {
   GOOGLE_RUNTIME_ARGS="--env-file ${GOOGLE_RUNTIME_ENV_FILE} --mount type=bind,source=${GOOGLE_RUNTIME_HOST_DIR},target=${GOOGLE_RUNTIME_CONTAINER_DIR},readonly"
 }
 
+# A separate send-only operations pair must not replace the outreach bot or
+# enter the immutable identity/database profile. Load only this root-owned file.
+OPS_RUNTIME_ARGS=()
+if [ -e /etc/xmail-ops.env ] || [ -L /etc/xmail-ops.env ]; then
+  python3 -I - <<'XMAIL_OPS_ENV_PY' || exit 1
+from pathlib import Path
+import re,stat
+p=Path('/etc/xmail-ops.env');s=p.lstat()
+assert stat.S_ISREG(s.st_mode) and s.st_uid==0 and stat.S_IMODE(s.st_mode)==0o600 and s.st_nlink==1 and s.st_size<1024
+lines=p.read_text().splitlines();values=dict(line.split('=',1) for line in lines)
+assert len(values)==len(lines) and set(values)<= {'OPS_TELEGRAM_BOT_TOKEN','OPS_TELEGRAM_CHAT_ID','OPS_TELEGRAM_THREAD_ID'}
+assert re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+',values.get('OPS_TELEGRAM_BOT_TOKEN',''))
+assert re.fullmatch(r'-[0-9]+',values.get('OPS_TELEGRAM_CHAT_ID',''))
+assert not values.get('OPS_TELEGRAM_THREAD_ID') or re.fullmatch(r'[1-9][0-9]*',values['OPS_TELEGRAM_THREAD_ID'])
+XMAIL_OPS_ENV_PY
+  OPS_RUNTIME_ARGS=(--env-file /etc/xmail-ops.env)
+fi
+
 # BEGIN XMAIL OWNED POLICY (offline fixtures execute this exact heredoc)
 OWNED_RUNTIME_OPS_DIR="/opt/xmail/owned-runtime-ops"
 OWNED_RUNTIME_ENV_FILE="${OWNED_RUNTIME_OPS_DIR}/owned-runtime.env"
@@ -779,6 +797,7 @@ run_app_container() {
     $PUBLISH_ARGS \
     -v /etc/letsencrypt:/etc/letsencrypt:ro \
     $GOOGLE_RUNTIME_ARGS \
+    "${OPS_RUNTIME_ARGS[@]}" \
     -e NODE_ENV=production \
     -e PORT=9001 \
     -e DEPLOY_VERSION="$DEPLOY_VERSION" \
@@ -1031,7 +1050,7 @@ run_owned_deploy() {
   new_id=$(docker run -d --name xmail --restart unless-stopped --network coolify \
     -p 127.0.0.1:9001:9001 -p 25:25 -p 587:587 -p 993:993 \
     --mount type=bind,source=/etc/letsencrypt,target=/etc/letsencrypt,readonly \
-    --env-file "$OWNED_BASE_ENV_FILE" $GOOGLE_RUNTIME_ARGS --env-file "$OWNED_RUNTIME_ENV_FILE" \
+    --env-file "$OWNED_BASE_ENV_FILE" $GOOGLE_RUNTIME_ARGS --env-file "$OWNED_RUNTIME_ENV_FILE" "${OPS_RUNTIME_ARGS[@]}" \
     -e DEPLOY_VERSION="$DEPLOY_VERSION" -e DEPLOYED_AT="$DEPLOYED_AT" \
     --label com.skale.xmail.runtime=owned-full --label traefik.enable=false "$OWNED_IMAGE_ID") || return 1
   for attempt in $(seq 1 "$HEALTH_CHECK_RETRIES"); do
