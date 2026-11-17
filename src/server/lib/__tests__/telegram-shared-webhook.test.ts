@@ -7,7 +7,7 @@ const secret = 'relay-secret-for-tests-only-0123456789'
 const now = 1_800_000_000_000
 const timestamp = String(now / 1000)
 const raw = Buffer.from('{ "update_id": 1 }')
-const sign = (body = raw, ts = timestamp, key = secret) => 'sha256=' + crypto.createHmac('sha256', key).update(ts + '.').update(body).digest('hex')
+const sign = (body: Buffer = raw, ts = timestamp, key = secret) => 'sha256=' + crypto.createHmac('sha256', key).update(ts + '.').update(body).digest('hex')
 afterEach(() => vi.unstubAllEnvs())
 
 describe('relay signature', () => {
