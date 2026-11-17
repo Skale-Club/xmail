@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({
     approvalRow: null as null | Record<string, unknown>,
@@ -466,5 +466,37 @@ describe('campaign_enrollment card', () => {
         deps.approve.mockResolvedValue({ ok: false, status: 409, body: { error: 'Cannot enroll leads into a completed campaign' } })
         await handleTelegramUpdate(tap(`apv:c:${APPROVAL}`), SECRET, deps)
         expect((calls('editMessageText')[0] as { text: string }).text).toContain('Não aprovado: Cannot enroll leads into a completed campaign')
+    })
+})
+
+
+describe('shared central approvals', () => {
+    beforeEach(() => {
+        vi.stubEnv('TELEGRAM_SHARED_WEBHOOK', 'true')
+        deps.config.mockResolvedValue(config({ outreachChatId: String(GROUP) }))
+    })
+    afterEach(() => vi.unstubAllEnvs())
+    it('never takes over the central webhook even in production', async () => {
+        vi.stubEnv('NODE_ENV', 'production')
+        vi.stubEnv('BASE_URL', 'https://mail.example.test')
+        await ensureTelegramWebhook()
+        expect(getTelegramConfig).not.toHaveBeenCalled()
+        expect(callTelegramApi).not.toHaveBeenCalled()
+    })
+    it('permits only the owner in an allowed chat to verify connectivity, without an approval', async () => {
+        await handleTelegramUpdate(tap('xmail:ping', STRANGER, GROUP), SECRET, deps)
+        expect(calls('answerCallbackQuery')[0].text).toBe('Sem permissão.')
+        await handleTelegramUpdate(tap('xmail:ping', OWNER, OTHER_GROUP), SECRET, deps)
+        expect(calls('answerCallbackQuery')[1].text).toBe('Sem permissão.')
+        await handleTelegramUpdate(tap('xmail:ping', OWNER, GROUP), SECRET, deps)
+        expect(calls('answerCallbackQuery')[2].text).toContain('Xmail conectado')
+        expect(deps.findApproval).not.toHaveBeenCalled()
+        expect(deps.approve).not.toHaveBeenCalled()
+    })
+    it('does not reconfigure the shared destination on membership or channel taps', async () => {
+        await handleTelegramUpdate(memberUpdate({ id: GROUP, type: 'supergroup' }, 'member', 'left'), SECRET, deps)
+        await handleTelegramUpdate(tap(`chan:o:${OTHER_GROUP}`), SECRET, deps)
+        expect(deps.saveOutreachChat).not.toHaveBeenCalled()
+        expect(calls('getChat')).toHaveLength(0)
     })
 })

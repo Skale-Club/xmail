@@ -157,10 +157,14 @@ import re,stat
 p=Path('/etc/xmail-ops.env');s=p.lstat()
 assert stat.S_ISREG(s.st_mode) and s.st_uid==0 and stat.S_IMODE(s.st_mode)==0o600 and s.st_nlink==1 and s.st_size<1024
 lines=p.read_text().splitlines();values=dict(line.split('=',1) for line in lines)
-assert len(values)==len(lines) and set(values)<= {'OPS_TELEGRAM_BOT_TOKEN','OPS_TELEGRAM_CHAT_ID','OPS_TELEGRAM_THREAD_ID'}
+assert len(values)==len(lines) and set(values)<= {'OPS_TELEGRAM_BOT_TOKEN','OPS_TELEGRAM_CHAT_ID','OPS_TELEGRAM_THREAD_ID','TELEGRAM_SHARED_WEBHOOK','TELEGRAM_RELAY_SECRET','TELEGRAM_APPROVER_USER_ID'}
 assert re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+',values.get('OPS_TELEGRAM_BOT_TOKEN',''))
 assert re.fullmatch(r'-[0-9]+',values.get('OPS_TELEGRAM_CHAT_ID',''))
 assert not values.get('OPS_TELEGRAM_THREAD_ID') or re.fullmatch(r'[1-9][0-9]*',values['OPS_TELEGRAM_THREAD_ID'])
+assert values.get('TELEGRAM_SHARED_WEBHOOK','false') in ('true','false')
+if values.get('TELEGRAM_SHARED_WEBHOOK')=='true':
+    assert re.fullmatch(r'[1-9][0-9]*',values.get('TELEGRAM_APPROVER_USER_ID',''))
+    assert re.fullmatch(r'[A-Za-z0-9_-]{32,256}',values.get('TELEGRAM_RELAY_SECRET',''))
 XMAIL_OPS_ENV_PY
   OPS_RUNTIME_ARGS=(--env-file /etc/xmail-ops.env)
 fi

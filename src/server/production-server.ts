@@ -59,10 +59,11 @@ import { getMailTLSOptions } from './lib/mail-tls'
 import { createApiAuthMiddleware } from './lib/api-auth'
 import { describeServiceAuthState } from './lib/service-auth'
 import { installAlerting } from './lib/install-alerting'
-import { ensureTelegramWebhook, handleTelegramUpdate, telegramWebhookPath } from './lib/telegram-approvals'
+import { ensureTelegramWebhook, handleTelegramUpdate, telegramWebhookPath, telegramWebhookSecret } from './lib/telegram-approvals'
 import { startDbLivenessWatchdog, type DbLivenessWatchdog } from './lib/db-liveness'
 import { alertOps } from './lib/ops-alert'
-import { escapeHtml } from './lib/telegram'
+import { escapeHtml, getTelegramConfig } from './lib/telegram'
+import { createTelegramSharedWebhook } from './lib/telegram-shared-webhook'
 import { markShuttingDown } from './lib/shutdown'
 
 const app = express()
@@ -165,6 +166,11 @@ app.use('/o/u/', unsubscribeLimiter)
 
 // The pilot owns its strict body parser/timeout before the generic 10 MB parser.
 app.use('/api/auth/identity', createIdentityRouter())
+app.post('/telegram/shared-webhook', express.raw({ type: 'application/json', limit: '256kb' }), createTelegramSharedWebhook(async (update) => {
+    const config = await getTelegramConfig('outreach')
+    if (!config) return 401
+    return handleTelegramUpdate(update, telegramWebhookSecret(config.token))
+}))
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 // Outlook autodiscover sends XML bodies; accept them as raw text
@@ -384,6 +390,7 @@ app.use('/t', trackRoutes)
 // Telegram approval buttons (lib/telegram-approvals.ts). Outside /api: Telegram cannot send a JWT.
 // The secret header derived from the bot token plus the configured chat id are the auth.
 app.post(telegramWebhookPath(), async (req: Request, res: Response) => {
+    if (process.env.TELEGRAM_SHARED_WEBHOOK === 'true') { res.sendStatus(401); return }
     try {
         const header = req.headers['x-telegram-bot-api-secret-token']
         const status = await handleTelegramUpdate(req.body ?? {}, typeof header === 'string' ? header : undefined)

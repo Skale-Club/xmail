@@ -446,6 +446,7 @@ export async function handleTelegramUpdate(
     }
 
     if (update.my_chat_member) {
+        if (process.env.TELEGRAM_SHARED_WEBHOOK === 'true') return 200
         await handleMyChatMember(update.my_chat_member, config, deps)
         return 200
     }
@@ -460,7 +461,16 @@ export async function handleTelegramUpdate(
         await answer(gate.text)
         return 200
     }
+    if (query.data === 'xmail:ping') {
+        await answer('Xmail conectado. Nenhuma ação foi executada.')
+        console.log('[telegram-approvals] verified connectivity callback')
+        return 200
+    }
     if (channelMatch) {
+        if (process.env.TELEGRAM_SHARED_WEBHOOK === 'true') {
+            await answer('Configuração gerenciada pelo bot central.')
+            return 200
+        }
         await handleChannelTap(channelMatch[1], query, config, deps, answer)
         return 200
     }
@@ -523,6 +533,7 @@ export async function handleTelegramUpdate(
  * the one-tap setup of the outreach chat.
  */
 export async function ensureTelegramWebhook(): Promise<void> {
+    if (process.env.TELEGRAM_SHARED_WEBHOOK === 'true') return
     if (process.env.NODE_ENV !== 'production') return
     const base = (process.env.BASE_URL || process.env.FRONTEND_URL || '').replace(/\/$/, '')
     if (!base.startsWith('https://')) return

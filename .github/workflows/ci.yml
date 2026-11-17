@@ -112,7 +112,7 @@ jobs:
 
       - name: Operations routing, formatting and approval isolation (offline)
         run: |
-          npx vitest run --project server src/server/lib/__tests__/telegram.test.ts src/server/lib/__tests__/telegram-approvals.test.ts src/server/lib/__tests__/ops-message.test.ts src/server/lib/__tests__/ops-alert.test.ts --maxWorkers 1
+          npx vitest run --project server src/server/lib/__tests__/telegram.test.ts src/server/lib/__tests__/telegram-shared-webhook.test.ts src/server/lib/__tests__/telegram-approvals.test.ts src/server/lib/__tests__/ops-message.test.ts src/server/lib/__tests__/ops-alert.test.ts --maxWorkers 1
           python3 -B -m unittest discover -s scripts/ops -p test_telegram_ops_contract.py
 
       - name: Type-check server (tsconfig.server.json)

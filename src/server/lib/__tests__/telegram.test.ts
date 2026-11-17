@@ -332,3 +332,32 @@ describe('telegram channels', () => {
         expect(state.updates[0]).toMatchObject({ telegramOutreachChatId: null, telegramOutreachThreadId: null })
     })
 })
+
+
+describe('shared approval configuration', () => {
+    afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals() })
+    beforeEach(() => {
+        vi.stubEnv('TELEGRAM_SHARED_WEBHOOK', 'true')
+        vi.stubEnv('OPS_TELEGRAM_BOT_TOKEN', '123456:central-token')
+        vi.stubEnv('OPS_TELEGRAM_CHAT_ID', '-100123456')
+        vi.stubEnv('TELEGRAM_APPROVER_USER_ID', '123456789')
+        vi.stubEnv('TELEGRAM_RELAY_SECRET', 'test-relay-secret-01234567890123456789')
+        panelConfigured()
+    })
+    it('uses only the central bot, explicit owner and group for outreach and Bot API calls', async () => {
+        expect(await getTelegramConfig('outreach')).toMatchObject({ token: '123456:central-token', chatId: '-100123456', opsChatId: '123456789', outreachChatId: '-100123456' })
+        mockFetchOnce({ ok: true, result: true })
+        await callTelegramApi('answerCallbackQuery', { callback_query_id: 'test' })
+        expect(vi.mocked(fetch).mock.calls[0][0]).toBe('https://api.telegram.org/bot123456:central-token/answerCallbackQuery')
+    })
+    it.each(['OPS_TELEGRAM_BOT_TOKEN', 'OPS_TELEGRAM_CHAT_ID', 'TELEGRAM_APPROVER_USER_ID', 'TELEGRAM_RELAY_SECRET'])('fails closed without %s despite a configured panel', async (name) => {
+        vi.stubEnv(name, '')
+        expect(await getTelegramConfig('outreach')).toBeNull()
+    })
+    it('rejects group or zero owner identities', async () => {
+        for (const owner of ['-100123456', '0', 'admin']) {
+            vi.stubEnv('TELEGRAM_APPROVER_USER_ID', owner)
+            expect(await getTelegramConfig('outreach')).toBeNull()
+        }
+    })
+})

@@ -15,11 +15,24 @@ deployment paths. This file allows only the dedicated operations keys and stays
 separate from immutable database/identity maintenance profiles. Preview readers
 do not receive it.
 
-The existing panel bot remains responsible for outreach cards, approval ownership,
-callback authentication and webhook registration. These paths explicitly resolve
-the outreach configuration; Xmail must never register the shared operations bot's
-existing Xphere webhook. Changing the operations group does not change the
-approval owner. Keep the panel token until its non-operations uses are reviewed.
+The owner chose to retire the former bot completely. With
+`TELEGRAM_SHARED_WEBHOOK=true`, operations and outreach approvals resolve the
+same central OPS token and Xmail group, bypassing all legacy panel/env fallback.
+`TELEGRAM_APPROVER_USER_ID` preserves the original explicit private-owner ID;
+group membership or administrator status never grants approval rights. Missing
+owner/credentials/relay secret fails closed. Two-tap confirmation, readiness
+checks and database action idempotency remain unchanged.
+
+The central authenticated router in Xphere owns webhook registration. Xmail
+accepts only the bounded raw `/telegram/shared-webhook` relay, verified with
+`TELEGRAM_RELAY_SECRET` and timestamped HMAC-SHA256 over the original bytes before
+JSON parsing or config/database access. Shared mode rejects the direct webhook,
+never calls `setWebhook` and disables automatic group reconfiguration. The
+`xmail:ping` callback uses the same owner/chat gate and performs no campaign action.
+All three new values are allowlisted in the root-only operations file; preview
+readers never receive it. The retired bot webhook is removed only after the
+shared path is verified. Old credentials remain in protected rollback material,
+not as an active shared-mode fallback.
 
 Xmail runs on a separate host from the main Skale Club apps. Its existing
 in-process disk/memory/mail/queue/database checks remain active; the main host's
@@ -27,9 +40,10 @@ shared watchdog does not imply coverage of this host. External uptime remains
 independent of the mail process.
 
 Operations may use the shared Skale bot through `OPS_TELEGRAM_BOT_TOKEN`,
-`OPS_TELEGRAM_CHAT_ID` and optional `OPS_TELEGRAM_THREAD_ID`. The panel bot and
-its outreach/approval messages remain separate. Never point the shared bot's
-webhook at the Xmail outreach approval endpoint.
+`OPS_TELEGRAM_CHAT_ID` and optional `OPS_TELEGRAM_THREAD_ID`. In shared mode,
+outreach/approval cards use that same bot/group without changing their content
+or action authorization. Never point the shared bot directly at Xmail; the
+central Xphere router forwards authenticated approval events.
 
 The central pure formatter (`src/server/lib/ops-message.ts`) runs only for
 `sendTelegram(..., 'ops')`. Outreach messages and approval cards retain their

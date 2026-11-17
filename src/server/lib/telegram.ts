@@ -192,6 +192,17 @@ async function getBaseConfig(): Promise<BaseTelegramConfig | null> {
 }
 
 async function getConfig(channel: TelegramChannel = 'ops'): Promise<TelegramConfig | null> {
+    // Shared approvals never consult panel credentials or the retired bot.
+    if (process.env.TELEGRAM_SHARED_WEBHOOK === 'true') {
+        const token = process.env.OPS_TELEGRAM_BOT_TOKEN?.trim()
+        const chatId = process.env.OPS_TELEGRAM_CHAT_ID?.trim()
+        const owner = process.env.TELEGRAM_APPROVER_USER_ID?.trim()
+        const secret = process.env.TELEGRAM_RELAY_SECRET
+        if (!token || !/^[0-9]+:[A-Za-z0-9_-]+$/.test(token) || !chatId || !/^-[1-9][0-9]*$/.test(chatId)
+            || !owner || !/^[1-9][0-9]*$/.test(owner) || !secret || Buffer.byteLength(secret, 'utf8') < 32) return null
+        return { token, chatId, opsChatId: owner, outreachChatId: chatId,
+            threadId: process.env.OPS_TELEGRAM_THREAD_ID?.trim() || undefined, source: 'env', channel }
+    }
     // Operations may share a central bot without taking over the panel bot's
     // outreach approval webhook. A partial override fails closed: never send
     // operations to the previous destination while migration is incomplete.
