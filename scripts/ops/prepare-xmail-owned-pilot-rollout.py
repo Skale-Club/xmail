@@ -13,7 +13,7 @@ import secrets
 import stat
 import sys
 
-LIBRARY_SHA = '6e9a7a4b211410f6a0e7c073a91169584c3b4593ebf8209c372a4ba0d8c623e7'
+LIBRARY_SHA = 'a6cce4c62824517716e90393d44570a4d6023e7a72a2abd5b9a84fbe7a386adf'
 UUID = r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
 
 AUTH_REVIEW_JS = r'''
@@ -104,7 +104,7 @@ def validate_snapshot(value):
     ids = value['ids']
     require(isinstance(ids, list) and 0 < len(ids) <= 1000 and len(set(ids)) == len(ids)
         and all(re.fullmatch(UUID, x) for x in ids))
-    require(len(value['schema']['tables']) == 70 and set(value['schema']['tables']) == set(value['fingerprints'])
+    require(len(value['schema']['tables']) == 73 and set(value['schema']['tables']) == set(value['fingerprints'])
         and value['fingerprints']['users']['count'] == len(ids) and type(value['unsafeDispatches']) is int and value['unsafeDispatches'] == 0)
     require(all(type(x['count']) is int and x['count'] >= 0 and re.fullmatch(r'[a-f0-9]{64}', x['sha256']) for x in value['fingerprints'].values()))
     require(isinstance(value['controls'], list) and all(x['user_id'] in ids for x in value['controls']))

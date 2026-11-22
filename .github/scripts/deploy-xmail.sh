@@ -390,7 +390,7 @@ def receipt(p, profile_digest, root=ROOT, now=None):
     need(exact_facts(proofs['freeze'], freeze_facts))
     snap = proofs['snapshot']
     need(set(snap) == {'sourceReadOnlySnapshotComplete', 'snapshotDigest', 'businessTables'}
-         and snap['sourceReadOnlySnapshotComplete'] is True and digest(snap['snapshotDigest']) and type(snap['businessTables']) is int and snap['businessTables'] == 70)
+         and snap['sourceReadOnlySnapshotComplete'] is True and digest(snap['snapshotDigest']) and type(snap['businessTables']) is int and snap['businessTables'] in (70, 73))
     if 'final-import' in proofs:
         need(exact_facts(proofs['final-import'], {'snapshotReceiptSha256': r['proofs']['snapshot']['sha256'], 'restoredAndReconciled': True,
              'nativeHashesPreserved': True, 'referenceMetadataPreserved': True, 'identityTables': 4, 'businessTables': 70}))

@@ -32,7 +32,7 @@ class OwnedPilotPolicy(unittest.TestCase):
         fenced = operator.owned_guard_sql(self.lib,True)
         self.assertNotIn('OR EXISTS(SELECT FROM public.xmail_identity_bindings)',before)
         self.assertIn('AND rolcanlogin',before);self.assertIn('AND NOT rolcanlogin',fenced)
-        for guard in ["<>74","<>'080'",'rolconnlimit=CASE',"has_sequence_privilege",'has_function_privilege','NOT g.tgisinternal']:
+        for guard in ["<>77","<>81","<>'081'",'rolconnlimit=CASE',"has_sequence_privilege",'has_function_privilege','NOT g.tgisinternal']:
             self.assertIn(guard,before);self.assertIn(guard,fenced)
         self.assertIn("AND usename<>'xmail_runtime'",before)
         self.assertNotIn("AND usename<>'xmail_runtime'",fenced)

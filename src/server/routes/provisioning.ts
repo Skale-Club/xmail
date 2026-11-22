@@ -25,17 +25,47 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import type { DomainVerificationUpdate } from '../lib/domain-dns'
 import type { DomainRecord } from '../lib/microsite-provisioning'
 
-/** Constant-time compare that also hides the secret length (both sides are hashed first). */
-function secretsMatch(provided: string, expected: string): boolean {
+/**
+ * Constant-time compare that also hides the secret length (both sides are hashed first). A config
+ * loaded from the database carries only the key's SHA-256, compared the same way.
+ */
+function secretsMatch(provided: string, config: ProvisioningConfig): boolean {
     const a = createHash('sha256').update(provided).digest()
-    const b = createHash('sha256').update(expected).digest()
-    return timingSafeEqual(a, b)
+    const b = config.apiKeySha256
+        ? Buffer.from(config.apiKeySha256, 'hex')
+        : createHash('sha256').update(config.apiKey).digest()
+    return b.length === a.length && timingSafeEqual(a, b)
+}
+
+const DB_CONFIG_TTL_MS = 60 * 1000
+
+/** Environment first; otherwise the Microsites organization in the database, cached briefly. */
+export function defaultConfigResolver(
+    loadFromDb: () => Promise<ProvisioningConfig | null>,
+    env: Record<string, string | undefined> = process.env,
+    now: () => number = Date.now,
+): () => Promise<ProvisioningConfig | null> {
+    let cached: { at: number; value: ProvisioningConfig | null } | null = null
+    return async () => {
+        const fromEnv = resolveProvisioningConfig(env)
+        if (fromEnv) return fromEnv
+        if (cached && now() - cached.at < DB_CONFIG_TTL_MS) return cached.value
+        try {
+            cached = { at: now(), value: await loadFromDb() }
+        } catch (error) {
+            console.error('[provisioning] database config unavailable:', error instanceof Error ? error.message : 'unknown')
+            cached = { at: now(), value: null }
+        }
+        return cached.value
+    }
 }
 
 export interface ProvisioningRouterDeps {
     store: ProvisioningStore
-    /** Resolved per request so the env can be validated fresh; defaults to process.env. */
-    getConfig?: () => ProvisioningConfig | null
+    /** Resolved per request; defaults to the environment, then the database. */
+    getConfig?: () => ProvisioningConfig | null | Promise<ProvisioningConfig | null>
+    /** Database fallback used by the default resolver (production wiring passes the drizzle loader). */
+    loadConfigFromDb?: () => Promise<ProvisioningConfig | null>
     checkDns?: (domain: DomainRecord) => Promise<DomainVerificationUpdate>
     /** Tests turn the limiter off; production keeps it. */
     rateLimitPerMinute?: number | false
@@ -45,7 +75,8 @@ const defaultCheckDns = async (domain: DomainRecord) => (await checkDomainDns(do
 
 export function createProvisioningRouter(deps: ProvisioningRouterDeps): Router {
     const router = Router()
-    const getConfig = deps.getConfig ?? (() => resolveProvisioningConfig())
+    const getConfig = deps.getConfig
+        ?? (deps.loadConfigFromDb ? defaultConfigResolver(deps.loadConfigFromDb) : () => resolveProvisioningConfig())
     const checkDns = deps.checkDns ?? defaultCheckDns
 
     if (deps.rateLimitPerMinute !== false) {
@@ -59,12 +90,17 @@ export function createProvisioningRouter(deps: ProvisioningRouterDeps): Router {
     }
 
     // Auth: disabled (503) when key/org are unset, 401 with no detail on a bad token.
-    router.use((req: Request, res: Response, next: NextFunction) => {
-        const config = getConfig()
+    router.use(async (req: Request, res: Response, next: NextFunction) => {
+        let config: ProvisioningConfig | null
+        try {
+            config = await getConfig()
+        } catch {
+            config = null
+        }
         if (!config) return res.status(503).json({ error: 'provisioning_disabled' })
         const header = req.headers.authorization
         const token = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : ''
-        if (!token || !secretsMatch(token, config.apiKey)) {
+        if (!token || !secretsMatch(token, config)) {
             return res.status(401).json({ error: 'invalid_token' })
         }
         res.locals.provisioningConfig = config

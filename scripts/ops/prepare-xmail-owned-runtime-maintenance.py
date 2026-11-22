@@ -15,7 +15,7 @@ import sys
 import time
 from urllib.parse import unquote, urlsplit
 
-PILOT_SHA = 'f7305667a88d79150ad6df8f0a9cd4c21977d407f62f23952fd7958e52a1cee7'
+PILOT_SHA = 'd81d5202f024c141b9fd33b7799a0e3a70bb84bf38c08ca71ca8f41299b795d1'
 GOOGLE_KEYS = set('XMAIL_GOOGLE_AUTH_ENABLED XMAIL_GOOGLE_AUTH_PROJECT_ID XMAIL_GOOGLE_AUTH_PROJECT_NUMBER XMAIL_GOOGLE_AUTH_WEB_API_KEY XMAIL_GOOGLE_AUTH_ADC_MODE XMAIL_GOOGLE_AUTH_ADC_FILE XMAIL_GOOGLE_AUTH_ADC_AUDIENCE XMAIL_GOOGLE_AUTH_ADC_SERVICE_ACCOUNT XMAIL_GOOGLE_AUTH_ORIGIN'.split())
 UUID = r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
 BUNDLE = r'owned-(?:authority|maintenance)-[0-9TZ]{16}-[a-f0-9]{8}'
@@ -254,7 +254,7 @@ def publish(m, policy, bundle, old, image_id, source_sha, prior_raw, prior_profi
         'commitAckSha256': m.sha(policy['secure_read'](bundle/'maintenance-commit-acknowledged.json')),
         'identityStateDigest': m.sha(m.encoded(frozen['identityDigests'])), 'backupSha256': backup_sha}
     facts = {'freeze': {'allSourceWritersStopped': True, 'oldContainerStopped': True, 'oldOwnedCredentialsRejected': True},
-        'snapshot': {'sourceReadOnlySnapshotComplete': True, 'snapshotDigest': m.sha(m.encoded(frozen)), 'businessTables': 70},
+        'snapshot': {'sourceReadOnlySnapshotComplete': True, 'snapshotDigest': m.sha(m.encoded(frozen)), 'businessTables': 73},
         'controls': {'snapshotReceiptSha256': '', 'exactUuidControlsReviewed': True, 'disabledStatePreserved': True,
             'noContactAutoLinks': True, 'runtimeGrantsReviewed': True}, 'maintenance': maintenance}
     pointers = {}
@@ -445,7 +445,7 @@ def republish(m, pilot, policy, args, ctx):
     at('publish')
     publish(m, policy, bundle, old, args.approved_image_id, args.approved_source_sha, prior_raw, prior_profile_raw, anchor_raw, base_raw,
         frozen, frozen_at, expiry, next_profile, pending_reader, backup_sha)
-    m.durable_file(bundle/'maintenance-profile-ready.json', m.encoded({'ownedMaintenanceReady': True, 'businessFingerprintsPreserved': 70, 'allIdentityTablesPreserved': True, 'sourceAuthRequests': False}), replace=True)
+    m.durable_file(bundle/'maintenance-profile-ready.json', m.encoded({'ownedMaintenanceReady': True, 'businessFingerprintsPreserved': 73, 'allIdentityTablesPreserved': True, 'sourceAuthRequests': False}), replace=True)
     emit(phase, 'receipts-republished')
     return {'ownedMaintenanceReady': True, 'recovered': True, 'oldRuntimeRestored': False, 'applicationStarted': False, 'sourceAuthRequests': False}
 
@@ -622,8 +622,8 @@ def run(args):
         at('publish'); previous_profile_raw = policy['secure_read'](bundle/'previous-profile.env')
         publish(m, policy, bundle, old, args.approved_image_id, args.approved_source_sha, prior_raw, previous_profile_raw, anchor, base_raw,
             frozen, frozen_at, expiry, next_profile, next_reader, backup_sha)
-        m.durable_file(bundle/'maintenance-profile-ready.json', m.encoded({'ownedMaintenanceReady': True, 'businessFingerprintsPreserved': 70, 'allIdentityTablesPreserved': True, 'sourceAuthRequests': False}))
-        return {'ownedMaintenanceReady': True, 'previewReadyBeforeStop': True, 'businessFingerprintsPreserved': 70,
+        m.durable_file(bundle/'maintenance-profile-ready.json', m.encoded({'ownedMaintenanceReady': True, 'businessFingerprintsPreserved': 73, 'allIdentityTablesPreserved': True, 'sourceAuthRequests': False}))
+        return {'ownedMaintenanceReady': True, 'previewReadyBeforeStop': True, 'businessFingerprintsPreserved': 73,
             'allIdentityTablesPreserved': True, 'sourceAuthRequests': False, 'personalFactorRequired': False, 'applicationStarted': False}
     finally:
         os.close(fd)

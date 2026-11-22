@@ -52,7 +52,7 @@ import mailRoutes from './routes/mail'
 import notificationRoutes from './routes/notifications'
 import autodiscoverRoutes from './routes/autodiscover'
 import { createProvisioningRouter } from './routes/provisioning'
-import { createDrizzleProvisioningStore, startMicrositeProtectedDomainRefresh } from './lib/microsite-provisioning-store'
+import { createDrizzleProvisioningStore, loadProvisioningConfigFromDb, startMicrositeProtectedDomainRefresh } from './lib/microsite-provisioning-store'
 import { createSMTPServer } from './smtp-server'
 import { createIMAPServer, loadImapBranding } from './imap-server'
 import { createMXServer } from './mx-server'
@@ -354,7 +354,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 // Microsite mailbox provisioning (server-to-server, own bearer secret, 503 until configured).
 // The sending guards read the provisioned domains from memory, so load them before serving.
 startMicrositeProtectedDomainRefresh()
-app.use('/api/provisioning/v1', createProvisioningRouter({ store: createDrizzleProvisioningStore() }))
+app.use('/api/provisioning/v1', createProvisioningRouter({ store: createDrizzleProvisioningStore(), loadConfigFromDb: loadProvisioningConfigFromDb }))
 app.use('/api/auth', authRoutes)
 app.use('/api/users', userRoutes)
 app.use('/api/organizations', organizationRoutes)

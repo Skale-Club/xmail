@@ -18,10 +18,18 @@ import { getOperationDomains } from './operation-domains'
 // ----------------------------------------------------------------------------
 
 export interface ProvisioningConfig {
+    /** Plain key from the environment; empty when the key comes from the database as a hash. */
     apiKey: string
+    /** SHA-256 hex of the key, stored in the Microsites organization's API credential. */
+    apiKeySha256?: string
     organizationId: string
     delegateUserIds: string[]
 }
+
+/** Slug of the organization that groups every microsite mailbox (database configuration). */
+export const MICROSITES_ORGANIZATION_SLUG = 'microsites'
+/** Name of that organization's API credential whose secret_hash is the provisioning key hash. */
+export const PROVISIONING_CREDENTIAL_NAME = 'websites-provisioning'
 
 type EnvLike = Record<string, string | undefined>
 

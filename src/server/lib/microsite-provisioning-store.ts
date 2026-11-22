@@ -10,10 +10,12 @@
  * No password is ever generated or stored: the mailbox user has a null password_hash, so
  * authenticateNativeUser (SMTP/IMAP) rejects it and nobody can sign in as it.
  */
-import { and, eq, inArray, notInArray, sql } from 'drizzle-orm'
+import { and, eq, gt, inArray, isNull, notInArray, or, sql } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
 import { db } from '../../db'
 import {
+    credentials,
+    organizations,
     domains,
     mailboxDelegates,
     mailboxes,
@@ -28,8 +30,11 @@ import { DEFAULT_DKIM_SELECTOR, generateDkimKeyPair } from './domain-dns'
 import { createUserMailbox } from './native-mail'
 import { addMicrositeProtectedDomain, setMicrositeProtectedDomains } from './microsite-protected-domains'
 import {
+    MICROSITES_ORGANIZATION_SLUG,
+    PROVISIONING_CREDENTIAL_NAME,
     ProvisioningError,
     type DomainRecord,
+    type ProvisioningConfig,
     type ProvisioningStore,
 } from './microsite-provisioning'
 
@@ -70,6 +75,35 @@ export function startMicrositeProtectedDomainRefresh(intervalMs = 5 * 60 * 1000)
     const timer = setInterval(run, intervalMs)
     timer.unref()
     return () => clearInterval(timer)
+}
+
+/**
+ * Database configuration, used when the XMAIL_PROVISIONING_* environment is not set (the owned
+ * runtime pins its environment, so this avoids an environment change for a release). The bound
+ * organization is the one with slug `microsites`; the key is its unexpired `api` credential named
+ * `websites-provisioning`, stored only as a SHA-256 hex in secret_hash; delegates are the
+ * organization owner plus its admin members. Null (API answers 503) if anything is missing.
+ */
+export async function loadProvisioningConfigFromDb(): Promise<ProvisioningConfig | null> {
+    const [org] = await db.select({ id: organizations.id, ownerId: organizations.ownerId })
+        .from(organizations).where(eq(organizations.slug, MICROSITES_ORGANIZATION_SLUG)).limit(1)
+    if (!org) return null
+    const [credential] = await db.select({ secretHash: credentials.secretHash })
+        .from(credentials)
+        .where(and(
+            eq(credentials.organizationId, org.id),
+            eq(credentials.type, 'api'),
+            eq(credentials.name, PROVISIONING_CREDENTIAL_NAME),
+            or(isNull(credentials.expiresAt), gt(credentials.expiresAt, new Date())),
+        ))
+        .limit(1)
+    const hash = credential?.secretHash?.trim().toLowerCase() ?? ''
+    if (!/^[a-f0-9]{64}$/.test(hash)) return null
+    const admins = await db.select({ userId: organizationUsers.userId })
+        .from(organizationUsers)
+        .where(and(eq(organizationUsers.organizationId, org.id), eq(organizationUsers.role, 'admin')))
+    const delegateUserIds = [...new Set([org.ownerId, ...admins.map((row) => row.userId)].map((id) => id.toLowerCase()))]
+    return { apiKey: '', apiKeySha256: hash, organizationId: org.id.toLowerCase(), delegateUserIds }
 }
 
 export function createDrizzleProvisioningStore(): ProvisioningStore {

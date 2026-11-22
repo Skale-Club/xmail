@@ -217,10 +217,10 @@ CANDIDATE_GUARD = """DO $$ BEGIN
  IF current_database()<>'xmail' OR current_user<>'xmail_owner' OR session_user<>'xmail_owner'
  OR current_setting('server_version_num')::int/10000<>17
  OR (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname=current_database())<>'xmail_owner'
- OR (SELECT count(*) FROM pg_tables WHERE schemaname='public')<>74
+ OR (SELECT count(*) FROM pg_tables WHERE schemaname='public')<>77
  OR EXISTS(SELECT FROM pg_tables WHERE schemaname='public' AND tableowner<>'xmail_owner')
- OR (SELECT count(*) FROM supabase_migrations.schema_migrations)<>80
- OR (SELECT max(version) FROM supabase_migrations.schema_migrations)<>'080'
+ OR (SELECT count(*) FROM supabase_migrations.schema_migrations)<>81
+ OR (SELECT max(version) FROM supabase_migrations.schema_migrations)<>'081'
  OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN
  ('xmail_identity_bindings','xmail_identity_browser_challenges','xmail_identity_owned_sessions','xmail_identity_user_controls') AND c.relkind='r' AND c.relrowsecurity)<>4
  OR EXISTS(SELECT FROM public.xmail_identity_bindings) OR EXISTS(SELECT FROM public.xmail_identity_owned_sessions)
