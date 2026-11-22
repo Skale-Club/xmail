@@ -142,7 +142,7 @@ export function createDrizzleProvisioningStore(): ProvisioningStore {
             if (!owner) throw new Error('mailbox user missing after upsert')
             if (owner.passwordHash || owner.isAdmin) throw new ProvisioningError(409, 'mailbox_user_conflict')
 
-            // 2. Membership in the bound organization ("Owned Microsites"): this is what groups the
+            // 2. Membership in the bound organization ("Microsites"): this is what groups the
             //    mailbox in the delegates' webmail (classifyMailboxes uses the owner's org name).
             await db.insert(organizationUsers).values({
                 organizationId,

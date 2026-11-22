@@ -11,9 +11,9 @@ service key and from every human route.
 - It is owned by a dedicated mailbox user (`users` row, email `info@<domain>`) with NO password:
   no password is generated, returned or logged, and SMTP/IMAP login is impossible for it
   (`authenticateNativeUser` rejects a null hash).
-- All mailbox users belong to ONE bound Xmail organization, named **Owned Microsites** in the
+- All mailbox users belong to ONE bound Xmail organization, named **Microsites** in the
   runbook. That organization is the grouping category: the webmail switcher groups mailboxes by
-  the owner's organization name, so the owner sees every site mailbox under "Owned Microsites"
+  the owner's organization name, so the owner sees every site mailbox under "Microsites"
   and never mixed with other mail.
 - Designated delegate users (the owner, env `XMAIL_PROVISIONING_DELEGATE_USER_IDS`) read the
   mailbox in Xmail webmail with their own login, through the new `mailbox_delegates` table.
@@ -100,7 +100,7 @@ detail), never with secrets.
 | Variable | Meaning |
 | --- | --- |
 | `XMAIL_PROVISIONING_API_KEY` | Bearer secret shared with the Websites platform (`openssl rand -base64 32`). |
-| `XMAIL_PROVISIONING_ORG_ID` | UUID of the "Owned Microsites" organization. |
+| `XMAIL_PROVISIONING_ORG_ID` | UUID of the "Microsites" organization. |
 | `XMAIL_PROVISIONING_DELEGATE_USER_IDS` | Comma-separated user UUIDs allowed to read every site mailbox. |
 
 Added to `.github/scripts/deploy-xmail.sh` (`run_app_container`, the block build-deploy.yml
@@ -113,7 +113,7 @@ the API disabled (503), nothing else changes.
 1. Apply migration `081_microsite_mailbox_provisioning.sql` (`node scripts/apply-pending-migrations.mjs`).
    Deploys do not run migrations. Until it is applied the new routes fail with 500 and the
    delegate lookup in `checkUserMailboxAccess` would error, so apply it BEFORE deploying.
-2. In Xmail admin create the organization **Owned Microsites** (no members needed). Copy its id.
+2. In Xmail admin create the organization **Microsites** (no members needed). Copy its id.
 3. Note the user ids of the delegates (the owner's own Xmail user).
 4. Set the three secrets, deploy. Check: `GET /api/provisioning/v1/domains/example.com` answers
    401 without a token and 404 `domain_not_found` with it.
@@ -125,7 +125,7 @@ the API disabled (503), nothing else changes.
 7. `POST .../verify`, repeat until `inbound_pending`.
 8. Verify inbound with an authorized test message from a mailbox you control to `info@<d>`. The
    state becomes `ready` once Xmail stores it. Read it in webmail: the delegate sees it under
-   "Owned Microsites".
+   "Microsites".
 
 ## Rollback
 

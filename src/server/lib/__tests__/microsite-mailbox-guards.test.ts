@@ -64,7 +64,7 @@ describe('grouping and isolation in the delegate webmail', () => {
     const operationDomains = getOperationDomains({ MAIL_DOMAIN: 'skale.club', OUTREACH_PROTECTED_DOMAINS: 'xkedule.com' })
     const delegate = 'owner-user'
 
-    it('shows shared microsite mailboxes under the Owned Microsites group, apart from personal mail', () => {
+    it('shows shared microsite mailboxes under the Microsites group, apart from personal mail', () => {
         const result = classifyMailboxes({
             requesterId: delegate,
             mailboxes: [
@@ -73,14 +73,14 @@ describe('grouping and isolation in the delegate webmail', () => {
                 { id: 'site-b', userId: 'info-b', email: 'info@best-roofing.com' },
             ],
             memberships: [
-                { userId: 'info-a', organizationName: 'Owned Microsites' },
-                { userId: 'info-b', organizationName: 'Owned Microsites' },
+                { userId: 'info-a', organizationName: 'Microsites' },
+                { userId: 'info-b', organizationName: 'Microsites' },
             ],
             operationDomains,
         })
         expect(result.get('mine')).toMatchObject({ role: 'work', organizationName: null })
         for (const id of ['site-a', 'site-b']) {
-            expect(result.get(id)).toMatchObject({ role: 'other', isOperationMailbox: false, organizationName: 'Owned Microsites' })
+            expect(result.get(id)).toMatchObject({ role: 'other', isOperationMailbox: false, organizationName: 'Microsites' })
         }
     })
 })

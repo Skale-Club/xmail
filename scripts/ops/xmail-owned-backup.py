@@ -57,7 +57,7 @@ def valid_comparison(value):
         and all(type(value[k]) is bool for k in booleans) and all(type(value[k]) is int and 0<=value[k]<=256 for k in counts)):return False
     parts=value.get('tableDifferences',[])
     fields={'columnsEqual','constraintsEqual','indexesEqual','policiesEqual','triggersEqual','rlsEqual','forceRlsEqual'}
-    return isinstance(parts,list) and len(parts)<=min(74,value['schemaTableDifferenceCount']) and all(isinstance(row,dict) and set(row)==fields|{'table'}
+    return isinstance(parts,list) and len(parts)<=min(77,value['schemaTableDifferenceCount']) and all(isinstance(row,dict) and set(row)==fields|{'table'}
         and isinstance(row['table'],str) and re.fullmatch(r'[a-z_][a-z0-9_]{0,62}',row['table']) and all(type(row[k]) is bool for k in fields) for row in parts)
 
 
@@ -162,8 +162,8 @@ def manifest_sql(m):
 
 def validate_manifest(value):
     need(isinstance(value,dict) and set(value)=={'schema','fingerprints','ledger','policyRoles'})
-    need(len(value['schema']['tables'])==len(value['fingerprints'])==74 and set(value['schema']['tables'])==set(value['fingerprints'])
-        and IDENTITY<=set(value['schema']['tables']) and value['ledger']['count']==80 and re.fullmatch(r'[a-f0-9]{64}',value['ledger']['sha256']))
+    need(len(value['schema']['tables'])==len(value['fingerprints'])==77 and set(value['schema']['tables'])==set(value['fingerprints'])
+        and IDENTITY<=set(value['schema']['tables']) and value['ledger']['count']==81 and re.fullmatch(r'[a-f0-9]{64}',value['ledger']['sha256']))
     need(set(value['policyRoles'])<=set(['anon','authenticated','service_role','xmail_owner','xmail_runtime','xmail_staging_reader']))
     need(all(type(x['count']) is int and x['count']>=0 and re.fullmatch(r'[a-f0-9]{64}',x['sha256']) for x in value['fingerprints'].values()))
     parts=value['schema'].get('tableParts')
@@ -308,7 +308,7 @@ def receive(m,c):
         expected=c['read_json'](stage/'manifest.json');validate_manifest(expected)
         restore(m,c,stage,expected,value['operation'])
         for name in ['plaintext.tar','snapshot.dump','manifest.json']:(stage/name).unlink()
-        proof={**value,'aeadVerified':True,'restoreEquivalent':True,'schemaMatch':True,'rowsMatch':True,'publicTables':74,'migrationLedger':80,
+        proof={**value,'aeadVerified':True,'restoreEquivalent':True,'schemaMatch':True,'rowsMatch':True,'publicTables':77,'migrationLedger':81,
             'createdAt':value['createdAt'],'verifiedAt':dt.datetime.now(dt.timezone.utc).isoformat(),'applicationChanged':False,'sourceWriteFenceChanged':False}
         c['write_json'](stage/'receipt.json',proof);c['syncdir'](stage);c['rename_new'](stage,destination);c['syncdir'](ARCHIVES)
         retained=retention(c,ARCHIVES)
@@ -381,7 +381,7 @@ def backup(m,c):
             finally:
                 if p.poll() is None:p.kill();p.wait(timeout=5)
         need(all(proof.get(k)==v for k,v in value.items()) and all(proof.get(k) is True for k in ['aeadVerified','restoreEquivalent','schemaMatch','rowsMatch','temporaryRestoreRemoved'])
-            and proof.get('publicTables')==74 and proof.get('migrationLedger')==80 and 0<proof.get('retainedVerifiedArchives',0)<=KEEP)
+            and proof.get('publicTables')==77 and proof.get('migrationLedger')==81 and 0<proof.get('retainedVerifiedArchives',0)<=KEEP)
         current=m.inspect(old['Id']);need(current['State']['Running'] is True and current['State'].get('Health',{}).get('Status')=='healthy' and current['State']['StartedAt']==old['State']['StartedAt'])
         m.durable_file(stage/'receipt.json',m.encoded(proof))
         # Remove local plaintext only after off-host authenticated recovery and
@@ -389,7 +389,7 @@ def backup(m,c):
         for name in ['snapshot.dump','manifest.json','plaintext.tar']:(stage/name).unlink()
         c['syncdir'](stage);c['rename_new'](stage,root/operation);c['syncdir'](root)
         retained_local=retention(c,root)
-        return {'retainedLocalEncryptedArchives':retained_local,'ownedBackupVerified':True,'offsiteEncrypted':True,'restoreEquivalent':True,'temporaryRestoreRemoved':True,'publicTables':74,'migrationLedger':80,
+        return {'retainedLocalEncryptedArchives':retained_local,'ownedBackupVerified':True,'offsiteEncrypted':True,'restoreEquivalent':True,'temporaryRestoreRemoved':True,'publicTables':77,'migrationLedger':81,
             'retainedVerifiedArchives':proof['retainedVerifiedArchives'],'applicationUnchanged':True,'sourceWriteFenceChanged':False}
     finally:
         if holder is not None:
