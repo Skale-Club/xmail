@@ -72,6 +72,12 @@ export function createApiAuthMiddleware(): RequestHandler {
         if (PUBLIC_ROUTES.some((r) => r.method === req.method && r.path === path)) {
             return next()
         }
+        // Server-to-server microsite provisioning API: authenticated by its own dedicated bearer
+        // secret inside routes/provisioning.ts (fails closed: 503 when unconfigured, 401 on a bad
+        // token). Neither a Supabase session nor the outreach service key may enter here.
+        if (path === '/api/provisioning/v1' || path.startsWith('/api/provisioning/v1/')) {
+            return next()
+        }
         if (req.method === 'GET' && PUBLIC_GET_PREFIXES.some((p) => path.startsWith(p))) {
             return next()
         }

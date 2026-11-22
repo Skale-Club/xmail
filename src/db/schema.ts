@@ -3064,3 +3064,43 @@ export const inboxReplyAlerts = pgTable('inbox_reply_alerts', {
 
 export type InboxReplyAlert = typeof inboxReplyAlerts.$inferSelect
 export type NewInboxReplyAlert = typeof inboxReplyAlerts.$inferInsert
+
+// ============================================================================
+// Microsite mailbox provisioning (migration 081, owned microsites / D-015)
+// ============================================================================
+
+/** One row per provisioned microsite domain; links the site to its domain row and info@ mailbox. */
+export const micrositeMailDomains = pgTable('microsite_mail_domains', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    domain: text('domain').notNull(),
+    organizationId: uuid('organization_id').references(() => organizations.id).notNull(),
+    domainId: uuid('domain_id').references(() => domains.id, { onDelete: 'set null' }),
+    siteRef: text('site_ref').notNull(),
+    mailboxId: uuid('mailbox_id').references(() => mailboxes.id, { onDelete: 'set null' }),
+    mailboxUserId: uuid('mailbox_user_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    domainUnique: uniqueIndex('microsite_mail_domains_domain_unique').on(table.domain),
+}))
+
+/** Users allowed to open another user's native mailbox in webmail (not over IMAP/SMTP). */
+export const mailboxDelegates = pgTable('mailbox_delegates', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    mailboxId: uuid('mailbox_id').references(() => mailboxes.id, { onDelete: 'cascade' }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    mailboxUserUnique: uniqueIndex('mailbox_delegates_mailbox_user_unique').on(table.mailboxId, table.userId),
+}))
+
+/** Append-only audit of provisioning writes. Never holds secrets. */
+export const micrositeProvisioningAudit = pgTable('microsite_provisioning_audit', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    action: text('action').notNull(),
+    domain: text('domain').notNull(),
+    siteRef: text('site_ref'),
+    outcome: text('outcome').$type<'success' | 'denied' | 'failed'>().notNull(),
+    detail: jsonb('detail').default({}).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+})

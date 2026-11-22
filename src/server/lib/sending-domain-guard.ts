@@ -1,4 +1,5 @@
 import { getOperationDomains } from './operation-domains'
+import { getMicrositeProtectedDomains } from './microsite-protected-domains'
 
 /**
  * Pure sending-inbox guards shared by the human outreach routes and the agent gateway.
@@ -22,7 +23,8 @@ export interface ProtectedSendingDomainViolation {
 export function checkProtectedSendingDomains(
     accounts: Array<{ email: string }>,
 ): ProtectedSendingDomainViolation | null {
-    const protectedDomains = getOperationDomains()
+    // Operation domains (env) plus the runtime set of provisioned owned-microsite domains.
+    const protectedDomains = new Set([...getOperationDomains(), ...getMicrositeProtectedDomains()])
     if (protectedDomains.size === 0 || accounts.length === 0) return null
     const offending = accounts.filter((a) => {
         const domain = a.email.split('@')[1]?.toLowerCase()

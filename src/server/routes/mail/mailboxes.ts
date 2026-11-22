@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import { eq, and, desc, inArray, sql } from 'drizzle-orm'
+import { eq, and, or, desc, inArray, sql } from 'drizzle-orm'
 import { db } from '../../../db'
-import { mailboxes, mailFolders, users, organizationUsers, organizations, emailAccounts } from '../../../db/schema'
+import { mailboxes, mailFolders, users, organizationUsers, organizations, emailAccounts, mailboxDelegates } from '../../../db/schema'
+import { evaluateMailboxAccess } from '../../lib/mailbox-delegation'
 import { classifyMailboxes, filterUserFacingMailboxes } from './mailbox-organizations'
 import { getOperationDomains } from '../../lib/operation-domains'
 import { DMARC_MAILBOX_ADDRESS } from '../../lib/dmarc-config'
@@ -29,7 +30,7 @@ const router = Router()
  *     must still match the user's email (sanity check; native mailboxes
  *     are 1:1 with the user record).
  */
-export async function checkUserMailboxAccess(userId: string, mailboxId: string) {
+export async function checkUserMailboxAccess(userId: string, mailboxId: string, opts: { ownerOnly?: boolean } = {}) {
     const [requester, mailbox] = await Promise.all([
         db.query.users.findFirst({
             where: eq(users.id, userId),
@@ -43,27 +44,29 @@ export async function checkUserMailboxAccess(userId: string, mailboxId: string) 
         return null
     }
 
-    // Admin bypass: super-admins can access any mailbox.
-    if (requester.isAdmin) {
-        return mailbox
-    }
+    // Admins pass without further lookups; owners need the native-email sanity check.
+    const needsOwner = !requester.isAdmin && mailbox.isNative
+    const needsDelegate = !requester.isAdmin && mailbox.userId !== userId && !opts.ownerOnly
+    const [owner, delegation] = await Promise.all([
+        needsOwner
+            ? db.query.users.findFirst({ where: eq(users.id, mailbox.userId) })
+            : Promise.resolve(null),
+        needsDelegate
+            ? db.query.mailboxDelegates.findFirst({
+                where: and(eq(mailboxDelegates.mailboxId, mailboxId), eq(mailboxDelegates.userId, userId)),
+            })
+            : Promise.resolve(null),
+    ])
 
-    // Non-admins must own the mailbox.
-    if (mailbox.userId !== userId) {
-        return null
-    }
+    const access = evaluateMailboxAccess({
+        requester: { id: requester.id, isAdmin: requester.isAdmin },
+        mailbox: { userId: mailbox.userId, email: mailbox.email, isNative: mailbox.isNative },
+        owner: owner ? { email: owner.email } : null,
+        isDelegate: !!delegation,
+        ownerOnly: opts.ownerOnly,
+    })
 
-    // For native mailboxes, the email must match the owner's email.
-    if (mailbox.isNative) {
-        const owner = await db.query.users.findFirst({
-            where: eq(users.id, mailbox.userId),
-        })
-        if (!owner || mailbox.email.toLowerCase() !== owner.email.toLowerCase()) {
-            return null
-        }
-    }
-
-    return mailbox
+    return access ? mailbox : null
 }
 
 function toMailboxResponse(mailbox: {
@@ -114,7 +117,16 @@ router.get('/', async (req: Request, res: Response) => {
                   orderBy: [desc(mailboxes.createdAt)],
               })
             : await db.query.mailboxes.findMany({
-                  where: eq(mailboxes.userId, userId),
+                  where: or(
+                      eq(mailboxes.userId, userId),
+                      // Mailboxes shared with this user (microsite info@ boxes). They are
+                      // classified as client/other mailboxes below, so they appear grouped under
+                      // the owning organization and never in the user's own section.
+                      inArray(mailboxes.id, db
+                          .select({ id: mailboxDelegates.mailboxId })
+                          .from(mailboxDelegates)
+                          .where(eq(mailboxDelegates.userId, userId))),
+                  ),
                   orderBy: [desc(mailboxes.createdAt)],
               })
 
@@ -188,6 +200,8 @@ router.get('/', async (req: Request, res: Response) => {
 
         const safeMailboxes = userMailboxes.map(mb => ({
             ...toMailboxResponse(mb),
+            // Shared with the requester by delegation (not owned by them).
+            isDelegated: mb.userId !== userId,
             unreadCount: unreadByMailbox.get(mb.id) ?? 0,
             // organizationName: first organization of the owner (null if none).
             // isOperationMailbox: operation domain (MAIL_DOMAIN + OUTREACH_PROTECTED_DOMAINS) or own mailbox.
@@ -424,7 +438,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 
         const data = schema.parse(req.body)
 
-        const existing = await checkUserMailboxAccess(userId, mailboxId)
+        const existing = await checkUserMailboxAccess(userId, mailboxId, { ownerOnly: true })
 
         if (!existing) {
             return res.status(404).json({ error: 'Mailbox not found' })
@@ -475,7 +489,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
             return res.status(401).json({ error: 'Unauthorized' })
         }
 
-        const existing = await checkUserMailboxAccess(userId, mailboxId)
+        const existing = await checkUserMailboxAccess(userId, mailboxId, { ownerOnly: true })
 
         if (!existing) {
             return res.status(404).json({ error: 'Mailbox not found' })
