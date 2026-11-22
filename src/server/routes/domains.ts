@@ -1,13 +1,14 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import { generateKeyPairSync } from 'node:crypto'
 import { db } from '../../db'
 import { domains, organizations, organizationUsers } from '../../db/schema'
 import { eq, and } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
 import { isPlatformAdmin } from '../lib/admin'
-import { resolveMx, resolveTxt, resolveCname } from '../lib/dns-resolver'
-import { isAcceptableSpf, SPF_REQUIREMENT_MESSAGE, MAIL_HOST, RECOMMENDED_SPF_RECORD } from '../lib/spf-policy'
+import {
+    buildDnsRecords, checkDomainDns, generateDkimKeyPair, DEFAULT_DKIM_SELECTOR,
+    type DomainRow, type DnsRecordSpec, type DomainDnsRecords,
+} from '../lib/domain-dns'
 import { invalidateDkimCache } from '../lib/dkim'
 
 const router = Router()
@@ -18,55 +19,8 @@ const createDomainSchema = z.object({
     verificationMethod: z.enum(['dns', 'email']).default('dns'),
 })
 
-// One constant for the verification-TXT label instead of the literal string sprinkled across
-// the verify handler, buildDnsRecords() and (formerly) the frontend. The value itself is kept —
-// changing it would invalidate every already-published TXT record.
-const VERIFICATION_TXT_PREFIX = 'skaleclub-verification'
-
-// Matches the `dkim_selector` column default in src/db/schema.ts and the fallback dkim.ts uses
-// when reading a domain that predates the column. Not user/brand facing — it's just the DNS
-// label prefix (`<selector>._domainkey.<domain>`), so it is not part of the branding cleanup.
-const DEFAULT_DKIM_SELECTOR = 'skaleclub'
-
-// Return-Path CNAME target. Mirrors the MAIL_HOST/MAIL_DOMAIN split used elsewhere in the
-// server (mail-tls.ts, autodiscover.ts, mx-server.ts): MAIL_HOST is the mail *host* name
-// (mx.skale.club), MAIL_DOMAIN is the apex domain the platform sends as (skale.club). The old
-// code hardcoded `rp.skaleclub.com`, which doesn't exist for the real production domain.
-const RETURN_PATH_BASE_DOMAIN = process.env.MAIL_DOMAIN || 'skale.club'
-const RETURN_PATH_TARGET = `rp.${RETURN_PATH_BASE_DOMAIN}`
-
-type DomainRow = typeof domains.$inferSelect
-
-export interface DnsRecordSpec {
-    type: 'TXT' | 'MX' | 'CNAME'
-    name: string
-    value: string | null
-    priority?: number
-}
-
-export interface DomainDnsRecords {
-    verification: DnsRecordSpec
-    spf: DnsRecordSpec
-    dkim: DnsRecordSpec
-    dmarc: DnsRecordSpec
-    mx: DnsRecordSpec
-    returnPath: DnsRecordSpec
-}
-
-/** Strip PEM headers/whitespace to get the base64 body nodemailer's SPKI public key needs for
- * a DKIM TXT `p=` value. Same transform the DKIM signing test uses to build its fixture record. */
-function dkimPublicKeyToDnsValue(pem: string): string {
-    return pem.replace(/-----[A-Z ]+-----/g, '').replace(/\s+/g, '')
-}
-
-function generateDkimKeyPair(): { privateKey: string; publicKey: string } {
-    const { privateKey, publicKey } = generateKeyPairSync('rsa', {
-        modulusLength: 2048,
-        privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
-        publicKeyEncoding: { type: 'spki', format: 'pem' },
-    })
-    return { privateKey, publicKey }
-}
+export { buildDnsRecords }
+export type { DnsRecordSpec, DomainDnsRecords }
 
 /**
  * Lazily backfills a DKIM keypair for domains created before key generation existed (POST '/'
@@ -89,51 +43,6 @@ async function ensureDkimKeyPair(domain: DomainRow): Promise<DomainRow> {
     invalidateDkimCache(domain.name)
 
     return updated ?? domain
-}
-
-/**
- * Builds the DNS records an admin needs to publish for a domain, server-side, from the same
- * values the verify route checks against — so the UI can render these instead of hardcoding
- * `skaleclub.com` / "Skale Club" strings that don't match production (`mx.skale.club`).
- */
-export function buildDnsRecords(domain: DomainRow): DomainDnsRecords {
-    const selector = domain.dkimSelector || DEFAULT_DKIM_SELECTOR
-
-    return {
-        verification: {
-            type: 'TXT',
-            name: '@',
-            value: domain.verificationToken ? `${VERIFICATION_TXT_PREFIX}:${domain.verificationToken}` : null,
-        },
-        spf: {
-            type: 'TXT',
-            name: '@',
-            value: RECOMMENDED_SPF_RECORD,
-        },
-        dkim: {
-            type: 'TXT',
-            name: `${selector}._domainkey.${domain.name}`,
-            value: domain.dkimPublicKey
-                ? `v=DKIM1; k=rsa; p=${dkimPublicKeyToDnsValue(domain.dkimPublicKey)}`
-                : null,
-        },
-        dmarc: {
-            type: 'TXT',
-            name: `_dmarc.${domain.name}`,
-            value: `v=DMARC1; p=quarantine; rua=mailto:dmarc@${domain.name}`,
-        },
-        mx: {
-            type: 'MX',
-            name: '@',
-            value: MAIL_HOST,
-            priority: 10,
-        },
-        returnPath: {
-            type: 'CNAME',
-            name: `rp.${domain.name}`,
-            value: RETURN_PATH_TARGET,
-        },
-    }
 }
 
 /**
@@ -321,74 +230,17 @@ router.post('/:id/verify', async (req: Request, res: Response) => {
         // GET route first.
         const domain = await ensureDkimKeyPair(rawDomain)
 
-        const domainName = domain.name
-        const expectedDnsRecords = buildDnsRecords(domain)
-        const expectedToken = expectedDnsRecords.verification.value
-        const dkimSelector = domain.dkimSelector || DEFAULT_DKIM_SELECTOR
-
-        const [rootTxt, dkimTxt, dmarcTxt, mxRecords, returnPathCname] = await Promise.all([
-            resolveTxt(domainName),
-            resolveTxt(`${dkimSelector}._domainkey.${domainName}`),
-            resolveTxt(`_dmarc.${domainName}`),
-            resolveMx(domainName),
-            resolveCname(`rp.${domainName}`),
-        ])
-
-        const verificationFound = rootTxt.some((r) => r === expectedToken)
-        const verificationStatus = verificationFound ? 'verified' as const : 'failed' as const
-
-        const spfFound = rootTxt.some(isAcceptableSpf)
-        const spfStatus = spfFound ? 'verified' : 'failed'
-        const spfError = spfFound ? null : SPF_REQUIREMENT_MESSAGE
-
-        const dkimFound = dkimTxt.length > 0 && dkimTxt.some((r) => r.startsWith('v=DKIM1'))
-        const dkimStatus = dkimFound ? 'verified' : 'failed'
-        const dkimError = dkimFound ? null : 'DKIM record not found'
-
-        const dmarcFound = dmarcTxt.some((r) => r.startsWith('v=DMARC1'))
-        const dmarcStatus = dmarcFound ? 'verified' : 'failed'
-        const dmarcError = dmarcFound ? null : 'DMARC record not found'
-
-        const mxFound = mxRecords.some((r) => r.exchange.toLowerCase() === MAIL_HOST.toLowerCase())
-        const mxStatus = mxFound ? 'verified' : 'failed'
-        const mxError = mxFound ? null : `MX record not found or does not point to ${MAIL_HOST}`
-
-        const returnPathFound = returnPathCname.some((r) => r.toLowerCase() === RETURN_PATH_TARGET)
-        const returnPathStatus = returnPathFound ? 'verified' : 'failed'
-        const returnPathError = returnPathFound ? null : `Return-Path CNAME not found (expected rp.${domainName} → ${RETURN_PATH_TARGET})`
-
-        const allVerified = verificationFound && spfFound && dkimFound && dmarcFound && mxFound && returnPathFound
+        const { update: verificationUpdate, dnsResults } = await checkDomainDns(domain)
 
         const [updatedDomain] = await db
             .update(domains)
-            .set({
-                verificationStatus,
-                verifiedAt: allVerified ? new Date() : null,
-                spfStatus,
-                spfError,
-                dkimStatus,
-                dkimError,
-                dmarcStatus,
-                dmarcError,
-                mxStatus,
-                mxError,
-                returnPathStatus,
-                returnPathError,
-                updatedAt: new Date(),
-            })
+            .set({ ...verificationUpdate, updatedAt: new Date() })
             .where(eq(domains.id, domainId))
             .returning()
 
         res.json({
             domain: toPublicDomain(updatedDomain),
-            dnsResults: {
-                verification: { found: verificationFound },
-                spf: { found: spfFound, error: spfError },
-                dkim: { found: dkimFound, error: dkimError },
-                dmarc: { found: dmarcFound, error: dmarcError },
-                mx: { found: mxFound, error: mxError },
-                returnPath: { found: returnPathFound, error: returnPathError },
-            },
+            dnsResults,
         })
     } catch (error) {
         console.error('Error verifying domain:', error)

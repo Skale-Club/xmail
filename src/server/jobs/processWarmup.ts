@@ -27,6 +27,7 @@ import type { ImapFlow } from 'imapflow'
 import { createImapClient } from '../lib/imap-client'
 import { and, eq, gt, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm'
 import { db } from '../../db'
+import { isMicrositeMailAddress } from '../lib/microsite-protected-domains'
 import {
     emailAccounts,
     mailboxes,
@@ -100,7 +101,8 @@ async function loadMeshAccounts(): Promise<MeshAccount[]> {
     const rows = await db.query.emailAccounts.findMany({
         where: and(eq(emailAccounts.warmupSource, 'internal'), eq(emailAccounts.status, 'verified')),
     })
-    return rows.map((account) => ({
+    // A microsite info@ is work mail and never joins the mesh, even if a row was created by hand.
+    return rows.filter((account) => !isMicrositeMailAddress(account.email)).map((account) => ({
         account,
         domain: domainOf(account.email),
         providerHint: providerHintOf(account),

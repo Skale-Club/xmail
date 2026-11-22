@@ -153,6 +153,7 @@ async function rejectPrivateMailHosts(hosts: (string | null | undefined)[]): Pro
 import nodemailer from 'nodemailer'
 import type { TransportOptions } from 'nodemailer'
 import { createImapClient } from '../../lib/imap-client'
+import { isMicrositeMailAddress } from '../../lib/microsite-protected-domains'
 
 const router = Router()
 
@@ -585,6 +586,11 @@ router.post('/', async (req: Request, res: Response) => {
         // normalizedEmail and then checked for duplicates against the raw value anyway, so a case
         // variant slipped past the check and past the (then case-sensitive) index.
         const validatedData = createEmailAccountSchema.parse(req.body)
+
+        // Owned-microsite info@ boxes are work mail: never an outreach or warm-up account.
+        if (isMicrositeMailAddress(validatedData.email)) {
+            return res.status(400).json({ error: 'This address is a protected work mailbox and cannot be an outreach account' })
+        }
 
         // Check for duplicate email
         const existing = await db.query.emailAccounts.findFirst({

@@ -231,6 +231,9 @@ jobs:
               -e XMAIL_SERVICE_KEY="${{ secrets.XMAIL_SERVICE_KEY }}" \
               -e XMAIL_SERVICE_USER_ID="${{ secrets.XMAIL_SERVICE_USER_ID }}" \
               -e XMAIL_SERVICE_ORGANIZATION_ID="${{ secrets.XMAIL_SERVICE_ORGANIZATION_ID }}" \
+              -e XMAIL_PROVISIONING_API_KEY="${{ secrets.XMAIL_PROVISIONING_API_KEY }}" \
+              -e XMAIL_PROVISIONING_ORG_ID="${{ secrets.XMAIL_PROVISIONING_ORG_ID }}" \
+              -e XMAIL_PROVISIONING_DELEGATE_USER_IDS="${{ secrets.XMAIL_PROVISIONING_DELEGATE_USER_IDS }}" \
               -e XPHERE_EVENTS_URL="${{ secrets.XPHERE_EVENTS_URL }}" \
               -e XPHERE_EVENTS_API_KEY="${{ secrets.XPHERE_EVENTS_API_KEY }}" \
               -e APOLLO_API_KEY="${{ secrets.APOLLO_API_KEY }}" \
@@ -411,6 +414,9 @@ jobs:
                   -e XMAIL_SERVICE_KEY="${{ secrets.XMAIL_SERVICE_KEY }}" \
                   -e XMAIL_SERVICE_USER_ID="${{ secrets.XMAIL_SERVICE_USER_ID }}" \
                   -e XMAIL_SERVICE_ORGANIZATION_ID="${{ secrets.XMAIL_SERVICE_ORGANIZATION_ID }}" \
+                  -e XMAIL_PROVISIONING_API_KEY="${{ secrets.XMAIL_PROVISIONING_API_KEY }}" \
+                  -e XMAIL_PROVISIONING_ORG_ID="${{ secrets.XMAIL_PROVISIONING_ORG_ID }}" \
+                  -e XMAIL_PROVISIONING_DELEGATE_USER_IDS="${{ secrets.XMAIL_PROVISIONING_DELEGATE_USER_IDS }}" \
                   -e XPHERE_EVENTS_URL="${{ secrets.XPHERE_EVENTS_URL }}" \
                   -e XPHERE_EVENTS_API_KEY="${{ secrets.XPHERE_EVENTS_API_KEY }}" \
                   -e APOLLO_API_KEY="${{ secrets.APOLLO_API_KEY }}" \
