@@ -16,6 +16,20 @@ function isMissingEncryptionKey(err: unknown): boolean {
     return err instanceof Error && err.message.includes('Missing OUTLOOK_TOKEN_ENCRYPTION_KEY')
 }
 
+/**
+ * Deploy-order safety: if migration 081 (mailbox_delegates) is not applied yet, delegated access is
+ * simply unavailable instead of breaking webmail for every user. Any other error is rethrown.
+ */
+function delegationUnavailable(err: unknown): null {
+    const code = (err as { code?: string; cause?: { code?: string } } | null)?.code
+        ?? (err as { cause?: { code?: string } } | null)?.cause?.code
+    if (code === '42P01') {
+        console.warn('[mailboxes] mailbox_delegates table missing; delegated mailboxes are hidden until migration 081 is applied')
+        return null
+    }
+    throw err
+}
+
 const router = Router()
 
 /**
@@ -54,7 +68,7 @@ export async function checkUserMailboxAccess(userId: string, mailboxId: string, 
         needsDelegate
             ? db.query.mailboxDelegates.findFirst({
                 where: and(eq(mailboxDelegates.mailboxId, mailboxId), eq(mailboxDelegates.userId, userId)),
-            })
+            }).catch(delegationUnavailable)
             : Promise.resolve(null),
     ])
 
@@ -128,6 +142,13 @@ router.get('/', async (req: Request, res: Response) => {
                           .where(eq(mailboxDelegates.userId, userId))),
                   ),
                   orderBy: [desc(mailboxes.createdAt)],
+              }).catch(async (err: unknown) => {
+                  // Migration 081 not applied yet: keep webmail working with own mailboxes only.
+                  delegationUnavailable(err)
+                  return db.query.mailboxes.findMany({
+                      where: eq(mailboxes.userId, userId),
+                      orderBy: [desc(mailboxes.createdAt)],
+                  })
               })
 
         // dmarc@ is an internal report sink consumed by the ingestion job, not a human inbox.
