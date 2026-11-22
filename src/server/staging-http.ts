@@ -36,7 +36,7 @@ const proofSql = `SELECT current_database() AS database,current_user AS current_
 function assertReader(proof?: ReaderProof) {
     if (!proof || proof.database !== 'xmail' || proof.current_role !== 'xmail_staging_reader' || proof.session_role !== 'xmail_staging_reader'
         || proof.read_only !== 'on' || proof.login !== true || proof.bypass_rls !== true || proof.memberships !== 0
-        || proof.tables !== 74 || proof.readable !== 74 || proof.business_tables !== 70 || proof.identity_rls !== 4
+        || proof.tables !== 77 || proof.readable !== 77 || proof.business_tables !== 73 || proof.identity_rls !== 4
         || JSON.stringify(proof.identity_tables) !== JSON.stringify(identityTables)
         || ['superuser', 'create_db', 'create_role', 'replication', 'owns_database', 'owns_tables', 'create_schema',
             'create_database', 'temp_database', 'table_writes', 'sequence_writes', 'function_execute'].some(key => proof[key as keyof ReaderProof] !== false)) {
